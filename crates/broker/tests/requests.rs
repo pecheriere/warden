@@ -515,6 +515,107 @@ async fn relay_not_configured_rejected_without_notifying() {
     create_notified(&h, "bot", pi_request()).await;
 }
 
+/// `public_key` with its comment replaced: the same key, spelled differently.
+fn recommented(public_key: &str) -> String {
+    let mut key = ssh_key::PublicKey::from_openssh(public_key).unwrap();
+    key.set_comment("someone-else@example.com");
+    key.to_openssh().unwrap()
+}
+
+#[tokio::test]
+async fn public_key_bound_once_across_agents() {
+    let h = harness().await;
+    let key = ed25519_public();
+    let (created, token) =
+        create_notified(&h, "bot", ssh_request("pi", "alice", Window::M30, &key)).await;
+
+    // Another agent cannot bind the same key (whatever its comment), to
+    // the same target or another one, while bot's request is pending.
+    for (target, user) in [("pi", "alice"), ("nas", "backup")] {
+        let err = h
+            .requests
+            .create(
+                &agent("other"),
+                ssh_request(target, user, Window::M30, &recommented(&key)),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, RequestError::KeyInUse), "{err:?}");
+        assert_eq!(
+            message(&err),
+            "this public key is already bound to another request or grant"
+        );
+    }
+    assert_eq!(row_count(&h.pool, "requests").await, 1);
+    assert_eq!(h.capture.rung().len(), 1);
+
+    // bot repeating its own request is the dedupe path, as before.
+    let again = h
+        .requests
+        .create(&agent("bot"), ssh_request("pi", "alice", Window::M30, &key))
+        .await
+        .unwrap();
+    assert_eq!(again.id, created.id);
+
+    // Approved: the active grant still holds the key.
+    let grant = grant_for(&h, Window::M15);
+    h.requests
+        .mark_approved(&token, Window::M15, grant.clone(), "pk1")
+        .await
+        .unwrap();
+    let err = h
+        .requests
+        .create(
+            &agent("other"),
+            ssh_request("pi", "alice", Window::M30, &key),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, RequestError::KeyInUse), "{err:?}");
+
+    // Once the grant has ended the key is free again.
+    h.requests
+        .revoke_grant(&grant.grant_id, "test")
+        .await
+        .unwrap();
+    create_notified(&h, "other", ssh_request("pi", "alice", Window::M30, &key)).await;
+}
+
+#[tokio::test]
+async fn bound_key_freed_when_pending_request_expires() {
+    let h = harness().await;
+    let key = ed25519_public();
+    create_notified(&h, "bot", ssh_request("pi", "alice", Window::M30, &key)).await;
+    h.clock.advance(600);
+    // The stale pending row no longer binds the key.
+    create_notified(&h, "other", ssh_request("pi", "alice", Window::M30, &key)).await;
+}
+
+#[tokio::test]
+async fn same_agent_reuse_for_other_target_refused() {
+    let h = harness().await;
+    let key = ed25519_public();
+    create_notified(&h, "bot", ssh_request("pi", "alice", Window::M30, &key)).await;
+    let err = h
+        .requests
+        .create(
+            &agent("bot"),
+            ssh_request("nas", "backup", Window::M30, &key),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, RequestError::KeyInUse), "{err:?}");
+    assert_eq!(row_count(&h.pool, "requests").await, 1);
+    assert_eq!(h.capture.rung().len(), 1);
+    // A different key for the other target is fine.
+    create_notified(
+        &h,
+        "bot",
+        ssh_request("nas", "backup", Window::M30, &ed25519_public()),
+    )
+    .await;
+}
+
 #[tokio::test]
 async fn connect_down_fails_request_without_notifying() {
     let down = harness_with(broken_connect().await, None).await;

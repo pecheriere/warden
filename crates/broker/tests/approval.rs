@@ -1449,3 +1449,20 @@ async fn cert_grant_is_never_an_active_relay_grant() {
             .is_none()
     );
 }
+
+#[tokio::test]
+async fn bound_key_reuse_is_409_on_the_api() {
+    let broker = TestBroker::new().await;
+    let bot = broker.add_agent("bot").await;
+    let other = broker.add_agent("other").await;
+    let request = TestBroker::pi_request("look around", Window::M30);
+    let body = serde_json::to_value(&request).unwrap();
+    let first = broker.api_post_json(&bot, "/v1/requests", &body).await;
+    assert_eq!(first.status, StatusCode::CREATED, "{}", first.body);
+    let second = broker.api_post_json(&other, "/v1/requests", &body).await;
+    assert_eq!(second.status, StatusCode::CONFLICT, "{}", second.body);
+    assert_eq!(
+        second.json(),
+        json!({"error": "this public key is already bound to another request or grant"})
+    );
+}

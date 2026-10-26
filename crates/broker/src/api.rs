@@ -94,7 +94,7 @@ const fn status_of(e: &RequestError) -> Option<StatusCode> {
         RequestError::UnknownTarget(_)
         | RequestError::UnknownSecret(_)
         | RequestError::NotFound => Some(StatusCode::NOT_FOUND),
-        RequestError::AlreadyDecided => Some(StatusCode::CONFLICT),
+        RequestError::AlreadyDecided | RequestError::KeyInUse => Some(StatusCode::CONFLICT),
         RequestError::AgentRevoked => Some(StatusCode::UNAUTHORIZED),
         RequestError::Unavailable(_) | RequestError::Contended => {
             Some(StatusCode::SERVICE_UNAVAILABLE)
@@ -520,6 +520,10 @@ mod tests {
         assert_eq!(
             status_of(&RequestError::UnknownSecret("nope".to_owned())),
             Some(StatusCode::NOT_FOUND)
+        );
+        assert_eq!(
+            status_of(&RequestError::KeyInUse),
+            Some(StatusCode::CONFLICT)
         );
     }
 

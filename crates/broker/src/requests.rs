@@ -15,7 +15,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use sha2::{Digest as _, Sha256};
 use sqlx::sqlite::SqliteRow;
-use sqlx::{Row as _, Sqlite, SqlitePool, Transaction};
+use sqlx::{Row as _, Sqlite, SqliteConnection, SqlitePool, Transaction};
 use tokio::sync::broadcast;
 use url::Url;
 use warden_broker_proto::{
@@ -161,6 +161,10 @@ pub enum RequestError {
     /// No agent has this name.
     #[error("unknown agent {0}")]
     UnknownAgent(AgentName),
+    /// The SSH public key is bound to another live request or grant: one of
+    /// another agent, or of this agent for another target.
+    #[error("this public key is already bound to another request or grant")]
+    KeyInUse,
     /// Too many concurrent creates for the same slot; retry.
     #[error("request slot contended; retry")]
     Contended,
@@ -399,9 +403,10 @@ impl Requests {
     /// target (or secret) and kind returns that request instead.
     ///
     /// # Errors
-    /// [`RequestError::Rejected`] for policy violations, the target or
-    /// secret errors from the backend, [`RequestError::AgentRevoked`], or
-    /// storage failures. No row is stored and nobody is notified on error.
+    /// [`RequestError::Rejected`] for policy violations,
+    /// [`RequestError::KeyInUse`] if the SSH public key backs another live
+    /// request or grant, the target or secret errors from the backend,
+    /// [`RequestError::AgentRevoked`], or storage failures. No row is stored and nobody is notified on error.
     pub async fn create(
         &self,
         agent: &AgentName,
@@ -482,6 +487,14 @@ impl Requests {
         let id = Id::random();
         let fp = fingerprint(agent, req);
         let mut tx = begin(&self.pool).await?;
+        if let Access::Ssh {
+            target, public_key, ..
+        } = &req.access
+        {
+            // In the write transaction, so no concurrent create can bind the
+            // key between this check and the insert.
+            check_key_unbound(&mut tx, agent, target, public_key, now).await?;
+        }
         let inserted = sqlx::query(
             "INSERT INTO requests (id, agent, fingerprint, dedupe_key, body, \
              approval_token_hash, status, created_at, expires_at) \
@@ -1156,6 +1169,63 @@ impl Requests {
         }
         Ok(ids)
     }
+}
+
+/// Refuse `public_key` for `agent`'s request on `target` if it is bound to
+/// a live SSH request (pending and not past its deadline) or one with a
+/// live grant (neither revoked nor expired) that belongs to another agent or
+/// to another target: each ephemeral key backs exactly one live access, so
+/// the relay can attribute a key to one grant. The same agent and target is
+/// the dedupe path and is left to it. Keys are compared by key data, so
+/// comments do not matter.
+///
+/// # Errors
+/// [`RequestError::KeyInUse`]; storage failures; [`RequestError::Corrupt`]
+/// for a stored key that no longer parses.
+async fn check_key_unbound(
+    conn: &mut SqliteConnection,
+    agent: &AgentName,
+    target: &TargetName,
+    public_key: &str,
+    now: i64,
+) -> Result<(), RequestError> {
+    let offered = ssh_key::PublicKey::from_openssh(public_key).map_err(|_| {
+        RequestError::Rejected("public_key must be an OpenSSH ssh-ed25519 public key".to_owned())
+    })?;
+    let rows = sqlx::query(
+        "SELECT r.agent, r.body FROM requests r \
+         WHERE json_extract(r.body, '$.access.kind') = 'ssh' \
+         AND ((r.status = 'pending' AND r.expires_at > ?1) \
+              OR EXISTS (SELECT 1 FROM grants g WHERE g.request_id = r.id \
+                         AND g.revoked_at IS NULL AND g.not_after > ?1))",
+    )
+    .bind(now)
+    .fetch_all(&mut *conn)
+    .await?;
+    for row in &rows {
+        let body: String = row.try_get("body")?;
+        let request: CreateRequest = serde_json::from_str(&body)?;
+        let Access::Ssh {
+            target: bound_target,
+            public_key: bound_key,
+            ..
+        } = &request.access
+        else {
+            return Err(RequestError::Corrupt(
+                "ssh request without ssh access".to_owned(),
+            ));
+        };
+        let bound_key = ssh_key::PublicKey::from_openssh(bound_key)
+            .map_err(|e| RequestError::Corrupt(format!("bound public key: {e}")))?;
+        if bound_key.key_data() != offered.key_data() {
+            continue;
+        }
+        let bound_agent: AgentName = parse(row, "agent")?;
+        if bound_agent != *agent || bound_target != target {
+            return Err(RequestError::KeyInUse);
+        }
+    }
+    Ok(())
 }
 
 /// Revoke agent `name` at `now` in one transaction: its key stops working,
