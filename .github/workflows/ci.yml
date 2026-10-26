@@ -24,8 +24,16 @@ jobs:
           toolchain: "1.94"
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      # Only the tests' own unprivileged sshd may accept logins: the system
+      # one is stopped before the runner account gets a password below.
       - name: Install OpenSSH
-        run: sudo apt-get update && sudo apt-get install -y openssh-server openssh-client
+        run: |
+          sudo apt-get update && sudo apt-get install -y openssh-server openssh-client
+          sudo systemctl disable --now ssh.socket ssh.service
+          if ss -Hltn 'sport = :22' | grep -q .; then
+            echo "something still listens on port 22" >&2
+            exit 1
+          fi
       # The relay's password-target tests log in to a throwaway sshd as the
       # runner account, checked through PAM: give it a random password.
       - name: Give the runner account a login password

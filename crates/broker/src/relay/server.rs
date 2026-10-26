@@ -15,10 +15,13 @@
 //!   `TERM`), `window-change`, `signal`, then `shell` or `exec`. Port
 //!   forwarding, agent forwarding, X11 and subsystems (sftp included) are
 //!   refused with a message on the session's stderr.
+//! - Before the session starts, at most 32 messages or 64 KiB of input are
+//!   accepted on it; past that the connection is hung up, on record.
 //! - When the session starts, the grant and the target's policy are read
 //!   again (one read, with the credential); `relay_session_started` is
 //!   written before anything reaches the target; `relay_session_ended`
-//!   follows when it ends.
+//!   follows when it ends, also when the relay stops mid-setup. The onward
+//!   connection negotiates only the host key types of the pinned keys.
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -26,11 +29,11 @@ use std::time::Duration;
 
 use russh::server::{self, Auth, Session};
 use russh::{
-    Channel, ChannelId, ChannelOpenFailure, Disconnect, MethodKind, MethodSet, Pty, SshId,
+    Channel, ChannelId, ChannelOpenFailure, Disconnect, MethodKind, MethodSet, Pty, Sig, SshId,
 };
 use ssh_key::Algorithm;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::watch;
+use tokio::sync::{oneshot, watch};
 use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::Instant;
 use warden_broker_proto::{Id, TargetName};
@@ -50,6 +53,8 @@ use super::session::{
 const NO_LONGER_VALID: &str = "warden relay: this access is no longer valid";
 /// Told to an agent when the grant or policy cannot be read.
 const UNAVAILABLE: &str = "warden relay: the target's policy cannot be read right now";
+/// Told to an agent when the session task failed unexpectedly.
+const INTERNAL: &str = "warden relay: internal error";
 /// Told to an agent when `relay_session_started` cannot be written.
 const UNRECORDED: &str = "warden relay: the session could not be recorded; not starting it";
 /// Exit status of a session the relay could not start (OpenSSH's own
@@ -61,6 +66,12 @@ const NO_SUBSYSTEMS: &str = "warden relay: subsystems (such as sftp) are not all
 const NO_X11: &str = "warden relay: X11 forwarding is not allowed";
 const NO_AGENT: &str = "warden relay: agent forwarding is not allowed";
 const ONE_SESSION: &str = "warden relay: one session per connection";
+/// Messages (data or requests) a session may receive before it starts.
+const MAX_PRE_START_MESSAGES: usize = 32;
+/// Bytes of data a session may receive before it starts.
+const MAX_PRE_START_BYTES: usize = 64 * 1024;
+/// Told to an agent that sent too much before starting its session.
+const TOO_MUCH_INPUT: &str = "warden relay: too much input before the session started";
 /// Disconnect messages.
 const LOGIN_TIMEOUT: &str = "warden relay: login timed out";
 const SHUTTING_DOWN: &str = "warden relay: shutting down";
@@ -262,20 +273,7 @@ async fn connection(
         refusals: Mutex::new(Refusals::default()),
         relayed: Mutex::new(None),
     });
-    let handler = RelayHandler {
-        shared: Arc::clone(&shared),
-        conn: Arc::clone(&conn),
-        preauth: Some(permit),
-        stop: stop.clone(),
-        login: None,
-        slot: None,
-        session_id: None,
-        channel: None,
-        pty: None,
-        env: Vec::new(),
-        notices: Vec::new(),
-        started: false,
-    };
+    let handler = RelayHandler::new(Arc::clone(&shared), Arc::clone(&conn), permit, stop.clone());
     // A second handle on the socket, to cut the connection off if the peer
     // ignores the relay hanging up on it.
     let (socket, cut) = match with_cutoff(socket) {
@@ -348,20 +346,26 @@ async fn connection(
     }
 
     if !*logged_in_rx.borrow() {
-        let refusals =
-            std::mem::take(&mut *conn.refusals.lock().unwrap_or_else(PoisonError::into_inner));
-        if refusals.attempts > 0 {
-            let user = refusals.user.unwrap_or_default();
-            tracing::info!(peer = %peer.ip(), user, attempts = refusals.attempts, "relay: login refused");
-            let event = AuditEvent::RelayLoginRefused {
-                user,
-                peer: peer.ip().to_string(),
-                attempts: refusals.attempts,
-            };
-            if let Err(e) = shared.audit.append(event).await {
-                tracing::error!(error = %e, "relay: could not record a refused login");
-            }
-        }
+        record_refused_login(&shared.audit, &conn, peer).await;
+    }
+}
+
+/// Record the refused login attempts of a connection that never logged in.
+async fn record_refused_login(audit: &AuditLog, conn: &Conn, peer: SocketAddr) {
+    let refusals =
+        std::mem::take(&mut *conn.refusals.lock().unwrap_or_else(PoisonError::into_inner));
+    if refusals.attempts == 0 {
+        return;
+    }
+    let user = refusals.user.unwrap_or_default();
+    tracing::info!(peer = %peer.ip(), user, attempts = refusals.attempts, "relay: login refused");
+    let event = AuditEvent::RelayLoginRefused {
+        user,
+        peer: peer.ip().to_string(),
+        attempts: refusals.attempts,
+    };
+    if let Err(e) = audit.append(event).await {
+        tracing::error!(error = %e, "relay: could not record a refused login");
     }
 }
 
@@ -412,6 +416,7 @@ fn ours(key: &russh::keys::PublicKey) -> Option<ssh_key::PublicKey> {
 }
 
 /// Who logged in: the grant matched, and the key it was matched by.
+#[derive(Clone)]
 struct Login {
     grant: RelayGrantRecord,
     key: ssh_key::PublicKey,
@@ -436,9 +441,39 @@ struct RelayHandler {
     /// Refusals to report on the session's stderr.
     notices: Vec<&'static str>,
     started: bool,
+    /// Input that arrived before the session started.
+    pre_start_messages: usize,
+    pre_start_bytes: usize,
+    /// Whether the connection was hung up for too much of it.
+    flooded: bool,
 }
 
 impl RelayHandler {
+    fn new(
+        shared: Arc<Shared>,
+        conn: Arc<Conn>,
+        permit: PreAuthPermit,
+        stop: watch::Receiver<bool>,
+    ) -> Self {
+        Self {
+            shared,
+            conn,
+            preauth: Some(permit),
+            stop,
+            login: None,
+            slot: None,
+            session_id: None,
+            channel: None,
+            pty: None,
+            env: Vec::new(),
+            notices: Vec::new(),
+            started: false,
+            pre_start_messages: 0,
+            pre_start_bytes: 0,
+            flooded: false,
+        }
+    }
+
     fn is_session(&self, channel: ChannelId) -> bool {
         self.session_id == Some(channel)
     }
@@ -487,6 +522,44 @@ impl RelayHandler {
         session.channel_failure(channel)
     }
 
+    /// Count `bytes` of input (or a request) that arrived on the session
+    /// before it started. The SSH library queues it for the session (a
+    /// bounded queue whose overflow would stall this connection), so past
+    /// [`MAX_PRE_START_MESSAGES`] messages or [`MAX_PRE_START_BYTES`] bytes
+    /// the session is refused, on record, and the connection hung up.
+    /// Returns whether to go on handling the input.
+    async fn admit_before_start(
+        &mut self,
+        bytes: usize,
+        session: &mut Session,
+    ) -> Result<bool, russh::Error> {
+        if self.started {
+            return Ok(!self.flooded);
+        }
+        self.pre_start_messages = self.pre_start_messages.saturating_add(1);
+        self.pre_start_bytes = self.pre_start_bytes.saturating_add(bytes);
+        if self.pre_start_messages <= MAX_PRE_START_MESSAGES
+            && self.pre_start_bytes <= MAX_PRE_START_BYTES
+        {
+            return Ok(true);
+        }
+        self.started = true;
+        self.flooded = true;
+        self.channel = None;
+        self.slot = None;
+        if let Some(login) = &self.login {
+            refuse_session(
+                &self.shared,
+                &login.grant.grant_id,
+                "too much input before the session started",
+                TOO_MUCH_INPUT,
+            )
+            .await;
+        }
+        session.disconnect(Disconnect::ByApplication, TOO_MUCH_INPUT, "en")?;
+        Ok(false)
+    }
+
     /// Start the session on `channel` with `program`: check the grant and
     /// policy again, record the start, connect to the target, and hand both
     /// ends to a task relaying them. On any failure the agent gets a fixed
@@ -507,49 +580,74 @@ impl RelayHandler {
         else {
             return session.channel_failure(channel);
         };
-        let shared = &self.shared;
-        let grant = &login.grant;
-        match open_target(shared, login, self.pty.as_ref(), &self.env, &program).await {
-            Ok(started) => {
-                session.channel_success(channel)?;
-                tracing::info!(grant = %grant.grant_id, agent = %grant.agent, target = %grant.target, "relay: session started");
-                let (target, early, hang_up) = started.into_parts();
-                let ends = Ends {
-                    agent,
-                    agent_handle: session.handle(),
-                    target,
-                    early,
-                };
-                let (audit, grant_id, stop) = (
-                    Arc::clone(&shared.audit),
-                    grant.grant_id.clone(),
-                    self.stop.clone(),
-                );
-                let relayed = tokio::spawn(async move {
-                    let outcome = session::relay(ends, stop).await;
-                    hang_up.now().await;
-                    drop(slot);
-                    record_end(&audit, &grant_id, &outcome).await;
-                });
-                *self
-                    .conn
-                    .relayed
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner) = Some(relayed);
-                Ok(())
-            }
-            Err(message) => {
-                // Answered like a session that ran and failed: OpenSSH
-                // clients drop stderr that follows a refused request, but
-                // print it before an exit status.
-                let newline = if self.pty.is_some() { "\r\n" } else { "\n" };
-                session.channel_success(channel)?;
-                session.extended_data(channel, 1, format!("{message}{newline}").into_bytes())?;
-                session.exit_status_request(channel, REFUSED_EXIT_STATUS)?;
-                session.eof(channel)?;
-                session.close(channel)
-            }
+        // The session runs on its own task, registered with the connection
+        // before anything is recorded: a stopping relay waits for it, so a
+        // recorded start always gets its recorded end.
+        let (ready, ready_rx) = oneshot::channel();
+        let (shared, login, pty, env) = (
+            Arc::clone(&self.shared),
+            login.clone(),
+            self.pty.clone(),
+            self.env.clone(),
+        );
+        let (agent_handle, mut stop) = (session.handle(), self.stop.clone());
+        let relayed = tokio::spawn(async move {
+            let opened =
+                open_target(&shared, &login, pty.as_ref(), &env, &program, &mut stop).await;
+            let started = match opened {
+                Ok(started) => started,
+                Err(message) => {
+                    // The handler may be gone with its connection; then
+                    // nobody needs the answer.
+                    let _ = ready.send(Err(message));
+                    return;
+                }
+            };
+            let _ = ready.send(Ok(()));
+            let grant = &login.grant;
+            tracing::info!(grant = %grant.grant_id, agent = %grant.agent, target = %grant.target, "relay: session started");
+            let (target, early, hang_up) = started.into_parts();
+            let ends = Ends {
+                agent,
+                agent_handle,
+                target,
+                early,
+            };
+            let outcome = session::relay(ends, stop).await;
+            hang_up.now().await;
+            drop(slot);
+            record_end(&shared.audit, &grant.grant_id, &outcome).await;
+        });
+        *self
+            .conn
+            .relayed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(relayed);
+        // Replies go out before anything the session task relays: they are
+        // written here, inside the connection's event loop, which handles
+        // the task's output only after this returns.
+        match ready_rx.await {
+            Ok(Ok(())) => session.channel_success(channel),
+            Ok(Err(message)) => self.refuse_start(channel, message, session),
+            Err(_) => self.refuse_start(channel, INTERNAL, session),
         }
+    }
+
+    /// Answer a session that could not start like one that ran and failed:
+    /// OpenSSH clients drop stderr that follows a refused request, but
+    /// print it before an exit status.
+    fn refuse_start(
+        &self,
+        channel: ChannelId,
+        message: &str,
+        session: &mut Session,
+    ) -> Result<(), russh::Error> {
+        let newline = if self.pty.is_some() { "\r\n" } else { "\n" };
+        session.channel_success(channel)?;
+        session.extended_data(channel, 1, format!("{message}{newline}").into_bytes())?;
+        session.exit_status_request(channel, REFUSED_EXIT_STATUS)?;
+        session.eof(channel)?;
+        session.close(channel)
     }
 }
 
@@ -595,6 +693,7 @@ async fn open_target(
     pty: Option<&PtyRequest>,
     env: &[(String, String)],
     program: &Program,
+    stop: &mut watch::Receiver<bool>,
 ) -> Result<onward::Started, &'static str> {
     let grant = &login.grant;
     let refuse = |reason, message| refuse_session(shared, &grant.grant_id, reason, message);
@@ -650,28 +749,36 @@ async fn open_target(
         tracing::error!(grant = %grant.grant_id, error = %e, "relay: could not record a session start; not starting it");
         return Err(UNRECORDED);
     }
-    let failed = |e: onward::OnwardError| async move {
-        record_end(
-            &shared.audit,
-            &grant.grant_id,
-            &Outcome {
-                reason: e.audit_reason(),
-                bytes_to_target: 0,
-                bytes_from_target: 0,
-                exit_status: None,
-            },
-        )
-        .await;
-        e.message()
+    let ended_early = |reason: &'static str| async move {
+        let outcome = Outcome {
+            reason,
+            bytes_to_target: 0,
+            bytes_from_target: 0,
+            exit_status: None,
+        };
+        record_end(&shared.audit, &grant.grant_id, &outcome).await;
     };
     let timeout = shared.limits.onward_timeout;
-    let connected = match onward::connect(&target, &grant.user, credential, timeout).await {
-        Ok(connected) => connected,
-        Err(e) => return Err(failed(e).await),
+    let onward = async {
+        onward::connect(&target, &grant.user, credential, timeout)
+            .await?
+            .start(pty, env, program, timeout)
+            .await
     };
-    match connected.start(pty, env, program, timeout).await {
-        Ok(started) => Ok(started),
-        Err(e) => Err(failed(e).await),
+    // A stopping relay does not wait for a slow target: the session ends
+    // now, on record, and dropping the attempt closes its connection.
+    tokio::select! {
+        opened = onward => match opened {
+            Ok(started) => Ok(started),
+            Err(e) => {
+                ended_early(e.audit_reason()).await;
+                Err(e.message())
+            }
+        },
+        () = stopping(stop) => {
+            ended_early(session::reason::SHUTDOWN).await;
+            Err(SHUTTING_DOWN)
+        }
     }
 }
 
@@ -838,6 +945,9 @@ impl server::Handler for RelayHandler {
         modes: &[(Pty, u32)],
         session: &mut Session,
     ) -> Result<(), Self::Error> {
+        if !self.admit_before_start(0, session).await? {
+            return Ok(());
+        }
         self.flush_notices(channel, session);
         if !self.is_session(channel)
             || self.started
@@ -864,6 +974,9 @@ impl server::Handler for RelayHandler {
         variable_value: &str,
         session: &mut Session,
     ) -> Result<(), Self::Error> {
+        if !self.admit_before_start(0, session).await? {
+            return Ok(());
+        }
         self.flush_notices(channel, session);
         if !self.is_session(channel)
             || self.started
@@ -886,6 +999,9 @@ impl server::Handler for RelayHandler {
         _x11_screen_number: u32,
         session: &mut Session,
     ) -> Result<(), Self::Error> {
+        if !self.admit_before_start(0, session).await? {
+            return Ok(());
+        }
         self.refuse_request(channel, NO_X11, session)
     }
 
@@ -895,6 +1011,9 @@ impl server::Handler for RelayHandler {
         _name: &str,
         session: &mut Session,
     ) -> Result<(), Self::Error> {
+        if !self.admit_before_start(0, session).await? {
+            return Ok(());
+        }
         self.refuse_request(channel, NO_SUBSYSTEMS, session)
     }
 
@@ -903,10 +1022,46 @@ impl server::Handler for RelayHandler {
         channel: ChannelId,
         session: &mut Session,
     ) -> Result<bool, Self::Error> {
+        if !self.admit_before_start(0, session).await? {
+            return Ok(false);
+        }
         // The library sends the failure reply for `false`.
         self.notice(NO_AGENT);
         self.flush_notices(channel, session);
         Ok(false)
+    }
+
+    async fn data(
+        &mut self,
+        _channel: ChannelId,
+        data: &[u8],
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        // Carried by the session task once started; counted until then.
+        self.admit_before_start(data.len(), session).await?;
+        Ok(())
+    }
+
+    async fn extended_data(
+        &mut self,
+        _channel: ChannelId,
+        _code: u32,
+        data: &[u8],
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        self.admit_before_start(data.len(), session).await?;
+        Ok(())
+    }
+
+    async fn signal(
+        &mut self,
+        _channel: ChannelId,
+        _signal: Sig,
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        // Forwarded by the session task once started.
+        self.admit_before_start(0, session).await?;
+        Ok(())
     }
 
     async fn shell_request(
@@ -936,6 +1091,9 @@ impl server::Handler for RelayHandler {
         pix_height: u32,
         session: &mut Session,
     ) -> Result<(), Self::Error> {
+        if !self.admit_before_start(0, session).await? {
+            return Ok(());
+        }
         // A running session gets the change from the relay loop; before the
         // start, the pty to be requested takes the new size.
         if let Some(pty) = &mut self.pty

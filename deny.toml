@@ -7,13 +7,17 @@ yanked = "deny"
 unmaintained = "all"
 ignore = [
     # rsa and crypto-bigint come in through ssh-agent-lib 0.6.0, which enables
-    # ssh-key's "crypto" feature (RSA and NIST curves) unconditionally. warden
-    # only ever holds Ed25519 private keys (the CA, the CLI's ephemeral keys
-    # and relay targets' login keys, which are refused unless Ed25519), so no
-    # RSA or NIST-curve private-key operation and no vulnerable crypto-bigint
-    # path runs. Remove these entries once ssh-agent-lib drops the dependency
-    # or the advisories are patched.
-    { id = "RUSTSEC-2023-0071", reason = "rsa pulled in by ssh-agent-lib; no RSA private-key operations are performed" },
+    # ssh-key's "crypto" feature (RSA and NIST curves) unconditionally, and
+    # rsa also through russh's "rsa" feature, which the relay enables only
+    # to verify the signatures of targets' pinned RSA host keys (rsa-sha2-256
+    # and -512): public-key operations, which the Marvin timing attack of
+    # RUSTSEC-2023-0071 does not affect. warden only ever holds Ed25519
+    # private keys (the CA, the CLI's ephemeral keys, the relay host key and
+    # relay targets' login keys, which are refused unless Ed25519), so no RSA
+    # or NIST-curve private-key operation and no vulnerable crypto-bigint
+    # path runs. Remove these entries once the dependencies drop RSA or the
+    # advisories are patched.
+    { id = "RUSTSEC-2023-0071", reason = "rsa via ssh-agent-lib and russh; RSA is used only to verify host-key signatures, never with a private key" },
     { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5 pulled in by ssh-key NIST curves via ssh-agent-lib; only Ed25519 is used" },
 ]
 

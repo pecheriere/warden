@@ -26,7 +26,7 @@ use tokio::net::TcpStream;
 use warden_broker::policy::{RelayCredential, SshMode, SshTarget};
 use warden_broker::relay::RelayLimits;
 use warden_broker::testkit::TestBroker;
-use warden_broker::testkit::sshd::{Sshd, SshdLogin, current_user};
+use warden_broker::testkit::sshd::{HostKeyType, Sshd, SshdLogin, current_user};
 use warden_broker_proto::{
     Access, AgentName, CreateRequest, Goal, Id, TargetName, UnixUser, Window,
 };
@@ -203,13 +203,20 @@ impl OpenSsh {
             .stderr(Stdio::piped())
             .spawn()
             .unwrap();
+        // Written while the output is read, so neither pipe can fill up and
+        // stall the other.
         let mut input = child.stdin.take().unwrap();
-        input.write_all(stdin).await.unwrap();
-        drop(input);
-        tokio::time::timeout(Duration::from_secs(60), child.wait_with_output())
+        let stdin = stdin.to_vec();
+        let writer = tokio::spawn(async move {
+            // ssh may exit (and close its stdin) before reading it all.
+            let _ = input.write_all(&stdin).await;
+        });
+        let out = tokio::time::timeout(Duration::from_secs(60), child.wait_with_output())
             .await
             .expect("ssh finished")
-            .unwrap()
+            .unwrap();
+        writer.await.unwrap();
+        out
     }
 
     async fn run(&self, remote: &[&str]) -> Output {
@@ -602,6 +609,88 @@ async fn onward_host_key_mismatch_aborts_before_auth() {
     assert_eq!(ended[0]["reason"], "host key mismatch");
     assert_eq!(ended[0]["grant_id"], agent.grant_id.as_str());
     assert_eq!(ended[0]["bytes_to_target"], 0);
+}
+
+/// A broker whose `nas` is an `sshd` with `host_keys`, of which `pin`
+/// chooses the pinned ones, plus an approved agent's OpenSSH client.
+async fn host_key_target(
+    host_keys: &[HostKeyType],
+    pin: impl FnOnce(&Sshd) -> Vec<PublicKey>,
+) -> (Setup, OpenSsh) {
+    let broker = TestBroker::new().await;
+    let onward = random_key();
+    let sshd = Sshd::start_with(&SshdLogin::Key(onward.public_key().clone()), host_keys);
+    let mut target = nas(&sshd);
+    target.host_keys = pin(&sshd);
+    broker
+        .backend
+        .set_relay_target(target, RelayCredential::Key(openssh_private(&onward)));
+    let relay = broker.spawn_relay().await;
+    let agent = approved_agent(&broker, "bot").await;
+    let ssh = OpenSsh::new(&broker, relay, &agent.key);
+    let setup = Setup {
+        broker,
+        sshd,
+        relay,
+        onward,
+    };
+    (setup, ssh)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn relay_pins_ecdsa_when_target_also_has_ed25519() {
+    // The target offers Ed25519 too, but only its ECDSA key is pinned: the
+    // relay must ask for ECDSA rather than fail on the Ed25519 key.
+    let (_s, ssh) = host_key_target(&[HostKeyType::Ed25519, HostKeyType::EcdsaP256], |sshd| {
+        vec![sshd.host_keys()[1].clone()]
+    })
+    .await;
+    let out = ssh.run(&["echo", "ok"]).await;
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    assert_eq!(text(&out.stdout), "ok\n");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn relay_verifies_rsa_host_key() {
+    let (s, ssh) = host_key_target(&[HostKeyType::Rsa], |sshd| sshd.host_keys().to_vec()).await;
+    let out = ssh.run(&["echo", "ok"]).await;
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    assert_eq!(text(&out.stdout), "ok\n");
+    let log = s.sshd.log();
+    assert!(log.contains("Accepted publickey"), "{log}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unpinned_algorithm_still_mismatch() {
+    // A different ECDSA key, from another host.
+    let other_ecdsa = Sshd::start_with(
+        &SshdLogin::Key(random_key().public_key().clone()),
+        &[HostKeyType::EcdsaP256],
+    )
+    .host_key()
+    .clone();
+    // Pinned while the target has Ed25519 and (another) ECDSA key ...
+    let (s, ssh) = host_key_target(&[HostKeyType::Ed25519, HostKeyType::EcdsaP256], |_| {
+        vec![other_ecdsa.clone()]
+    })
+    .await;
+    // ... and while the target has only Ed25519 (no common algorithm).
+    let (t, ssh2) = host_key_target(&[HostKeyType::Ed25519], |_| vec![other_ecdsa.clone()]).await;
+    for (setup, client) in [(&s, &ssh), (&t, &ssh2)] {
+        let out = client.run(&["true"]).await;
+        assert_ne!(out.status.code(), Some(0));
+        assert!(
+            text(&out.stderr).contains("warden relay: the target's host key does not match"),
+            "{}",
+            text(&out.stderr)
+        );
+        let log = setup.sshd.log();
+        for auth in ["Accepted", "Failed", "Postponed"] {
+            assert!(!log.contains(auth), "{auth}: {log}");
+        }
+        let ended = await_events(&setup.broker, "relay_session_ended", 1).await;
+        assert_eq!(ended[0]["reason"], "host key mismatch");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1111,7 +1200,15 @@ async fn terminate(mut child: tokio::process::Child) {
 async fn serve_runs_the_relay_only_when_configured() {
     let dir = tempfile::tempdir().unwrap();
     let (server, relay, host_key) = spawn_server(dir.path(), true).await;
-    let mut conn = TcpStream::connect(("127.0.0.1", relay)).await.unwrap();
+    // The relay listener is bound just after the HTTP ones.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut conn = loop {
+        match TcpStream::connect(("127.0.0.1", relay)).await {
+            Ok(conn) => break conn,
+            Err(e) => assert!(Instant::now() < deadline, "relay not listening: {e}"),
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
     let mut banner = [0_u8; 16];
     conn.read_exact(&mut banner).await.unwrap();
     assert_eq!(&banner, b"SSH-2.0-warden\r\n");
@@ -1133,4 +1230,115 @@ async fn serve_runs_the_relay_only_when_configured() {
     assert!(TcpStream::connect(("127.0.0.1", relay)).await.is_err());
     assert!(!host_key.exists());
     terminate(server).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn shutdown_during_onward_setup_records_end() {
+    let s = key_target().await;
+    // The target accepts TCP connections but never speaks SSH, so the
+    // relay is stuck connecting onward (for up to its 10 s timeout).
+    let silent = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut target = nas(&s.sshd);
+    target.port = silent.local_addr().unwrap().port();
+    s.broker
+        .backend
+        .set_relay_target(target, RelayCredential::Key(openssh_private(&s.onward)));
+    let agent = approved_agent(&s.broker, "bot").await;
+    let ssh = OpenSsh::new(&s.broker, s.relay, &agent.key);
+    let client = tokio::spawn(async move { ssh.run(&["true"]).await });
+    let (_held, _) = silent.accept().await.unwrap();
+    await_events(&s.broker, "relay_session_started", 1).await;
+
+    let stopping = Instant::now();
+    s.broker.stop_relay().await;
+    // The stop returns only once the session's end is on record.
+    let ended = events_of(&s.broker, "relay_session_ended");
+    assert_eq!(ended.len(), 1, "{:?}", audit_events(&s.broker));
+    assert_eq!(ended[0]["reason"], "relay shutting down");
+    assert_eq!(ended[0]["grant_id"], agent.grant_id.as_str());
+    assert!(
+        stopping.elapsed() < Duration::from_secs(8),
+        "{:?}",
+        stopping.elapsed()
+    );
+    let out = client.await.unwrap();
+    assert_ne!(out.status.code(), Some(0));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn input_flood_before_start_disconnects() {
+    let s = key_target().await;
+    let agent = approved_agent(&s.broker, "bot").await;
+    let c = login(&s.broker, s.relay, TARGET, &agent.key).await;
+    let channel = c.handle.channel_open_session().await.unwrap();
+    // Data before any shell or exec, past the 32-message allowance.
+    for _ in 0..40 {
+        if channel.data_bytes(&b"x"[..]).await.is_err() {
+            break;
+        }
+    }
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !c.handle.is_closed() {
+        assert!(Instant::now() < deadline, "the relay kept the connection");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let refused = await_events(&s.broker, "relay_session_refused", 1).await;
+    assert_eq!(
+        refused[0]["reason"],
+        "too much input before the session started"
+    );
+    assert_eq!(refused[0]["grant_id"], agent.grant_id.as_str());
+    assert_eq!(sshd_connections(&s.sshd), 0, "{}", s.sshd.log());
+
+    // Bytes count too: one 70 KiB write is over the 64 KiB allowance.
+    let c = login(&s.broker, s.relay, TARGET, &agent.key).await;
+    let channel = c.handle.channel_open_session().await.unwrap();
+    let _ = channel.data_bytes(vec![b'y'; 70 * 1024]).await;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !c.handle.is_closed() {
+        assert!(Instant::now() < deadline, "the relay kept the connection");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    await_events(&s.broker, "relay_session_refused", 2).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn large_transfers_both_ways() {
+    use sha2::{Digest as _, Sha256};
+    const SIZE: usize = 16 * 1024 * 1024;
+    // All eight log in at once, from one address.
+    let s = key_target_with(RelayLimits {
+        max_unauthenticated_per_ip: 10,
+        ..RelayLimits::default()
+    })
+    .await;
+    let agents = [
+        approved_agent(&s.broker, "bot").await,
+        approved_agent(&s.broker, "other").await,
+    ];
+    // Eight sessions at once (four per grant), each sending 16 MiB of
+    // incompressible bytes up through `cat` and reading them back: both
+    // directions of every session run against full windows and queues at
+    // the same time, which is when the two connections could stall each
+    // other.
+    let mut transfers = Vec::new();
+    for i in 0..8 {
+        let ssh = OpenSsh::new(&s.broker, s.relay, &agents[i % 2].key);
+        transfers.push(tokio::spawn(async move {
+            let mut payload = vec![0_u8; SIZE];
+            getrandom::fill(&mut payload).unwrap();
+            let out = ssh.run_as(TARGET, &[], &["cat"], &payload).await;
+            assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+            assert_eq!(out.stdout.len(), payload.len());
+            assert_eq!(Sha256::digest(&out.stdout), Sha256::digest(&payload));
+        }));
+    }
+    for transfer in transfers {
+        transfer.await.unwrap();
+    }
+    for ended in await_events(&s.broker, "relay_session_ended", 8).await {
+        assert_eq!(ended["reason"], "exited");
+        assert_eq!(ended["bytes_to_target"], SIZE);
+        assert_eq!(ended["bytes_from_target"], SIZE);
+    }
 }
