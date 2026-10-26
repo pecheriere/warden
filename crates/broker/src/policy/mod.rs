@@ -227,15 +227,22 @@ impl ApiSecretPolicy {
         )
     }
 
-    /// The grant details an approval of this policy hands to the agent.
+    /// The grant details an approval of this policy hands to the agent:
+    /// methods in sorted order (the order [`Self::destination_digest`]
+    /// uses) and the destination digest, so two grants are equal exactly
+    /// when they were made from the same destination.
     #[must_use]
     pub fn grant(&self) -> ApiGrant {
+        let mut methods: Vec<String> = self.methods.iter().map(|m| m.as_str().to_owned()).collect();
+        methods.sort_unstable();
+        methods.dedup();
         ApiGrant {
             secret: self.name.clone(),
             origin: self.origin.ascii_serialization(),
-            methods: self.methods.iter().map(|m| m.as_str().to_owned()).collect(),
+            methods,
             path_prefix: self.path_prefix.clone(),
             header: self.header.as_str().to_owned(),
+            digest: self.destination_digest(),
         }
     }
 }
@@ -519,6 +526,31 @@ mod tests {
             digest,
             api("https://api.example.com", "/v1/", &get, "Authorization").destination_digest()
         );
+    }
+
+    #[test]
+    fn grant_sorts_methods_and_carries_digest() {
+        let post_get = api(
+            "https://api.example.com",
+            "/v1/",
+            &[Method::POST, Method::GET],
+            "authorization",
+        );
+        let grant = post_get.grant();
+        assert_eq!(grant.methods, ["GET", "POST"]);
+        assert_eq!(grant.digest, post_get.destination_digest());
+
+        // Equal grants exactly when the destination is the same: a change
+        // the other grant fields do not show (format, CA) still differs.
+        let mut get_post = post_get.clone();
+        get_post.methods.reverse();
+        assert_eq!(get_post.grant(), grant);
+        let mut formatted = post_get.clone();
+        formatted.format = ValueFormat::parse("token {{secret}}").unwrap();
+        assert_ne!(formatted.grant(), grant);
+        let mut pinned = post_get;
+        pinned.ca_pem = Some("-----BEGIN CERTIFICATE-----".to_owned());
+        assert_ne!(pinned.grant(), grant);
     }
 
     #[test]

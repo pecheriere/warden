@@ -122,8 +122,10 @@ Assistant first and fall back to ntfy; see
    (default `127.0.0.1:8080`), `WARDEN_APPROVAL_LISTEN` (default
    `127.0.0.1:8081`), `WARDEN_PUBLIC_URL` (https), `WARDEN_OWNER_LOGIN`,
    `WARDEN_OP_CONNECT_URL`, `WARDEN_OP_CONNECT_TOKEN`, `WARDEN_OP_VAULT`
-   (default `Warden`), `WARDEN_HA_WEBHOOK_URL`, `WARDEN_NTFY_URL` and
-   `WARDEN_NTFY_TOKEN`. At least one notifier is required.
+   (default `Warden`), `WARDEN_HA_WEBHOOK_URL`, `WARDEN_NTFY_URL`,
+   `WARDEN_NTFY_TOKEN` and `WARDEN_PROXY_MAX_RESPONSE_BYTES` (largest response
+   a proxied API call may return, default `1048576`, at most `67108864`). At
+   least one notifier is required.
 
 3. **Enroll your phone's passkey.**
 

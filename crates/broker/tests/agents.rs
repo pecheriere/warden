@@ -181,6 +181,34 @@ fn config_rejects_ntfy_token_without_ntfy_url() {
     assert!(cfg.ntfy_token.is_some());
 }
 
+#[test]
+fn config_proxy_response_limit_defaults_and_bounds() {
+    let cfg = Config::from_lookup(env).unwrap();
+    assert_eq!(cfg.proxy.max_response_bytes, 1_048_576);
+    assert_eq!(cfg.proxy.max_request_bytes, 1_048_576);
+    assert_eq!(cfg.proxy.timeout.as_secs(), 30);
+    assert_eq!(cfg.proxy.connect_timeout.as_secs(), 10);
+
+    let with = |value: &'static str| {
+        move |v: &str| {
+            if v == "WARDEN_PROXY_MAX_RESPONSE_BYTES" {
+                Some(value.to_owned())
+            } else {
+                env(v)
+            }
+        }
+    };
+    let cfg = Config::from_lookup(with("4096")).unwrap();
+    assert_eq!(cfg.proxy.max_response_bytes, 4096);
+    for bad in ["0", "-1", "1MiB", "67108865"] {
+        let err = Config::from_lookup(with(bad)).unwrap_err();
+        assert!(
+            err.to_string().contains("WARDEN_PROXY_MAX_RESPONSE_BYTES"),
+            "{bad}: {err}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn add_audited_records_agent_added() {
     let dir = tempfile::tempdir().unwrap();

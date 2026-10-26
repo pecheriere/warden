@@ -32,6 +32,10 @@ use webauthn_rs::prelude::{
 };
 use zeroize::Zeroizing;
 
+pub mod upstream;
+
+pub use upstream::{HttpsUpstream, Received};
+
 use crate::approval::passkeys::Passkeys;
 use crate::audit::AuditLog;
 use crate::config::Config;
@@ -41,6 +45,7 @@ use crate::policy::{
     ApiSecretPolicy, CaKey, PolicyError, SecretBackend, SecretValue, SshMode, SshTarget,
     ValueFormat,
 };
+use crate::proxy::ProxyLimits;
 use crate::requests::{Clock, Requests};
 use crate::{AppState, agents, store};
 
@@ -444,6 +449,7 @@ pub struct TestBroker {
     default_passkey: tokio::sync::Mutex<Option<SoftAuthenticator>>,
     servers: Mutex<Vec<AbortHandle>>,
     dir: Option<TempDir>,
+    proxy: ProxyLimits,
 }
 
 impl Drop for TestBroker {
@@ -462,6 +468,15 @@ impl TestBroker {
     /// # Panics
     /// If any part of the setup fails.
     pub async fn new() -> Self {
+        Self::with_proxy_limits(ProxyLimits::default()).await
+    }
+
+    /// Like [`TestBroker::new`], with proxied calls held to `proxy` (for
+    /// example a short timeout).
+    ///
+    /// # Panics
+    /// If any part of the setup fails.
+    pub async fn with_proxy_limits(proxy: ProxyLimits) -> Self {
         let dir = tempfile::tempdir().expect("temp dir");
         let db_path = dir.path().join("warden.db");
         let audit_path = dir.path().join("audit.jsonl");
@@ -471,6 +486,7 @@ impl TestBroker {
             audit_path,
             Arc::new(ManualClock::new(TEST_START)),
             Arc::new(FakeBackend::new()),
+            proxy,
         )
         .await
     }
@@ -491,6 +507,7 @@ impl TestBroker {
             self.audit_path.clone(),
             self.clock.clone(),
             self.backend.clone(),
+            self.proxy,
         )
         .await;
         *next.default_passkey.lock().await = passkey;
@@ -503,10 +520,13 @@ impl TestBroker {
         audit_path: PathBuf,
         clock: Arc<ManualClock>,
         backend: Arc<FakeBackend>,
+        proxy: ProxyLimits,
     ) -> Self {
         let pool = store::open(&db_path).await.expect("open database");
         let audit = Arc::new(AuditLog::open(&audit_path).await.expect("open audit log"));
-        let config = Arc::new(Config::from_lookup(test_env).expect("test configuration"));
+        let mut config = Config::from_lookup(test_env).expect("test configuration");
+        config.proxy = proxy;
+        let config = Arc::new(config);
         let capture = Arc::new(CapturingNotifier::new());
         let requests = Requests::new(
             pool.clone(),
@@ -546,6 +566,7 @@ impl TestBroker {
             default_passkey: tokio::sync::Mutex::new(None),
             servers: Mutex::new(Vec::new()),
             dir,
+            proxy,
         }
     }
 

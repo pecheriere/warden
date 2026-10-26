@@ -974,6 +974,7 @@ async fn api_request_notifies_and_approves() {
             methods: vec!["GET".to_owned()],
             path_prefix: "/".to_owned(),
             header: "authorization".to_owned(),
+            digest: FakeBackend::example_api_secret().destination_digest(),
         })
     );
 

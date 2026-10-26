@@ -91,6 +91,25 @@ pub enum AuditEvent {
         /// Who revoked it.
         by: String,
     },
+    /// An agent asked the broker to make an HTTP call with an API secret.
+    /// Recorded for every call on a usable grant, whether it was refused,
+    /// failed or answered. Never holds the secret or the query string.
+    ProxyCall {
+        /// Grant id.
+        grant_id: Id,
+        /// Request method, or `invalid`.
+        method: String,
+        /// Origin and path of the URL (no query), or `invalid`.
+        url: String,
+        /// Upstream status, if a response arrived.
+        status: Option<u16>,
+        /// Upstream body length, before redaction.
+        response_bytes: u64,
+        /// Secret occurrences removed from the response.
+        redactions: u32,
+        /// `ok`, or the message the agent was given.
+        outcome: String,
+    },
     /// An agent was added.
     AgentAdded {
         /// Agent name.

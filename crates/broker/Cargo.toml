@@ -23,7 +23,10 @@ testkit = [
     "dep:http-body-util",
     "dep:hyper",
     "dep:hyper-util",
+    "dep:percent-encoding",
+    "dep:rcgen",
     "dep:tempfile",
+    "dep:tokio-rustls",
     "dep:tower",
     "dep:webauthn-authenticator-rs",
 ]
@@ -61,7 +64,10 @@ openssl = { workspace = true, optional = true }
 http-body-util = { workspace = true, optional = true }
 hyper = { workspace = true, optional = true }
 hyper-util = { workspace = true, optional = true }
+percent-encoding = { workspace = true, optional = true }
+rcgen = { workspace = true, optional = true }
 tempfile = { workspace = true, optional = true }
+tokio-rustls = { workspace = true, optional = true }
 tower = { workspace = true, optional = true }
 webauthn-authenticator-rs = { workspace = true, optional = true }
 

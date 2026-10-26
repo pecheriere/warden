@@ -734,7 +734,8 @@ async fn methods_parsed_and_uppercase_only() {
     set_field(&mut item, "methods", Some(" POST ,GET,POST "));
     let p = api_with(&item).await.unwrap();
     assert_eq!(p.methods, vec![http::Method::POST, http::Method::GET]);
-    assert_eq!(p.grant().methods, vec!["POST", "GET"]);
+    // The grant lists them sorted, the order the destination digest uses.
+    assert_eq!(p.grant().methods, vec!["GET", "POST"]);
 
     for bad in [
         "get",

@@ -958,6 +958,29 @@ impl Requests {
             .collect()
     }
 
+    /// Grant `grant_id` of `agent` as approved, whatever its state, and
+    /// whether it was revoked. Whether it expired is the caller's check
+    /// against `not_after`.
+    ///
+    /// # Errors
+    /// [`RequestError::NotFound`] if the grant does not exist or belongs to
+    /// another agent; storage failures or an unreadable stored grant.
+    pub async fn agent_grant(
+        &self,
+        agent: &AgentName,
+        grant_id: &Id,
+    ) -> Result<(GrantView, bool), RequestError> {
+        let row = sqlx::query("SELECT view, revoked_at FROM grants WHERE id = ? AND agent = ?")
+            .bind(grant_id.as_str())
+            .bind(agent.as_str())
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or(RequestError::NotFound)?;
+        let view: String = row.try_get("view")?;
+        let revoked_at: Option<i64> = row.try_get("revoked_at")?;
+        Ok((serde_json::from_str(&view)?, revoked_at.is_some()))
+    }
+
     /// End a grant on behalf of the agent that holds it. Revoking an already
     /// revoked grant does nothing.
     ///

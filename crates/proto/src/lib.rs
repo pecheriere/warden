@@ -407,12 +407,16 @@ pub struct ApiGrant {
     pub secret: SecretName,
     /// Only origin the broker will call, `https://host[:port]`.
     pub origin: String,
-    /// Allowed HTTP methods, uppercase.
+    /// Allowed HTTP methods, uppercase, sorted.
     pub methods: Vec<String>,
     /// Allowed path prefix, starting with `/`.
     pub path_prefix: String,
     /// Header the broker sets to carry the secret.
     pub header: String,
+    /// Lowercase hex digest of the approved policy (origin, prefix, header,
+    /// value format, pinned CA, methods): a call is refused once the policy
+    /// no longer matches it.
+    pub digest: String,
 }
 
 /// Body of `POST /v1/grants/{id}/http`: a call for the broker to make.
@@ -667,6 +671,7 @@ mod tests {
             methods: vec!["GET".to_owned()],
             path_prefix: "/v1/".to_owned(),
             header: "Authorization".to_owned(),
+            digest: "ab".repeat(32),
         });
         let json = serde_json::to_string(&api).unwrap();
         assert!(json.starts_with(r#"{"kind":"api","secret":"github""#));
