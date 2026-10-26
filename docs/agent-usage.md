@@ -1,7 +1,8 @@
 # Using warden as an agent
 
 `warden` is how an agent (or a person at a terminal) asks the owner for
-short-lived SSH access and then uses it. The owner approves on their phone
+short-lived access (an SSH shell, or calls to an HTTP API that needs a
+secret) and then uses it. The owner approves on their phone
 with a passkey. The CLI makes an Ed25519 key in memory. That key goes only
 to a dedicated `ssh-agent` and is never written to disk.
 
@@ -28,7 +29,8 @@ manager, never from a file in a repository.
 
 ## When to request access
 
-Request access only when the task actually needs a shell on the target, and
+Request access only when the task actually needs a shell on the target (or
+a call to the API), and
 only right before you use it. Do not request access "in case it is needed".
 Do not keep a grant open while you do unrelated work.
 
@@ -42,10 +44,22 @@ warden request ssh pi --user alice --for 15m \
   "maintenance" or "debugging" is not a goal. The goal is one line of at
   most 500 characters, and the notification shows the first 200.
 - **Narrowest user.** Ask for the least privileged account that can do the
-  job. Do not ask for `admin` when your own user is enough.
+  job. Do not ask for `admin` when your own user is enough. (SSH only.)
 - **Shortest window.** Pick the smallest of `15m`, `30m`, `1h` and `4h` that
   covers the work. The owner may approve a shorter window than you asked
   for. The target's policy caps every window.
+
+To call an HTTP API that needs a secret, ask for the secret by name. You
+never see the secret: the broker adds it to your calls.
+
+```sh
+warden request api github --for 15m \
+  --goal "list open PRs on alice/widgets to triage issue #42"
+```
+
+The same rules apply: a precise goal, the shortest window, and no request
+until you need it. The owner sees the secret's name, and the approval page
+shows the one origin, path prefix and methods the secret may be used for.
 
 ## The fingerprint check
 
@@ -88,6 +102,40 @@ the host keys the broker pinned (`StrictHostKeyChecking=yes`). Passwords and
 keyboard-interactive login are disabled. Put everything after `--`. It is
 the remote command, never ssh options.
 
+### Calling an API
+
+```sh
+warden http github GET https://api.github.com/user
+warden http github POST https://api.github.com/repos/alice/widgets/issues \
+  -H 'Content-Type: application/json' -d '{"title":"stale fork"}'
+warden http github PUT https://api.github.com/repos/alice/widgets/x \
+  --data-file body.json -i --fail
+```
+
+`warden http <secret> <METHOD> <url>` uses the newest active `api` grant for
+the secret. The response body goes to stdout, unchanged. With `-i`, the status
+line and response headers go to stderr. `-H 'Name: value'` adds a request
+header (repeatable). `-d` gives the body inline, and `--data-file <path>`
+reads it from a file (`-` for standard input). A body is at most 1 MiB.
+
+The broker refuses, with a message that names the rule (exit 1):
+
+- a URL that is not on the secret's origin, not `https`, or whose path is
+  outside the allowed prefix or has dot segments, `//`, `;`, `\` or encoded
+  separators;
+- a method the policy does not allow (`CONNECT` and `TRACE` never are);
+- headers you may not set: `Host`, `Content-Length`, `Connection` and other
+  hop-by-hop headers, the secret's own header, `Accept-Encoding`, `Range`,
+  `If-Range`, method or URL override headers and `Forwarded` / `X-Forwarded-*`
+  / `X-Real-IP`.
+
+Redirects are not followed; a 3xx comes back to you as is. Responses over the
+broker's size limit (1 MiB by default) or compressed are an error, and the
+secret is replaced by `[REDACTED]` wherever it shows up in a response. A call
+takes at most 30 seconds. If the owner changes the secret's policy after you
+were approved, or revokes the grant, the broker answers 409 and you request
+again.
+
 `warden status` lists the grants on this machine and the broker's view of
 your live grants.
 
@@ -97,7 +145,8 @@ When the work is done, revoke the grant. Do not let it run out on its own:
 warden revoke <grant-id>
 ```
 
-This revokes the grant on the broker and stops its local `ssh-agent`.
+This revokes the grant on the broker, stops its local `ssh-agent` and removes
+the local record of an `api` grant.
 Certificates that were already issued are not revoked on the target. Short
 windows limit that risk, so revoke as soon as you finish. Every `warden` run
 also cleans up expired grants and stops their agents.
@@ -111,7 +160,12 @@ also cleans up expired grants and stops their agents.
 | 2 | The request was denied. Do not retry the same request. Ask the owner what to change. |
 | 3 | The request expired without a decision. The owner may be away. Retry later, not in a loop. |
 | 4 | The grant was revoked. |
-| 5 | `warden ssh` found no active grant for the target. Run `warden request ssh …` first. |
+| 5 | `warden ssh` or `warden http` found no active grant. Run `warden request ssh …` or `warden request api …` first. |
+| 22 | `warden http --fail` got an upstream status of 400 or more. The body is still written to stdout. |
+
+`warden http` exits 0 for any upstream status unless `--fail` is given. A
+refusal or failure by the broker (policy violation, 409, timeout, size limit)
+is exit 1 with the broker's message on stderr.
 
 ## When the broker is unreachable
 

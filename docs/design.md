@@ -189,20 +189,98 @@ The CLI always gets a terminal state: `approved`, `denied`, `expired`, or
 
 ### 8.3 HTTP proxy mode (secret injection)
 
-- The CLI sends `{grant_id, method, url, headers, body}` to warden;
-  `{{secret}}` placeholders are allowed **only in header values that policy
-  names** (never in URL, query, or body).
-- warden enforces the secret's destination rule: exact match of scheme, host
-  and port from the item's website field (`https` only); optional path
-  prefix; allowed methods; then substitutes the secret and performs the HTTPS
-  request itself with full certificate verification (system roots, or a
-  pinned CA per item where a target uses a private CA).
-- Redirects are **not followed** automatically (a redirect to another origin
-  would carry the header); the 3xx is returned to the agent.
-- Responses are returned with secret values redacted in raw, base64 and
-  URL-encoded forms (defence in depth; destination rules are the real
-  control). Response size limit configurable.
-- `warden http <secret> <METHOD> <url> [-H …] [-d …]` is the CLI form.
+The agent never receives the secret. It asks warden to make an HTTPS call
+and warden returns the answer. `warden http <secret> <METHOD> <url> [-H …]
+[-d …]` is the CLI form, and `POST /v1/grants/{id}/http` is the route behind
+it. The body is `{method, url, headers, body_b64}`. The grant must belong to
+the calling agent, be unrevoked and unexpired, and be of kind `api`.
+
+**The header comes from the policy.** There are no placeholders and the agent
+places nothing: warden builds the header itself from the item's `header` name
+and `format` (default `Authorization: Bearer {{secret}}`), and sets it after
+the agent's headers. The secret is read from 1Password at call time, held in
+wiped memory and never logged or audited.
+
+**Checks before anything is sent.** The request must satisfy the policy as it
+stands now (see "Changes during approval and use" below):
+
+- *Origin:* scheme `https`, host and port equal to the item's website, exactly.
+  Userinfo and fragments are refused. The URL must be printable ASCII with no
+  spaces.
+- *Path:* under `path_prefix`, matched on a segment boundary (`/api` covers
+  `/api` and `/api/x`, not `/apiary`; a prefix ending in `/` covers what is
+  below it). The path is inspected as sent, before URL normalisation, and
+  refused if it has `.` or `..` segments, `//`, `;`, `\`, or the encodings
+  `%2e`, `%2f`, `%5c`, `%3b`, `%25`, `%c0`, `%c1` and `%u` (any case). A
+  path the URL parser would rewrite is refused too, so the path that was
+  checked is the path that is sent. The query string is not restricted.
+- *Method:* one of the item's `methods` (default `GET`). `CONNECT` and
+  `TRACE` are always refused, even if listed.
+- *Request headers:* the agent may not set hop-by-hop or framing headers
+  (`Host`, `Content-Length`, `Transfer-Encoding`, `Connection`, `Keep-Alive`,
+  `TE`, `Trailer`, `Upgrade`, `Proxy-*`), the header that carries the secret,
+  `Accept-Encoding`, `Range`, `If-Range` (they could make the answer carry the
+  secret compressed or in fragments), the method and URL override headers
+  (`X-HTTP-Method-Override`, `X-HTTP-Method`, `X-Method-Override`,
+  `X-Original-URL`, `X-Rewrite-URL`) or the forwarding headers (`Forwarded`,
+  `X-Forwarded-Host`, `-For`, `-Proto`, `-Port`, `X-Real-IP`). Names and
+  values with CR, LF or NUL are refused.
+- *Body:* at most 1 MiB once decoded (the route accepts 2 MiB of JSON).
+
+A refusal is a 400 whose message names the rule, never the secret.
+
+**The outbound call.** warden sends `Accept-Encoding: identity` and refuses a
+response with any other `Content-Encoding` or a `Transfer-Encoding` other
+than `chunked` (502), because redaction cannot see inside compressed data.
+Redirects are **not followed** (a redirect to another origin would carry the
+header); the 3xx is returned to the agent. No outbound proxy is used and
+nothing is retried. Limits: request body 1 MiB, response body 1 MiB
+(`WARDEN_PROXY_MAX_RESPONSE_BYTES`, at most 64 MiB), 30 s for the whole call,
+10 s to connect. Over the response limit the agent gets a 502 and nothing
+partial. Upstream trouble is a 502 or 504 with a fixed message that never
+quotes upstream text.
+
+**TLS.** Strict verification with hostname checking always on, and no leaf
+pinning. By default the system roots are used. If the item has `ca_pem`,
+**only** those CA certificates are trusted (they replace the default roots,
+they are not added to them), for private-CA targets. A fresh client is built
+for each call, so no trust decision is shared between secrets.
+
+**Redaction.** In the response headers (values) and body, warden replaces
+with `[REDACTED]` every occurrence of the secret and of the full injected
+header value, in these forms: raw; base64 (standard and URL-safe, padded and
+unpadded), including base64 inside a larger base64 blob at any of the three
+byte alignments; and, per character, the percent-encoded form (either hex
+case), `+` for a space, JSON `\/`, `\"`, `\\` and `\u00hh`, and HTML
+`&amp;`, `&quot;`, `&lt;`, `&gt;`, `&apos;`, `&#NN;` and `&#xHH;`, mixed
+freely within one occurrence. Overlapping matches merge into one marker. A
+header whose name contains the secret is dropped, and hop-by-hop response
+headers and `Content-Length` are dropped. The number of redactions is
+audited and returned. Boundary residual: for a secret embedded in a larger
+base64 blob, the one base64 character on each side that mixes secret bits
+with neighbouring bytes is not matched, so at most 4 bits of the secret per
+side can survive; a base64 run shorter than 8 characters is not matched on
+its own. Redaction is defence in depth against services that echo input. The
+destination rules are the real control.
+
+**Changes during approval and use.** The approval binds a digest of the
+destination: origin, path prefix, header name, value format, pinned CA and the
+set of methods. If the item changes between the request and the approval, the
+approval is refused with a 409 and the owner reloads and reviews. At call
+time warden re-reads the policy; if the digest no longer matches (including
+the format and the CA), or the secret is gone or invalid, the call is a 409
+(`policy changed; request access again`) and the agent must request again. A
+grant revoked while a call is in flight yields a 409 and the response is
+discarded. The window and the secret value are not part of the digest.
+
+**Audit.** `proxy_call_started` is appended **before** the request is sent
+(if it cannot be written, the call is not made), and `proxy_call` after it
+ends, whatever the outcome: grant, method, origin and path (never the query
+string, which may carry the agent's own data), status, response size,
+redaction count and outcome. The secret never appears. The call runs on its
+own task, so an agent that disconnects can neither stop it halfway nor keep
+it out of the log.
+
 - **Request/response HTTPS only in v1** (decision). WebSocket and streaming
   APIs are out of scope for v1; diagnostics that need them go through SSH.
 - **Strict TLS verification, no leaf pinning** (decision): API targets are
@@ -315,6 +393,14 @@ in-flight requests and enrolled passkeys (re-enroll).
 - `warden request ssh <target> --user <u> --for 30m --goal "…"`,
   `warden request api <secret> --for 30m --goal "…"`, `warden status`,
   `warden ssh …`, `warden http …`, `warden revoke <grant>`.
+- `warden http <secret> <METHOD> <url> [-H 'Name: value']… [-d <body> |
+  --data-file <path|->] [-i] [--fail]` calls an API through the newest active
+  `api` grant for the secret. The response body goes to stdout unchanged, and
+  with `-i` the status line and headers go to stderr. The CLI records an `api`
+  grant locally (secret name, origin, grant id and end time; never a secret)
+  and exits 5 when there is no active one. `--fail` exits 22 on an upstream
+  status of 400 or more, as `curl --fail` does, and still writes the body.
+  The CLI refuses non-https URLs and bodies over 1 MiB before sending.
 - Requests block (with progress on stderr) until a terminal state; exit codes
   distinguish approved / denied / expired / error.
 - A short usage doc ([agent-usage.md](agent-usage.md)) tells the agent to

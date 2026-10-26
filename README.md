@@ -6,11 +6,18 @@ notification on their phone, reviews the goal and exactly what would be
 granted, and approves with a passkey. warden then issues a credential that
 expires on its own. The agent never holds a long-lived secret.
 
-The first supported resource is SSH. The broker signs a short-lived SSH
-certificate for an ephemeral Ed25519 key that exists only in memory on the
-requesting machine, and only for the approved window.
+Two kinds of access are supported:
 
-Status: early development. This release implements SSH certificate mode.
+- **SSH.** The broker signs a short-lived SSH certificate for an ephemeral
+  Ed25519 key that exists only in memory on the requesting machine, and only
+  for the approved window.
+- **HTTP API secrets.** The agent never sees the secret. For the approved
+  window the broker makes HTTPS calls for the agent, adds the secret to the
+  header the policy names, sends them only to the one origin and path prefix
+  the policy allows, and returns the response with the secret redacted.
+
+Status: early development. This release (0.2.0) implements SSH certificate
+mode and HTTP proxy mode.
 
 ## Why
 
@@ -40,11 +47,11 @@ phone --- HTTPS (tailnet) ------------> approval page (WebAuthn passkey)
 ## Components
 
 - `warden-server` (crate `warden-broker`): the agent API, the approval web UI,
-  the SSH CA, notifier dispatch, the hash-chained audit log and SQLite state.
+  the SSH CA, the HTTP proxy, notifier dispatch, the hash-chained audit log and SQLite state.
   It runs as a container.
 - `warden` (crate `warden-broker-cli`): the command-line client. It requests
   access, waits for the decision, keeps the ephemeral key in a per-grant
-  `ssh-agent` and wraps `ssh`.
+  `ssh-agent`, wraps `ssh` and makes brokered API calls (`warden http`).
 - `warden-broker-proto`: the wire types shared by both.
 
 Policy lives in a 1Password vault read through 1Password Connect. See
@@ -163,6 +170,20 @@ Assistant first and fall back to ntfy; see
    expires, and prints a fingerprint the approval page also shows. See
    [docs/agent-usage.md](docs/agent-usage.md) for how an agent should use it.
 
+   To call an API with a stored secret, add an API secret item to the vault
+   (see [docs/1password-items.md](docs/1password-items.md)), then:
+
+   ```sh
+   warden request api github --for 30m --goal "list my repos to find the stale fork"
+   warden http github GET https://api.github.com/user
+   ```
+
+   The secret is added by the broker and never reaches the workstation. It
+   goes only to the item's origin, under its path prefix, with its allowed
+   methods. `warden http` writes the response body to stdout; `-i` shows the
+   status and headers on stderr and `--fail` exits 22 on a status of 400 or
+   more.
+
 ## Deployment notes
 
 warden expects to run behind a dedicated Tailscale node (a sidecar container)
@@ -182,7 +203,8 @@ threat model.
 
 An agent can only request; a passkey approval from the owner's enrolled device,
 reachable only over the tailnet, is required for every grant; certificates are
-valid for at most four hours for one ephemeral key; secrets never reach
+valid for at most four hours for one ephemeral key; API secrets never leave
+the broker except toward their approved origin; secrets never reach
 notifiers; and every step is written to a tamper-evident audit log. The actors,
 anti-goals, accepted residual risks and deployment assumptions are in
 [docs/threat-model.md](docs/threat-model.md).

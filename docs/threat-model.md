@@ -1,8 +1,9 @@
 # Threat model
 
 This describes what warden protects, who it trusts, what it must never allow,
-and the risks that are accepted. It covers the SSH certificate mode, the only
-mode in this release. The design rationale is in
+and the risks that are accepted. It covers the SSH certificate mode and the
+HTTP proxy mode (brokered API calls that use a stored secret). The design
+rationale is in
 [design.md](design.md).
 
 ## Actors and trust
@@ -46,6 +47,14 @@ defends against it.
   Connect token.
 - **Silent failure.** The CLI always receives an explicit terminal state:
   `approved`, `denied`, `expired` or `error` with a message.
+
+- **An API secret reaches the agent.** In proxy mode the broker reads the
+  secret from 1Password only when a call is made, builds the header from the
+  policy, sends the call itself and redacts the answer. The agent supplies no
+  placeholder and no part of the header. The destination is the item's origin
+  (exact match), a path prefix on a segment boundary, and an allowed method
+  list; changing any of them, the header, its format or the pinned CA between
+  approval and use invalidates the grant (409).
 
 ## Approval binding
 
@@ -118,6 +127,38 @@ These were recorded during implementation and are accepted for this release.
   prompt-injected agent can write a misleading goal. The fingerprint check, the
   narrow user and the short window limit the damage.
 
+## Proxy mode residual risks
+
+- **The destination sees the secret, by design.** The approved origin gets
+  the real credential in every call. The owner must trust that origin and the
+  path prefix. A secret whose origin can act on the agent's behalf beyond the
+  stated goal (a broad token on a general-purpose API) is only as safe as that
+  origin and the window allow. Keep the website, `path_prefix` and `methods`
+  as narrow as the use needs, and use a token with the least scope the service
+  offers.
+- **Redaction is defence in depth, not a guarantee.** It removes the secret
+  and the injected header value from responses in the raw, base64,
+  percent-encoded, JSON and HTML forms listed in the design, so a service that
+  echoes its input does not hand the secret to the agent. It cannot catch
+  every transformation (encryption, hashing, other encodings, a secret split
+  across calls) and, inside a larger base64 blob, at most 4 bits of the secret
+  per side can remain at the boundary. Compressed responses are refused
+  because they cannot be inspected. The real control is the destination rule.
+- **Within the window, the agent can make any allowed call.** Approval is
+  bound to an origin, prefix, method set and window, not to individual
+  requests. A prompt-injected agent can issue any call the policy permits
+  until the grant expires or is revoked, including state-changing calls if the
+  item allows `POST`, `PUT` or `DELETE`. Choose methods and window
+  accordingly, and revoke when done.
+- **The query string and body are the agent's.** They are not restricted by
+  the policy, and the query is not written to the audit log.
+- **Redirects and other origins.** Redirects are never followed, so the secret
+  cannot be carried to another origin by a 3xx. The 3xx is returned to the
+  agent, which cannot reuse the secret elsewhere.
+- **The server holds the secret briefly in memory.** It is fetched per call,
+  wiped after use, and never logged or audited. Parts of it may sit in HTTP
+  client buffers that warden cannot zeroize, as for the CA key above.
+
 ## Deployment assumptions
 
 warden's guarantees depend on its environment being set up as follows.
@@ -142,7 +183,8 @@ warden's guarantees depend on its environment being set up as follows.
 - **Hardened container.** Run as the image's non-root user, with all
   capabilities dropped, a read-only root filesystem and a writable `/data`
   volume for the database and audit log. Egress is limited to what warden
-  needs: Connect, the notifiers and Tailscale.
+  needs: Connect, the notifiers, Tailscale and, for proxy mode, the origins
+  of the API secrets.
 - **Targets trust the CA, per target.** Each target host must trust the SSH
   CA only for its own target name. With OpenSSH: `TrustedUserCAKeys
   /etc/ssh/warden_ca.pub` and `AuthorizedPrincipalsFile
