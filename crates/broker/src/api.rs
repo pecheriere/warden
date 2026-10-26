@@ -322,7 +322,7 @@ async fn api_grant_status(
     } else {
         match view.access {
             GrantAccess::Api(grant) => Ok(grant),
-            GrantAccess::Ssh(_) => Err(Unusable::NotApi),
+            GrantAccess::Ssh(_) | GrantAccess::Relay(_) => Err(Unusable::NotApi),
         }
     })
 }

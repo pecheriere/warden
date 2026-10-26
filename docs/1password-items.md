@@ -25,7 +25,47 @@ error.
 | `mode`       | `cert` or `relay`. |
 | `users`      | Comma-separated Unix accounts that may be requested, each matching `^[a-z_][a-z0-9_-]{0,31}$`. |
 | `max_window` | Longest window that may be granted: `15m`, `30m`, `1h` or `4h`. |
-| `host_keys`  | One or more OpenSSH public key lines (`ssh-ed25519 AAAA...`), newline-separated. Any key algorithm is accepted: these are the target's host keys. |
+| `host_keys`  | One or more OpenSSH public key lines (`ssh-ed25519 AAAA...`), newline-separated. Any key algorithm is accepted: these are the target's host keys. They are pinned: there is no trust on first use. |
+| `private_key` | Relay targets only: the private key warden logs in to the target with. See below. |
+| `password`    | Relay targets only: the password warden logs in to the target with. See below. |
+
+### Relay targets
+
+A target with mode `relay` is reached through warden: the agent connects to
+warden, and warden logs in to the target with a credential that never leaves
+it. The item holds that credential in **exactly one** of two fields:
+
+- `private_key`: an unencrypted Ed25519, ECDSA (P-256, P-384 or P-521) or RSA
+  (at least 2048 bits) private key, in OpenSSH
+  (`-----BEGIN OPENSSH PRIVATE KEY-----`) or PKCS#8
+  (`-----BEGIN PRIVATE KEY-----`) PEM format. Passphrase-protected keys, and
+  PKCS#1 (`BEGIN RSA PRIVATE KEY`) or SEC1 (`BEGIN EC PRIVATE KEY`) files,
+  are rejected; convert those with `ssh-keygen -p -f <file>`.
+- `password`: the account's password, at least one character, used verbatim
+  (surrounding spaces included). The Server category's built-in `password`
+  field can hold it.
+
+A field that is absent or empty counts as not set. A relay item with neither
+field, or with both, is unusable; so is a `cert` item with either field set,
+so that a credential is never left on an item that does not use it. Errors
+name the item and the field but never quote the value.
+
+Every read of the item validates the credential, so a bad one fails the
+request up front, but only a relay session keeps it: the session takes it
+from the same read as the rest of the item, holds it in memory that is wiped
+after use, and never logs it, returns it to the agent or writes it to the
+audit log.
+
+Example (category Server, tag `warden:ssh-target`, title `nas`):
+
+```
+address     nas.example.com:2222
+mode        relay
+users       backup
+max_window  1h
+host_keys   ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... root@nas
+password    ••••••••••••
+```
 
 Example (category Server, tag `warden:ssh-target`, title `pi`):
 

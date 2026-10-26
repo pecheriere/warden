@@ -467,8 +467,12 @@ async fn install_grant(
     key: &PrivateKey,
     grant: &GrantView,
 ) -> Result<()> {
-    let GrantAccess::Ssh(ssh) = &grant.access else {
-        bail!("the broker returned a non-ssh grant for an ssh request");
+    let ssh = match &grant.access {
+        GrantAccess::Ssh(ssh) => ssh,
+        GrantAccess::Relay(_) => {
+            bail!("target {target} is a relay target, which this version of warden cannot use yet")
+        }
+        GrantAccess::Api(_) => bail!("the broker returned a non-ssh grant for an ssh request"),
     };
     let cert = Certificate::from_openssh(&ssh.certificate)
         .context("the grant's certificate is invalid")?;
@@ -607,6 +611,7 @@ async fn status() -> Result<()> {
         let subject = match &g.access {
             GrantAccess::Ssh(ssh) => format!("{}@{}:{}", ssh.user, ssh.host, ssh.port),
             GrantAccess::Api(api) => format!("api:{}", api.secret),
+            GrantAccess::Relay(relay) => format!("{}@{} via relay", relay.user, relay.target),
         };
         println!(
             "  {subject}  grant {}  until {}",

@@ -94,6 +94,10 @@ fn grant_access(grant: &ActiveGrant) -> Markup {
             html! { code { (access_line(&grant.request, &ssh.host, ssh.port)) } }
         }
         GrantAccess::Api(api) => api_access(api),
+        GrantAccess::Relay(relay) => html! {
+            code { "ssh " bdi { (relay.user) "@" (relay.target) } }
+            " via the warden relay"
+        },
     }
 }
 

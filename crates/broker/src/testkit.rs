@@ -42,8 +42,8 @@ use crate::config::Config;
 use crate::identity::TailscaleServeIdentity;
 use crate::notify::{Doorbell, Notifier, NotifyError};
 use crate::policy::{
-    ApiSecretPolicy, CaKey, PolicyError, SecretBackend, SecretValue, SshMode, SshTarget,
-    ValueFormat,
+    ApiSecretPolicy, CaKey, PolicyError, RelayCredential, SecretBackend, SecretValue, SshMode,
+    SshTarget, ValueFormat, not_a_relay_target,
 };
 use crate::proxy::ProxyLimits;
 use crate::requests::{Clock, Requests};
@@ -185,14 +185,17 @@ pub const TEST_START: i64 = 1_800_000_000;
 /// Host of the default `pi` target.
 pub const PI_HOST: &str = "192.0.2.10";
 
+/// Host of [`FakeBackend::relay_target`].
+pub const NAS_HOST: &str = "192.0.2.20";
+
 /// A software passkey that claims user verification, as Face ID would.
 pub type SoftAuthenticator = WebauthnAuthenticator<SoftPasskey>;
 
-/// An in-memory [`SecretBackend`]: targets and API secrets can be changed at
-/// any time, the CA key is generated per backend, and target or CA lookups
-/// can be made to fail as if the backend were down.
+/// An in-memory [`SecretBackend`]: targets (with relay credentials) and API
+/// secrets can be changed at any time, the CA key is generated per backend,
+/// and target or CA lookups can be made to fail as if the backend were down.
 pub struct FakeBackend {
-    targets: Mutex<HashMap<String, SshTarget>>,
+    targets: Mutex<HashMap<String, (SshTarget, Option<RelayCredential>)>>,
     api_secrets: Mutex<HashMap<String, (ApiSecretPolicy, Zeroizing<String>)>>,
     api_swap: Mutex<Option<(ApiSecretPolicy, Zeroizing<String>)>>,
     ca: PrivateKey,
@@ -209,7 +212,7 @@ impl FakeBackend {
     pub fn new() -> Self {
         let pi = Self::pi_target();
         Self {
-            targets: Mutex::new(HashMap::from([(pi.name.as_str().to_owned(), pi)])),
+            targets: Mutex::new(HashMap::from([(pi.name.as_str().to_owned(), (pi, None))])),
             api_secrets: Mutex::new(HashMap::new()),
             api_swap: Mutex::new(None),
             ca: PrivateKey::random(&mut OsRng, Algorithm::Ed25519).expect("CA key generation"),
@@ -243,7 +246,30 @@ impl FakeBackend {
         }
     }
 
-    /// Add or replace a target.
+    /// Target `nas`: relay mode, user `backup`, max window 1h,
+    /// `192.0.2.20:22`, one random host key. Not added to any backend by
+    /// itself; see [`FakeBackend::set_relay_target`].
+    ///
+    /// # Panics
+    /// If no key can be generated.
+    #[must_use]
+    pub fn relay_target() -> SshTarget {
+        let host_key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519)
+            .expect("host key generation")
+            .public_key()
+            .clone();
+        SshTarget {
+            name: TargetName::try_from("nas".to_owned()).expect("valid target name"),
+            host: NAS_HOST.to_owned(),
+            port: 22,
+            mode: SshMode::Relay,
+            users: vec![UnixUser::try_from("backup".to_owned()).expect("valid user")],
+            max_window: Window::H1,
+            host_keys: vec![host_key],
+        }
+    }
+
+    /// Add or replace a target, without a relay credential.
     ///
     /// # Panics
     /// If the lock is poisoned.
@@ -251,7 +277,19 @@ impl FakeBackend {
         self.targets
             .lock()
             .expect("targets lock poisoned")
-            .insert(target.name.as_str().to_owned(), target);
+            .insert(target.name.as_str().to_owned(), (target, None));
+    }
+
+    /// Add or replace a relay target together with its onward credential.
+    ///
+    /// # Panics
+    /// If the target is not in relay mode or the lock is poisoned.
+    pub fn set_relay_target(&self, target: SshTarget, credential: RelayCredential) {
+        assert_eq!(target.mode, SshMode::Relay, "not a relay target");
+        self.targets
+            .lock()
+            .expect("targets lock poisoned")
+            .insert(target.name.as_str().to_owned(), (target, Some(credential)));
     }
 
     /// The current definition of target `name`.
@@ -264,7 +302,7 @@ impl FakeBackend {
             .lock()
             .expect("targets lock poisoned")
             .get(name)
-            .cloned()
+            .map(|(target, _)| target.clone())
             .expect("no such fake target")
     }
 
@@ -384,8 +422,39 @@ impl SecretBackend for FakeBackend {
             .lock()
             .map_err(|_| PolicyError::Unavailable("fake backend lock poisoned".to_owned()))?
             .get(name.as_str())
-            .cloned()
+            .map(|(target, _)| target.clone())
             .ok_or_else(|| PolicyError::NotFound(name.as_str().to_owned()))
+    }
+
+    async fn relay_target_with_credential(
+        &self,
+        name: &TargetName,
+    ) -> Result<(SshTarget, RelayCredential), PolicyError> {
+        Self::outage(&self.target_outage)?;
+        let targets = self
+            .targets
+            .lock()
+            .map_err(|_| PolicyError::Unavailable("fake backend lock poisoned".to_owned()))?;
+        let (target, credential) = targets
+            .get(name.as_str())
+            .ok_or_else(|| PolicyError::NotFound(name.as_str().to_owned()))?;
+        if target.mode != SshMode::Relay {
+            return Err(not_a_relay_target(name.as_str()));
+        }
+        let credential = match credential {
+            Some(RelayCredential::Key(key)) => RelayCredential::Key(key.clone()),
+            Some(RelayCredential::Password(password)) => {
+                RelayCredential::Password(password.clone())
+            }
+            None => {
+                return Err(PolicyError::Invalid {
+                    item: name.as_str().to_owned(),
+                    field: "password".to_owned(),
+                    reason: "missing: a relay target needs a credential".to_owned(),
+                });
+            }
+        };
+        Ok((target.clone(), credential))
     }
 
     async fn ssh_ca(&self) -> Result<CaKey, PolicyError> {

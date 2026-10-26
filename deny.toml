@@ -6,13 +6,22 @@ version = 2
 yanked = "deny"
 unmaintained = "all"
 ignore = [
-    # rsa and crypto-bigint come in through ssh-agent-lib 0.6.0, which enables
-    # ssh-key's "crypto" feature (RSA and NIST curves) unconditionally. warden
-    # only ever generates and signs with Ed25519, so no RSA private-key
-    # operation and no vulnerable crypto-bigint path runs. Remove these entries
-    # once ssh-agent-lib drops the dependency or the advisories are patched.
-    { id = "RUSTSEC-2023-0071", reason = "rsa pulled in by ssh-agent-lib; no RSA private-key operations are performed" },
-    { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5 pulled in by ssh-key NIST curves via ssh-agent-lib; only Ed25519 is used" },
+    # rsa and crypto-bigint 0.5 come in through ssh-key's RSA and NIST-curve
+    # support (enabled by ssh-agent-lib 0.6.0 and by the broker, which accepts
+    # Ed25519, ECDSA or RSA keys as the onward login credential of relay
+    # targets). Certificates and the CA use Ed25519 only.
+    # RSA private keys are only held for relay targets: the broker decodes
+    # and validates one on every read of the target's item (rsa's
+    # non-constant-time arithmetic runs on the key while a PKCS#8 RSA key is
+    # loaded) and the
+    # relay signs its onward login with it. RUSTSEC-2023-0071 (Marvin) is a
+    # timing side channel in that arithmetic; the party that sees those
+    # signatures and their timing is the target itself (host key pinned by
+    # the owner), one signature per relay session. Prefer Ed25519 or ECDSA
+    # keys for relay targets. Remove these entries once rsa ships a
+    # constant-time release and ssh-key moves to it.
+    { id = "RUSTSEC-2023-0071", reason = "rsa via ssh-key: RSA keys are only relay-target login keys, loaded and used to sign the onward login; see comment" },
+    { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5 via ssh-key NIST curves; ECDSA is only used for relay-target login keys" },
 ]
 
 [licenses]

@@ -341,7 +341,7 @@ token can read (read-only). Item conventions (documented in
 
 - **SSH target item** (one per host): address (host:port), mode (`cert` |
   `relay`), allowed users, max window, pinned host key(s); for relay mode the
-  onward credential (SSH key item or password field).
+  onward credential (`private_key` or `password` field on the same item).
 - **API secret item**: the secret field, website field = allowed origin
   (scheme+host+port, exact), allowed header and format (default
   `Authorization: Bearer {{secret}}`), allowed methods, optional path prefix,
