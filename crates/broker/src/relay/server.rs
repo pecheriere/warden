@@ -45,8 +45,8 @@ use crate::requests::{RelayGrantRecord, Requests};
 use super::host_key::{HostKeyError, RelayHostKey};
 use super::onward;
 use super::session::{
-    self, Ends, MAX_ENV_VARS, Outcome, PreAuthLimiter, PreAuthPermit, Program, PtyRequest,
-    SessionSlot, SessionSlots, env_allowed,
+    self, Cutoff, Ends, MAX_ENV_VARS, Outcome, PreAuthLimiter, PreAuthPermit, Program, PtyRequest,
+    SessionSlot, SessionSlots, env_allowed, with_cutoff,
 };
 
 /// Told to an agent whose grant or target changed since it logged in.
@@ -77,7 +77,7 @@ const LOGIN_TIMEOUT: &str = "warden relay: login timed out";
 const SHUTTING_DOWN: &str = "warden relay: shutting down";
 
 /// Longest wait for a connection to end after the relay hung up on it.
-const GOODBYE_WAIT: Duration = Duration::from_secs(5);
+const GOODBYE_WAIT: Duration = Duration::from_secs(2);
 /// Longest pseudo-terminal type name passed on.
 const MAX_TERM_LEN: usize = 64;
 /// Recorded in `relay_login_refused` for a user name that is not a valid
@@ -103,6 +103,13 @@ pub struct RelayLimits {
     /// Time for each step of the onward connection: connecting with the
     /// host key check, logging in, opening and starting the session (10 s).
     pub onward_timeout: Duration,
+    /// Time a direction of a session may hold data without delivering any
+    /// of it (its destination not reading) before the session ends (60 s).
+    pub stall_timeout: Duration,
+    /// Time both directions of a session may be held up at once with
+    /// nothing delivered before the session ends (2 s): the two SSH
+    /// connections are then waiting on each other.
+    pub wedge_timeout: Duration,
 }
 
 impl Default for RelayLimits {
@@ -115,6 +122,8 @@ impl Default for RelayLimits {
             max_auth_attempts: 3,
             auth_timeout: Duration::from_secs(10),
             onward_timeout: Duration::from_secs(10),
+            stall_timeout: Duration::from_secs(60),
+            wedge_timeout: Duration::from_secs(2),
         }
     }
 }
@@ -273,16 +282,22 @@ async fn connection(
         refusals: Mutex::new(Refusals::default()),
         relayed: Mutex::new(None),
     });
-    let handler = RelayHandler::new(Arc::clone(&shared), Arc::clone(&conn), permit, stop.clone());
     // A second handle on the socket, to cut the connection off if the peer
-    // ignores the relay hanging up on it.
+    // ignores the relay hanging up on it, or its event loop is stuck.
     let (socket, cut) = match with_cutoff(socket) {
-        Ok(split) => split,
+        Ok((socket, cut)) => (socket, Arc::new(cut)),
         Err(e) => {
             tracing::warn!(peer = %peer.ip(), error = %e, "relay: cannot set up a connection");
             return;
         }
     };
+    let handler = RelayHandler::new(
+        Arc::clone(&shared),
+        Arc::clone(&conn),
+        permit,
+        stop.clone(),
+        Arc::clone(&cut),
+    );
     // The SSH version exchange is part of logging in, and bounded with it.
     let started = tokio::select! {
         started = tokio::time::timeout_at(deadline, server::run_stream(config, socket, handler)) => started,
@@ -380,24 +395,6 @@ async fn became_true(flag: &mut watch::Receiver<bool>) -> bool {
     flag.wait_for(|set| *set).await.is_ok()
 }
 
-/// Cuts a connection off: shuts the socket down under the SSH library,
-/// whose reads then end.
-struct Cutoff(std::net::TcpStream);
-
-impl Cutoff {
-    fn now(&self) {
-        // Already closed is as good as cut.
-        let _ = self.0.shutdown(std::net::Shutdown::Both);
-    }
-}
-
-/// `socket`, and a cutoff for it.
-fn with_cutoff(socket: TcpStream) -> std::io::Result<(TcpStream, Cutoff)> {
-    let socket = socket.into_std()?;
-    let cutoff = Cutoff(socket.try_clone()?);
-    Ok((TcpStream::from_std(socket)?, cutoff))
-}
-
 async fn goodbye(handle: &server::Handle, message: &str) {
     // A connection already gone needs no goodbye.
     let _ = handle
@@ -446,6 +443,8 @@ struct RelayHandler {
     pre_start_bytes: usize,
     /// Whether the connection was hung up for too much of it.
     flooded: bool,
+    /// Cuts this connection.
+    cut: Arc<Cutoff>,
 }
 
 impl RelayHandler {
@@ -454,6 +453,7 @@ impl RelayHandler {
         conn: Arc<Conn>,
         permit: PreAuthPermit,
         stop: watch::Receiver<bool>,
+        cut: Arc<Cutoff>,
     ) -> Self {
         Self {
             shared,
@@ -471,6 +471,7 @@ impl RelayHandler {
             pre_start_messages: 0,
             pre_start_bytes: 0,
             flooded: false,
+            cut,
         }
     }
 
@@ -591,6 +592,7 @@ impl RelayHandler {
             self.env.clone(),
         );
         let (agent_handle, mut stop) = (session.handle(), self.stop.clone());
+        let agent_cut = Arc::clone(&self.cut);
         let relayed = tokio::spawn(async move {
             let opened =
                 open_target(&shared, &login, pty.as_ref(), &env, &program, &mut stop).await;
@@ -606,14 +608,20 @@ impl RelayHandler {
             let _ = ready.send(Ok(()));
             let grant = &login.grant;
             tracing::info!(grant = %grant.grant_id, agent = %grant.agent, target = %grant.target, "relay: session started");
-            let (target, early, hang_up) = started.into_parts();
+            let (target, early, target_cut, hang_up) = started.into_parts();
             let ends = Ends {
                 agent,
                 agent_handle,
+                agent_cut,
                 target,
+                target_cut,
                 early,
             };
-            let outcome = session::relay(ends, stop).await;
+            let watch = session::Watch {
+                stall: shared.limits.stall_timeout,
+                wedge: shared.limits.wedge_timeout,
+            };
+            let outcome = session::relay(ends, stop, watch).await;
             hang_up.now().await;
             drop(slot);
             record_end(&shared.audit, &grant.grant_id, &outcome).await;

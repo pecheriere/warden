@@ -15,7 +15,7 @@ use warden_broker_proto::UnixUser;
 
 use crate::policy::{RelayCredential, SshTarget};
 
-use super::session::{Program, PtyRequest};
+use super::session::{Cutoff, Program, PtyRequest, with_cutoff};
 
 /// Why the onward connection failed. Messages are fixed: they never carry
 /// the credential or anything the target sent.
@@ -197,7 +197,10 @@ impl client::Handler for OnwardHandler {
 /// keys, in pinned order, each once, so the target proves the key that is
 /// pinned (a target with several host keys would otherwise be asked for
 /// the relay's favourite one). RSA keys are asked for as `rsa-sha2-512` then
-/// `rsa-sha2-256`, never SHA-1 `ssh-rsa`. Key types the relay cannot
+/// `rsa-sha2-256`, never SHA-1 `ssh-rsa`. (russh 0.64 does not check that
+/// the target's signature uses the negotiated hash, so a holder of the
+/// pinned key could still sign with SHA-1; the key itself is pinned.) Key
+/// types the relay cannot
 /// verify (DSA, security keys) are left out.
 #[must_use]
 fn host_key_algorithms(pinned: &[ssh_key::PublicKey]) -> Vec<russh::keys::Algorithm> {
@@ -240,6 +243,7 @@ fn host_key_algorithms(pinned: &[ssh_key::PublicKey]) -> Vec<russh::keys::Algori
 pub(crate) struct Onward {
     handle: client::Handle<OnwardHandler>,
     channel: Channel<client::Msg>,
+    cut: Arc<Cutoff>,
 }
 
 /// Connect to `target`, verify its host key, and log in as `user` with
@@ -267,30 +271,40 @@ pub(crate) async fn connect(
         inactivity_timeout: None,
         keepalive_interval: Some(Duration::from_secs(30)),
         keepalive_max: 3,
-        nodelay: true,
         preferred: russh::Preferred {
             key: host_key_algorithms.into(),
             ..russh::Preferred::default()
         },
         ..client::Config::default()
     });
-    let connected = tokio::time::timeout(
-        timeout,
-        client::connect(config, (target.host.as_str(), target.port), handler),
-    )
+    let connected = tokio::time::timeout(timeout, async {
+        let socket = tokio::net::TcpStream::connect((target.host.as_str(), target.port))
+            .await
+            .map_err(|_| OnwardError::Unreachable)?;
+        // Small writes (keystrokes) go out at once.
+        socket
+            .set_nodelay(true)
+            .map_err(|_| OnwardError::Unreachable)?;
+        let (socket, cut) = with_cutoff(socket).map_err(|_| OnwardError::Unreachable)?;
+        Ok::<_, OnwardError>((client::connect_stream(config, socket, handler).await, cut))
+    })
     .await;
-    let mut handle = match connected {
-        Ok(Ok(handle)) => handle,
-        // The handshake fails when the host key is refused, or when the
-        // target has no host key of a pinned type: say so.
-        Ok(Err(russh::Error::NoCommonAlgo {
-            kind: russh::AlgorithmKind::Key,
-            ..
-        })) => return Err(OnwardError::HostKeyMismatch),
-        Ok(Err(_)) | Err(_) if mismatch.load(Ordering::SeqCst) => {
+    let (mut handle, cut) = match connected {
+        Ok(Ok((Ok(handle), cut))) => (handle, Arc::new(cut)),
+        // The handshake fails when the target has no host key of a pinned
+        // type, or when its host key is refused: say so.
+        Ok(Ok((
+            Err(russh::Error::NoCommonAlgo {
+                kind: russh::AlgorithmKind::Key,
+                ..
+            }),
+            _,
+        ))) => return Err(OnwardError::HostKeyMismatch),
+        Ok(Ok((Err(_), _))) | Err(_) if mismatch.load(Ordering::SeqCst) => {
             return Err(OnwardError::HostKeyMismatch);
         }
-        Ok(Err(_)) | Err(_) => return Err(OnwardError::Unreachable),
+        Ok(Err(e)) => return Err(e),
+        Ok(Ok((Err(_), _))) | Err(_) => return Err(OnwardError::Unreachable),
     };
     let login = tokio::time::timeout(timeout, async {
         match &credential {
@@ -332,12 +346,24 @@ pub(crate) async fn connect(
         hang_up(&handle).await;
         return Err(OnwardError::SessionRefused);
     };
-    Ok(Onward { handle, channel })
+    Ok(Onward {
+        handle,
+        channel,
+        cut,
+    })
 }
 
+/// Longest wait for the target to take the relay's goodbye.
+const GOODBYE_WAIT: Duration = Duration::from_secs(2);
+
 async fn hang_up(handle: &client::Handle<OnwardHandler>) {
-    // The connection is dropped right after; a failed goodbye changes nothing.
-    let _ = handle.disconnect(Disconnect::ByApplication, "", "en").await;
+    // The connection is dropped (or cut) right after; a failed or slow
+    // goodbye changes nothing.
+    let _ = tokio::time::timeout(
+        GOODBYE_WAIT,
+        handle.disconnect(Disconnect::ByApplication, "", "en"),
+    )
+    .await;
 }
 
 impl Onward {
@@ -388,6 +414,7 @@ impl Onward {
             Ok(Ok(())) => Ok(Started {
                 handle: self.handle,
                 channel: self.channel,
+                cut: self.cut,
                 early: early.messages,
             }),
             Ok(Err(e)) => {
@@ -468,6 +495,7 @@ impl Answer {
 /// A session running on the target.
 pub(crate) struct Started {
     handle: client::Handle<OnwardHandler>,
+    cut: Arc<Cutoff>,
     /// Its channel.
     pub channel: Channel<client::Msg>,
     /// What the target sent before it accepted the command.
@@ -475,20 +503,41 @@ pub(crate) struct Started {
 }
 
 impl Started {
-    /// Split into the channel and early messages, and something that hangs
-    /// up when the session is over.
-    pub(crate) fn into_parts(self) -> (Channel<client::Msg>, VecDeque<ChannelMsg>, HangUp) {
-        (self.channel, self.early, HangUp(self.handle))
+    /// Split into the channel, the early messages, the connection's
+    /// cutoff, and something that hangs up when the session is over.
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        Channel<client::Msg>,
+        VecDeque<ChannelMsg>,
+        Arc<Cutoff>,
+        HangUp,
+    ) {
+        let cut = Arc::clone(&self.cut);
+        (
+            self.channel,
+            self.early,
+            cut,
+            HangUp {
+                handle: self.handle,
+                cut: self.cut,
+            },
+        )
     }
 }
 
 /// Hangs up on the target.
-pub(crate) struct HangUp(client::Handle<OnwardHandler>);
+pub(crate) struct HangUp {
+    handle: client::Handle<OnwardHandler>,
+    cut: Arc<Cutoff>,
+}
 
 impl HangUp {
-    /// Disconnect from the target.
+    /// Say goodbye to the target (waiting at most 2 s), then cut the
+    /// connection, so it ends whatever state the SSH library is in.
     pub(crate) async fn now(self) {
-        hang_up(&self.0).await;
+        hang_up(&self.handle).await;
+        self.cut.now();
     }
 }
 
@@ -595,7 +644,7 @@ mod tests {
         );
         assert!(
             !host_key_algorithms(&pinned).contains(&Algorithm::Rsa { hash: None }),
-            "never SHA-1 ssh-rsa"
+            "SHA-1 ssh-rsa is never negotiated"
         );
     }
 

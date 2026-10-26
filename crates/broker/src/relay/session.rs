@@ -4,7 +4,9 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::net::IpAddr;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 
 use russh::client;
 use russh::server;
@@ -16,7 +18,7 @@ use warden_broker_proto::Id;
 const COMMAND_AUDIT_CHARS: usize = 200;
 
 /// Most environment variables an agent may pass on.
-pub(crate) const MAX_ENV_VARS: usize = 32;
+pub(crate) const MAX_ENV_VARS: usize = 16;
 
 /// Longest environment variable value passed on, in bytes.
 const MAX_ENV_VALUE: usize = 256;
@@ -31,6 +33,12 @@ pub(crate) mod reason {
     pub const CLIENT_CLOSED: &str = "client closed";
     /// The relay is stopping.
     pub const SHUTDOWN: &str = "relay shutting down";
+    /// Prefix of the reasons below.
+    pub const FLOW_CONTROL: &str = "flow control: ";
+    /// The agent did not take the target's output.
+    pub const DOWNSTREAM_STALLED: &str = "flow control: output to the agent not drained";
+    /// The target did not take the agent's input.
+    pub const UPSTREAM_STALLED: &str = "flow control: input to the target not drained";
 }
 
 /// What the agent asked the target to run.
@@ -251,14 +259,80 @@ pub(crate) struct Outcome {
     pub exit_status: Option<u32>,
 }
 
+/// Bytes of the agent's input held between the agent's connection and the
+/// target's; past it the relay stops reading the agent's connection.
+const UPSTREAM_QUEUE_BYTES: usize = 2 * 1024 * 1024;
+
+/// Bytes of the target's output held between the two connections; past it
+/// the relay stops reading the target's connection. Larger than
+/// [`UPSTREAM_QUEUE_BYTES`] plus the SSH window the relay grants the agent
+/// (2 MiB), so a target echoing its input never fills it while the agent's
+/// window updates wait behind the input queued ahead of them.
+const DOWNSTREAM_QUEUE_BYTES: usize = 8 * 1024 * 1024;
+
+/// What a message other than data counts for in a queue.
+const CONTROL_MESSAGE_BYTES: usize = 64;
+
+/// When a session that stopped making progress ends.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Watch {
+    /// A direction holding data that nothing delivers for this long (an
+    /// agent not reading its output, a target not reading its input).
+    pub stall: Duration,
+    /// Both directions held up at once (each waiting for room in its
+    /// queue) with nothing delivered either way for this long.
+    ///
+    /// russh stops a connection's whole event loop (its window updates and
+    /// outgoing data included) while the relay is not reading it, and it
+    /// grants window as data arrives whatever the reader's pace, so reading
+    /// less is the only way to hold either side back. With both connections
+    /// held back each can wait for the other's window forever: an agent
+    /// that feeds input to an echoing command and never reads the output
+    /// gets there in seconds. While held back, the agent's connection does
+    /// not notice the agent leaving either; this ends such a session.
+    pub wedge: Duration,
+}
+
+/// How often the session checks for progress.
+const WATCH_EVERY: Duration = Duration::from_millis(250);
+
+/// Longest each side gets to take the relay's close at the end before its
+/// connection is cut.
+const CLOSE_WAIT: Duration = Duration::from_secs(2);
+
+/// Cuts a connection off: shuts its socket down under the SSH library,
+/// whose reads then end, whatever state its event loop is in.
+#[derive(Debug)]
+pub(crate) struct Cutoff(std::net::TcpStream);
+
+impl Cutoff {
+    pub(crate) fn now(&self) {
+        // Already closed is as good as cut.
+        let _ = self.0.shutdown(std::net::Shutdown::Both);
+    }
+}
+
+/// `socket`, and a cutoff for it.
+pub(crate) fn with_cutoff(
+    socket: tokio::net::TcpStream,
+) -> std::io::Result<(tokio::net::TcpStream, Cutoff)> {
+    let socket = socket.into_std()?;
+    let cutoff = Cutoff(socket.try_clone()?);
+    Ok((tokio::net::TcpStream::from_std(socket)?, cutoff))
+}
+
 /// Both ends of a started session.
 pub(crate) struct Ends {
     /// The agent's session channel.
     pub agent: Channel<server::Msg>,
     /// The agent connection, for an exit signal.
     pub agent_handle: server::Handle,
+    /// Cuts the agent's connection.
+    pub agent_cut: Arc<Cutoff>,
     /// The target's session channel, its command started.
     pub target: Channel<client::Msg>,
+    /// Cuts the target's connection.
+    pub target_cut: Arc<Cutoff>,
     /// What the target sent while the session was being set up, in order.
     pub early: VecDeque<ChannelMsg>,
 }
@@ -267,37 +341,58 @@ fn len64(n: usize) -> u64 {
     u64::try_from(n).unwrap_or(u64::MAX)
 }
 
-/// Bytes of the agent's input held between the agent's connection and the
-/// target's.
-const UPSTREAM_QUEUE_BYTES: usize = 2 * 1024 * 1024;
-/// Bytes of the target's output held between the two connections. Larger
-/// than [`UPSTREAM_QUEUE_BYTES`] plus the SSH window the relay grants the
-/// agent (2 MiB), so a target echoing its input never fills it while the
-/// agent's window updates wait behind the input queued ahead of them.
-const DOWNSTREAM_QUEUE_BYTES: usize = 8 * 1024 * 1024;
-/// What a message other than data counts for in a queue.
-const CONTROL_MESSAGE_BYTES: usize = 64;
+/// How a direction is doing, for the session's watchdog.
+#[derive(Debug, Default)]
+struct Progress {
+    /// Messages delivered so far.
+    delivered: AtomicU64,
+    /// Bytes queued and not yet delivered.
+    queued: AtomicUsize,
+    /// Whether the reader is waiting for room in the queue (so the
+    /// connection it reads is held up).
+    waiting: AtomicBool,
+}
 
-/// A message on its way from one connection to the other, holding its room
-/// in the queue until it is delivered.
+/// Marks a reader as waiting for room while it exists (also if the wait is
+/// abandoned).
+struct Waiting<'a>(&'a Progress);
+
+impl<'a> Waiting<'a> {
+    fn new(progress: &'a Progress) -> Self {
+        progress.waiting.store(true, Ordering::Release);
+        Self(progress)
+    }
+}
+
+impl Drop for Waiting<'_> {
+    fn drop(&mut self) {
+        self.0.waiting.store(false, Ordering::Release);
+    }
+}
+
+/// A message on its way, holding its room in the queue until delivered.
 struct Queued {
     msg: ChannelMsg,
+    size: usize,
     _room: OwnedSemaphorePermit,
 }
 
-/// A queue of messages between the two connections, bounded in bytes.
+/// A direction's queue of messages between the two connections, bounded
+/// in bytes.
 struct Queue {
     room: Arc<Semaphore>,
     capacity: usize,
+    progress: Arc<Progress>,
     tx: mpsc::UnboundedSender<Queued>,
 }
 
 impl Queue {
-    fn new(capacity: usize) -> (Self, mpsc::UnboundedReceiver<Queued>) {
+    fn new(capacity: usize, progress: Arc<Progress>) -> (Self, mpsc::UnboundedReceiver<Queued>) {
         let (tx, rx) = mpsc::unbounded_channel();
         let queue = Self {
             room: Arc::new(Semaphore::new(capacity)),
             capacity,
+            progress,
             tx,
         };
         (queue, rx)
@@ -310,49 +405,83 @@ impl Queue {
             _ => 0,
         }
         .clamp(CONTROL_MESSAGE_BYTES, self.capacity);
-        let Ok(room) = u32::try_from(size) else {
+        let Ok(permits) = u32::try_from(size) else {
             return false;
+        };
+        let room = {
+            let _waiting = Waiting::new(&self.progress);
+            Arc::clone(&self.room).acquire_many_owned(permits).await
         };
         // The semaphore is never closed.
-        let Ok(room) = Arc::clone(&self.room).acquire_many_owned(room).await else {
+        let Ok(room) = room else {
             return false;
         };
-        self.tx.send(Queued { msg, _room: room }).is_ok()
+        self.progress.queued.fetch_add(size, Ordering::AcqRel);
+        self.tx
+            .send(Queued {
+                msg,
+                size,
+                _room: room,
+            })
+            .is_ok()
     }
 }
 
-/// Carry the session until either side closes it or `stop` fires, then
-/// close both channels. The agent's data, EOF, window changes and signals
-/// go to the target; the target's output, EOF, exit status and exit signal
-/// come back.
+impl Queued {
+    /// Count this message as delivered (its room is freed on drop).
+    fn delivered(&self, progress: &Progress) {
+        progress.queued.fetch_sub(self.size, Ordering::AcqRel);
+        progress.delivered.fetch_add(1, Ordering::AcqRel);
+    }
+}
+
+/// Carry the session until either side closes it, it stops making
+/// progress, or `stop` fires; then close both channels, cutting a
+/// connection that does not take its close in time. The agent's data, EOF,
+/// window changes and signals go to the target; the target's output, EOF,
+/// exit status and exit signal come back.
 ///
-/// Each connection's SSH event loop stops reading (window updates and
-/// outgoing data included) while a channel's inbound queue is full, so
-/// each direction reads its source into a bounded queue of its own and
-/// writes it out separately: reading never waits on the other connection,
-/// and the two loops cannot end up waiting on each other.
-pub(crate) async fn relay(ends: Ends, mut stop: watch::Receiver<bool>) -> Outcome {
+/// Each direction reads its source into a bounded queue and writes the
+/// queue out separately, so a slow destination holds back only its own
+/// source. The session ends when it stops making progress (see [`Watch`]).
+pub(crate) async fn relay(ends: Ends, mut stop: watch::Receiver<bool>, limits: Watch) -> Outcome {
     let Ends {
         agent,
         agent_handle,
+        agent_cut,
         target,
+        target_cut,
         early,
     } = ends;
     let agent_id = agent.id();
     let (mut from_agent, to_agent) = agent.split();
     let (mut from_target, to_target) = target.split();
+    let (up_progress, down_progress) =
+        (Arc::new(Progress::default()), Arc::new(Progress::default()));
     let mut up = Delivered::default();
     let mut down = Delivered::default();
     let ended = tokio::select! {
-        ended = upstream(&mut from_agent, &to_target, &mut up) => ended,
-        ended = downstream(&mut from_target, early, &to_agent, &agent_handle, agent_id, &mut down) => ended,
+        ended = upstream(&mut from_agent, &to_target, Arc::clone(&up_progress), &mut up) => ended,
+        ended = downstream(&mut from_target, early, &to_agent, &agent_handle, agent_id, Arc::clone(&down_progress), &mut down) => ended,
+        ended = watchdog(&up_progress, &down_progress, limits) => ended,
         () = super::server::stopping(&mut stop) => reason::SHUTDOWN,
     };
-    // Best effort: either side may already be gone.
-    let _ = to_agent.close().await;
-    let _ = to_target.close().await;
+    let (agent_closed, target_closed) = tokio::join!(
+        tokio::time::timeout(CLOSE_WAIT, to_agent.close()),
+        tokio::time::timeout(CLOSE_WAIT, to_target.close()),
+    );
+    // A connection whose event loop is held up cannot take the close.
+    if agent_closed.is_err() || ended.starts_with(reason::FLOW_CONTROL) {
+        agent_cut.now();
+    }
+    if target_closed.is_err() || ended.starts_with(reason::FLOW_CONTROL) {
+        target_cut.now();
+    }
     Outcome {
-        reason: if down.exited && ended != reason::SHUTDOWN {
+        reason: if down.exited
+            && !matches!(ended, reason::SHUTDOWN)
+            && !ended.starts_with(reason::FLOW_CONTROL)
+        {
             reason::EXITED
         } else {
             ended
@@ -360,6 +489,36 @@ pub(crate) async fn relay(ends: Ends, mut stop: watch::Receiver<bool>) -> Outcom
         bytes_to_target: up.bytes,
         bytes_from_target: down.bytes,
         exit_status: down.exit_status,
+    }
+}
+
+/// Resolves, with the reason, once the session stops making progress.
+async fn watchdog(up: &Progress, down: &Progress, limits: Watch) -> &'static str {
+    let start = tokio::time::Instant::now();
+    // Per direction: messages delivered at the last check, and since when
+    // that count has not moved.
+    let mut last = [(0_u64, start); 2];
+    loop {
+        tokio::time::sleep(WATCH_EVERY).await;
+        let now = tokio::time::Instant::now();
+        let mut idle = [Duration::ZERO; 2];
+        for (i, progress) in [up, down].into_iter().enumerate() {
+            let delivered = progress.delivered.load(Ordering::Acquire);
+            if delivered != last[i].0 {
+                last[i] = (delivered, now);
+            }
+            idle[i] = now.duration_since(last[i].1);
+        }
+        let both_held = up.waiting.load(Ordering::Acquire) && down.waiting.load(Ordering::Acquire);
+        if both_held && idle[0] >= limits.wedge && idle[1] >= limits.wedge {
+            return reason::DOWNSTREAM_STALLED;
+        }
+        if down.queued.load(Ordering::Acquire) > 0 && idle[1] >= limits.stall {
+            return reason::DOWNSTREAM_STALLED;
+        }
+        if up.queued.load(Ordering::Acquire) > 0 && idle[0] >= limits.stall {
+            return reason::UPSTREAM_STALLED;
+        }
     }
 }
 
@@ -373,15 +532,16 @@ struct Delivered {
     exited: bool,
 }
 
-/// Read the agent's side into a queue until the agent closes, while
+/// Read the agent's side into its queue until the agent closes, while
 /// delivering the queue to the target; returns why it stopped. What was
 /// queued when the agent closed is still delivered.
 async fn upstream(
     from_agent: &mut ChannelReadHalf,
     to_target: &ChannelWriteHalf<client::Msg>,
+    progress: Arc<Progress>,
     delivered: &mut Delivered,
 ) -> &'static str {
-    let (queue, mut queued) = Queue::new(UPSTREAM_QUEUE_BYTES);
+    let (queue, mut queued) = Queue::new(UPSTREAM_QUEUE_BYTES, Arc::clone(&progress));
     let read = async move {
         loop {
             let msg = match from_agent.wait().await {
@@ -403,11 +563,11 @@ async fn upstream(
         }
     };
     let write = async {
-        while let Some(Queued { msg, _room }) = queued.recv().await {
-            let sent = match msg {
+        while let Some(queued_msg) = queued.recv().await {
+            let sent = match &queued_msg.msg {
                 ChannelMsg::Data { data } => {
                     let n = len64(data.len());
-                    let sent = to_target.data_bytes(data).await;
+                    let sent = to_target.data_bytes(data.clone()).await;
                     if sent.is_ok() {
                         delivered.bytes = delivered.bytes.saturating_add(n);
                     }
@@ -421,22 +581,23 @@ async fn upstream(
                     pix_height,
                 } => {
                     to_target
-                        .window_change(col_width, row_height, pix_width, pix_height)
+                        .window_change(*col_width, *row_height, *pix_width, *pix_height)
                         .await
                 }
-                ChannelMsg::Signal { signal } => to_target.signal(signal).await,
+                ChannelMsg::Signal { signal } => to_target.signal(signal.clone()).await,
                 _ => Ok(()),
             };
             if sent.is_err() {
                 return false;
             }
+            queued_msg.delivered(&progress);
         }
         true
     };
     finish(read, write, reason::TARGET_CLOSED).await
 }
 
-/// Read the target's side (after what it sent during setup) into a queue
+/// Read the target's side (after what it sent during setup) into its queue
 /// until the target closes, while delivering the queue to the agent;
 /// returns why it stopped. What was queued when the target closed is still
 /// delivered.
@@ -446,9 +607,10 @@ async fn downstream(
     to_agent: &ChannelWriteHalf<server::Msg>,
     agent_handle: &server::Handle,
     agent_id: ChannelId,
+    progress: Arc<Progress>,
     delivered: &mut Delivered,
 ) -> &'static str {
-    let (queue, mut queued) = Queue::new(DOWNSTREAM_QUEUE_BYTES);
+    let (queue, mut queued) = Queue::new(DOWNSTREAM_QUEUE_BYTES, Arc::clone(&progress));
     let read = async move {
         let mut early = early;
         loop {
@@ -473,21 +635,24 @@ async fn downstream(
         }
     };
     let write = async {
-        while let Some(Queued { msg, _room }) = queued.recv().await {
-            let sent = match msg {
+        while let Some(queued_msg) = queued.recv().await {
+            let sent = match &queued_msg.msg {
                 ChannelMsg::Data { data } => {
                     delivered.bytes = delivered.bytes.saturating_add(len64(data.len()));
-                    to_agent.data_bytes(data).await.is_ok()
+                    to_agent.data_bytes(data.clone()).await.is_ok()
                 }
                 ChannelMsg::ExtendedData { data, ext } => {
                     delivered.bytes = delivered.bytes.saturating_add(len64(data.len()));
-                    to_agent.extended_data_bytes(ext, data).await.is_ok()
+                    to_agent
+                        .extended_data_bytes(*ext, data.clone())
+                        .await
+                        .is_ok()
                 }
                 ChannelMsg::Eof => to_agent.eof().await.is_ok(),
                 ChannelMsg::ExitStatus { exit_status } => {
-                    delivered.exit_status = Some(exit_status);
+                    delivered.exit_status = Some(*exit_status);
                     delivered.exited = true;
-                    to_agent.exit_status(exit_status).await.is_ok()
+                    to_agent.exit_status(*exit_status).await.is_ok()
                 }
                 ChannelMsg::ExitSignal {
                     signal_name,
@@ -499,10 +664,10 @@ async fn downstream(
                     agent_handle
                         .exit_signal_request(
                             agent_id,
-                            signal_name,
-                            core_dumped,
-                            error_message,
-                            lang_tag,
+                            signal_name.clone(),
+                            *core_dumped,
+                            error_message.clone(),
+                            lang_tag.clone(),
                         )
                         .await
                         .is_ok()
@@ -512,6 +677,7 @@ async fn downstream(
             if !sent {
                 return false;
             }
+            queued_msg.delivered(&progress);
         }
         true
     };
@@ -544,7 +710,15 @@ mod tests {
 
     use warden_broker_proto::Id;
 
-    use super::{PreAuthLimiter, Program, Queue, SessionSlots, SlotRefusal, env_allowed};
+    use std::sync::Arc;
+    use std::sync::atomic::Ordering;
+
+    use std::time::Duration;
+
+    use super::{
+        PreAuthLimiter, Program, Progress, Queue, SessionSlots, SlotRefusal, Watch, env_allowed,
+        reason, watchdog,
+    };
 
     fn data(len: usize) -> russh::ChannelMsg {
         russh::ChannelMsg::Data {
@@ -553,17 +727,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn queue_waits_for_room_and_frees_it_on_delivery() {
-        let (queue, mut rx) = Queue::new(1000);
+    async fn queue_waits_for_room_and_reports_progress() {
+        let progress = Arc::new(Progress::default());
+        let (queue, mut rx) = Queue::new(1000, Arc::clone(&progress));
         assert!(queue.push(data(600)).await);
         // Control messages take room too, so they cannot pile up for free.
         assert!(queue.push(russh::ChannelMsg::Eof).await);
-        let blocked =
-            tokio::time::timeout(std::time::Duration::from_millis(100), queue.push(data(600)))
-                .await;
+        assert_eq!(progress.queued.load(Ordering::Acquire), 664);
+        let blocked = tokio::time::timeout(Duration::from_millis(100), queue.push(data(600))).await;
         assert!(blocked.is_err(), "a full queue makes the reader wait");
-        // Delivering the first message frees its room.
-        drop(rx.recv().await.unwrap());
+        // Delivering frees room and counts as progress.
+        let first = rx.recv().await.unwrap();
+        first.delivered(&progress);
+        drop(first);
+        assert_eq!(progress.delivered.load(Ordering::Acquire), 1);
+        assert!(!progress.waiting.load(Ordering::Acquire));
         assert!(queue.push(data(600)).await);
         // A message larger than the whole queue still fits on its own.
         drop(rx.recv().await.unwrap());
@@ -571,6 +749,51 @@ mod tests {
         assert!(queue.push(data(5000)).await);
         drop(rx);
         assert!(!queue.push(data(1)).await, "the other end is gone");
+    }
+
+    fn limits(stall_secs: u64) -> Watch {
+        Watch {
+            stall: Duration::from_secs(stall_secs),
+            wedge: Duration::from_secs(2),
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn watchdog_ends_wedged_and_stalled_sessions_only() {
+        // Both directions held up, nothing delivered: ended after 2 s.
+        let (up, down) = (Progress::default(), Progress::default());
+        up.waiting.store(true, Ordering::Release);
+        down.waiting.store(true, Ordering::Release);
+        let started = tokio::time::Instant::now();
+        let why = watchdog(&up, &down, limits(60)).await;
+        assert_eq!(why, reason::DOWNSTREAM_STALLED);
+        assert!(started.elapsed() < Duration::from_secs(3));
+
+        // One direction holding data nothing delivers: ended after the
+        // stall timeout, not before.
+        let (up, down) = (Progress::default(), Progress::default());
+        up.queued.store(10, Ordering::Release);
+        up.waiting.store(true, Ordering::Release);
+        let started = tokio::time::Instant::now();
+        let why = watchdog(&up, &down, limits(60)).await;
+        assert_eq!(why, reason::UPSTREAM_STALLED);
+        assert!(started.elapsed() >= Duration::from_secs(60));
+
+        // Progress keeps a session alive.
+        let (up, down) = (Progress::default(), Progress::default());
+        up.waiting.store(true, Ordering::Release);
+        down.waiting.store(true, Ordering::Release);
+        down.queued.store(10, Ordering::Release);
+        let moving = async {
+            for _ in 0..40 {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                down.delivered.fetch_add(1, Ordering::AcqRel);
+            }
+        };
+        tokio::select! {
+            why = watchdog(&up, &down, limits(5)) => panic!("ended: {why}"),
+            () = moving => {}
+        }
     }
 
     #[test]
