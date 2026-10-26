@@ -289,24 +289,54 @@ async fn proxy_call(
         .map(Json)
 }
 
-/// The approved details of grant `id` if `agent` may use it now.
+/// Why a grant of the agent's cannot be used for a call now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Unusable {
+    Revoked,
+    Expired,
+    NotApi,
+}
+
+impl Unusable {
+    const fn message(self) -> &'static str {
+        match self {
+            Self::Revoked => "grant revoked",
+            Self::Expired => "grant expired",
+            Self::NotApi => "grant is not for API access",
+        }
+    }
+}
+
+/// The approved details of grant `id` if `agent` may use it now, or why
+/// not. The outer error is a failed lookup (404 for another agent's grant).
+async fn api_grant_status(
+    state: &AppState,
+    agent: &AgentName,
+    id: &Id,
+) -> Result<Result<ApiGrant, Unusable>, Failure> {
+    let (view, revoked) = state.requests.agent_grant(agent, id).await?;
+    Ok(if revoked {
+        Err(Unusable::Revoked)
+    } else if state.clock.now() >= view.not_after {
+        Err(Unusable::Expired)
+    } else {
+        match view.access {
+            GrantAccess::Api(grant) => Ok(grant),
+            GrantAccess::Ssh(_) => Err(Unusable::NotApi),
+        }
+    })
+}
+
+/// The approved details of grant `id` if `agent` may use it now; 409 if it
+/// is revoked, expired or not for API access.
 async fn usable_api_grant(
     state: &AppState,
     agent: &AgentName,
     id: &Id,
 ) -> Result<ApiGrant, Failure> {
-    let conflict = |message: &str| Failure::Client(StatusCode::CONFLICT, message.to_owned());
-    let (view, revoked) = state.requests.agent_grant(agent, id).await?;
-    if revoked {
-        return Err(conflict("grant revoked"));
-    }
-    if state.clock.now() >= view.not_after {
-        return Err(conflict("grant expired"));
-    }
-    match view.access {
-        GrantAccess::Api(grant) => Ok(grant),
-        GrantAccess::Ssh(_) => Err(conflict("grant is not for API access")),
-    }
+    api_grant_status(state, agent, id)
+        .await?
+        .map_err(|why| Failure::Client(StatusCode::CONFLICT, why.message().to_owned()))
 }
 
 /// What a `proxy_call` audit entry records about a call.
@@ -419,14 +449,13 @@ async fn call(
     drop(secret);
     record.status = Some(upstream.status.as_u16());
     record.response_bytes = u64::try_from(upstream.body.len()).unwrap_or(u64::MAX);
-    match usable_api_grant(state, agent, grant_id).await {
-        Ok(_) => {}
-        Err(Failure::Client(StatusCode::CONFLICT | StatusCode::NOT_FOUND, _)) => {
-            return Err(Failure::Client(
-                StatusCode::CONFLICT,
-                "grant revoked during the call".to_owned(),
-            ));
-        }
+    let ended =
+        |how: &str| Failure::Client(StatusCode::CONFLICT, format!("grant {how} during the call"));
+    match api_grant_status(state, agent, grant_id).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(Unusable::Expired)) => return Err(ended("expired")),
+        Ok(Err(Unusable::Revoked | Unusable::NotApi))
+        | Err(Failure::Request(RequestError::NotFound)) => return Err(ended("revoked")),
         Err(other) => return Err(other),
     }
     // Redaction scans every needle over up to 1 MiB, then the result is

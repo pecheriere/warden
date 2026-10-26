@@ -728,3 +728,22 @@ async fn revoked_during_call_withholds_response() {
     assert_eq!(calls[0]["outcome"], "grant revoked during the call");
     assert_eq!(calls[0]["status"], 200);
 }
+
+#[tokio::test]
+async fn expired_during_call_withholds_response() {
+    let s = setup().await;
+    let call = get(&s, "/delayed");
+    let expire = async {
+        while s.upstream.received().is_empty() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        s.broker.clock.advance(30 * 60);
+    };
+    let (resp, ()) = tokio::join!(call, expire);
+    assert_eq!(resp.status, StatusCode::CONFLICT, "{}", resp.body);
+    assert_eq!(resp.body, r#"{"error":"grant expired during the call"}"#);
+    let calls = proxy_calls(&s.broker);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0]["outcome"], "grant expired during the call");
+    assert_eq!(calls[0]["status"], 200);
+}
