@@ -14,6 +14,7 @@ use url::Url;
 use warden_broker::audit::AuditLog;
 use warden_broker::notify::Notifier;
 use warden_broker::policy::OnePasswordConnect;
+use warden_broker::relay::RelayEndpoint;
 use warden_broker::requests::{Destination, RequestError, Requests};
 use warden_broker::testkit::{CapturingNotifier, FailingNotifier, ManualClock};
 use warden_broker::{agents, audit, store};
@@ -141,7 +142,24 @@ async fn broken_connect() -> MockServer {
     server
 }
 
+/// The relay endpoint the harness advertises, unless built without one.
+fn test_relay() -> RelayEndpoint {
+    RelayEndpoint {
+        host: "relay.warden.test".to_owned(),
+        port: 2222,
+        host_key: ed25519_public(),
+    }
+}
+
 async fn harness_with(connect: MockServer, notifier: Option<Arc<dyn Notifier>>) -> Harness {
+    harness_with_relay(connect, notifier, Some(test_relay())).await
+}
+
+async fn harness_with_relay(
+    connect: MockServer,
+    notifier: Option<Arc<dyn Notifier>>,
+    relay: Option<RelayEndpoint>,
+) -> Harness {
     let dir = tempfile::tempdir().unwrap();
     let pool = store::open(&dir.path().join("warden.db")).await.unwrap();
     let bot_key = agents::add(&pool, &agent("bot"))
@@ -167,6 +185,7 @@ async fn harness_with(connect: MockServer, notifier: Option<Arc<dyn Notifier>>) 
         notifier,
         Url::parse(PUBLIC_URL).unwrap(),
         clock.clone(),
+        relay,
     );
     Harness {
         requests,
@@ -458,8 +477,26 @@ async fn create_rejects_non_ed25519_key() {
 }
 
 #[tokio::test]
-async fn create_rejects_relay_mode() {
+async fn relay_request_is_created_and_notified() {
     let h = harness().await;
+    let (created, _) = create_notified(
+        &h,
+        "bot",
+        ssh_request("nas", "backup", Window::M30, &ed25519_public()),
+    )
+    .await;
+    assert_eq!(row_count(&h.pool, "requests").await, 1);
+    let status = h
+        .requests
+        .status(&agent("bot"), &created.id, Duration::ZERO)
+        .await
+        .unwrap();
+    assert_eq!(status, RequestStatus::Pending);
+}
+
+#[tokio::test]
+async fn relay_not_configured_rejected_without_notifying() {
+    let h = harness_with_relay(healthy_connect().await, None, None).await;
     let err = h
         .requests
         .create(
@@ -469,8 +506,13 @@ async fn create_rejects_relay_mode() {
         .await
         .unwrap_err();
     assert!(matches!(err, RequestError::Rejected(_)), "{err:?}");
-    assert_eq!(message(&err), "target nas: relay mode not supported yet");
+    assert_eq!(message(&err), "target nas: relay is not configured");
     assert_eq!(row_count(&h.pool, "requests").await, 0);
+    assert!(h.capture.rung().is_empty());
+    assert!(audit_types(&h).is_empty());
+
+    // Cert targets are unaffected.
+    create_notified(&h, "bot", pi_request()).await;
 }
 
 #[tokio::test]

@@ -24,6 +24,17 @@ pub enum SshMode {
     Relay,
 }
 
+impl SshMode {
+    /// The item's spelling: `cert` or `relay`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Cert => "cert",
+            Self::Relay => "relay",
+        }
+    }
+}
+
 /// An SSH target as defined by its 1Password item.
 #[derive(Debug, Clone)]
 pub struct SshTarget {
@@ -44,10 +55,12 @@ pub struct SshTarget {
 }
 
 impl SshTarget {
-    /// Lowercase hex SHA-256 over where this target sends a connection: host,
-    /// port and the set of host keys (by SHA-256 key fingerprint, sorted, so
-    /// key order and comments do not matter). Every part is length-prefixed,
-    /// so distinct destinations cannot collide by concatenation.
+    /// Lowercase hex SHA-256 over where and how this target sends a
+    /// connection: the mode (a certificate for the agent, or the broker's
+    /// relay logging in with its own credential), host, port and the set of
+    /// host keys (by SHA-256 key fingerprint, sorted, so key order and
+    /// comments do not matter). Every part is length-prefixed, so distinct
+    /// destinations cannot collide by concatenation.
     #[must_use]
     pub fn destination_digest(&self) -> String {
         let mut keys: Vec<String> = self
@@ -59,7 +72,7 @@ impl SshTarget {
         keys.dedup();
         let port = self.port.to_string();
         digest_parts(
-            [self.host.as_str(), port.as_str()]
+            [self.mode.as_str(), self.host.as_str(), port.as_str()]
                 .into_iter()
                 .chain(keys.iter().map(String::as_str)),
         )
@@ -280,8 +293,8 @@ impl fmt::Debug for SecretValue {
 /// scratch space, and the PEM/base64/DER decoders' intermediate buffers are
 /// not wiped.
 pub enum RelayCredential {
-    /// An unencrypted Ed25519, ECDSA or RSA private key, normalised to
-    /// OpenSSH format whatever format the item held it in.
+    /// An unencrypted Ed25519 private key, normalised to OpenSSH format
+    /// whatever format (OpenSSH or PKCS#8) the item held it in.
     Key(Zeroizing<String>),
     /// A password, verbatim.
     Password(Zeroizing<String>),

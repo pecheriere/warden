@@ -1295,3 +1295,17 @@ async fn fake_backend_serves_relay_targets() {
         .unwrap_err();
     assert!(matches!(err, PolicyError::Invalid { .. }), "{err:?}");
 }
+
+#[test]
+fn ssh_destination_digest_binds_the_mode() {
+    use warden_broker::testkit::FakeBackend;
+    let cert = FakeBackend::pi_target();
+    let mut relay = cert.clone();
+    relay.mode = SshMode::Relay;
+    // Same host, port and host keys: only the mode differs.
+    assert_ne!(cert.destination_digest(), relay.destination_digest());
+    assert_eq!(
+        relay.destination_digest(),
+        relay.clone().destination_digest()
+    );
+}

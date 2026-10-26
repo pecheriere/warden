@@ -209,6 +209,61 @@ fn config_proxy_response_limit_defaults_and_bounds() {
     }
 }
 
+#[test]
+fn config_relay_defaults_and_public_address() {
+    let cfg = Config::from_lookup(env).unwrap();
+    assert_eq!(cfg.relay.listen.to_string(), "127.0.0.1:2222");
+    assert_eq!(
+        cfg.relay.host_key_path,
+        std::path::Path::new("/data/relay_host_ed25519")
+    );
+    assert!(cfg.relay.public_addr.is_none());
+
+    let with = |var: &'static str, value: &'static str| {
+        move |v: &str| {
+            if v == var {
+                Some(value.to_owned())
+            } else {
+                env(v)
+            }
+        }
+    };
+    let cfg = Config::from_lookup(with(
+        "WARDEN_RELAY_PUBLIC_ADDR",
+        "warden.example.ts.net:2222",
+    ))
+    .unwrap();
+    let addr = cfg.relay.public_addr.unwrap();
+    assert_eq!(addr.host, "warden.example.ts.net");
+    assert_eq!(addr.port, 2222);
+    let cfg = Config::from_lookup(with("WARDEN_RELAY_PUBLIC_ADDR", "[2001:db8::1]:22")).unwrap();
+    let addr = cfg.relay.public_addr.unwrap();
+    assert_eq!((addr.host.as_str(), addr.port), ("2001:db8::1", 22));
+
+    let cfg = Config::from_lookup(with("WARDEN_RELAY_LISTEN", "0.0.0.0:2200")).unwrap();
+    assert_eq!(cfg.relay.listen.to_string(), "0.0.0.0:2200");
+    let cfg = Config::from_lookup(with("WARDEN_RELAY_HOST_KEY_PATH", "/keys/relay")).unwrap();
+    assert_eq!(cfg.relay.host_key_path, std::path::Path::new("/keys/relay"));
+
+    for bad in [
+        "warden.example.ts.net",
+        "warden.example.ts.net:0",
+        "warden.example.ts.net:65536",
+        "warden example:22",
+        ":22",
+        "2001:db8::1:22",
+        "-warden:22",
+    ] {
+        let err = Config::from_lookup(with("WARDEN_RELAY_PUBLIC_ADDR", bad)).unwrap_err();
+        assert!(
+            err.to_string().contains("WARDEN_RELAY_PUBLIC_ADDR"),
+            "{bad}: {err}"
+        );
+    }
+    let err = Config::from_lookup(with("WARDEN_RELAY_LISTEN", "nope")).unwrap_err();
+    assert!(err.to_string().contains("WARDEN_RELAY_LISTEN"), "{err}");
+}
+
 #[tokio::test]
 async fn add_audited_records_agent_added() {
     let dir = tempfile::tempdir().unwrap();

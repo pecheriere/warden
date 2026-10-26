@@ -20,13 +20,14 @@ use tokio::sync::broadcast;
 use url::Url;
 use warden_broker_proto::{
     Access, AgentName, CreateRequest, CreatedResponse, Fingerprint, GrantAccess, GrantView, Id,
-    RequestStatus, Window, fingerprint,
+    RequestStatus, TargetName, UnixUser, Window, fingerprint,
 };
 
 use crate::agents::{self, AgentError};
 use crate::audit::{AuditError, AuditEvent, AuditLog};
 use crate::notify::{Doorbell, Notifier, doorbell};
 use crate::policy::{ApiSecretPolicy, PolicyError, SecretBackend, SshMode, SshTarget};
+use crate::relay::RelayEndpoint;
 
 /// How long a request waits for the owner, in seconds.
 const PENDING_TTL_SECS: i64 = 600;
@@ -101,6 +102,10 @@ impl Default for StatusBus {
         Self::new()
     }
 }
+
+/// Why a relay target cannot be requested or approved on a broker without
+/// `WARDEN_RELAY_PUBLIC_ADDR`.
+pub const RELAY_NOT_CONFIGURED: &str = "relay is not configured";
 
 /// What callers are told when the secret backend (targets or the SSH CA)
 /// cannot answer; the detail goes to the server log only.
@@ -316,6 +321,21 @@ pub struct ActiveGrant {
     pub not_after: i64,
 }
 
+/// An active relay grant, as the relay needs it to admit an agent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelayGrantRecord {
+    /// Grant id.
+    pub grant_id: Id,
+    /// Agent holding the grant.
+    pub agent: AgentName,
+    /// Target the relay opens the session to.
+    pub target: TargetName,
+    /// Unix account the relay logs in to the target as.
+    pub user: UnixUser,
+    /// End of validity, Unix seconds.
+    pub not_after: i64,
+}
+
 /// The request lifecycle service.
 #[derive(Clone)]
 pub struct Requests {
@@ -326,6 +346,7 @@ pub struct Requests {
     bus: StatusBus,
     public_url: Url,
     clock: Arc<dyn Clock>,
+    relay: Option<Arc<RelayEndpoint>>,
 }
 
 /// Which pending requests an expiry pass looks at.
@@ -337,6 +358,8 @@ enum Scope {
 
 impl Requests {
     /// Build the service. Approval links are `<public_url>/approve/<token>`.
+    /// Relay targets can be requested only when `relay` (where agents reach
+    /// the relay) is given.
     #[must_use]
     pub fn new(
         pool: SqlitePool,
@@ -345,6 +368,7 @@ impl Requests {
         notifier: Arc<dyn Notifier>,
         public_url: Url,
         clock: Arc<dyn Clock>,
+        relay: Option<RelayEndpoint>,
     ) -> Self {
         Self {
             pool,
@@ -354,7 +378,14 @@ impl Requests {
             bus: StatusBus::new(),
             public_url,
             clock,
+            relay: relay.map(Arc::new),
         }
+    }
+
+    /// Where agents reach the relay, if it is configured.
+    #[must_use]
+    pub fn relay(&self) -> Option<&RelayEndpoint> {
+        self.relay.as_deref()
     }
 
     /// The bus on which changed request ids are published.
@@ -391,9 +422,9 @@ impl Requests {
                 }
                 check_window(req.window, policy.max_window, &format!("target {target}"))
                     .map_err(RequestError::Rejected)?;
-                if policy.mode != SshMode::Cert {
+                if policy.mode == SshMode::Relay && self.relay.is_none() {
                     return Err(RequestError::Rejected(format!(
-                        "target {target}: relay mode not supported yet"
+                        "target {target}: {RELAY_NOT_CONFIGURED}"
                     )));
                 }
                 format!("{agent}|ssh|{target}")
@@ -979,6 +1010,68 @@ impl Requests {
         let view: String = row.try_get("view")?;
         let revoked_at: Option<i64> = row.try_get("revoked_at")?;
         Ok((serde_json::from_str(&view)?, revoked_at.is_some()))
+    }
+
+    /// The active (neither revoked nor expired) relay grant for `target`
+    /// whose approved request bound `public_key`, if there is one: the relay
+    /// admits an agent offering that key for that target. Keys are compared
+    /// by key data, so comments do not matter. If several match, the one
+    /// lasting longest is returned.
+    ///
+    /// # Errors
+    /// Storage failures or unreadable stored rows.
+    pub async fn active_relay_grant(
+        &self,
+        target: &TargetName,
+        public_key: &ssh_key::PublicKey,
+    ) -> Result<Option<RelayGrantRecord>, RequestError> {
+        let rows = sqlx::query(
+            "SELECT g.id, g.agent, g.not_after, g.view, r.body \
+             FROM grants g JOIN requests r ON r.id = g.request_id \
+             WHERE g.revoked_at IS NULL AND g.not_after > ? \
+             AND json_extract(g.view, '$.access.kind') = 'relay' \
+             AND json_extract(g.view, '$.access.target') = ? \
+             ORDER BY g.not_after DESC, g.id",
+        )
+        .bind(self.clock.now())
+        .bind(target.as_str())
+        .fetch_all(&self.pool)
+        .await?;
+        for row in &rows {
+            let body: String = row.try_get("body")?;
+            let request: CreateRequest = serde_json::from_str(&body)?;
+            let Access::Ssh {
+                public_key: bound, ..
+            } = &request.access
+            else {
+                return Err(RequestError::Corrupt(
+                    "relay grant for a non-SSH request".to_owned(),
+                ));
+            };
+            let bound = ssh_key::PublicKey::from_openssh(bound)
+                .map_err(|e| RequestError::Corrupt(format!("bound public key: {e}")))?;
+            if bound.key_data() != public_key.key_data() {
+                continue;
+            }
+            let view: String = row.try_get("view")?;
+            let view: GrantView = serde_json::from_str(&view)?;
+            let GrantAccess::Relay(grant) = view.access else {
+                return Err(RequestError::Corrupt("relay grant changed kind".to_owned()));
+            };
+            if grant.target != *target {
+                return Err(RequestError::Corrupt(
+                    "relay grant changed target".to_owned(),
+                ));
+            }
+            return Ok(Some(RelayGrantRecord {
+                grant_id: parse(row, "id")?,
+                agent: parse(row, "agent")?,
+                target: grant.target,
+                user: grant.user,
+                not_after: row.try_get("not_after")?,
+            }));
+        }
+        Ok(None)
     }
 
     /// End a grant on behalf of the agent that holds it. Revoking an already

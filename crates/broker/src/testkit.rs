@@ -46,6 +46,7 @@ use crate::policy::{
     SshTarget, ValueFormat, not_a_relay_target,
 };
 use crate::proxy::ProxyLimits;
+use crate::relay::{RelayEndpoint, host_key};
 use crate::requests::{Clock, Requests};
 use crate::{AppState, agents, store};
 
@@ -187,6 +188,13 @@ pub const PI_HOST: &str = "192.0.2.10";
 
 /// Host of [`FakeBackend::relay_target`].
 pub const NAS_HOST: &str = "192.0.2.20";
+
+/// Host of the relay's public address in a [`TestBroker`] (unless built
+/// without a relay).
+pub const RELAY_PUBLIC_HOST: &str = "relay.warden.test";
+
+/// Port of the relay's public address in a [`TestBroker`].
+pub const RELAY_PUBLIC_PORT: u16 = 2222;
 
 /// A software passkey that claims user verification, as Face ID would.
 pub type SoftAuthenticator = WebauthnAuthenticator<SoftPasskey>;
@@ -543,6 +551,7 @@ pub struct TestBroker {
     servers: Mutex<Vec<AbortHandle>>,
     dir: Option<TempDir>,
     proxy: ProxyLimits,
+    relay: bool,
 }
 
 impl Drop for TestBroker {
@@ -556,12 +565,23 @@ impl Drop for TestBroker {
 }
 
 impl TestBroker {
-    /// A fresh broker with no agents and no passkeys.
+    /// A fresh broker with no agents and no passkeys. Its relay is
+    /// configured: public address [`RELAY_PUBLIC_HOST`]:[`RELAY_PUBLIC_PORT`],
+    /// host key created in the temporary directory.
     ///
     /// # Panics
     /// If any part of the setup fails.
     pub async fn new() -> Self {
         Self::with_proxy_limits(ProxyLimits::default()).await
+    }
+
+    /// Like [`TestBroker::new`], without `WARDEN_RELAY_PUBLIC_ADDR`: the
+    /// relay is off.
+    ///
+    /// # Panics
+    /// If any part of the setup fails.
+    pub async fn without_relay() -> Self {
+        Self::fresh(ProxyLimits::default(), false).await
     }
 
     /// Like [`TestBroker::new`], with proxied calls held to `proxy` (for
@@ -570,6 +590,10 @@ impl TestBroker {
     /// # Panics
     /// If any part of the setup fails.
     pub async fn with_proxy_limits(proxy: ProxyLimits) -> Self {
+        Self::fresh(proxy, true).await
+    }
+
+    async fn fresh(proxy: ProxyLimits, relay: bool) -> Self {
         let dir = tempfile::tempdir().expect("temp dir");
         let db_path = dir.path().join("warden.db");
         let audit_path = dir.path().join("audit.jsonl");
@@ -580,6 +604,7 @@ impl TestBroker {
             Arc::new(ManualClock::new(TEST_START)),
             Arc::new(FakeBackend::new()),
             proxy,
+            relay,
         )
         .await
     }
@@ -591,7 +616,21 @@ impl TestBroker {
     ///
     /// # Panics
     /// If any part of the setup fails.
-    pub async fn restart(mut self) -> Self {
+    pub async fn restart(self) -> Self {
+        let relay = self.relay;
+        self.restart_with(relay).await
+    }
+
+    /// Like [`TestBroker::restart`], but the broker comes back without
+    /// `WARDEN_RELAY_PUBLIC_ADDR`.
+    ///
+    /// # Panics
+    /// If any part of the setup fails.
+    pub async fn restart_without_relay(self) -> Self {
+        self.restart_with(false).await
+    }
+
+    async fn restart_with(mut self, relay: bool) -> Self {
         self.state.pool.close().await;
         let passkey = std::mem::take(self.default_passkey.get_mut());
         let next = Self::build(
@@ -601,6 +640,7 @@ impl TestBroker {
             self.clock.clone(),
             self.backend.clone(),
             self.proxy,
+            relay,
         )
         .await;
         *next.default_passkey.lock().await = passkey;
@@ -614,12 +654,30 @@ impl TestBroker {
         clock: Arc<ManualClock>,
         backend: Arc<FakeBackend>,
         proxy: ProxyLimits,
+        relay: bool,
     ) -> Self {
         let pool = store::open(&db_path).await.expect("open database");
         let audit = Arc::new(AuditLog::open(&audit_path).await.expect("open audit log"));
-        let mut config = Config::from_lookup(test_env).expect("test configuration");
+        let host_key_path = db_path.with_file_name("relay_host_ed25519");
+        let mut config = Config::from_lookup(|var| match var {
+            "WARDEN_RELAY_PUBLIC_ADDR" if relay => {
+                Some(format!("{RELAY_PUBLIC_HOST}:{RELAY_PUBLIC_PORT}"))
+            }
+            "WARDEN_RELAY_HOST_KEY_PATH" => Some(host_key_path.display().to_string()),
+            other => test_env(other),
+        })
+        .expect("test configuration");
         config.proxy = proxy;
         let config = Arc::new(config);
+        let relay_endpoint = match &config.relay.public_addr {
+            Some(addr) => {
+                let key = host_key::load_or_create(config.relay.host_key_path.clone())
+                    .await
+                    .expect("relay host key");
+                Some(RelayEndpoint::new(addr, &key).expect("relay endpoint"))
+            }
+            None => None,
+        };
         let capture = Arc::new(CapturingNotifier::new());
         let requests = Requests::new(
             pool.clone(),
@@ -628,6 +686,7 @@ impl TestBroker {
             capture.clone(),
             config.public_url.clone(),
             clock.clone(),
+            relay_endpoint,
         );
         let passkeys = Passkeys::new(
             pool.clone(),
@@ -660,6 +719,7 @@ impl TestBroker {
             servers: Mutex::new(Vec::new()),
             dir,
             proxy,
+            relay,
         }
     }
 
@@ -796,6 +856,21 @@ impl TestBroker {
             },
             window,
         }
+    }
+
+    /// An SSH request for `backup@nas` (see [`FakeBackend::relay_target`])
+    /// with a fresh Ed25519 key.
+    ///
+    /// # Panics
+    /// If no key can be generated or `goal` is not valid.
+    #[must_use]
+    pub fn relay_request(goal: &str, window: Window) -> CreateRequest {
+        let mut request = Self::pi_request(goal, window);
+        if let Access::Ssh { target, user, .. } = &mut request.access {
+            *target = TargetName::try_from("nas".to_owned()).expect("valid target");
+            *user = UnixUser::try_from("backup".to_owned()).expect("valid user");
+        }
+        request
     }
 
     /// A request to use API secret `secret`.

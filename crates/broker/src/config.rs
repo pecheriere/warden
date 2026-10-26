@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use secrecy::SecretString;
 use url::Url;
 
+use crate::policy::onepassword::parse_host_port;
 use crate::proxy::ProxyLimits;
 
 /// Largest value accepted for `WARDEN_PROXY_MAX_RESPONSE_BYTES`: a response
@@ -96,6 +97,45 @@ pub fn parse_public_url(value: &str) -> Result<Url, ConfigError> {
     Ok(url)
 }
 
+/// Where agents reach the SSH relay: a host name or IP address and a port.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelayAddress {
+    /// Host name or IP address, without brackets.
+    pub host: String,
+    /// TCP port.
+    pub port: u16,
+}
+
+/// Parse a `WARDEN_RELAY_PUBLIC_ADDR` value: `host:port` or `[ipv6]:port`,
+/// the port required.
+///
+/// # Errors
+///
+/// [`ConfigError::Invalid`] naming `WARDEN_RELAY_PUBLIC_ADDR`.
+pub fn parse_relay_address(value: &str) -> Result<RelayAddress, ConfigError> {
+    let invalid = |reason| ConfigError::Invalid {
+        var: "WARDEN_RELAY_PUBLIC_ADDR",
+        reason,
+    };
+    match parse_host_port(value.trim()).map_err(invalid)? {
+        (host, Some(port)) => Ok(RelayAddress { host, port }),
+        (_, None) => Err(invalid("must name a port (host:port)")),
+    }
+}
+
+/// The SSH relay's settings.
+#[derive(Debug, Clone)]
+pub struct RelayConfig {
+    /// `WARDEN_RELAY_LISTEN`, default `127.0.0.1:2222`.
+    pub listen: SocketAddr,
+    /// `WARDEN_RELAY_PUBLIC_ADDR`: where agents connect to the relay. Unset
+    /// means the relay is off and requests for relay targets are refused.
+    pub public_addr: Option<RelayAddress>,
+    /// `WARDEN_RELAY_HOST_KEY_PATH`, default `/data/relay_host_ed25519`:
+    /// the relay's Ed25519 host key, created on first use.
+    pub host_key_path: PathBuf,
+}
+
 /// Full server configuration.
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -126,6 +166,8 @@ pub struct Config {
     /// Limits of proxied API calls; `WARDEN_PROXY_MAX_RESPONSE_BYTES` sets
     /// the response size (default 1 MiB, at most 64 MiB).
     pub proxy: ProxyLimits,
+    /// The SSH relay.
+    pub relay: RelayConfig,
 }
 
 impl Config {
@@ -196,6 +238,16 @@ impl Config {
                 })?;
         }
 
+        let relay = RelayConfig {
+            listen: addr("WARDEN_RELAY_LISTEN", "127.0.0.1:2222")?,
+            public_addr: get("WARDEN_RELAY_PUBLIC_ADDR")
+                .map(|v| parse_relay_address(&v))
+                .transpose()?,
+            host_key_path: get("WARDEN_RELAY_HOST_KEY_PATH")
+                .unwrap_or_else(|| "/data/relay_host_ed25519".to_owned())
+                .into(),
+        };
+
         Ok(Self {
             db_path: required("WARDEN_DB_PATH")?.into(),
             audit_path: required("WARDEN_AUDIT_PATH")?.into(),
@@ -210,6 +262,7 @@ impl Config {
             ntfy_url,
             ntfy_token,
             proxy,
+            relay,
         })
     }
 }

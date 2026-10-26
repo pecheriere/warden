@@ -7,6 +7,7 @@
 use maud::{DOCTYPE, Markup, html};
 use warden_broker_proto::{Access, ApiGrant, CreateRequest, GrantAccess, Window};
 
+use crate::policy::SshMode;
 use crate::requests::{ActiveGrant, Destination, HistoryEntry, PendingView, window_label};
 
 const STYLE: &str = "\
@@ -70,14 +71,16 @@ fn api_access(grant: &ApiGrant) -> Markup {
     }
 }
 
-/// What approving `request` gives access to under `destination`; for an
+/// What approving `request` gives access to under `destination`: for a
+/// relay target also that the session goes through the warden relay; for an
 /// API secret also how its value is written (the secret shown as `…`) and
 /// whether a pinned CA replaces the system roots.
 fn destination_access(request: &CreateRequest, destination: &Destination) -> Markup {
     match destination {
-        Destination::Ssh(target) => {
-            html! { code { (access_line(request, &target.host, target.port)) } }
-        }
+        Destination::Ssh(target) => html! {
+            code { (access_line(request, &target.host, target.port)) }
+            @if target.mode == SshMode::Relay { " via the warden relay" }
+        },
         Destination::Api(policy) => html! {
             (api_access(&policy.grant()))
             br;

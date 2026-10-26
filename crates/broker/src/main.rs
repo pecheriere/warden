@@ -18,6 +18,7 @@ use warden_broker::health;
 use warden_broker::identity::TailscaleServeIdentity;
 use warden_broker::notify::{Fallback, HaWebhook, Notifier, Ntfy};
 use warden_broker::policy::OnePasswordConnect;
+use warden_broker::relay::{RelayEndpoint, host_key};
 use warden_broker::requests::{self, Clock as _, Requests, SystemClock};
 use warden_broker::{AppState, agents, audit, build_routers, store};
 use warden_broker_proto::AgentName;
@@ -219,6 +220,27 @@ fn build_notifier(config: &Config) -> Result<Arc<dyn Notifier>> {
     Ok(Arc::new(Fallback::new(primary, secondary)))
 }
 
+/// Where agents reach the relay, with its host key loaded (and created on
+/// first use), or `None` when `WARDEN_RELAY_PUBLIC_ADDR` is unset.
+async fn relay_endpoint(config: &Config) -> Result<Option<RelayEndpoint>> {
+    let Some(addr) = &config.relay.public_addr else {
+        tracing::info!("WARDEN_RELAY_PUBLIC_ADDR unset; relay targets cannot be requested");
+        return Ok(None);
+    };
+    let path = &config.relay.host_key_path;
+    let key = host_key::load_or_create(path.clone())
+        .await
+        .with_context(|| format!("loading the relay host key {}", path.display()))?;
+    tracing::info!(
+        public_addr = %format!("{}:{}", addr.host, addr.port),
+        host_key = %key.fingerprint(),
+        "relay host key loaded"
+    );
+    Ok(Some(
+        RelayEndpoint::new(addr, &key).context("encoding the relay host key")?,
+    ))
+}
+
 /// Resolves on SIGTERM or Ctrl-C.
 async fn termination() -> Result<()> {
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
@@ -256,6 +278,7 @@ async fn serve() -> Result<()> {
         config.connect_token.clone(),
         config.vault.clone(),
     ));
+    let relay = relay_endpoint(&config).await?;
     let clock = Arc::new(SystemClock);
     let requests = Requests::new(
         pool.clone(),
@@ -264,6 +287,7 @@ async fn serve() -> Result<()> {
         build_notifier(&config)?,
         config.public_url.clone(),
         clock.clone(),
+        relay,
     );
     let passkeys = Passkeys::new(
         pool.clone(),

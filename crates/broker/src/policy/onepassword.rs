@@ -791,6 +791,17 @@ fn check_ca_pem(pem: &str) -> Result<(), &'static str> {
 
 /// Split `host`, `host:port` or `[ipv6]:port`; the port defaults to 22.
 fn parse_address(s: &str) -> Result<(String, u16), &'static str> {
+    let (host, port) = parse_host_port(s)?;
+    Ok((host, port.unwrap_or(22)))
+}
+
+/// Split `host`, `host:port` or `[ipv6]:port` into the host (without
+/// brackets) and the port, if one is given. The host must be a plausible
+/// host name or IP address; the port 1-65535.
+///
+/// # Errors
+/// Why the address is unusable, as a fixed message that never echoes it.
+pub(crate) fn parse_host_port(s: &str) -> Result<(String, Option<u16>), &'static str> {
     let (host, port) = if let Some(rest) = s.strip_prefix('[') {
         let (host, tail) = rest.split_once(']').ok_or("unterminated '[' in address")?;
         host.parse::<Ipv6Addr>()
@@ -819,9 +830,9 @@ fn parse_address(s: &str) -> Result<(String, u16), &'static str> {
         return Err("host is empty or contains unsupported characters");
     }
     let port = match port {
-        None => 22,
+        None => None,
         Some(p) => match p.parse::<u16>() {
-            Ok(n) if n != 0 => n,
+            Ok(n) if n != 0 => Some(n),
             _ => return Err("port must be 1-65535"),
         },
     };
