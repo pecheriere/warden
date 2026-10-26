@@ -62,9 +62,9 @@ impl From<RequestError> for Failure {
 /// must not be described to the agent.
 const fn status_of(e: &RequestError) -> Option<StatusCode> {
     match e {
-        RequestError::Rejected(_) | RequestError::TargetInvalid { .. } => {
-            Some(StatusCode::BAD_REQUEST)
-        }
+        RequestError::Rejected(_)
+        | RequestError::TargetInvalid { .. }
+        | RequestError::SecretInvalid { .. } => Some(StatusCode::BAD_REQUEST),
         RequestError::UnknownTarget(_)
         | RequestError::UnknownSecret(_)
         | RequestError::NotFound => Some(StatusCode::NOT_FOUND),
@@ -242,6 +242,16 @@ mod tests {
         assert_eq!(
             status_of(&RequestError::Rejected("bad".to_owned())),
             Some(StatusCode::BAD_REQUEST)
+        );
+        let invalid = RequestError::SecretInvalid {
+            secret: "github".to_owned(),
+            field: "credential".to_owned(),
+            reason: "too short".to_owned(),
+        };
+        assert_eq!(status_of(&invalid), Some(StatusCode::BAD_REQUEST));
+        assert_eq!(
+            status_of(&RequestError::UnknownSecret("nope".to_owned())),
+            Some(StatusCode::NOT_FOUND)
         );
     }
 }

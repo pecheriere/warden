@@ -120,9 +120,9 @@ pub struct ApprovalBinding {
     pub window: Window,
     /// Fingerprint of the request the owner was shown.
     pub fingerprint: Fingerprint,
-    /// [`crate::policy::SshTarget::destination_digest`] of the destination
+    /// [`crate::requests::Destination::digest`] of the destination
     /// the owner was shown.
-    pub target_digest: String,
+    pub destination_digest: String,
     /// When the request expires, Unix seconds.
     pub request_expires_at: i64,
 }

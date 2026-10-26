@@ -362,9 +362,16 @@ async fn connect_500_is_unavailable() {
 
 #[tokio::test]
 async fn connection_refused_is_unavailable_without_token() {
-    let server = MockServer::start().await;
-    let backend = backend(&server);
-    drop(server);
+    // A port that was just free and has no listener. (A dropped MockServer
+    // would not do: wiremock pools servers, so another test may answer.)
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    drop(listener);
+    let backend = OnePasswordConnect::new(
+        Url::parse(&format!("http://{addr}")).unwrap(),
+        SecretString::from(TOKEN.to_owned()),
+        "Warden".to_owned(),
+    );
     let err = backend.ssh_target(&target("pi")).await.unwrap_err();
     assert!(matches!(&err, PolicyError::Unavailable(_)), "{err:?}");
     assert!(!err.to_string().contains(TOKEN));

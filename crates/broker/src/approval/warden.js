@@ -106,7 +106,7 @@
       busy([approve, deny], true);
       try {
         // The digest of the destination shown on this page: the server refuses
-        // to approve if the target's host, port or host keys changed since.
+        // to approve if the policy of the target or secret changed since.
         const begun = await post(`${base}/begin`, {
           window: select.value,
           target: approval.dataset.target,

@@ -5,9 +5,9 @@
 //! Pages carry no inline script; behaviour lives in `/static/warden.js`.
 
 use maud::{DOCTYPE, Markup, html};
-use warden_broker_proto::{Access, CreateRequest, Window};
+use warden_broker_proto::{Access, ApiGrant, CreateRequest, GrantAccess, Window};
 
-use crate::requests::{ActiveGrant, HistoryEntry, PendingView, window_label};
+use crate::requests::{ActiveGrant, Destination, HistoryEntry, PendingView, window_label};
 
 const STYLE: &str = "\
 body{font-family:system-ui,sans-serif;max-width:40rem;margin:0 auto;padding:1rem;line-height:1.4}\
@@ -59,10 +59,41 @@ fn access_line(request: &CreateRequest, host: &str, port: u16) -> String {
     }
 }
 
+/// `use secret <name> for <METHODS> on <origin><prefix> (header <header>)`:
+/// what an API grant lets the broker do with the secret.
+fn api_access(grant: &ApiGrant) -> Markup {
+    html! {
+        "use secret " code { bdi { (grant.secret) } }
+        " for " code { bdi { (grant.methods.join(", ")) } }
+        " on " code { bdi { (grant.origin) (grant.path_prefix) } }
+        " (header " code { bdi { (grant.header) } } ")"
+    }
+}
+
+/// What approving `request` gives access to under `destination`.
+fn destination_access(request: &CreateRequest, destination: &Destination) -> Markup {
+    match destination {
+        Destination::Ssh(target) => {
+            html! { code { (access_line(request, &target.host, target.port)) } }
+        }
+        Destination::Api(policy) => api_access(&policy.grant()),
+    }
+}
+
+/// What an active grant gives access to.
+fn grant_access(grant: &ActiveGrant) -> Markup {
+    match &grant.access {
+        GrantAccess::Ssh(ssh) => {
+            html! { code { (access_line(&grant.request, &ssh.host, ssh.port)) } }
+        }
+        GrantAccess::Api(api) => api_access(api),
+    }
+}
+
 /// The approval page for a pending request.
 #[must_use]
 pub fn approve(view: &PendingView, now: i64) -> Markup {
-    let max = view.target.max_window;
+    let max = view.destination.max_window();
     let default = view.request.window.min(max);
     let remaining = (view.expires_at - now).max(0);
     let content = html! {
@@ -73,7 +104,7 @@ pub fn approve(view: &PendingView, now: i64) -> Markup {
             dt { "Goal" }
             dd { bdi { (view.request.goal) } }
             dt { "Access" }
-            dd { code { (access_line(&view.request, &view.target.host, view.target.port)) } }
+            dd { (destination_access(&view.request, &view.destination)) }
             dt { "Requested window" }
             dd { (window_label(view.request.window)) }
             dt { "Fingerprint (must match what the agent shows)" }
@@ -83,7 +114,7 @@ pub fn approve(view: &PendingView, now: i64) -> Markup {
         }
         // The script sends this back when the approval begins, binding it to
         // the destination shown above.
-        main #approval data-target=(view.target.destination_digest()) {
+        main #approval data-target=(view.destination.digest()) {
             label for="window" { "Grant for " }
             select #window name="window" {
                 @for window in WINDOWS.into_iter().filter(|w| *w <= max) {
@@ -157,7 +188,7 @@ pub fn grants(grants: &[ActiveGrant], now: i64) -> Markup {
                     @for grant in grants {
                         tr {
                             td { bdi { (grant.agent) } }
-                            td { code { (access_line(&grant.request, &grant.host, grant.port)) } }
+                            td { (grant_access(grant)) }
                             td { code { (grant.fingerprint) } }
                             td {
                                 (utc(grant.not_after))

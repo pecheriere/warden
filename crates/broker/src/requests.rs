@@ -26,7 +26,7 @@ use warden_broker_proto::{
 use crate::agents::{self, AgentError};
 use crate::audit::{AuditError, AuditEvent, AuditLog};
 use crate::notify::{Doorbell, Notifier, doorbell};
-use crate::policy::{PolicyError, SecretBackend, SshMode, SshTarget};
+use crate::policy::{ApiSecretPolicy, PolicyError, SecretBackend, SshMode, SshTarget};
 
 /// How long a request waits for the owner, in seconds.
 const PENDING_TTL_SECS: i64 = 600;
@@ -131,6 +131,16 @@ pub enum RequestError {
         /// What is wrong with it.
         reason: String,
     },
+    /// The API secret's policy item is malformed.
+    #[error("secret {secret}: field {field} invalid: {reason}")]
+    SecretInvalid {
+        /// Secret (item) name.
+        secret: String,
+        /// Offending field.
+        field: String,
+        /// What is wrong with it.
+        reason: String,
+    },
     /// The secret backend could not answer.
     #[error("secret backend unavailable: {0}")]
     Unavailable(String),
@@ -169,6 +179,25 @@ pub enum RequestError {
     Internal(&'static str),
 }
 
+impl RequestError {
+    /// The error for a failed API secret lookup: like the `From` conversion,
+    /// but a malformed item is named as a secret, not a target.
+    fn from_secret_lookup(e: PolicyError) -> Self {
+        match e {
+            PolicyError::Invalid {
+                item,
+                field,
+                reason,
+            } => Self::SecretInvalid {
+                secret: item,
+                field,
+                reason,
+            },
+            other => other.into(),
+        }
+    }
+}
+
 impl From<PolicyError> for RequestError {
     fn from(e: PolicyError) -> Self {
         match e {
@@ -189,6 +218,51 @@ impl From<PolicyError> for RequestError {
     }
 }
 
+/// The current policy of what a request asks for: where approving it lets
+/// the agent go.
+#[derive(Debug, Clone)]
+pub enum Destination {
+    /// An SSH target.
+    Ssh(SshTarget),
+    /// An API secret.
+    Api(ApiSecretPolicy),
+}
+
+impl Destination {
+    /// Lowercase hex SHA-256 over where the destination sends the agent's
+    /// access (see [`SshTarget::destination_digest`] and
+    /// [`ApiSecretPolicy::destination_digest`]). The approval page embeds it
+    /// and the approval is refused if it changed meanwhile.
+    #[must_use]
+    pub fn digest(&self) -> String {
+        match self {
+            Self::Ssh(target) => target.destination_digest(),
+            Self::Api(policy) => policy.destination_digest(),
+        }
+    }
+
+    /// Longest window the policy allows.
+    #[must_use]
+    pub const fn max_window(&self) -> Window {
+        match self {
+            Self::Ssh(target) => target.max_window,
+            Self::Api(policy) => policy.max_window,
+        }
+    }
+
+    /// Whether the policy allows granting `window`.
+    ///
+    /// # Errors
+    /// Why not, as `window 4h exceeds max 1h for secret github`.
+    pub fn check_window(&self, window: Window) -> Result<(), String> {
+        let subject = match self {
+            Self::Ssh(target) => format!("target {}", target.name),
+            Self::Api(policy) => format!("secret {}", policy.name),
+        };
+        check_window(window, self.max_window(), &subject)
+    }
+}
+
 /// What the approval page shows for a pending request.
 #[derive(Debug, Clone)]
 pub struct PendingView {
@@ -200,8 +274,8 @@ pub struct PendingView {
     pub fingerprint: Fingerprint,
     /// The request as made.
     pub request: CreateRequest,
-    /// The target's current policy.
-    pub target: SshTarget,
+    /// The current policy of what it asks for.
+    pub destination: Destination,
     /// When the request expires, Unix seconds.
     pub expires_at: i64,
 }
@@ -236,10 +310,8 @@ pub struct ActiveGrant {
     pub fingerprint: Fingerprint,
     /// The approved request.
     pub request: CreateRequest,
-    /// Host the grant connects to.
-    pub host: String,
-    /// Port the grant connects to.
-    pub port: u16,
+    /// What the grant gives access to.
+    pub access: GrantAccess,
     /// End of validity, Unix seconds.
     pub not_after: i64,
 }
@@ -293,48 +365,50 @@ impl Requests {
 
     /// Validate `req` against policy, store it and notify the owner in the
     /// background. A duplicate of the agent's pending request for the same
-    /// target returns that request instead.
+    /// target (or secret) and kind returns that request instead.
     ///
     /// # Errors
-    /// [`RequestError::Rejected`] for policy violations, the target errors
-    /// from the backend, [`RequestError::AgentRevoked`], or storage failures.
-    /// No row is stored and nobody is notified on error.
+    /// [`RequestError::Rejected`] for policy violations, the target or
+    /// secret errors from the backend, [`RequestError::AgentRevoked`], or
+    /// storage failures. No row is stored and nobody is notified on error.
     pub async fn create(
         &self,
         agent: &AgentName,
         req: CreateRequest,
     ) -> Result<CreatedResponse, RequestError> {
-        let Access::Ssh {
-            target,
-            user,
-            public_key,
-        } = &req.access
-        else {
-            return Err(RequestError::Rejected(
-                "api access is not supported yet".to_owned(),
-            ));
+        let dedupe_key = match &req.access {
+            Access::Ssh {
+                target,
+                user,
+                public_key,
+            } => {
+                check_ed25519(public_key)?;
+                let policy = self.backend.ssh_target(target).await?;
+                if !policy.users.contains(user) {
+                    return Err(RequestError::Rejected(format!(
+                        "user {user} not allowed for target {target}"
+                    )));
+                }
+                check_window(req.window, policy.max_window, &format!("target {target}"))
+                    .map_err(RequestError::Rejected)?;
+                if policy.mode != SshMode::Cert {
+                    return Err(RequestError::Rejected(format!(
+                        "target {target}: relay mode not supported yet"
+                    )));
+                }
+                format!("{agent}|ssh|{target}")
+            }
+            Access::Api { secret } => {
+                let policy = self
+                    .backend
+                    .api_secret(secret)
+                    .await
+                    .map_err(RequestError::from_secret_lookup)?;
+                check_window(req.window, policy.max_window, &format!("secret {secret}"))
+                    .map_err(RequestError::Rejected)?;
+                format!("{agent}|api|{secret}")
+            }
         };
-        check_ed25519(public_key)?;
-        let policy = self.backend.ssh_target(target).await?;
-        if !policy.users.contains(user) {
-            return Err(RequestError::Rejected(format!(
-                "user {user} not allowed for target {target}"
-            )));
-        }
-        if req.window > policy.max_window {
-            return Err(RequestError::Rejected(format!(
-                "window {} exceeds max {} for target {target}",
-                window_label(req.window),
-                window_label(policy.max_window)
-            )));
-        }
-        if policy.mode != SshMode::Cert {
-            return Err(RequestError::Rejected(format!(
-                "target {target}: relay mode not supported yet"
-            )));
-        }
-
-        let dedupe_key = format!("{agent}|ssh|{target}");
         for _ in 0..INSERT_ATTEMPTS {
             // A stale pending row past its expiry must not hold the slot.
             self.expire_due(Scope::Dedupe(dedupe_key.clone())).await?;
@@ -558,8 +632,8 @@ impl Requests {
         .ok_or(RequestError::NotFound)
     }
 
-    /// The pending request behind an approval token, with the target's
-    /// current policy.
+    /// The pending request behind an approval token, with the current
+    /// policy of its target or secret.
     ///
     /// # Errors
     /// [`RequestError::NotFound`] if the token is unknown or its request is
@@ -576,17 +650,20 @@ impl Requests {
         .ok_or(RequestError::NotFound)?;
         let body: String = row.try_get("body")?;
         let request: CreateRequest = serde_json::from_str(&body)?;
-        let Access::Ssh { target, .. } = &request.access else {
-            return Err(RequestError::Rejected(
-                "api access is not supported yet".to_owned(),
-            ));
+        let destination = match &request.access {
+            Access::Ssh { target, .. } => Destination::Ssh(self.backend.ssh_target(target).await?),
+            Access::Api { secret } => Destination::Api(
+                self.backend
+                    .api_secret(secret)
+                    .await
+                    .map_err(RequestError::from_secret_lookup)?,
+            ),
         };
-        let target = self.backend.ssh_target(target).await?;
         Ok(PendingView {
             id: parse(&row, "id")?,
             agent: parse(&row, "agent")?,
             fingerprint: parse(&row, "fingerprint")?,
-            target,
+            destination,
             expires_at: row.try_get("expires_at")?,
             request,
         })
@@ -847,18 +924,12 @@ impl Requests {
                 let body: String = row.try_get("body")?;
                 let view: String = row.try_get("view")?;
                 let view: GrantView = serde_json::from_str(&view)?;
-                let GrantAccess::Ssh(ssh) = view.access else {
-                    return Err(RequestError::Rejected(
-                        "api access is not supported yet".to_owned(),
-                    ));
-                };
                 Ok(ActiveGrant {
                     grant_id: parse(row, "id")?,
                     agent: parse(row, "agent")?,
                     fingerprint: parse(row, "fingerprint")?,
                     request: serde_json::from_str(&body)?,
-                    host: ssh.host,
-                    port: ssh.port,
+                    access: view.access,
                     not_after: row.try_get("not_after")?,
                 })
             })
@@ -1140,6 +1211,19 @@ where
 {
     let raw: String = row.try_get(column)?;
     T::try_from(raw).map_err(|e| RequestError::Corrupt(format!("column {column}: {e}")))
+}
+
+/// Refuse a `window` longer than `max`, the limit of `subject` (`target pi`,
+/// `secret github`).
+fn check_window(window: Window, max: Window, subject: &str) -> Result<(), String> {
+    if window > max {
+        return Err(format!(
+            "window {} exceeds max {} for {subject}",
+            window_label(window),
+            window_label(max),
+        ));
+    }
+    Ok(())
 }
 
 fn check_ed25519(public_key: &str) -> Result<(), RequestError> {

@@ -684,6 +684,21 @@ impl TestBroker {
         }
     }
 
+    /// A request to use API secret `secret`.
+    ///
+    /// # Panics
+    /// If `secret` or `goal` is not valid.
+    #[must_use]
+    pub fn api_request(secret: &str, goal: &str, window: Window) -> CreateRequest {
+        CreateRequest {
+            goal: Goal::try_from(goal.to_owned()).expect("valid goal"),
+            access: Access::Api {
+                secret: SecretName::try_from(secret.to_owned()).expect("valid secret name"),
+            },
+            window,
+        }
+    }
+
     /// Create a request as `agent` and return it with the approval token
     /// from its doorbell.
     ///
