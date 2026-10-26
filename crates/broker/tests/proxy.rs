@@ -376,6 +376,34 @@ async fn policy_change_after_approval_is_refused() {
     assert_eq!(s.upstream.received().len(), 1);
 }
 
+/// An item edited between two reads must not mix the old policy with the
+/// new credential: the policy that is checked and the value that is sent
+/// come from one read.
+#[tokio::test]
+async fn policy_and_value_come_from_one_read() {
+    let s = setup().await;
+    let elsewhere = HttpsUpstream::start().await;
+    s.broker
+        .backend
+        .set_api_secret_after_next_read(elsewhere.policy("svc"), ROTATED);
+    let (proxied, _) = proxied(&get(&s, "/v1/hello").await);
+    assert_eq!(proxied.status, 200);
+    let received = s.upstream.received();
+    assert_eq!(received.len(), 1);
+    assert_eq!(
+        received[0].headers["authorization"],
+        format!("Bearer {SECRET}")
+    );
+
+    // The edit is seen whole by the next call: the origin moved, so the
+    // grant no longer holds and nothing is sent anywhere.
+    let resp = get(&s, "/v1/hello").await;
+    assert_eq!(resp.status, StatusCode::CONFLICT, "{}", resp.body);
+    assert_eq!(resp.body, POLICY_CHANGED);
+    assert_eq!(s.upstream.received().len(), 1);
+    assert!(elsewhere.received().is_empty());
+}
+
 #[tokio::test]
 async fn rotated_credential_is_used() {
     let s = setup().await;

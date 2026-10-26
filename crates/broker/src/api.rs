@@ -392,9 +392,9 @@ async fn call(
     req: &ProxyRequest,
     record: &mut CallRecord,
 ) -> Result<ProxyResponse, Failure> {
-    let backend = &state.backend;
-    let policy = backend
-        .api_secret(&grant.secret)
+    let (policy, secret) = state
+        .backend
+        .api_secret_with_value(&grant.secret)
         .await
         .map_err(policy_failure)?;
     if policy.grant() != *grant {
@@ -403,10 +403,6 @@ async fn call(
     let limits = state.config.proxy;
     let prepared = proxy::check(&policy, req, limits.max_request_bytes)
         .map_err(|refusal| Failure::Client(StatusCode::BAD_REQUEST, refusal.to_string()))?;
-    let secret = backend
-        .api_secret_value(&grant.secret)
-        .await
-        .map_err(policy_failure)?;
     let needles = Needles::new(secret.expose(), &policy.format.render(secret.expose()));
     let started = AuditEvent::ProxyCallStarted {
         grant_id: grant_id.clone(),

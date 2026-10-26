@@ -174,7 +174,7 @@ pub fn is_reserved_header(name: &HeaderName) -> bool {
 
 /// An API secret as defined by its 1Password item: where the broker may send
 /// it and how. The secret value itself is not part of it; see
-/// [`SecretBackend::api_secret_value`].
+/// [`SecretBackend::api_secret_with_value`].
 #[derive(Debug, Clone)]
 pub struct ApiSecretPolicy {
     /// Secret name (the item title).
@@ -372,12 +372,17 @@ pub trait SecretBackend: Send + Sync + 'static {
     /// [`PolicyError::Unavailable`].
     async fn api_secret(&self, name: &SecretName) -> Result<ApiSecretPolicy, PolicyError>;
 
-    /// Fetch an API secret's value, only when a call is about to be made.
-    /// The item is validated exactly as by [`SecretBackend::api_secret`].
+    /// Look up an API secret's policy and value in one read of its item,
+    /// only when a call is about to be made, so the value always belongs to
+    /// the policy it is checked against. The item is validated exactly as
+    /// by [`SecretBackend::api_secret`].
     ///
     /// # Errors
     /// As [`SecretBackend::api_secret`].
-    async fn api_secret_value(&self, name: &SecretName) -> Result<SecretValue, PolicyError>;
+    async fn api_secret_with_value(
+        &self,
+        name: &SecretName,
+    ) -> Result<(ApiSecretPolicy, SecretValue), PolicyError>;
 }
 
 #[cfg(test)]

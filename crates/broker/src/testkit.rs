@@ -194,6 +194,7 @@ pub type SoftAuthenticator = WebauthnAuthenticator<SoftPasskey>;
 pub struct FakeBackend {
     targets: Mutex<HashMap<String, SshTarget>>,
     api_secrets: Mutex<HashMap<String, (ApiSecretPolicy, Zeroizing<String>)>>,
+    api_swap: Mutex<Option<(ApiSecretPolicy, Zeroizing<String>)>>,
     ca: PrivateKey,
     target_outage: Mutex<Option<String>>,
     ca_outage: Mutex<Option<String>>,
@@ -210,6 +211,7 @@ impl FakeBackend {
         Self {
             targets: Mutex::new(HashMap::from([(pi.name.as_str().to_owned(), pi)])),
             api_secrets: Mutex::new(HashMap::new()),
+            api_swap: Mutex::new(None),
             ca: PrivateKey::random(&mut OsRng, Algorithm::Ed25519).expect("CA key generation"),
             target_outage: Mutex::new(None),
             ca_outage: Mutex::new(None),
@@ -302,17 +304,34 @@ impl FakeBackend {
             );
     }
 
+    /// Add or replace an API secret and its value right after the next API
+    /// secret read, as if the item were edited in 1Password between two
+    /// reads.
+    ///
+    /// # Panics
+    /// If the lock is poisoned.
+    pub fn set_api_secret_after_next_read(&self, policy: ApiSecretPolicy, value: &str) {
+        *self.api_swap.lock().expect("api swap lock poisoned") =
+            Some((policy, Zeroizing::new(value.to_owned())));
+    }
+
+    /// Read API secret `name` through `pick`, then apply any change queued
+    /// by [`FakeBackend::set_api_secret_after_next_read`].
     fn api_entry<T>(
         &self,
         name: &SecretName,
         pick: impl FnOnce(&(ApiSecretPolicy, Zeroizing<String>)) -> T,
     ) -> Result<T, PolicyError> {
-        self.api_secrets
-            .lock()
-            .map_err(|_| PolicyError::Unavailable("fake backend lock poisoned".to_owned()))?
+        let poisoned = || PolicyError::Unavailable("fake backend lock poisoned".to_owned());
+        let mut secrets = self.api_secrets.lock().map_err(|_| poisoned())?;
+        let picked = secrets
             .get(name.as_str())
             .map(pick)
-            .ok_or_else(|| PolicyError::UnknownSecret(name.as_str().to_owned()))
+            .ok_or_else(|| PolicyError::UnknownSecret(name.as_str().to_owned()));
+        if let Some((policy, value)) = self.api_swap.lock().map_err(|_| poisoned())?.take() {
+            secrets.insert(policy.name.as_str().to_owned(), (policy, value));
+        }
+        picked
     }
 
     /// The CA's public key.
@@ -378,8 +397,13 @@ impl SecretBackend for FakeBackend {
         self.api_entry(name, |(policy, _)| policy.clone())
     }
 
-    async fn api_secret_value(&self, name: &SecretName) -> Result<SecretValue, PolicyError> {
-        self.api_entry(name, |(_, value)| SecretValue::new(value.clone()))
+    async fn api_secret_with_value(
+        &self,
+        name: &SecretName,
+    ) -> Result<(ApiSecretPolicy, SecretValue), PolicyError> {
+        self.api_entry(name, |(policy, value)| {
+            (policy.clone(), SecretValue::new(value.clone()))
+        })
     }
 }
 

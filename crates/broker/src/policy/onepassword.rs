@@ -353,8 +353,11 @@ impl SecretBackend for OnePasswordConnect {
         self.api_item(name).await.map(|(policy, _value)| policy)
     }
 
-    async fn api_secret_value(&self, name: &SecretName) -> Result<SecretValue, PolicyError> {
-        self.api_item(name).await.map(|(_policy, value)| value)
+    async fn api_secret_with_value(
+        &self,
+        name: &SecretName,
+    ) -> Result<(ApiSecretPolicy, SecretValue), PolicyError> {
+        self.api_item(name).await
     }
 }
 

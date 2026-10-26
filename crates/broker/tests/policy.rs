@@ -612,13 +612,13 @@ async fn parses_api_secret_with_defaults() {
     assert_eq!(p.path_prefix, "/v1/repos/");
     assert_eq!(p.ca_pem.as_deref(), Some(THROWAWAY_CA_PEM.trim()));
 
-    // The value comes from the same item.
+    // The value comes with the policy, from the same item.
     let server = api_server(&api_item()).await;
-    let value = backend(&server)
-        .api_secret_value(&secret("github"))
-        .await
-        .unwrap();
+    let b = backend(&server);
+    let policy = b.api_secret(&secret("github")).await.unwrap();
+    let (with_value, value) = b.api_secret_with_value(&secret("github")).await.unwrap();
     assert_eq!(value.expose(), CREDENTIAL);
+    assert_eq!(with_value.grant(), policy.grant());
 }
 
 #[tokio::test]
@@ -632,7 +632,7 @@ async fn unknown_or_untagged_api_secret_not_found() {
             matches!(&err, PolicyError::UnknownSecret(n) if n == name),
             "{err:?}"
         );
-        let err = b.api_secret_value(&secret(name)).await.unwrap_err();
+        let err = b.api_secret_with_value(&secret(name)).await.unwrap_err();
         assert!(matches!(&err, PolicyError::UnknownSecret(_)), "{err:?}");
     }
 }
@@ -803,7 +803,7 @@ async fn missing_credential_or_max_window_is_invalid() {
     set_field(&mut item, "max_window", None);
     let server = api_server(&item).await;
     let err = backend(&server)
-        .api_secret_value(&secret("github"))
+        .api_secret_with_value(&secret("github"))
         .await
         .unwrap_err();
     assert!(
@@ -835,7 +835,7 @@ async fn short_credential_is_invalid() {
     let server = api_server(&item).await;
     let b = backend(&server);
     b.api_secret(&secret("github")).await.unwrap();
-    let value = b.api_secret_value(&secret("github")).await.unwrap();
+    let (_, value) = b.api_secret_with_value(&secret("github")).await.unwrap();
     assert_eq!(value.expose(), "twelve-chars");
 }
 
@@ -875,7 +875,10 @@ async fn value_fetch_does_not_echo_on_decode_error() {
     ]);
     let server = api_server(&item).await;
     let b = backend(&server);
-    let err = b.api_secret_value(&secret("github")).await.unwrap_err();
+    let err = b
+        .api_secret_with_value(&secret("github"))
+        .await
+        .unwrap_err();
     assert!(matches!(err, PolicyError::Unavailable(_)), "{err:?}");
     assert!(!err.to_string().contains("TOP-SECRET-MARKER"), "{err}");
     let err = b.api_secret(&secret("github")).await.unwrap_err();
@@ -885,7 +888,7 @@ async fn value_fetch_does_not_echo_on_decode_error() {
     item["fields"] = json!("TOP-SECRET-MARKER");
     let server = api_server(&item).await;
     let err = backend(&server)
-        .api_secret_value(&secret("github"))
+        .api_secret_with_value(&secret("github"))
         .await
         .unwrap_err();
     assert!(matches!(err, PolicyError::Unavailable(_)), "{err:?}");
@@ -896,8 +899,7 @@ async fn value_fetch_does_not_echo_on_decode_error() {
 async fn api_secret_debug_redacted() {
     let server = api_server(&api_item()).await;
     let b = backend(&server);
-    let policy = b.api_secret(&secret("github")).await.unwrap();
-    let value = b.api_secret_value(&secret("github")).await.unwrap();
+    let (policy, value) = b.api_secret_with_value(&secret("github")).await.unwrap();
     assert_eq!(format!("{value:?}"), "SecretValue(<redacted>)");
     let shown = format!("{policy:?} {:?}", policy.grant());
     assert!(!shown.contains(CREDENTIAL), "{shown}");
@@ -908,14 +910,22 @@ async fn api_secret_debug_redacted() {
 async fn api_secret_reads_fresh_item_every_time() {
     let server = api_server(&api_item()).await;
     let b = backend(&server);
+    let item_fetches = || async {
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| r.url.path() == format!("/v1/vaults/{VAULT_ID}/items/{API_ID}"))
+            .count()
+    };
     b.api_secret(&secret("github")).await.unwrap();
-    b.api_secret_value(&secret("github")).await.unwrap();
-    let requests = server.received_requests().await.unwrap();
-    let item_fetches = requests
-        .iter()
-        .filter(|r| r.url.path() == format!("/v1/vaults/{VAULT_ID}/items/{API_ID}"))
-        .count();
-    assert_eq!(item_fetches, 2);
+    assert_eq!(item_fetches().await, 1);
+    b.api_secret(&secret("github")).await.unwrap();
+    assert_eq!(item_fetches().await, 2);
+    // Policy and value come from a single fetch of the item.
+    b.api_secret_with_value(&secret("github")).await.unwrap();
+    assert_eq!(item_fetches().await, 3);
 }
 
 #[tokio::test]
@@ -953,11 +963,12 @@ async fn fake_backend_serves_api_secrets() {
     let got = fake.api_secret(&secret("github")).await.unwrap();
     assert_eq!(got.destination_digest(), policy.destination_digest());
     assert_eq!(got.grant(), policy.grant());
-    let value = fake.api_secret_value(&secret("github")).await.unwrap();
+    let (with_value, value) = fake.api_secret_with_value(&secret("github")).await.unwrap();
+    assert_eq!(with_value.grant(), policy.grant());
     assert_eq!(value.expose(), CREDENTIAL);
 
     // Rotation replaces the value.
     fake.set_api_secret(policy, "rotated-credential-value");
-    let value = fake.api_secret_value(&secret("github")).await.unwrap();
+    let (_, value) = fake.api_secret_with_value(&secret("github")).await.unwrap();
     assert_eq!(value.expose(), "rotated-credential-value");
 }
