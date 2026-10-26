@@ -11,18 +11,29 @@ use zeroize::Zeroizing;
 /// What every redacted region is replaced with.
 pub const MARKER: &[u8] = b"[REDACTED]";
 
-/// Shortest base64 middle part kept as a needle; shorter ones would match
-/// unrelated base64 text too often.
+/// Shortest aligned base64 needle kept; shorter ones would match unrelated
+/// base64 text too often.
 const MIN_MIDDLE: usize = 8;
+
+/// Most digits accepted in an HTML numeric character reference (leading
+/// zeros included, as in `&#039;`).
+const MAX_ENTITY_DIGITS: usize = 7;
 
 /// The secret and the injected header value in the forms a response may
 /// carry them, matched byte by byte with per-byte escapes (see [`redact`]).
 ///
-/// The base forms of each value are: the value itself; its base64 in the
-/// standard and URL-safe alphabets, padded and unpadded; and, for each of the
-/// three byte alignments the value can have inside a larger base64-encoded
-/// blob, the base64 characters that encode only the value's bytes (dropped
-/// when shorter than 8 characters). Wiped on drop; never printed.
+/// The base forms of each value are:
+/// - the value itself;
+/// - its base64 in the standard and URL-safe alphabets, padded and unpadded;
+/// - for each of the three byte positions the value can start at inside a
+///   3-byte group of a larger base64-encoded blob, in both alphabets, every
+///   base64 character fully determined by the value's bytes (dropped when
+///   shorter than 8 characters). Only the one character on each side that
+///   mixes value bits with neighbouring bytes is left: at most 4 bits of
+///   the value per side (2 or 4 bits at the start, 2 or 4 at the end,
+///   depending on alignment and length).
+///
+/// Wiped on drop; never printed.
 pub struct Needles {
     list: Vec<Zeroizing<Vec<u8>>>,
 }
@@ -45,17 +56,11 @@ impl Needles {
                 list.push(encode(engine, bytes));
             }
             for engine in [&STANDARD_NO_PAD, &URL_SAFE_NO_PAD] {
-                for offset in 0..3 {
-                    // Skip to the first byte that starts a 3-byte group of
-                    // the blob, and keep whole groups only: their characters
-                    // depend on nothing but the value.
-                    let skip = (3 - offset) % 3;
-                    let Some(rest) = bytes.get(skip..) else {
-                        continue;
-                    };
-                    let middle = encode(engine, &rest[..rest.len() / 3 * 3]);
-                    if middle.len() >= MIN_MIDDLE {
-                        list.push(middle);
+                for position in 0..3 {
+                    if let Some(aligned) = aligned_base64(engine, bytes, position)
+                        && aligned.len() >= MIN_MIDDLE
+                    {
+                        list.push(aligned);
                     }
                 }
             }
@@ -81,6 +86,33 @@ fn encode(engine: &GeneralPurpose, bytes: &[u8]) -> Zeroizing<Vec<u8>> {
     Zeroizing::new(engine.encode(bytes).into_bytes())
 }
 
+/// The base64 characters fully determined by `bytes` when they start at
+/// byte `position` (0, 1 or 2) of a 3-byte group in a larger blob.
+///
+/// A group `b0 b1 b2` encodes as `c0 c1 c2 c3`, where `c0` holds 6 bits of
+/// `b0`, `c1` 2 of `b0` and 4 of `b1`, `c2` 4 of `b1` and 2 of `b2`, and
+/// `c3` 6 of `b2`. So at the head, starting at `b1` keeps `c2 c3` and
+/// starting at `b2` keeps `c3`; at the tail, ending after `b0` keeps `c0`
+/// and ending after `b1` keeps `c0 c1`. The value is placed in a zero-filled
+/// buffer of whole groups, encoded, and the mixed characters cut off.
+fn aligned_base64(
+    engine: &GeneralPurpose,
+    bytes: &[u8],
+    position: usize,
+) -> Option<Zeroizing<Vec<u8>>> {
+    let end = position + bytes.len();
+    let mut blob = Zeroizing::new(vec![0; end.div_ceil(3) * 3]);
+    blob.get_mut(position..end)?.copy_from_slice(bytes);
+    let chars = encode(engine, &blob);
+    let head = if position == 0 { 0 } else { position + 1 };
+    let tail = match end % 3 {
+        0 => 0,
+        rest => 4 - rest,
+    };
+    let kept = chars.get(head..chars.len().checked_sub(tail)?)?;
+    Some(Zeroizing::new(kept.to_vec()))
+}
+
 impl fmt::Debug for Needles {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Needles({} redacted)", self.list.len())
@@ -95,17 +127,62 @@ struct Scratch {
     next: Vec<usize>,
 }
 
-/// Whether `data[at..]` spells needle byte `b`, and in how many bytes, in
-/// each of the accepted forms: the byte itself (or `+` for a space), `%hh`,
-/// `\/` for `/`, and `\u00hh` (hex in either case).
-fn spellings(b: u8, rest: &[u8]) -> [Option<usize>; 4] {
+/// Whether `rest` starts with a spelling of needle byte `b`, and in how
+/// many bytes, for each accepted form (see [`redact`] for the list).
+fn spellings(b: u8, rest: &[u8]) -> [Option<usize>; 6] {
     let first = rest.first().copied();
+    let json_short = match (b, rest.get(..2)) {
+        (b'/', Some(b"\\/")) | (b'"', Some(b"\\\"")) | (b'\\', Some(b"\\\\")) => Some(2),
+        _ => None,
+    };
     [
         (first == Some(b) || (b == b' ' && first == Some(b'+'))).then_some(1),
         (first == Some(b'%') && hex_byte(rest.get(1..3)) == Some(b)).then_some(3),
-        (b == b'/' && rest.starts_with(b"\\/")).then_some(2),
+        json_short,
         (rest.starts_with(b"\\u00") && hex_byte(rest.get(4..6)) == Some(b)).then_some(6),
+        html_named(b, rest),
+        html_numeric(b, rest),
     ]
+}
+
+/// `&amp;`, `&quot;`, `&lt;`, `&gt;` or `&apos;` for the byte they name.
+fn html_named(b: u8, rest: &[u8]) -> Option<usize> {
+    let name: &[u8] = match b {
+        b'&' => b"&amp;",
+        b'"' => b"&quot;",
+        b'<' => b"&lt;",
+        b'>' => b"&gt;",
+        b'\'' => b"&apos;",
+        _ => return None,
+    };
+    rest.starts_with(name).then_some(name.len())
+}
+
+/// `&#NN;` (decimal) or `&#xHH;` / `&#XHH;` (hex, either case) for a
+/// printable ASCII byte, with up to [`MAX_ENTITY_DIGITS`] digits.
+fn html_numeric(b: u8, rest: &[u8]) -> Option<usize> {
+    if !(b' '..=b'~').contains(&b) {
+        return None;
+    }
+    let body = rest.strip_prefix(b"&#")?;
+    let (radix, marker_len) = match body.first() {
+        Some(b'x' | b'X') => (16, 1),
+        _ => (10, 0),
+    };
+    let digits = body.get(marker_len..)?;
+    let count = digits
+        .iter()
+        .take(MAX_ENTITY_DIGITS)
+        .take_while(|d| char::from(**d).is_digit(radix))
+        .count();
+    if count == 0 || digits.get(count) != Some(&b';') {
+        return None;
+    }
+    let value = digits[..count]
+        .iter()
+        .filter_map(|d| char::from(*d).to_digit(radix))
+        .fold(0u32, |acc, d| acc * radix + d);
+    (value == u32::from(b)).then_some(2 + marker_len + count + 1)
 }
 
 /// The byte two hex digits (either case) stand for.
@@ -156,10 +233,19 @@ fn match_len(needle: &[u8], data: &[u8], scratch: &mut Scratch) -> Option<usize>
 /// `data` with every occurrence of every needle replaced by [`MARKER`], and
 /// the number of markers written.
 ///
-/// Each needle byte may appear as itself, as `%hh` (hex in either case), as
-/// `+` for a space, as `\/` for `/` and as `\u00hh`, mixed freely within one
-/// occurrence: this covers percent-encoding by any encoder, form encoding,
-/// JSON escaping and percent-encoded base64.
+/// Needles are the base forms listed on [`Needles`]: the raw secret and
+/// header value, their base64 (standard and URL-safe, padded and unpadded)
+/// and their alignment-independent base64 inside a larger blob. Each needle
+/// byte may appear in any of these spellings, mixed freely within one
+/// occurrence, and nothing else:
+/// - the byte itself;
+/// - percent-encoded `%hh`, hex in either case;
+/// - `+` for a space;
+/// - JSON `\/` for `/`, `\"` for `"`, `\\` for `\`, and `\u00hh` (hex in
+///   either case) for any byte;
+/// - HTML `&amp;`, `&quot;`, `&lt;`, `&gt;`, `&apos;` for the byte they name,
+///   and `&#NN;` / `&#xHH;` (hex in either case, up to 7 digits) for any
+///   printable ASCII byte.
 ///
 /// Every byte covered by any occurrence of any needle is removed: occurrences
 /// that overlap (a needle inside a longer one, or a periodic secret
@@ -209,7 +295,6 @@ pub fn redact(data: &[u8], needles: &Needles) -> (Vec<u8>, u32) {
 #[cfg(test)]
 mod tests {
     use base64::Engine as _;
-    use base64::engine::GeneralPurpose;
     use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD};
     use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
     use proptest::collection::vec;
@@ -221,6 +306,10 @@ mod tests {
 
     /// Has `/`, space, `<>&~` raw, and `+`, `/`, `=` in its standard base64.
     const SECRET: &str = "s3cr3t/t0ken+with=odd&chars ~<>?~~>?>";
+
+    /// Has the characters JSON and HTML escape by name: `"`, `\`, `'`, `<`,
+    /// `&`, `>`, `/`.
+    const QUOTED: &str = "abc\"def\\ghij12'<&>/ x";
 
     fn contains(haystack: &[u8], needle: &[u8]) -> bool {
         haystack.windows(needle.len()).any(|w| w == needle)
@@ -301,21 +390,30 @@ mod tests {
         ]
     }
 
-    /// `form` with each byte written as `choices[i] % 5` picks: raw, `%HH`,
-    /// `%hh`, `\u00hh`, or `+`/`\/` for space/slash (`\u00HH` otherwise).
+    /// `form` with each byte written as `choices[i] % 7` picks: raw, `%HH`,
+    /// `%hh`, `\u00hh`, a named escape (`+` for space, JSON `\/ \" \\`, HTML
+    /// `&amp; &lt; &gt; &#39;`; `\u00HH` otherwise), `&#NN;` or `&#xHH;`.
     fn encode_per_byte(form: &[u8], choices: &[u8]) -> Vec<u8> {
         let mut out = Vec::new();
         for (i, &b) in form.iter().enumerate() {
-            let piece = match choices.get(i).copied().unwrap_or(0) % 5 {
+            let piece = match choices.get(i).copied().unwrap_or(0) % 7 {
                 0 => vec![b],
                 1 => format!("%{b:02X}").into_bytes(),
                 2 => format!("%{b:02x}").into_bytes(),
                 3 => format!("\\u00{b:02x}").into_bytes(),
-                _ => match b {
+                4 => match b {
                     b' ' => b"+".to_vec(),
                     b'/' => b"\\/".to_vec(),
+                    b'"' => b"\\\"".to_vec(),
+                    b'\\' => b"\\\\".to_vec(),
+                    b'&' => b"&amp;".to_vec(),
+                    b'<' => b"&lt;".to_vec(),
+                    b'>' => b"&gt;".to_vec(),
+                    b'\'' => b"&#39;".to_vec(),
                     _ => format!("\\u00{b:02X}").into_bytes(),
                 },
+                5 => format!("&#{b};").into_bytes(),
+                _ => format!("&#x{b:X};").into_bytes(),
             };
             out.extend_from_slice(&piece);
         }
@@ -350,6 +448,45 @@ mod tests {
                     .replace('&', "\\u0026")
                     .replace('+', "\\u002b");
                 assert_redacted_once(&needles, go.as_bytes());
+            }
+        }
+        // `"` as `\"` and `\` as `\\` (every JSON encoder).
+        let header = format!("Bearer {QUOTED}");
+        let needles = Needles::new(QUOTED, &header);
+        for value in [QUOTED, header.as_str()] {
+            let json = value.replace('\\', "\\\\").replace('"', "\\\"");
+            assert_redacted_once(&needles, json.as_bytes());
+            assert_redacted_once(&needles, json.replace('/', "\\/").as_bytes());
+        }
+    }
+
+    /// `value` with every byte written by `spell`.
+    fn per_byte(value: &str, spell: fn(u8) -> String) -> String {
+        let mut out = String::new();
+        for b in value.bytes() {
+            out.push_str(&spell(b));
+        }
+        out
+    }
+
+    #[test]
+    fn redact_html_entity_forms() {
+        let header = format!("Bearer {QUOTED}");
+        let needles = Needles::new(QUOTED, &header);
+        for value in [QUOTED, header.as_str()] {
+            // `&` first, so the other entities are not escaped again.
+            let named = value
+                .replace('&', "&amp;")
+                .replace('"', "&quot;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;")
+                .replace('\'', "&#39;");
+            let apos = value.replace('\'', "&apos;").replace('"', "&#034;");
+            let decimal = per_byte(value, |b| format!("&#{b};"));
+            let hex_lower = per_byte(value, |b| format!("&#x{b:x};"));
+            let hex_upper = per_byte(value, |b| format!("&#X{b:02X};"));
+            for enc in [named, apos, decimal, hex_lower, hex_upper] {
+                assert_redacted_once(&needles, enc.as_bytes());
             }
         }
     }
@@ -388,30 +525,44 @@ mod tests {
         }
     }
 
-    /// The base64 characters that encode only `value`'s bytes when it sits
-    /// at byte offset `offset` (mod 3) of a larger blob.
-    fn aligned_middle(value: &[u8], offset: usize, engine: &GeneralPurpose) -> String {
-        let skip = (3 - offset % 3) % 3;
-        let whole = (value.len() - skip) / 3 * 3;
-        engine.encode(&value[skip..skip + whole])
-    }
-
+    /// After redacting a base64 blob that embeds the value at every byte
+    /// alignment, with and without trailing bytes and padding, no byte of
+    /// the value can be decoded from the characters left on either side of
+    /// the marker: those characters determine only bytes outside the value.
     #[test]
     fn redact_base64_at_any_alignment() {
         let header = format!("Bearer {SECRET}");
         let needles = Needles::new(SECRET, &header);
         for value in [SECRET, header.as_str()] {
-            for lead in 0..7 {
-                let blob = [vec![b'{'; lead], value.as_bytes().to_vec(), b"}".to_vec()].concat();
-                for (engine, plain) in
-                    [(&STANDARD, &STANDARD_NO_PAD), (&URL_SAFE, &URL_SAFE_NO_PAD)]
-                {
-                    let data = format!("token={}", engine.encode(&blob));
-                    let (out, count) = redact(data.as_bytes(), &needles);
-                    let middle = aligned_middle(value.as_bytes(), lead, plain);
-                    assert!(count >= 1, "{lead} {data}");
-                    assert!(!contains(&out, middle.as_bytes()), "{lead} {data}");
-                    assert!(out.starts_with(b"token="));
+            for lead in 0..6 {
+                for trail in 0..4 {
+                    let blob = [
+                        vec![b'{'; lead],
+                        value.as_bytes().to_vec(),
+                        vec![b'}'; trail],
+                    ]
+                    .concat();
+                    for engine in [&STANDARD, &STANDARD_NO_PAD, &URL_SAFE, &URL_SAFE_NO_PAD] {
+                        let encoded = engine.encode(&blob);
+                        let data = format!("token={encoded}").into_bytes();
+                        let (out, count) = redact(&data, &needles);
+                        let ctx = format!("lead {lead} trail {trail}: {encoded}");
+                        assert_eq!(count, 1, "{ctx}");
+                        let start = out.windows(MARKER.len()).position(|w| w == MARKER).unwrap();
+                        let end = data.len() - (out.len() - start - MARKER.len());
+                        assert!(start >= "token=".len(), "{ctx}");
+                        // Characters kept before the marker, and the index of
+                        // the first one kept after it, in `encoded`.
+                        let (head_chars, tail_from) = (start - 6, end - 6);
+                        // Bytes of the blob fully determined by them.
+                        let head_bytes = head_chars * 6 / 8;
+                        let tail_first_byte = (tail_from * 6).div_ceil(8);
+                        assert!(head_bytes <= lead, "decodable secret prefix: {ctx}");
+                        assert!(
+                            tail_first_byte >= lead + value.len(),
+                            "decodable secret suffix: {ctx}"
+                        );
+                    }
                 }
             }
         }
@@ -462,7 +613,7 @@ mod tests {
 
         #[test]
         fn redact_never_changes_data_without_secret(
-            secret in "[A-Za-z0-9!$&'()*+,./:;=?@_~ -]{12,40}",
+            secret in "[A-Za-z0-9!$&'()*+,./:;=?@_~ \"\\\\-]{12,40}",
             data in vec(any::<u8>(), 0..512),
         ) {
             let header = format!("Bearer {secret}");
@@ -479,7 +630,7 @@ mod tests {
 
         #[test]
         fn redact_removes_secret_anywhere(
-            secret in "[A-Za-z0-9!$&'()*+,./:;=?@_~ -]{12,40}",
+            secret in "[A-Za-z0-9!$&'()*+,./:;=?@_~ \"\\\\-]{12,40}",
             prefix in vec(any::<u8>(), 0..64),
             suffix in vec(any::<u8>(), 0..64),
         ) {
@@ -499,7 +650,7 @@ mod tests {
 
         #[test]
         fn redact_removes_per_byte_mixed_encodings(
-            secret in "[A-Za-z0-9!$&'()*+,./:;=?@_~ <>-]{12,40}",
+            secret in "[A-Za-z0-9!$&'()*+,./:;=?@_~ <>\"\\\\-]{12,40}",
             choices in vec(any::<u8>(), 64..=64),
             prefix in vec(any::<u8>(), 0..32),
             suffix in vec(any::<u8>(), 0..32),
