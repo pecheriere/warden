@@ -254,10 +254,44 @@ struct Refusals {
 struct Conn {
     logged_in: watch::Sender<bool>,
     refusals: Mutex<Refusals>,
-    relayed: Mutex<Option<JoinHandle<()>>>,
+    relayed: Mutex<Relayed>,
+}
+
+/// A connection's session task, as its connection task sees it.
+#[derive(Debug, Default)]
+enum Relayed {
+    /// No session started (yet).
+    #[default]
+    None,
+    /// A session task, which records the session's end.
+    Running(JoinHandle<()>),
+    /// The connection task is done waiting: no session may start now.
+    Closed,
 }
 
 impl Conn {
+    /// Start a session task with `spawn`, unless the connection task has
+    /// already stopped waiting for one (then nothing is spawned and `false`
+    /// is returned). Under one lock with [`Conn::close`], so every task
+    /// that is started is awaited by a stopping relay.
+    fn register(&self, spawn: impl FnOnce() -> JoinHandle<()>) -> bool {
+        let mut relayed = self.relayed.lock().unwrap_or_else(PoisonError::into_inner);
+        if matches!(*relayed, Relayed::Closed) {
+            return false;
+        }
+        *relayed = Relayed::Running(spawn());
+        true
+    }
+
+    /// Stop accepting session tasks; the one running, if any, to await.
+    fn close(&self) -> Option<JoinHandle<()>> {
+        let mut relayed = self.relayed.lock().unwrap_or_else(PoisonError::into_inner);
+        match std::mem::replace(&mut *relayed, Relayed::Closed) {
+            Relayed::Running(task) => Some(task),
+            Relayed::None | Relayed::Closed => None,
+        }
+    }
+
     fn refused(&self, user: &str) {
         let mut refusals = self.refusals.lock().unwrap_or_else(PoisonError::into_inner);
         refusals.user = Some(user.to_owned());
@@ -280,7 +314,7 @@ async fn connection(
     let conn = Arc::new(Conn {
         logged_in,
         refusals: Mutex::new(Refusals::default()),
-        relayed: Mutex::new(None),
+        relayed: Mutex::new(Relayed::None),
     });
     // A second handle on the socket, to cut the connection off if the peer
     // ignores the relay hanging up on it, or its event loop is stuck.
@@ -349,12 +383,9 @@ async fn connection(
 
     // The relayed session records its own end; wait for it, so a stopping
     // relay returns only once every session is recorded.
-    let relayed = conn
-        .relayed
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .take();
-    if let Some(relayed) = relayed
+    // A handler still running (its connection cut but not yet gone) can no
+    // longer start one after this.
+    if let Some(relayed) = conn.close()
         && let Err(e) = relayed.await
     {
         tracing::error!(error = %e, "relay: session task failed");
@@ -396,14 +427,18 @@ async fn became_true(flag: &mut watch::Receiver<bool>) -> bool {
 }
 
 async fn goodbye(handle: &server::Handle, message: &str) {
-    // A connection already gone needs no goodbye.
-    let _ = handle
-        .disconnect(
+    // A connection already gone needs no goodbye, and one whose event loop
+    // is held up (its queue full, so even sending this waits) is cut by the
+    // caller instead.
+    let _ = tokio::time::timeout(
+        GOODBYE_WAIT,
+        handle.disconnect(
             Disconnect::ByApplication,
             message.to_owned(),
             "en".to_owned(),
-        )
-        .await;
+        ),
+    )
+    .await;
 }
 
 /// `key` (russh's ssh-key) as warden's ssh-key type, via its OpenSSH text.
@@ -593,44 +628,45 @@ impl RelayHandler {
         );
         let (agent_handle, mut stop) = (session.handle(), self.stop.clone());
         let agent_cut = Arc::clone(&self.cut);
-        let relayed = tokio::spawn(async move {
-            let opened =
-                open_target(&shared, &login, pty.as_ref(), &env, &program, &mut stop).await;
-            let started = match opened {
-                Ok(started) => started,
-                Err(message) => {
-                    // The handler may be gone with its connection; then
-                    // nobody needs the answer.
-                    let _ = ready.send(Err(message));
-                    return;
-                }
-            };
-            let _ = ready.send(Ok(()));
-            let grant = &login.grant;
-            tracing::info!(grant = %grant.grant_id, agent = %grant.agent, target = %grant.target, "relay: session started");
-            let (target, early, target_cut, hang_up) = started.into_parts();
-            let ends = Ends {
-                agent,
-                agent_handle,
-                agent_cut,
-                target,
-                target_cut,
-                early,
-            };
-            let watch = session::Watch {
-                stall: shared.limits.stall_timeout,
-                wedge: shared.limits.wedge_timeout,
-            };
-            let outcome = session::relay(ends, stop, watch).await;
-            hang_up.now().await;
-            drop(slot);
-            record_end(&shared.audit, &grant.grant_id, &outcome).await;
-        });
-        *self
-            .conn
-            .relayed
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = Some(relayed);
+        let spawn = move || {
+            tokio::spawn(async move {
+                let opened =
+                    open_target(&shared, &login, pty.as_ref(), &env, &program, &mut stop).await;
+                let started = match opened {
+                    Ok(started) => started,
+                    Err(message) => {
+                        // The handler may be gone with its connection; then
+                        // nobody needs the answer.
+                        let _ = ready.send(Err(message));
+                        return;
+                    }
+                };
+                let _ = ready.send(Ok(()));
+                let grant = &login.grant;
+                tracing::info!(grant = %grant.grant_id, agent = %grant.agent, target = %grant.target, "relay: session started");
+                let (target, early, target_cut, hang_up) = started.into_parts();
+                let ends = Ends {
+                    agent,
+                    agent_handle,
+                    agent_cut,
+                    target,
+                    target_cut,
+                    early,
+                };
+                let watch = session::Watch {
+                    stall: shared.limits.stall_timeout,
+                    wedge: shared.limits.wedge_timeout,
+                };
+                let outcome = session::relay(ends, stop, watch).await;
+                hang_up.now().await;
+                drop(slot);
+                record_end(&shared.audit, &grant.grant_id, &outcome).await;
+            })
+        };
+        if !self.conn.register(spawn) {
+            // The connection is being hung up: nothing was recorded.
+            return self.refuse_start(channel, SHUTTING_DOWN, session);
+        }
         // Replies go out before anything the session task relays: they are
         // written here, inside the connection's event loop, which handles
         // the task's output only after this returns.
@@ -1117,5 +1153,31 @@ impl server::Handler for RelayHandler {
         } else {
             session.channel_failure(channel)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use super::{Conn, Refusals, Relayed};
+
+    fn conn() -> Conn {
+        Conn {
+            logged_in: tokio::sync::watch::channel(false).0,
+            refusals: Mutex::new(Refusals::default()),
+            relayed: Mutex::new(Relayed::None),
+        }
+    }
+
+    #[tokio::test]
+    async fn no_session_task_starts_after_the_connection_stopped_waiting() {
+        let conn = conn();
+        assert!(conn.register(|| tokio::spawn(async {})));
+        let task = conn.close().expect("the running task");
+        task.await.unwrap();
+        // A late start is refused without spawning anything.
+        assert!(!conn.register(|| unreachable!("nothing may start now")));
+        assert!(conn.close().is_none());
     }
 }

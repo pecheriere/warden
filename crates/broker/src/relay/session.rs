@@ -494,29 +494,38 @@ pub(crate) async fn relay(ends: Ends, mut stop: watch::Receiver<bool>, limits: W
 
 /// Resolves, with the reason, once the session stops making progress.
 async fn watchdog(up: &Progress, down: &Progress, limits: Watch) -> &'static str {
-    let start = tokio::time::Instant::now();
-    // Per direction: messages delivered at the last check, and since when
-    // that count has not moved.
-    let mut last = [(0_u64, start); 2];
+    // Per direction (upstream, downstream): messages delivered at the last
+    // check, and since when the direction has held data without delivering
+    // any (`None` while it holds nothing). Quiet time with nothing queued
+    // never counts.
+    let mut delivered = [0_u64; 2];
+    let mut held_since: [Option<tokio::time::Instant>; 2] = [None; 2];
     loop {
         tokio::time::sleep(WATCH_EVERY).await;
         let now = tokio::time::Instant::now();
-        let mut idle = [Duration::ZERO; 2];
+        let mut held = [Duration::ZERO; 2];
         for (i, progress) in [up, down].into_iter().enumerate() {
-            let delivered = progress.delivered.load(Ordering::Acquire);
-            if delivered != last[i].0 {
-                last[i] = (delivered, now);
-            }
-            idle[i] = now.duration_since(last[i].1);
+            let count = progress.delivered.load(Ordering::Acquire);
+            let moved = count != delivered[i];
+            delivered[i] = count;
+            held_since[i] = if progress.queued.load(Ordering::Acquire) == 0 {
+                None
+            } else if moved {
+                Some(now)
+            } else {
+                Some(held_since[i].unwrap_or(now))
+            };
+            held[i] = held_since[i].map_or(Duration::ZERO, |since| now.duration_since(since));
         }
-        let both_held = up.waiting.load(Ordering::Acquire) && down.waiting.load(Ordering::Acquire);
-        if both_held && idle[0] >= limits.wedge && idle[1] >= limits.wedge {
+        let both_waiting =
+            up.waiting.load(Ordering::Acquire) && down.waiting.load(Ordering::Acquire);
+        if both_waiting && held[0] >= limits.wedge && held[1] >= limits.wedge {
             return reason::DOWNSTREAM_STALLED;
         }
-        if down.queued.load(Ordering::Acquire) > 0 && idle[1] >= limits.stall {
+        if held[1] >= limits.stall {
             return reason::DOWNSTREAM_STALLED;
         }
-        if up.queued.load(Ordering::Acquire) > 0 && idle[0] >= limits.stall {
+        if held[0] >= limits.stall {
             return reason::UPSTREAM_STALLED;
         }
     }
@@ -760,10 +769,13 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn watchdog_ends_wedged_and_stalled_sessions_only() {
-        // Both directions held up, nothing delivered: ended after 2 s.
+        // Both directions held up (a waiting reader means a full queue),
+        // nothing delivered: ended after 2 s.
         let (up, down) = (Progress::default(), Progress::default());
-        up.waiting.store(true, Ordering::Release);
-        down.waiting.store(true, Ordering::Release);
+        for progress in [&up, &down] {
+            progress.waiting.store(true, Ordering::Release);
+            progress.queued.store(10, Ordering::Release);
+        }
         let started = tokio::time::Instant::now();
         let why = watchdog(&up, &down, limits(60)).await;
         assert_eq!(why, reason::DOWNSTREAM_STALLED);
@@ -779,11 +791,13 @@ mod tests {
         assert_eq!(why, reason::UPSTREAM_STALLED);
         assert!(started.elapsed() >= Duration::from_secs(60));
 
-        // Progress keeps a session alive.
+        // Progress keeps a session alive, even with the other direction
+        // held up all along.
         let (up, down) = (Progress::default(), Progress::default());
-        up.waiting.store(true, Ordering::Release);
-        down.waiting.store(true, Ordering::Release);
-        down.queued.store(10, Ordering::Release);
+        for progress in [&up, &down] {
+            progress.waiting.store(true, Ordering::Release);
+            progress.queued.store(10, Ordering::Release);
+        }
         let moving = async {
             for _ in 0..40 {
                 tokio::time::sleep(Duration::from_millis(500)).await;
@@ -791,9 +805,59 @@ mod tests {
             }
         };
         tokio::select! {
-            why = watchdog(&up, &down, limits(5)) => panic!("ended: {why}"),
+            why = watchdog(&up, &down, limits(60)) => panic!("ended: {why}"),
             () = moving => {}
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn idle_then_prompt_delivery_is_not_stalled() {
+        // An idle shell: nothing queued or delivered for over a minute.
+        let (up, down) = (Progress::default(), Progress::default());
+        let watching = watchdog(&up, &down, limits(60));
+        tokio::pin!(watching);
+        tokio::select! {
+            why = &mut watching => panic!("idle session ended: {why}"),
+            () = tokio::time::sleep(Duration::from_secs(61)) => {}
+        }
+        // A keystroke is queued and delivered 300 ms later.
+        up.queued.store(64, Ordering::Release);
+        tokio::select! {
+            why = &mut watching => panic!("first keystroke ended the session: {why}"),
+            () = tokio::time::sleep(Duration::from_millis(300)) => {}
+        }
+        up.queued.store(0, Ordering::Release);
+        up.delivered.fetch_add(1, Ordering::AcqRel);
+        tokio::select! {
+            why = &mut watching => panic!("ended after delivery: {why}"),
+            () = tokio::time::sleep(Duration::from_secs(5)) => {}
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn held_data_without_delivery_still_stalls() {
+        // After a long idle spell, data that is then held for the stall
+        // timeout without any delivery ends the session, and not before.
+        let (up, down) = (Progress::default(), Progress::default());
+        let watching = watchdog(&up, &down, limits(60));
+        tokio::pin!(watching);
+        tokio::select! {
+            why = &mut watching => panic!("idle session ended: {why}"),
+            () = tokio::time::sleep(Duration::from_secs(120)) => {}
+        }
+        down.queued.store(4096, Ordering::Release);
+        let held = tokio::time::Instant::now();
+        tokio::select! {
+            why = &mut watching => panic!("ended early: {why}"),
+            () = tokio::time::sleep(Duration::from_secs(59)) => {}
+        }
+        let why = (&mut watching).await;
+        assert_eq!(why, reason::DOWNSTREAM_STALLED);
+        let after = held.elapsed();
+        assert!(
+            after >= Duration::from_secs(60) && after < Duration::from_secs(62),
+            "{after:?}"
+        );
     }
 
     #[test]
