@@ -10,7 +10,7 @@ use serde_json::json;
 use sqlx::Row as _;
 use ssh_key::Certificate;
 use warden_broker::approval::passkeys;
-use warden_broker::policy::ApiSecretPolicy;
+use warden_broker::policy::{ApiSecretPolicy, ValueFormat};
 use warden_broker::requests::Clock as _;
 use warden_broker::testkit::{
     FakeBackend, PI_HOST, SoftAuthenticator, TEST_ORIGIN, TEST_OWNER, TEST_START, TestBroker,
@@ -1092,7 +1092,7 @@ async fn api_approval_rejected_when_policy_changes() {
 }
 
 #[tokio::test]
-async fn api_page_shows_origin_methods_prefix_header() {
+async fn api_page_shows_origin_methods_prefix_header_format_and_ca() {
     let broker = TestBroker::new().await;
     broker.add_agent("bot").await;
     let mut policy = FakeBackend::example_api_secret();
@@ -1102,6 +1102,7 @@ async fn api_page_shows_origin_methods_prefix_header() {
     policy.methods = vec![Method::GET, Method::POST];
     policy.path_prefix = "/v1/repos/".to_owned();
     policy.header = HeaderName::from_static("x-api-key");
+    policy.format = ValueFormat::parse("token=<{{secret}}>;").unwrap();
     broker.backend.set_api_secret(policy, API_CREDENTIAL);
     let goal = "triage <b>issues</b> & \u{5e9}\u{5dc}\u{5d5}\u{5dd}";
     let (created, token) = broker
@@ -1127,6 +1128,12 @@ async fn api_page_shows_origin_methods_prefix_header() {
         ),
         "{html}"
     );
+    // How the secret is written, never the secret itself, and whether the
+    // upstream's certificate must chain to a pinned CA.
+    assert!(
+        html.contains("value <code><bdi>token=&lt;…&gt;;</bdi></code>, pinned CA: no"),
+        "{html}"
+    );
     assert!(!html.contains(API_CREDENTIAL), "{html}");
     // Window picker capped at the secret's 1h max, requested 30m preselected.
     assert!(html.contains(r#"<option value="30m" selected>"#), "{html}");
@@ -1145,6 +1152,29 @@ async fn api_page_shows_origin_methods_prefix_header() {
     );
     let begin = broker.begin_approval(&token, Window::H1).await;
     assert_eq!(begin.status, StatusCode::OK, "{}", begin.body);
+}
+
+#[tokio::test]
+async fn api_page_shows_a_pinned_ca() {
+    let broker = TestBroker::new().await;
+    broker.add_agent("bot").await;
+    let mut policy = FakeBackend::example_api_secret();
+    policy.ca_pem = Some("-----BEGIN CERTIFICATE-----".to_owned());
+    broker.backend.set_api_secret(policy, API_CREDENTIAL);
+    let (_, token) = broker
+        .create_request(
+            "bot",
+            TestBroker::api_request("github", "call", Window::M30),
+        )
+        .await;
+    let page = broker.get(&format!("/approve/{token}")).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    assert!(
+        page.body
+            .contains("value <code><bdi>Bearer …</bdi></code>, pinned CA: yes"),
+        "{}",
+        page.body
+    );
 }
 
 #[tokio::test]

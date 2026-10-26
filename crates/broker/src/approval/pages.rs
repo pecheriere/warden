@@ -70,13 +70,20 @@ fn api_access(grant: &ApiGrant) -> Markup {
     }
 }
 
-/// What approving `request` gives access to under `destination`.
+/// What approving `request` gives access to under `destination`; for an
+/// API secret also how its value is written (the secret shown as `…`) and
+/// whether a pinned CA replaces the system roots.
 fn destination_access(request: &CreateRequest, destination: &Destination) -> Markup {
     match destination {
         Destination::Ssh(target) => {
             html! { code { (access_line(request, &target.host, target.port)) } }
         }
-        Destination::Api(policy) => api_access(&policy.grant()),
+        Destination::Api(policy) => html! {
+            (api_access(&policy.grant()))
+            br;
+            "value " code { bdi { (policy.format.prefix()) "…" (policy.format.suffix()) } }
+            ", pinned CA: " (if policy.ca_pem.is_some() { "yes" } else { "no" })
+        },
     }
 }
 
