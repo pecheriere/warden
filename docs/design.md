@@ -245,7 +245,9 @@ held up with nothing delivered for 2 s (the two connections are waiting on
 each other), and a stall watchdog ends a session in which one direction has
 held data for 60 s without delivering any of it (its receiver does not read).
 Both measure only while data is held, so an idle session is not affected. The
-session ends with the audited reason `flow control: …`. Residual: when the
+session ends with the audited reason `flow control: both directions held up`
+(wedge), or `flow control: output to the agent not drained` or `flow control:
+input to the target not drained` (stall). Residual: when the
 target stops reading its input, an agent that disconnects is noticed only
 after up to 60 s, so its slot is held that long.
 

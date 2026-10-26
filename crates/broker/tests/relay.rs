@@ -1647,7 +1647,7 @@ async fn agent_disconnect_ends_wedged_session() {
     // the wedge itself ends the session (it may have done so already).
     let reason = ended[0]["reason"].as_str().unwrap();
     assert!(
-        reason == "client closed" || reason == "flow control: output to the agent not drained",
+        reason == "client closed" || reason == "flow control: both directions held up",
         "{reason} after {:?}",
         gone.elapsed()
     );
@@ -1675,8 +1675,10 @@ async fn stop_relay_completes_with_wedged_session() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn agent_not_reading_output_ends_session() {
+    // The wedge watchdog is kept out of the way: this is the stall rule.
     let s = key_target_with(RelayLimits {
         stall_timeout: Duration::from_secs(3),
+        wedge_timeout: Duration::from_secs(600),
         ..RelayLimits::default()
     })
     .await;

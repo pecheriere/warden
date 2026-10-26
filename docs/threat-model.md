@@ -201,9 +201,11 @@ These were recorded during implementation and are accepted for this release.
 - **Flow control is watchdog-based.** The SSH library has no reader-driven
   back-pressure, so each direction of a session has a byte-bounded queue
   (2 MiB towards the target, 8 MiB towards the agent) and a session whose
-  receiver does not read is ended with the reason `flow control: …`: after 60 s
-  of held, undelivered data in one direction, or 2 s when both directions are
-  held up at once. A target that stops reading its input is a target
+  receiver does not read is ended: after 60 s of held, undelivered data in one
+  direction (reason `flow control: output to the agent not drained` or
+  `flow control: input to the target not drained`), or 2 s when both
+  directions are held up at once (`flow control: both directions held up`).
+  A target that stops reading its input is a target
   failure, and the session ends. Residual: when that happens, an agent that
   disconnects is noticed only after up to 60 s, and its session slot stays
   taken that long.

@@ -42,6 +42,9 @@ pub(crate) mod reason {
     pub const DOWNSTREAM_STALLED: &str = "flow control: output to the agent not drained";
     /// The target did not take the agent's input.
     pub const UPSTREAM_STALLED: &str = "flow control: input to the target not drained";
+    /// Both directions were held up at once with nothing delivered: the
+    /// two connections were waiting on each other.
+    pub const WEDGED: &str = "flow control: both directions held up";
     /// The grant (or its agent) was revoked.
     pub const REVOKED: &str = "revoked";
     /// The grant's window ended.
@@ -770,7 +773,7 @@ async fn watchdog(up: &Progress, down: &Progress, limits: Watch) -> &'static str
         let both_waiting =
             up.waiting.load(Ordering::Acquire) && down.waiting.load(Ordering::Acquire);
         if both_waiting && held[0] >= limits.wedge && held[1] >= limits.wedge {
-            return reason::DOWNSTREAM_STALLED;
+            return reason::WEDGED;
         }
         if held[1] >= limits.stall {
             return reason::DOWNSTREAM_STALLED;
@@ -1129,6 +1132,7 @@ mod tests {
             reason::GRANT_STATE_UNAVAILABLE,
             reason::DOWNSTREAM_STALLED,
             reason::UPSTREAM_STALLED,
+            reason::WEDGED,
         ] {
             assert!(reason::forced(forced), "{forced}");
         }
@@ -1159,7 +1163,9 @@ mod tests {
         }
         let started = tokio::time::Instant::now();
         let why = watchdog(&up, &down, limits(60)).await;
-        assert_eq!(why, reason::DOWNSTREAM_STALLED);
+        assert_eq!(why, reason::WEDGED);
+        assert!(reason::forced(why));
+        assert_eq!(reason::notice(why), None);
         assert!(started.elapsed() < Duration::from_secs(3));
 
         // One direction holding data nothing delivers: ended after the
