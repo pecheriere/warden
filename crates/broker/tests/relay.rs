@@ -1575,3 +1575,249 @@ async fn every_started_session_has_exactly_one_end() {
     assert_each_start_ended(&s.broker).await;
     assert_eq!(events_of(&s.broker, "relay_session_ended").len(), 7);
 }
+
+// --- teardown on revocation, expiry and idleness ----------------------------
+
+/// Connections to `sshd` (the relay's onward ones) not yet ended, by its
+/// log: each is named by its client port.
+fn sshd_open_connections(sshd: &Sshd) -> usize {
+    let port_of = |line: &str| {
+        let rest = &line[line.find(" port ")? + 6..];
+        let digits = rest.split(|c: char| !c.is_ascii_digit()).next()?;
+        digits.parse::<u16>().ok()
+    };
+    let (mut opened, mut closed) = (
+        std::collections::BTreeSet::new(),
+        std::collections::BTreeSet::new(),
+    );
+    for line in sshd.log().lines() {
+        let set = if line.starts_with("Connection from ") {
+            &mut opened
+        } else if [
+            "Connection closed by",
+            "Connection reset by",
+            "Disconnected from",
+            "Closing connection to",
+        ]
+        .iter()
+        .any(|ended| line.contains(ended))
+        {
+            &mut closed
+        } else {
+            continue;
+        };
+        if let Some(port) = port_of(line) {
+            set.insert(port);
+        }
+    }
+    opened.difference(&closed).count()
+}
+
+/// Wait, at most until `deadline`, for the relay to have closed the agent's
+/// connection `c` and for `sshd` to be down to `still_open` connections.
+async fn assert_both_sides_closed(s: &Setup, c: &Connected, still_open: usize, deadline: Instant) {
+    loop {
+        let (agent_gone, onward) = (c.handle.is_closed(), sshd_open_connections(&s.sshd));
+        if agent_gone && onward == still_open {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "agent connection closed: {agent_gone}, onward connections open: {onward}\n{}",
+            s.sshd.log()
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// Exactly one `relay_session_ended` (per started session), all with
+/// `reason`; then the relay still stops promptly, adding no further end.
+async fn assert_ended_once_then_stop(s: &Setup, sessions: usize, reason: &str) {
+    let ended = await_events(&s.broker, "relay_session_ended", sessions).await;
+    // Give a duplicate end a chance to show up.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let ended_now = events_of(&s.broker, "relay_session_ended");
+    assert_eq!(ended_now.len(), sessions, "{:?}", audit_events(&s.broker));
+    for end in &ended {
+        assert_eq!(end["reason"], reason, "{:?}", audit_events(&s.broker));
+        assert_eq!(end["exit_status"], Value::Null);
+    }
+    tokio::time::timeout(Duration::from_secs(3), s.broker.stop_relay())
+        .await
+        .expect("the relay stopped promptly");
+    assert_eq!(
+        events_of(&s.broker, "relay_session_ended").len(),
+        sessions,
+        "{:?}",
+        audit_events(&s.broker)
+    );
+    assert_each_start_ended(&s.broker).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn revoke_closes_live_session() {
+    let s = key_target().await;
+    let agent = approved_agent(&s.broker, "bot").await;
+    let (c, mut channel) = hold_session(&s, &agent.key).await;
+    let revoked = Instant::now();
+    s.broker
+        .state()
+        .requests
+        .revoke_grant(&agent.grant_id, "owner")
+        .await
+        .unwrap();
+    assert_both_sides_closed(&s, &c, 0, revoked + Duration::from_secs(5)).await;
+    let out = collect(&mut channel).await;
+    assert!(
+        text(&out.stderr).contains("warden relay: access revoked"),
+        "{out:?}"
+    );
+    assert_ended_once_then_stop(&s, 1, "revoked").await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn expiry_closes_live_session() {
+    let s = key_target().await;
+    let agent = approved_agent(&s.broker, "bot").await;
+    let (c, _channel) = hold_session(&s, &agent.key).await;
+    // Window 15 min: one second past it.
+    s.broker.clock.advance(15 * 60 + 1);
+    let expired = Instant::now();
+    assert_both_sides_closed(&s, &c, 0, expired + Duration::from_secs(5)).await;
+    assert_ended_once_then_stop(&s, 1, "expired").await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn agent_revoke_closes_sessions() {
+    let s = key_target().await;
+    let bot = approved_agent(&s.broker, "bot").await;
+    let other = approved_agent(&s.broker, "other").await;
+    let (first, _first_channel) = hold_session(&s, &bot.key).await;
+    let (second, _second_channel) = hold_session(&s, &bot.key).await;
+    let (kept, kept_channel) = hold_session(&s, &other.key).await;
+    let revoked = Instant::now();
+    s.broker
+        .state()
+        .requests
+        .revoke_agent(&AgentName::try_from("bot".to_owned()).unwrap())
+        .await
+        .unwrap();
+    let deadline = revoked + Duration::from_secs(5);
+    assert_both_sides_closed(&s, &first, 1, deadline).await;
+    assert_both_sides_closed(&s, &second, 1, deadline).await;
+    let ended = await_events(&s.broker, "relay_session_ended", 2).await;
+    for end in &ended {
+        assert_eq!(end["grant_id"], bot.grant_id.as_str());
+        assert_eq!(end["reason"], "revoked");
+    }
+    // The other agent's session goes on.
+    assert!(!kept.handle.is_closed());
+    kept_channel.data(&b"x"[..]).await.unwrap();
+    assert_eq!(events_of(&s.broker, "relay_session_ended").len(), 2);
+    tokio::time::timeout(Duration::from_secs(3), s.broker.stop_relay())
+        .await
+        .expect("the relay stopped promptly");
+    let ended = events_of(&s.broker, "relay_session_ended");
+    assert_eq!(ended.len(), 3, "{:?}", audit_events(&s.broker));
+    assert_eq!(ended[2]["grant_id"], other.grant_id.as_str());
+    assert_eq!(ended[2]["reason"], "relay shutting down");
+    assert_each_start_ended(&s.broker).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn db_revoke_from_another_process_closes_session() {
+    let s = key_target().await;
+    let agent = approved_agent(&s.broker, "bot").await;
+    let (c, _channel) = hold_session(&s, &agent.key).await;
+    // What `warden-server agent revoke` does from its own process: the
+    // database changes, and the running relay is not told.
+    let state = s.broker.state();
+    let revoked = Instant::now();
+    warden_broker::requests::revoke_agent(
+        &state.pool,
+        &state.audit,
+        &AgentName::try_from("bot".to_owned()).unwrap(),
+        state.clock.now(),
+    )
+    .await
+    .unwrap();
+    assert_both_sides_closed(&s, &c, 0, revoked + Duration::from_secs(5)).await;
+    assert_ended_once_then_stop(&s, 1, "revoked").await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn idle_session_times_out() {
+    let s = key_target_with(RelayLimits {
+        idle_timeout: Duration::from_secs(2),
+        ..RelayLimits::default()
+    })
+    .await;
+    let agent = approved_agent(&s.broker, "bot").await;
+    // Output every half second for 4 s: never idle for 2 s, so it runs to
+    // its end although it lasts longer than the idle timeout.
+    let busy = login(&s.broker, s.relay, TARGET, &agent.key).await;
+    let mut channel = busy.handle.channel_open_session().await.unwrap();
+    channel
+        .exec(
+            true,
+            "for i in 1 2 3 4 5 6 7 8; do echo $i; sleep 0.5; done",
+        )
+        .await
+        .unwrap();
+    assert!(reply(&mut channel).await);
+    let out = collect(&mut channel).await;
+    assert_eq!(out.exit_status, Some(0), "{out:?}");
+    let ended = await_events(&s.broker, "relay_session_ended", 1).await;
+    assert_eq!(ended[0]["reason"], "exited");
+
+    // Silent for the idle timeout: ended, both sides closed.
+    let (c, mut channel) = hold_session(&s, &agent.key).await;
+    let quiet = Instant::now();
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert!(!c.handle.is_closed(), "ended before the idle timeout");
+    assert_both_sides_closed(&s, &c, 0, quiet + Duration::from_secs(5)).await;
+    let out = collect(&mut channel).await;
+    assert!(text(&out.stderr).contains("idle"), "{out:?}");
+    let ended = await_events(&s.broker, "relay_session_ended", 2).await;
+    assert_eq!(ended[1]["reason"], "idle timeout");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(events_of(&s.broker, "relay_session_ended").len(), 2);
+    tokio::time::timeout(Duration::from_secs(3), s.broker.stop_relay())
+        .await
+        .expect("the relay stopped promptly");
+    assert_eq!(events_of(&s.broker, "relay_session_ended").len(), 2);
+    assert_each_start_ended(&s.broker).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unstarted_authenticated_connection_is_closed() {
+    let s = key_target_with(RelayLimits {
+        start_timeout: Duration::from_secs(2),
+        max_sessions_per_grant: 1,
+        ..RelayLimits::default()
+    })
+    .await;
+    let agent = approved_agent(&s.broker, "bot").await;
+    // Logged in, a session channel open, never started.
+    let idle = login(&s.broker, s.relay, TARGET, &agent.key).await;
+    let _channel = idle.handle.channel_open_session().await.unwrap();
+    let logged_in = Instant::now();
+    let deadline = logged_in + Duration::from_secs(2 + 5);
+    while !idle.handle.is_closed() {
+        assert!(Instant::now() < deadline, "the connection was not closed");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(logged_in.elapsed() >= Duration::from_millis(1500));
+    // Nothing started, so nothing is recorded; its place is free again.
+    assert!(events_of(&s.broker, "relay_session_started").is_empty());
+    assert!(events_of(&s.broker, "relay_session_ended").is_empty());
+    let c = login(&s.broker, s.relay, TARGET, &agent.key).await;
+    let mut channel = c.handle.channel_open_session().await.unwrap();
+    channel.exec(true, "echo ok").await.unwrap();
+    assert!(reply(&mut channel).await);
+    assert_eq!(text(&collect(&mut channel).await.stdout), "ok\n");
+    tokio::time::timeout(Duration::from_secs(3), s.broker.stop_relay())
+        .await
+        .expect("the relay stopped promptly");
+    assert_each_start_ended(&s.broker).await;
+}

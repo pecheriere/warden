@@ -539,6 +539,12 @@ impl HangUp {
         hang_up(&self.handle).await;
         self.cut.now();
     }
+
+    /// Cut the connection without a goodbye (one already given its chance
+    /// to close).
+    pub(crate) fn cut(self) {
+        self.cut.now();
+    }
 }
 
 #[cfg(test)]

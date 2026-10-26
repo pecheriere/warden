@@ -10,7 +10,9 @@
 //!   login exists. An unknown target, a key nobody approved and an inactive
 //!   grant are all refused the same way.
 //! - After login: at most [`RelayLimits::max_sessions_per_grant`] sessions
-//!   per grant and [`RelayLimits::max_sessions`] overall.
+//!   per grant and [`RelayLimits::max_sessions`] overall. A connection that
+//!   starts no session within [`RelayLimits::start_timeout`] is hung up, as
+//!   is one whose session is over and that the agent does not leave.
 //! - One session channel per connection. `pty-req`, `env` (`LANG`, `LC_*`,
 //!   `TERM`), `window-change`, `signal`, then `shell` or `exec`. Port
 //!   forwarding, agent forwarding, X11 and subsystems (sftp included) are
@@ -22,6 +24,11 @@
 //!   written before anything reaches the target; `relay_session_ended`
 //!   follows when it ends, also when the relay stops mid-setup. The onward
 //!   connection negotiates only the host key types of the pinned keys.
+//! - A running session ends, both connections cut within seconds, when its
+//!   grant or agent is revoked (told at once by the request service; found
+//!   by a check every [`GRANT_CHECK_EVERY`] when another process revoked
+//!   it), when the grant's window ends, or after
+//!   [`RelayLimits::idle_timeout`] with no bytes either way.
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -40,13 +47,13 @@ use warden_broker_proto::{Id, TargetName};
 
 use crate::audit::{AuditEvent, AuditLog};
 use crate::policy::{PolicyError, SecretBackend, SshMode};
-use crate::requests::{RelayGrantRecord, Requests};
+use crate::requests::{GrantEnd, RelayGrantRecord, Requests};
 
 use super::host_key::{HostKeyError, RelayHostKey};
 use super::onward;
 use super::session::{
     self, Cutoff, Ends, MAX_ENV_VARS, Outcome, PreAuthLimiter, PreAuthPermit, Program, PtyRequest,
-    SessionSlot, SessionSlots, env_allowed, with_cutoff,
+    Registration, SessionSlot, SessionSlots, env_allowed, with_cutoff,
 };
 
 /// Told to an agent whose grant or target changed since it logged in.
@@ -75,6 +82,12 @@ const TOO_MUCH_INPUT: &str = "warden relay: too much input before the session st
 /// Disconnect messages.
 const LOGIN_TIMEOUT: &str = "warden relay: login timed out";
 const SHUTTING_DOWN: &str = "warden relay: shutting down";
+const NOT_STARTED: &str = "warden relay: no session started in time";
+const SESSION_OVER: &str = "warden relay: session over";
+
+/// How often the grants of live sessions are checked for revocation (by
+/// another process; this one's are told at once) and expiry.
+const GRANT_CHECK_EVERY: Duration = Duration::from_secs(1);
 
 /// Longest wait for a connection to end after the relay hung up on it.
 const GOODBYE_WAIT: Duration = Duration::from_secs(2);
@@ -110,6 +123,11 @@ pub struct RelayLimits {
     /// nothing delivered before the session ends (2 s): the two SSH
     /// connections are then waiting on each other.
     pub wedge_timeout: Duration,
+    /// Time a session may carry no bytes either way before it ends (15 min).
+    pub idle_timeout: Duration,
+    /// Time from login to starting the session (`shell` or `exec`) before
+    /// the connection is hung up (30 s).
+    pub start_timeout: Duration,
 }
 
 impl Default for RelayLimits {
@@ -124,6 +142,8 @@ impl Default for RelayLimits {
             onward_timeout: Duration::from_secs(10),
             stall_timeout: Duration::from_secs(60),
             wedge_timeout: Duration::from_secs(2),
+            idle_timeout: Duration::from_secs(15 * 60),
+            start_timeout: Duration::from_secs(30),
         }
     }
 }
@@ -203,9 +223,12 @@ impl RelayServer {
     /// (recording `relay_session_ended`) and return once all are gone.
     pub async fn serve(self, listener: TcpListener, mut stop: watch::Receiver<bool>) {
         let mut connections = JoinSet::new();
+        let checking = check_grants_every(&self.shared.requests, GRANT_CHECK_EVERY);
+        tokio::pin!(checking);
         loop {
             tokio::select! {
                 () = stopping(&mut stop) => break,
+                () = &mut checking => {}
                 accepted = listener.accept() => match accepted {
                     Ok((socket, peer)) => {
                         let Some(permit) = self.shared.preauth.try_admit(peer.ip()) else {
@@ -243,6 +266,41 @@ impl RelayServer {
     }
 }
 
+/// End the live sessions whose grant was revoked or expired, every
+/// `every`. Never returns.
+async fn check_grants_every(requests: &Requests, every: Duration) {
+    let mut ticker = tokio::time::interval(every);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        ticker.tick().await;
+        check_grants(requests).await;
+    }
+}
+
+/// End the live sessions whose grant is past its window (known without the
+/// database) or revoked, in one lookup for all of them.
+async fn check_grants(requests: &Requests) {
+    let sessions = requests.live_sessions();
+    sessions.expire_due(requests.now());
+    let ids = sessions.grant_ids();
+    if ids.is_empty() {
+        return;
+    }
+    match requests.ended_grants(&ids).await {
+        Ok(ended) => {
+            for (grant_id, end) in ended {
+                match end {
+                    GrantEnd::Revoked => sessions.revoke_grant(&grant_id),
+                    GrantEnd::Expired => sessions.expire_grant(&grant_id),
+                }
+            }
+        }
+        // Expiry is still enforced above; revocations by this process are
+        // told directly.
+        Err(e) => tracing::error!(error = %e, "relay: checking the grants of live sessions failed"),
+    }
+}
+
 /// Refused login attempts on one connection.
 #[derive(Debug, Default)]
 struct Refusals {
@@ -255,6 +313,28 @@ struct Conn {
     logged_in: watch::Sender<bool>,
     refusals: Mutex<Refusals>,
     relayed: Mutex<Relayed>,
+    phase: watch::Sender<Phase>,
+}
+
+/// Where a connection's session is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    /// Not started.
+    Waiting,
+    /// Its task is running.
+    Running,
+    /// Its task is done.
+    Over,
+}
+
+/// Marks a connection's session as over when dropped (also if its task
+/// panicked).
+struct OverOnDrop(watch::Sender<Phase>);
+
+impl Drop for OverOnDrop {
+    fn drop(&mut self) {
+        self.0.send_replace(Phase::Over);
+    }
 }
 
 /// A connection's session task, as its connection task sees it.
@@ -280,6 +360,7 @@ impl Conn {
             return false;
         }
         *relayed = Relayed::Running(spawn());
+        self.phase.send_replace(Phase::Running);
         true
     }
 
@@ -315,6 +396,7 @@ async fn connection(
         logged_in,
         refusals: Mutex::new(Refusals::default()),
         relayed: Mutex::new(Relayed::None),
+        phase: watch::channel(Phase::Waiting).0,
     });
     // A second handle on the socket, to cut the connection off if the peer
     // ignores the relay hanging up on it, or its event loop is stuck.
@@ -359,9 +441,17 @@ async fn connection(
             None
         }
         true = became_true(&mut logged_in_rx) => {
+            let start_by = Instant::now() + shared.limits.start_timeout;
+            let mut phase = conn.phase.subscribe();
             tokio::select! {
                 _ = &mut session => None,
                 () = stopping(&mut stop) => Some(SHUTTING_DOWN),
+                message = no_more_use(&mut phase, start_by) => {
+                    if message == NOT_STARTED {
+                        tracing::info!(peer = %peer.ip(), "relay: no session started in time; hanging up");
+                    }
+                    Some(message)
+                }
             }
         }
         () = tokio::time::sleep_until(deadline) => Some(LOGIN_TIMEOUT),
@@ -413,6 +503,27 @@ async fn record_refused_login(audit: &AuditLog, conn: &Conn, peer: SocketAddr) {
     if let Err(e) = audit.append(event).await {
         tracing::error!(error = %e, "relay: could not record a refused login");
     }
+}
+
+/// Resolves, with the goodbye, once a logged-in connection has no more use:
+/// it started no session by `start_by`, or its session is over and the
+/// agent did not leave within [`GOODBYE_WAIT`].
+async fn no_more_use(phase: &mut watch::Receiver<Phase>, start_by: Instant) -> &'static str {
+    // The sender lives in the connection's `Conn`, which outlives this.
+    let started = tokio::time::timeout_at(start_by, phase.wait_for(|p| *p != Phase::Waiting))
+        .await
+        .map(|seen| seen.is_ok());
+    match started {
+        Err(_) => return NOT_STARTED,
+        Ok(false) => std::future::pending::<()>().await,
+        Ok(true) => {}
+    }
+    let over = phase.wait_for(|p| *p == Phase::Over).await.is_ok();
+    if !over {
+        std::future::pending::<()>().await;
+    }
+    tokio::time::sleep(GOODBYE_WAIT).await;
+    SESSION_OVER
 }
 
 /// Resolves once `stop` is true, or its sender is gone.
@@ -628,10 +739,24 @@ impl RelayHandler {
         );
         let (agent_handle, mut stop) = (session.handle(), self.stop.clone());
         let agent_cut = Arc::clone(&self.cut);
+        let over = OverOnDrop(self.conn.phase.clone());
+        let newline = if pty.is_some() { "\r\n" } else { "\n" };
         let spawn = move || {
             tokio::spawn(async move {
-                let opened =
-                    open_target(&shared, &login, pty.as_ref(), &env, &program, &mut stop).await;
+                let _over = over;
+                // Listed before the grant is checked again: a revocation
+                // after the check still reaches the session.
+                let mut live = shared.requests.live_sessions().register(&login.grant);
+                let opened = open_target(
+                    &shared,
+                    &login,
+                    pty.as_ref(),
+                    &env,
+                    &program,
+                    &mut stop,
+                    &mut live,
+                )
+                .await;
                 let started = match opened {
                     Ok(started) => started,
                     Err(message) => {
@@ -648,6 +773,7 @@ impl RelayHandler {
                 let ends = Ends {
                     agent,
                     agent_handle,
+                    newline,
                     agent_cut,
                     target,
                     target_cut,
@@ -656,9 +782,15 @@ impl RelayHandler {
                 let watch = session::Watch {
                     stall: shared.limits.stall_timeout,
                     wedge: shared.limits.wedge_timeout,
+                    idle: shared.limits.idle_timeout,
                 };
-                let outcome = session::relay(ends, stop, watch).await;
-                hang_up.now().await;
+                let outcome = session::relay(ends, &mut live, stop, watch).await;
+                if session::reason::forced(outcome.reason) {
+                    // Given its chance to close already.
+                    hang_up.cut();
+                } else {
+                    hang_up.now().await;
+                }
                 drop(slot);
                 record_end(&shared.audit, &grant.grant_id, &outcome).await;
             })
@@ -738,6 +870,7 @@ async fn open_target(
     env: &[(String, String)],
     program: &Program,
     stop: &mut watch::Receiver<bool>,
+    live: &mut Registration,
 ) -> Result<onward::Started, &'static str> {
     let grant = &login.grant;
     let refuse = |reason, message| refuse_session(shared, &grant.grant_id, reason, message);
@@ -822,6 +955,11 @@ async fn open_target(
         () = stopping(stop) => {
             ended_early(session::reason::SHUTDOWN).await;
             Err(SHUTTING_DOWN)
+        }
+        // Revoked or expired while connecting: ended the same way.
+        ending = live.ended() => {
+            ended_early(ending).await;
+            Err(session::reason::notice(ending).unwrap_or(NO_LONGER_VALID))
         }
     }
 }
@@ -1159,15 +1297,52 @@ impl server::Handler for RelayHandler {
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
+    use std::time::Duration;
 
-    use super::{Conn, Refusals, Relayed};
+    use tokio::sync::watch;
+    use tokio::time::Instant;
+
+    use super::{
+        Conn, GOODBYE_WAIT, NOT_STARTED, OverOnDrop, Phase, Refusals, Relayed, SESSION_OVER,
+        no_more_use,
+    };
 
     fn conn() -> Conn {
         Conn {
             logged_in: tokio::sync::watch::channel(false).0,
             refusals: Mutex::new(Refusals::default()),
             relayed: Mutex::new(Relayed::None),
+            phase: tokio::sync::watch::channel(Phase::Waiting).0,
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn connection_without_a_session_or_after_it_has_no_more_use() {
+        // No session started in time.
+        let (phase, mut rx) = watch::channel(Phase::Waiting);
+        let start_by = Instant::now() + Duration::from_secs(30);
+        assert_eq!(no_more_use(&mut rx, start_by).await, NOT_STARTED);
+        assert_eq!(Instant::now(), start_by);
+
+        // A session started in time keeps the connection until it is over,
+        // and the agent then gets a while to leave by itself.
+        let mut rx = phase.subscribe();
+        let start_by = Instant::now() + Duration::from_secs(30);
+        let waiting = no_more_use(&mut rx, start_by);
+        tokio::pin!(waiting);
+        tokio::select! {
+            why = &mut waiting => panic!("hung up early: {why}"),
+            () = tokio::time::sleep(Duration::from_secs(10)) => {}
+        }
+        phase.send_replace(Phase::Running);
+        tokio::select! {
+            why = &mut waiting => panic!("hung up on a running session: {why}"),
+            () = tokio::time::sleep(Duration::from_secs(600)) => {}
+        }
+        drop(OverOnDrop(phase.clone()));
+        let over = Instant::now();
+        assert_eq!((&mut waiting).await, SESSION_OVER);
+        assert_eq!(over.elapsed(), GOODBYE_WAIT);
     }
 
     #[tokio::test]

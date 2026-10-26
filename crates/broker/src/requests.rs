@@ -6,7 +6,8 @@
 //! entry is appended before the commit, so the audit trail never misses a
 //! transition (a failed commit can at worst leave an entry for a change that
 //! did not happen). After the commit the affected request ids are published
-//! on the [`StatusBus`] so long-polls wake up.
+//! on the [`StatusBus`] so long-polls wake up, and relay sessions of revoked
+//! grants are ended.
 
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -27,7 +28,7 @@ use crate::agents::{self, AgentError};
 use crate::audit::{AuditError, AuditEvent, AuditLog};
 use crate::notify::{Doorbell, Notifier, doorbell};
 use crate::policy::{ApiSecretPolicy, PolicyError, SecretBackend, SshMode, SshTarget};
-use crate::relay::RelayEndpoint;
+use crate::relay::{LiveSessions, RelayEndpoint};
 
 /// How long a request waits for the owner, in seconds.
 const PENDING_TTL_SECS: i64 = 600;
@@ -351,6 +352,24 @@ const ACTIVE_RELAY_GRANTS: &str = "\
     AND json_extract(g.view, '$.access.target') = ?2 \
     ORDER BY g.not_after DESC, g.id";
 
+/// Of the grants listed in `?2` (a JSON array of ids), those revoked or
+/// past their window at `?1` (now), each with whether it was revoked.
+/// Grants are found by primary key: the relay's periodic check costs one
+/// lookup per grant with a live session.
+const ENDED_GRANTS: &str = "\
+    SELECT id, revoked_at IS NOT NULL AS revoked FROM grants \
+    WHERE id IN (SELECT value FROM json_each(?2)) \
+    AND (revoked_at IS NOT NULL OR not_after <= ?1)";
+
+/// How a grant stopped being usable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GrantEnd {
+    /// It, or its agent, was revoked.
+    Revoked,
+    /// Its window is over.
+    Expired,
+}
+
 /// The request lifecycle service.
 #[derive(Clone)]
 pub struct Requests {
@@ -362,6 +381,8 @@ pub struct Requests {
     public_url: Url,
     clock: Arc<dyn Clock>,
     relay: Option<Arc<RelayEndpoint>>,
+    /// Live relay sessions, ended when their grant is revoked.
+    sessions: Arc<LiveSessions>,
 }
 
 /// Which pending requests an expiry pass looks at.
@@ -394,7 +415,44 @@ impl Requests {
             public_url,
             clock,
             relay: relay.map(Arc::new),
+            sessions: LiveSessions::new(),
         }
+    }
+
+    /// The live relay sessions.
+    pub(crate) const fn live_sessions(&self) -> &Arc<LiveSessions> {
+        &self.sessions
+    }
+
+    /// Now, by this service's clock (Unix seconds).
+    pub(crate) fn now(&self) -> i64 {
+        self.clock.now()
+    }
+
+    /// Which of `grant_ids` are revoked or past their window now.
+    ///
+    /// # Errors
+    /// Storage failures or unreadable stored rows.
+    pub(crate) async fn ended_grants(
+        &self,
+        grant_ids: &[Id],
+    ) -> Result<Vec<(Id, GrantEnd)>, RequestError> {
+        let ids = serde_json::to_string(&grant_ids.iter().map(Id::as_str).collect::<Vec<_>>())?;
+        sqlx::query(ENDED_GRANTS)
+            .bind(self.clock.now())
+            .bind(ids)
+            .fetch_all(&self.pool)
+            .await?
+            .iter()
+            .map(|row| {
+                let end = if row.try_get::<bool, _>("revoked")? {
+                    GrantEnd::Revoked
+                } else {
+                    GrantEnd::Expired
+                };
+                Ok((parse(row, "id")?, end))
+            })
+            .collect()
     }
 
     /// Where agents reach the relay, if it is configured.
@@ -892,6 +950,11 @@ impl Requests {
                 .bind(grant_id.as_str())
                 .fetch_optional(&mut *tx)
                 .await?;
+            // Revoked already, perhaps by another process: its sessions end
+            // now rather than at the relay's next check.
+            if exists.is_some() {
+                self.sessions.revoke_grant(grant_id);
+            }
             return exists.map(|_| ()).ok_or(RequestError::NotFound);
         };
         let request_id: Id = parse(&row, "request_id")?;
@@ -910,6 +973,7 @@ impl Requests {
             &format!("revocation of grant {grant_id}"),
         )
         .await?;
+        self.sessions.revoke_grant(grant_id);
         self.bus.publish(&request_id);
         Ok(())
     }
@@ -923,6 +987,7 @@ impl Requests {
         let name = name.clone();
         detached(async move {
             let affected = revoke_agent(&this.pool, &this.audit, &name, this.clock.now()).await?;
+            this.sessions.revoke_agent(&name);
             for id in &affected {
                 this.bus.publish(id);
             }
@@ -1252,7 +1317,8 @@ async fn check_key_unbound(
 ///
 /// When this runs in another process (the `agent revoke` admin command), the
 /// server's in-process [`StatusBus`] is not told; its long-polls see
-/// `revoked` on their next re-read, within the 30 s wait cap.
+/// `revoked` on their next re-read, within the 30 s wait cap, and its relay
+/// ends the agent's sessions at its next grant check (every second).
 ///
 /// # Errors
 /// [`RequestError::UnknownAgent`] if no such agent exists; storage or audit
@@ -1493,8 +1559,8 @@ pub async fn sweep_loop(
 #[cfg(test)]
 mod tests {
     use super::{
-        ACTIVE_RELAY_GRANTS, AuditEvent, AuditLog, LIVE_SSH_KEYS, RequestError, audit_and_commit,
-        begin,
+        ACTIVE_RELAY_GRANTS, AuditEvent, AuditLog, ENDED_GRANTS, LIVE_SSH_KEYS, RequestError,
+        audit_and_commit, begin,
     };
     use crate::store;
     use sqlx::Row as _;
@@ -1540,6 +1606,68 @@ mod tests {
                 "{steps:?}"
             );
         }
+        // The relay's check looks grants up by id.
+        let ended = plan(&pool, ENDED_GRANTS).await;
+        assert!(
+            ended
+                .iter()
+                .any(|s| s.starts_with("SEARCH grants USING INDEX sqlite_autoindex_grants_1")),
+            "{ended:?}"
+        );
+        assert!(
+            !ended.iter().any(|s| s.starts_with("SCAN grants")),
+            "{ended:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn ended_grants_are_the_listed_revoked_or_expired_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = store::open(&dir.path().join("warden.db")).await.unwrap();
+        let mut conn = pool.acquire().await.unwrap();
+        // Bare grant rows: their requests and agents do not matter here.
+        sqlx::query("PRAGMA foreign_keys = OFF")
+            .execute(&mut *conn)
+            .await
+            .unwrap();
+        for (id, not_after, revoked_at) in [
+            ("live", 1000, None),
+            ("revoked", 1000, Some(500)),
+            ("expired", 1000, None),
+            ("both", 900, Some(800)),
+            ("unlisted", 900, Some(800)),
+        ] {
+            let not_after = if id == "expired" { 999 } else { not_after };
+            sqlx::query(
+                "INSERT INTO grants (id, request_id, agent, window_secs, not_before, not_after, revoked_at, view) \
+                 VALUES (?, ?, 'a', 900, 0, ?, ?, '{}')",
+            )
+            .bind(id)
+            .bind(format!("r-{id}"))
+            .bind(not_after)
+            .bind(revoked_at)
+            .execute(&mut *conn)
+            .await
+            .unwrap();
+        }
+        let mut ended: Vec<(String, bool)> = sqlx::query(ENDED_GRANTS)
+            .bind(999_i64)
+            .bind(r#"["live","revoked","expired","both","missing"]"#)
+            .fetch_all(&mut *conn)
+            .await
+            .unwrap()
+            .iter()
+            .map(|row| (row.get("id"), row.get("revoked")))
+            .collect();
+        ended.sort();
+        assert_eq!(
+            ended,
+            [
+                ("both".to_owned(), true),
+                ("expired".to_owned(), false),
+                ("revoked".to_owned(), true),
+            ]
+        );
     }
 
     #[tokio::test]

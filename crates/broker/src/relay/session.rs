@@ -1,8 +1,9 @@
-//! One relayed session: how many may run, what the agent asked for before
-//! it started, and the loop that carries bytes, EOF, window changes,
-//! signals and the exit status between the agent and the target.
+//! One relayed session: how many may run, which are live (so revocation
+//! and expiry can end them), what the agent asked for before it started,
+//! and the loop that carries bytes, EOF, window changes, signals and the
+//! exit status between the agent and the target.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -10,9 +11,11 @@ use std::time::Duration;
 
 use russh::client;
 use russh::server;
-use russh::{Channel, ChannelId, ChannelMsg, ChannelReadHalf, ChannelWriteHalf, Pty};
+use russh::{Channel, ChannelId, ChannelMsg, ChannelReadHalf, ChannelWriteHalf, Disconnect, Pty};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, watch};
-use warden_broker_proto::Id;
+use warden_broker_proto::{AgentName, Id};
+
+use crate::requests::RelayGrantRecord;
 
 /// Longest command recorded in the audit log, in characters.
 const COMMAND_AUDIT_CHARS: usize = 200;
@@ -39,6 +42,163 @@ pub(crate) mod reason {
     pub const DOWNSTREAM_STALLED: &str = "flow control: output to the agent not drained";
     /// The target did not take the agent's input.
     pub const UPSTREAM_STALLED: &str = "flow control: input to the target not drained";
+    /// The grant (or its agent) was revoked.
+    pub const REVOKED: &str = "revoked";
+    /// The grant's window ended.
+    pub const EXPIRED: &str = "expired";
+    /// No bytes went either way for the idle timeout.
+    pub const IDLE: &str = "idle timeout";
+
+    /// Whether the relay ends a session ended for `reason` by force: both
+    /// connections are cut after a short grace, whatever their state.
+    #[must_use]
+    pub fn forced(reason: &str) -> bool {
+        reason.starts_with(FLOW_CONTROL) || matches!(reason, REVOKED | EXPIRED | IDLE)
+    }
+
+    /// What the agent is told when its session ends for `reason`, if
+    /// anything.
+    #[must_use]
+    pub fn notice(reason: &str) -> Option<&'static str> {
+        match reason {
+            REVOKED => Some("warden relay: access revoked"),
+            EXPIRED => Some("warden relay: access expired"),
+            IDLE => Some("warden relay: session idle for too long"),
+            _ => None,
+        }
+    }
+}
+
+/// The live relay sessions, so that revoking a grant or an agent, and a
+/// grant's expiry, end them at once. Shared by the relay and the request
+/// service (whose revocations tell it directly); revocations made by
+/// another process and expiry are found by the relay's periodic check.
+#[derive(Debug, Default)]
+pub(crate) struct LiveSessions {
+    entries: Mutex<HashMap<u64, LiveSession>>,
+    next: AtomicU64,
+}
+
+#[derive(Debug)]
+struct LiveSession {
+    grant_id: Id,
+    agent: AgentName,
+    not_after: i64,
+    /// Why the relay must end the session, once it must.
+    end: watch::Sender<Option<&'static str>>,
+}
+
+impl LiveSession {
+    /// Tell the session to end for `reason`; the first reason given stands.
+    fn end(&self, reason: &'static str) {
+        self.end.send_if_modified(|ending| {
+            if ending.is_some() {
+                return false;
+            }
+            *ending = Some(reason);
+            true
+        });
+    }
+}
+
+impl LiveSessions {
+    pub(crate) fn new() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+
+    /// Add a session of `grant`; it is listed until the registration is
+    /// dropped.
+    pub(crate) fn register(self: &Arc<Self>, grant: &RelayGrantRecord) -> Registration {
+        let (end, ended) = watch::channel(None);
+        let key = self.next.fetch_add(1, Ordering::Relaxed);
+        self.lock().insert(
+            key,
+            LiveSession {
+                grant_id: grant.grant_id.clone(),
+                agent: grant.agent.clone(),
+                not_after: grant.not_after,
+                end,
+            },
+        );
+        Registration {
+            sessions: Arc::clone(self),
+            key,
+            ended,
+        }
+    }
+
+    /// End the sessions of grant `grant_id`: it was revoked.
+    pub(crate) fn revoke_grant(&self, grant_id: &Id) {
+        self.end_where(|s| s.grant_id == *grant_id, reason::REVOKED);
+    }
+
+    /// End the sessions of every grant of `agent`: it was revoked.
+    pub(crate) fn revoke_agent(&self, agent: &AgentName) {
+        self.end_where(|s| s.agent == *agent, reason::REVOKED);
+    }
+
+    /// End the sessions of grant `grant_id`: its window is over.
+    pub(crate) fn expire_grant(&self, grant_id: &Id) {
+        self.end_where(|s| s.grant_id == *grant_id, reason::EXPIRED);
+    }
+
+    /// End the sessions whose grant's window is over at `now` (Unix
+    /// seconds), as known when they started.
+    pub(crate) fn expire_due(&self, now: i64) {
+        self.end_where(|s| s.not_after <= now, reason::EXPIRED);
+    }
+
+    /// The grants with live sessions, each once.
+    pub(crate) fn grant_ids(&self) -> Vec<Id> {
+        self.lock()
+            .values()
+            .map(|s| s.grant_id.clone())
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
+    fn end_where(&self, matches: impl Fn(&LiveSession) -> bool, reason: &'static str) {
+        for session in self.lock().values().filter(|s| matches(s)) {
+            session.end(reason);
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<u64, LiveSession>> {
+        // Every update is a single insert or removal: a holder that
+        // panicked leaves the map consistent.
+        self.entries.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// A session's place in [`LiveSessions`], removed when dropped.
+#[derive(Debug)]
+pub(crate) struct Registration {
+    sessions: Arc<LiveSessions>,
+    key: u64,
+    ended: watch::Receiver<Option<&'static str>>,
+}
+
+impl Registration {
+    /// Resolves, with the reason, once the relay must end the session.
+    pub(crate) async fn ended(&mut self) -> &'static str {
+        // The sender lives in the registry entry, which outlives `self`.
+        let ending = self
+            .ended
+            .wait_for(Option::is_some)
+            .await
+            .map_or(None, |ending| *ending);
+        match ending {
+            Some(reason) => reason,
+            None => std::future::pending().await,
+        }
+    }
+}
+
+impl Drop for Registration {
+    fn drop(&mut self) {
+        self.sessions.lock().remove(&self.key);
+    }
 }
 
 /// What the agent asked the target to run.
@@ -291,6 +451,8 @@ pub(crate) struct Watch {
     /// gets there in seconds. While held back, the agent's connection does
     /// not notice the agent leaving either; this ends such a session.
     pub wedge: Duration,
+    /// No bytes read from either side for this long.
+    pub idle: Duration,
 }
 
 /// How often the session checks for progress.
@@ -299,6 +461,10 @@ const WATCH_EVERY: Duration = Duration::from_millis(250);
 /// Longest each side gets to take the relay's close at the end before its
 /// connection is cut.
 const CLOSE_WAIT: Duration = Duration::from_secs(2);
+
+/// Longest a session ended by force (see [`reason::forced`]) gets to close
+/// gracefully before both connections are cut.
+const FORCED_CLOSE_WAIT: Duration = Duration::from_secs(1);
 
 /// Cuts a connection off: shuts its socket down under the SSH library,
 /// whose reads then end, whatever state its event loop is in.
@@ -325,8 +491,10 @@ pub(crate) fn with_cutoff(
 pub(crate) struct Ends {
     /// The agent's session channel.
     pub agent: Channel<server::Msg>,
-    /// The agent connection, for an exit signal.
+    /// The agent connection, for an exit signal and a forced hang-up.
     pub agent_handle: server::Handle,
+    /// Line ending of notices on the agent's stderr (`\r\n` with a pty).
+    pub newline: &'static str,
     /// Cuts the agent's connection.
     pub agent_cut: Arc<Cutoff>,
     /// The target's session channel, its command started.
@@ -351,6 +519,17 @@ struct Progress {
     /// Whether the reader is waiting for room in the queue (so the
     /// connection it reads is held up).
     waiting: AtomicBool,
+    /// Data bytes read from the source so far.
+    received: AtomicU64,
+}
+
+impl Progress {
+    /// Count a message read from the source.
+    fn read(&self, msg: &ChannelMsg) {
+        if let ChannelMsg::Data { data } | ChannelMsg::ExtendedData { data, .. } = msg {
+            self.received.fetch_add(len64(data.len()), Ordering::AcqRel);
+        }
+    }
 }
 
 /// Marks a reader as waiting for room while it exists (also if the wait is
@@ -436,18 +615,26 @@ impl Queued {
 }
 
 /// Carry the session until either side closes it, it stops making
-/// progress, or `stop` fires; then close both channels, cutting a
-/// connection that does not take its close in time. The agent's data, EOF,
-/// window changes and signals go to the target; the target's output, EOF,
-/// exit status and exit signal come back.
+/// progress or sits idle, the relay must end it (`live`: revoked or
+/// expired), or `stop` fires; then close both channels, cutting a
+/// connection that does not take its close in time. A session ended by
+/// force has both connections cut after [`FORCED_CLOSE_WAIT`]. The agent's
+/// data, EOF, window changes and signals go to the target; the target's
+/// output, EOF, exit status and exit signal come back.
 ///
 /// Each direction reads its source into a bounded queue and writes the
 /// queue out separately, so a slow destination holds back only its own
 /// source. The session ends when it stops making progress (see [`Watch`]).
-pub(crate) async fn relay(ends: Ends, mut stop: watch::Receiver<bool>, limits: Watch) -> Outcome {
+pub(crate) async fn relay(
+    ends: Ends,
+    live: &mut Registration,
+    mut stop: watch::Receiver<bool>,
+    limits: Watch,
+) -> Outcome {
     let Ends {
         agent,
         agent_handle,
+        newline,
         agent_cut,
         target,
         target_cut,
@@ -464,24 +651,59 @@ pub(crate) async fn relay(ends: Ends, mut stop: watch::Receiver<bool>, limits: W
         ended = upstream(&mut from_agent, &to_target, Arc::clone(&up_progress), &mut up) => ended,
         ended = downstream(&mut from_target, early, &to_agent, &agent_handle, agent_id, Arc::clone(&down_progress), &mut down) => ended,
         ended = watchdog(&up_progress, &down_progress, limits) => ended,
+        ended = live.ended() => ended,
         () = super::server::stopping(&mut stop) => reason::SHUTDOWN,
     };
-    let (agent_closed, target_closed) = tokio::join!(
-        tokio::time::timeout(CLOSE_WAIT, to_agent.close()),
-        tokio::time::timeout(CLOSE_WAIT, to_target.close()),
-    );
-    // A connection whose event loop is held up cannot take the close.
-    if agent_closed.is_err() || ended.starts_with(reason::FLOW_CONTROL) {
+    if reason::forced(ended) {
+        // Within the grace, a notice and a close for each side, a goodbye
+        // to the agent, and each connection given the chance to end; then
+        // both are cut, whatever state they are in.
+        let agent_side = async {
+            if let Some(notice) = reason::notice(ended) {
+                let _ = to_agent
+                    .extended_data_bytes(1, format!("{notice}{newline}").into_bytes())
+                    .await;
+            }
+            let _ = to_agent.close().await;
+            let goodbye = reason::notice(ended).unwrap_or("warden relay: session ended");
+            let _ = agent_handle
+                .disconnect(
+                    Disconnect::ByApplication,
+                    goodbye.to_owned(),
+                    "en".to_owned(),
+                )
+                .await;
+            while from_agent.wait().await.is_some() {}
+        };
+        let target_side = async {
+            let _ = to_target.close().await;
+            while let Some(msg) = from_target.wait().await {
+                if matches!(msg, ChannelMsg::Close) {
+                    break;
+                }
+            }
+        };
+        let _ = tokio::time::timeout(FORCED_CLOSE_WAIT, async {
+            tokio::join!(agent_side, target_side)
+        })
+        .await;
         agent_cut.now();
-    }
-    if target_closed.is_err() || ended.starts_with(reason::FLOW_CONTROL) {
         target_cut.now();
+    } else {
+        let (agent_closed, target_closed) = tokio::join!(
+            tokio::time::timeout(CLOSE_WAIT, to_agent.close()),
+            tokio::time::timeout(CLOSE_WAIT, to_target.close()),
+        );
+        // A connection whose event loop is held up cannot take the close.
+        if agent_closed.is_err() {
+            agent_cut.now();
+        }
+        if target_closed.is_err() {
+            target_cut.now();
+        }
     }
     Outcome {
-        reason: if down.exited
-            && !matches!(ended, reason::SHUTDOWN)
-            && !ended.starts_with(reason::FLOW_CONTROL)
-        {
+        reason: if down.exited && !matches!(ended, reason::SHUTDOWN) && !reason::forced(ended) {
             reason::EXITED
         } else {
             ended
@@ -492,7 +714,8 @@ pub(crate) async fn relay(ends: Ends, mut stop: watch::Receiver<bool>, limits: W
     }
 }
 
-/// Resolves, with the reason, once the session stops making progress.
+/// Resolves, with the reason, once the session stops making progress or
+/// sits idle.
 async fn watchdog(up: &Progress, down: &Progress, limits: Watch) -> &'static str {
     // Per direction (upstream, downstream): messages delivered at the last
     // check, and since when the direction has held data without delivering
@@ -500,9 +723,22 @@ async fn watchdog(up: &Progress, down: &Progress, limits: Watch) -> &'static str
     // never counts.
     let mut delivered = [0_u64; 2];
     let mut held_since: [Option<tokio::time::Instant>; 2] = [None; 2];
+    // Bytes read either way at the last check, and since when none were.
+    let mut received = 0_u64;
+    let mut quiet_since = tokio::time::Instant::now();
     loop {
         tokio::time::sleep(WATCH_EVERY).await;
         let now = tokio::time::Instant::now();
+        let read = up
+            .received
+            .load(Ordering::Acquire)
+            .wrapping_add(down.received.load(Ordering::Acquire));
+        if read != received {
+            received = read;
+            quiet_since = now;
+        } else if now.duration_since(quiet_since) >= limits.idle {
+            return reason::IDLE;
+        }
         let mut held = [Duration::ZERO; 2];
         for (i, progress) in [up, down].into_iter().enumerate() {
             let count = progress.delivered.load(Ordering::Acquire);
@@ -566,6 +802,7 @@ async fn upstream(
                 // nothing to the target.
                 Some(_) => continue,
             };
+            queue.progress.read(&msg);
             if !queue.push(msg).await {
                 return reason::TARGET_CLOSED;
             }
@@ -638,6 +875,7 @@ async fn downstream(
                 Some(ChannelMsg::Close) | None => return reason::TARGET_CLOSED,
                 Some(_) => continue,
             };
+            queue.progress.read(&msg);
             if !queue.push(msg).await {
                 return reason::CLIENT_CLOSED;
             }
@@ -724,9 +962,13 @@ mod tests {
 
     use std::time::Duration;
 
+    use warden_broker_proto::{AgentName, TargetName, UnixUser};
+
+    use crate::requests::RelayGrantRecord;
+
     use super::{
-        PreAuthLimiter, Program, Progress, Queue, SessionSlots, SlotRefusal, Watch, env_allowed,
-        reason, watchdog,
+        LiveSessions, PreAuthLimiter, Program, Progress, Queue, Registration, SessionSlots,
+        SlotRefusal, Watch, env_allowed, reason, watchdog,
     };
 
     fn data(len: usize) -> russh::ChannelMsg {
@@ -764,7 +1006,118 @@ mod tests {
         Watch {
             stall: Duration::from_secs(stall_secs),
             wedge: Duration::from_secs(2),
+            idle: Duration::from_secs(15 * 60),
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn idle_is_measured_from_the_last_byte_either_way() {
+        let (up, down) = (Progress::default(), Progress::default());
+        let limits = Watch {
+            idle: Duration::from_secs(10),
+            ..limits(60)
+        };
+        let watching = watchdog(&up, &down, limits);
+        tokio::pin!(watching);
+        // Bytes one way, then the other, every 8 s: never idle for 10 s.
+        for (i, progress) in [&up, &down, &up, &down].into_iter().enumerate() {
+            tokio::select! {
+                why = &mut watching => panic!("ended after {i} rounds: {why}"),
+                () = tokio::time::sleep(Duration::from_secs(8)) => {}
+            }
+            progress.received.fetch_add(1, Ordering::AcqRel);
+        }
+        // Then quiet: ended 10 s (and a check) after the last byte.
+        let quiet = tokio::time::Instant::now();
+        assert_eq!((&mut watching).await, reason::IDLE);
+        let after = quiet.elapsed();
+        assert!(
+            after >= Duration::from_secs(10) && after <= Duration::from_millis(10_500),
+            "{after:?}"
+        );
+    }
+
+    fn grant(agent: &str, not_after: i64) -> RelayGrantRecord {
+        RelayGrantRecord {
+            grant_id: Id::random(),
+            agent: AgentName::try_from(agent.to_owned()).unwrap(),
+            target: TargetName::try_from("nas".to_owned()).unwrap(),
+            user: UnixUser::try_from("backup".to_owned()).unwrap(),
+            not_after,
+        }
+    }
+
+    /// The reason `live` was told to end for, if it was.
+    async fn told(live: &mut Registration) -> Option<&'static str> {
+        tokio::time::timeout(Duration::from_millis(10), live.ended())
+            .await
+            .ok()
+    }
+
+    #[tokio::test]
+    async fn live_sessions_end_by_grant_agent_or_expiry() {
+        let sessions = LiveSessions::new();
+        let (a, b, c) = (grant("a", 100), grant("a", 200), grant("c", 300));
+        let mut a1 = sessions.register(&a);
+        let mut a2 = sessions.register(&a);
+        let mut b1 = sessions.register(&b);
+        let mut c1 = sessions.register(&c);
+        let mut ids = sessions.grant_ids();
+        ids.sort_by(|x, y| x.as_str().cmp(y.as_str()));
+        let mut want = vec![a.grant_id.clone(), b.grant_id.clone(), c.grant_id.clone()];
+        want.sort_by(|x, y| x.as_str().cmp(y.as_str()));
+        assert_eq!(ids, want, "each grant once");
+
+        sessions.revoke_grant(&a.grant_id);
+        assert_eq!(told(&mut a1).await, Some(reason::REVOKED));
+        assert_eq!(told(&mut a2).await, Some(reason::REVOKED));
+        assert_eq!(told(&mut b1).await, None, "another grant of the agent");
+        assert_eq!(told(&mut c1).await, None);
+
+        // The first reason stands.
+        sessions.expire_due(150);
+        assert_eq!(told(&mut a1).await, Some(reason::REVOKED));
+        assert_eq!(told(&mut b1).await, None, "not past its window");
+        sessions.expire_due(200);
+        assert_eq!(told(&mut b1).await, Some(reason::EXPIRED));
+
+        sessions.revoke_agent(&AgentName::try_from("c".to_owned()).unwrap());
+        assert_eq!(told(&mut c1).await, Some(reason::REVOKED));
+        sessions.expire_grant(&c.grant_id);
+        assert_eq!(told(&mut c1).await, Some(reason::REVOKED));
+
+        // Dropped registrations are no longer listed.
+        drop((a1, a2, b1));
+        assert_eq!(sessions.grant_ids(), vec![c.grant_id.clone()]);
+        drop(c1);
+        assert!(sessions.grant_ids().is_empty());
+    }
+
+    #[test]
+    fn forced_reasons_and_their_notices() {
+        for forced in [
+            reason::REVOKED,
+            reason::EXPIRED,
+            reason::IDLE,
+            reason::DOWNSTREAM_STALLED,
+            reason::UPSTREAM_STALLED,
+        ] {
+            assert!(reason::forced(forced), "{forced}");
+        }
+        for gentle in [
+            reason::EXITED,
+            reason::TARGET_CLOSED,
+            reason::CLIENT_CLOSED,
+            reason::SHUTDOWN,
+        ] {
+            assert!(!reason::forced(gentle), "{gentle}");
+            assert_eq!(reason::notice(gentle), None);
+        }
+        assert_eq!(
+            reason::notice(reason::REVOKED),
+            Some("warden relay: access revoked")
+        );
+        assert_eq!(reason::notice(reason::DOWNSTREAM_STALLED), None);
     }
 
     #[tokio::test(start_paused = true)]
