@@ -1,0 +1,16 @@
+{
+  "id": "badmode00000000000000000d0",
+  "title": "badmode",
+  "version": 3,
+  "vault": { "id": "vault0000000000000000000a1" },
+  "category": "SERVER",
+  "tags": ["warden:ssh-target"],
+  "fields": [
+    { "id": "notesPlain", "type": "STRING", "purpose": "NOTES", "label": "notesPlain", "value": "managed by warden" },
+    { "id": "f1", "type": "STRING", "label": "address", "value": "10.0.0.6" },
+    { "id": "f2", "type": "STRING", "label": "mode", "value": "telnet" },
+    { "id": "f3", "type": "STRING", "label": "users", "value": "root" },
+    { "id": "f4", "type": "STRING", "label": "max_window", "value": "1h" },
+    { "id": "f5", "type": "STRING", "label": "host_keys", "value": "{{HOST_KEY}}" }
+  ]
+}

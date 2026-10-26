@@ -1,0 +1,15 @@
+# Throwaway ECDSA key generated only for tests (the CA loader must reject
+# non-Ed25519 keys). It protects nothing and is not a secret.
+crates/broker/tests/fixtures/throwaway-test-only-ecdsa.key:private-key:1
+
+# Throwaway passphrase-protected Ed25519 key generated only for tests (the CA
+# loader must reject encrypted keys). It protects nothing and is not a secret.
+crates/broker/tests/fixtures/throwaway-test-only-ed25519-encrypted.key:private-key:1
+
+# Throwaway RSA key generated only for tests (the CA loader must reject
+# non-Ed25519 keys). It protects nothing and is not a secret.
+crates/broker/tests/fixtures/throwaway-test-only-rsa.key:private-key:1
+
+# PEM header marker string the CA loader matches to pick the OpenSSH parser.
+# It is a literal format marker, not key material.
+crates/broker/src/policy/onepassword.rs:private-key:293

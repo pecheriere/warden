@@ -1,0 +1,12 @@
+{
+  "id": "ca000000000000000000000f00",
+  "title": "warden-ssh-ca",
+  "version": 2,
+  "vault": { "id": "vault0000000000000000000a1" },
+  "category": "SSH_KEY",
+  "tags": ["warden:ssh-ca"],
+  "fields": [
+    { "id": "private_key", "type": "SSHKEY", "purpose": "", "label": "private key", "value": "{{PRIVATE_KEY}}" },
+    { "id": "public_key", "type": "STRING", "label": "public key", "value": "ssh-ed25519 AAAA-not-used" }
+  ]
+}

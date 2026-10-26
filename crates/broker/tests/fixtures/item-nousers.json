@@ -1,0 +1,16 @@
+{
+  "id": "nousers000000000000000000c",
+  "title": "nousers",
+  "version": 3,
+  "vault": { "id": "vault0000000000000000000a1" },
+  "category": "SERVER",
+  "tags": ["warden:ssh-target"],
+  "fields": [
+    { "id": "notesPlain", "type": "STRING", "purpose": "NOTES", "label": "notesPlain", "value": "managed by warden" },
+    { "id": "f1", "type": "STRING", "label": "address", "value": "10.0.0.5" },
+    { "id": "f2", "type": "STRING", "label": "mode", "value": "cert" },
+
+    { "id": "f4", "type": "STRING", "label": "max_window", "value": "1h" },
+    { "id": "f5", "type": "STRING", "label": "host_keys", "value": "{{HOST_KEY}}" }
+  ]
+}

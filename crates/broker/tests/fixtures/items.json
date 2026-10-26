@@ -1,0 +1,63 @@
+[
+  {
+    "id": "pi00000000000000000000000a",
+    "title": "pi",
+    "version": 3,
+    "vault": { "id": "vault0000000000000000000a1" },
+    "category": "SERVER",
+    "lastEditedBy": "USER0000000000000000000001",
+    "createdAt": "2026-10-01T09:05:00Z",
+    "updatedAt": "2026-10-20T18:30:00Z",
+    "tags": ["warden:ssh-target"]
+  },
+  {
+    "id": "nas0000000000000000000000b",
+    "title": "nas",
+    "version": 1,
+    "vault": { "id": "vault0000000000000000000a1" },
+    "category": "SERVER",
+    "createdAt": "2026-10-01T09:06:00Z",
+    "updatedAt": "2026-10-01T09:06:00Z",
+    "tags": ["warden:ssh-target"]
+  },
+  {
+    "id": "nousers000000000000000000c",
+    "title": "nousers",
+    "version": 1,
+    "vault": { "id": "vault0000000000000000000a1" },
+    "category": "SERVER",
+    "createdAt": "2026-10-01T09:07:00Z",
+    "updatedAt": "2026-10-01T09:07:00Z",
+    "tags": ["warden:ssh-target"]
+  },
+  {
+    "id": "badmode00000000000000000d0",
+    "title": "badmode",
+    "version": 1,
+    "vault": { "id": "vault0000000000000000000a1" },
+    "category": "SERVER",
+    "createdAt": "2026-10-01T09:08:00Z",
+    "updatedAt": "2026-10-01T09:08:00Z",
+    "tags": ["warden:ssh-target"]
+  },
+  {
+    "id": "login0000000000000000000e0",
+    "title": "pi",
+    "version": 1,
+    "vault": { "id": "vault0000000000000000000a1" },
+    "category": "LOGIN",
+    "createdAt": "2026-10-01T09:09:00Z",
+    "updatedAt": "2026-10-01T09:09:00Z",
+    "tags": ["unrelated"]
+  },
+  {
+    "id": "ca000000000000000000000f00",
+    "title": "warden-ssh-ca",
+    "version": 2,
+    "vault": { "id": "vault0000000000000000000a1" },
+    "category": "SSH_KEY",
+    "createdAt": "2026-10-01T09:10:00Z",
+    "updatedAt": "2026-10-01T09:10:00Z",
+    "tags": ["warden:ssh-ca"]
+  }
+]

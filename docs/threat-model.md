@@ -1,0 +1,163 @@
+# Threat model
+
+This describes what warden protects, who it trusts, what it must never allow,
+and the risks that are accepted. It covers the SSH certificate mode, the only
+mode in this release. The design rationale is in
+[design.md](design.md).
+
+## Actors and trust
+
+| Actor | Trust |
+|---|---|
+| Owner (phone, workstation) | Root of trust. Holds the passkey. Edits the 1Password vault. |
+| Agent (for example an AI coding agent on the owner's workstation) | Semi-trusted: well-intentioned but may be prompt-injected. Bounded by its stated goal, the approved window, and the targets and users the vault allows. It can only request access, never approve it. |
+| warden server | Trusted. Holds the SSH CA private key in memory and a read-only 1Password Connect token. Compromise of the server is compromise of everything it brokers, so it is hardened accordingly. |
+| 1Password Connect | Trusted secret backend. Reachable only from warden. |
+| Notifiers (Home Assistant Companion, ntfy, push providers) | Untrusted doorbells. They receive the goal text, agent, target and a link, and nothing else. They cannot approve anything. |
+| Tailscale | Transport and network-level identity. The tailnet policy is the outer access control. |
+
+## Anti-goals
+
+These are failures even if everything else "works". Each lists how warden
+defends against it.
+
+- **An approval is forged, replayed, widened or applied to a different request
+  than the one displayed.** Approval needs a WebAuthn assertion from an
+  enrolled passkey. The approval token is at least 128 bits of randomness,
+  stored only as a SHA-256 hash, single use, tied to one request and expiring
+  with it. The window cannot exceed what the target allows. An approval is
+  valid only on the approved target: the certificate's single principal is
+  `warden:<target>:<user>`, which only that target's host maps to the account
+  (see "Targets trust the CA, per target" below). See "Approval binding"
+  below.
+- **A notification channel sees secrets or can approve.** Notifications carry
+  the agent, target, user, a goal truncated to 200 characters, and a link.
+  The link opens a page that only the owner's phone can reach and that still
+  requires a passkey.
+- **Private keys are written to disk on the workstation.** The CLI keeps the
+  ephemeral Ed25519 key in memory and hands it to a dedicated per-grant
+  `ssh-agent`. The agent key lives in the macOS Keychain. The CLI stores only
+  the server URL, agent name, socket and pid files and `known_hosts` files, in
+  0700 directories with 0600 files.
+- **warden becomes the easiest way into the network.** It runs as a non-root
+  user in a distroless image with no shell, listens on the loopback interface
+  of the network namespace it shares with its Tailscale sidecar, and is
+  exposed only through that sidecar's Tailscale Serve. It holds a read-only
+  Connect token.
+- **Silent failure.** The CLI always receives an explicit terminal state:
+  `approved`, `denied`, `expired` or `error` with a message.
+
+## Approval binding
+
+The design called for a WebAuthn challenge derived from the hash of the exact
+request plus the chosen window. webauthn-rs generates and verifies the
+challenge itself, so warden binds the approval differently, with an equivalent
+guarantee because the server is the trusted party:
+
+- The server starts the passkey ceremony for one specific request and window.
+  The ceremony state, including the challenge, is kept server-side and keyed to
+  that request, the chosen window and the approval token. It is consumed by the
+  first completion attempt.
+- The assertion is verified against that stored state, so it cannot be used for
+  another request or another window, and a replay finds no state.
+- The approval page and the CLI both show a short fingerprint of the request
+  (a hash of the agent name and the whole request: target, user, requested window, goal and public key). If the owner is talking to
+  the person or agent that made the request, they can compare the two before
+  approving. A mismatch means the owner is looking at a different request and
+  should deny it.
+- The destination the page shows (host, port and the target's host keys) is
+  bound too. The page embeds a digest of it, the ceremony begins only if the
+  target still has that digest, and the approval completes only if the
+  target re-read at that moment still matches. If the 1Password item changed
+  in between, the owner is asked to reload and review.
+- The certificate is signed for the exact ephemeral public key in the request.
+  One certificate is issued per grant. The grant id is not a bearer credential
+  and cannot mint further certificates.
+
+## Authentication of callers
+
+- Every endpoint on both listeners requires the `Tailscale-User-Login` header
+  to equal `WARDEN_OWNER_LOGIN`, except `GET /healthz` on the agent API, which
+  is unauthenticated for the container health check and returns a static body
+  revealing nothing. The header is set by Tailscale Serve after it
+  authenticates the peer. The CLI never sets it.
+- Agent endpoints also require an agent key. Keys are `wdn_` followed by 256
+  random bits, shown once and stored only as a SHA-256 hash. Grants are bound
+  to the agent that requested them. Revoking an agent disables its key at
+  once, ends its pending requests and grants, and wakes its waiting CLI calls.
+- The approval endpoints are meant to be reachable from the owner's phone and
+  not from the workstation the agent runs on (see "Deployment assumptions").
+
+## Accepted residual risks
+
+These were recorded during implementation and are accepted for this release.
+
+- **The CA key is copied into HTTP client buffers.** The CA private key PEM is
+  read from 1Password Connect over HTTP. Parts of it can sit in reqwest and
+  hyper buffers that warden does not control and cannot zeroize. The parsed
+  key warden holds is zeroized on drop. The mitigation is the
+  container hardening described under "Deployment assumptions": an unprivileged
+  process, no capabilities and no other container on its network.
+- **Agent keys are bearer credentials.** Anyone who obtains an agent key can
+  replay it from a host that can reach the API. The impact is bounded: a key
+  can only create requests, and every request still needs a passkey approval
+  that shows the agent name and goal. A leaked key is revoked with
+  `warden-server agent revoke`.
+- **Certificates cannot be revoked before they expire.** Revoking a grant
+  stops new issuance and the CLI's use of it, but a certificate already issued
+  stays valid on target hosts until it expires. The windows are short (at most
+  four hours) and each certificate is bound to a key that exists only in the
+  agent's memory. Distributing a revocation list to targets is out of scope.
+- **Revocation from the server CLI is not instant for waiting clients.** A
+  `warden-server agent revoke` run from the command line changes the database,
+  but the running server only re-reads it when a long poll wakes, so a waiting
+  client can take up to 30 seconds to see the terminal state.
+- **Goals are free text.** The goal is a single line of at most 500 characters
+  without control characters or invisible format characters (bidi
+  overrides, zero-width characters). The owner decides on the goal alone, and a
+  prompt-injected agent can write a misleading goal. The fingerprint check, the
+  narrow user and the short window limit the damage.
+
+## Deployment assumptions
+
+warden's guarantees depend on its environment being set up as follows.
+
+- **Tailscale sidecar.** warden runs in the network namespace of a dedicated
+  Tailscale node (`--network container:<sidecar>`) with both listeners on
+  loopback (the defaults), and the node exposes the API and approval UI
+  through Tailscale Serve. No other container can reach warden, so none can
+  forge `Tailscale-User-Login`. Binding a listener to `0.0.0.0` or running
+  warden on a shared bridge network breaks this: anything that can reach the
+  listener directly can forge the header. The WebAuthn relying party is the node's name, so it
+  is not shared with other services. Nothing is published on the LAN.
+- **Phone-only approval port.** The tailnet policy grants the approval UI port
+  to the owner's phone only, never to the workstation the agent runs on. An
+  agent that is prompt-injected must not be able to put an approval prompt in
+  front of the owner on the machine it controls. warden checks only that the
+  caller is the owner; this separation is enforced by the tailnet policy, and
+  the policy should have tests that assert it.
+- **Connect read-only and internal.** The Connect token can read only the
+  `Warden` vault and is read-only. The Connect server is reachable from warden
+  alone, on an internal network.
+- **Hardened container.** Run as the image's non-root user, with all
+  capabilities dropped, a read-only root filesystem and a writable `/data`
+  volume for the database and audit log. Egress is limited to what warden
+  needs: Connect, the notifiers and Tailscale.
+- **Targets trust the CA, per target.** Each target host must trust the SSH
+  CA only for its own target name. With OpenSSH: `TrustedUserCAKeys
+  /etc/ssh/warden_ca.pub` and `AuthorizedPrincipalsFile
+  /etc/ssh/auth_principals/%u`, the file holding one line
+  `warden:<target>:<user>` per allowed user. A host that only reads
+  `authorized_keys` (for example the Home Assistant SSH add-on) uses
+  `cert-authority,principals="warden:<target>:<user>" ssh-ed25519 AAAA…`.
+  The property "an approval is valid only on the approved target" depends on
+  this configuration: a host that accepted any principal from the CA, or
+  listed another target's principal, would accept certificates approved for
+  other targets. A target that cannot be set up this way is outside this
+  release.
+- **Backups.** The SQLite database and the audit log live on `/data`. Losing
+  the database loses only in-flight requests and enrolled passkeys, which are
+  enrolled again. The audit log is a hash chain; `warden-server audit verify`
+  detects an edited, reordered or removed entry before the last one, but
+  whoever can rewrite the whole file can rewrite the chain, so ship the log somewhere
+  the server cannot modify.

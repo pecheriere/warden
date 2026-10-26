@@ -1,0 +1,44 @@
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+yanked = "deny"
+unmaintained = "all"
+ignore = [
+    # rsa and crypto-bigint come in through ssh-agent-lib 0.6.0, which enables
+    # ssh-key's "crypto" feature (RSA and NIST curves) unconditionally. warden
+    # only ever generates and signs with Ed25519, so no RSA private-key
+    # operation and no vulnerable crypto-bigint path runs. Remove these entries
+    # once ssh-agent-lib drops the dependency or the advisories are patched.
+    { id = "RUSTSEC-2023-0071", reason = "rsa pulled in by ssh-agent-lib; no RSA private-key operations are performed" },
+    { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5 pulled in by ssh-key NIST curves via ssh-agent-lib; only Ed25519 is used" },
+]
+
+[licenses]
+version = 2
+confidence-threshold = 0.9
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "OpenSSL", # webauthn-rs links openssl
+    "MPL-2.0",
+    "CDLA-Permissive-2.0", # webpki-root-certs trust-anchor data (reqwest rustls verifier)
+]
+
+[bans]
+# The RustCrypto and rand ecosystems currently ship overlapping major versions
+# (for example rand 0.8 via ssh-key and rand 0.9 elsewhere), so duplicates are
+# reported but do not fail the build.
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

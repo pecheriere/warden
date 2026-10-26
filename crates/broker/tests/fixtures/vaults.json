@@ -1,0 +1,12 @@
+[
+  {
+    "id": "vault0000000000000000000a1",
+    "name": "Warden",
+    "attributeVersion": 1,
+    "contentVersion": 42,
+    "items": 4,
+    "type": "USER_CREATED",
+    "createdAt": "2026-10-01T09:00:00Z",
+    "updatedAt": "2026-10-20T18:30:00Z"
+  }
+]
