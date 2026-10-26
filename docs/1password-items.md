@@ -36,8 +36,8 @@ warden, and warden logs in to the target with a credential that never leaves
 it. The item holds that credential in **exactly one** of two fields:
 
 - `private_key`: an **unencrypted Ed25519** private key (the only key type
-  warden handles privately; it holds no RSA or NIST-curve private key), in OpenSSH
-  (`-----BEGIN OPENSSH PRIVATE KEY-----`) or PKCS#8
+  warden handles privately; it holds no RSA or NIST-curve private key), in
+  OpenSSH (`-----BEGIN OPENSSH PRIVATE KEY-----`) or PKCS#8
   (`-----BEGIN PRIVATE KEY-----`) PEM format. RSA and ECDSA keys are
   refused (warden performs no RSA or NIST-curve private-key operation): use
   a password for a target that cannot accept an Ed25519 key.
@@ -51,10 +51,11 @@ field, or with both, is unusable; so is a `cert` item with either field set,
 so that a credential is never left on an item that does not use it. Errors
 name the item and the field but never quote the value.
 
-Every read of the item validates the credential, so a bad one fails the
-request up front, but only a relay session keeps it: the session takes it
-from the same read as the rest of the item, holds it in memory that is wiped
-after use, and never logs it, returns it to the agent or writes it to the
+Every read of the item (at request, at approval and at session start)
+reads and validates the credential, so a bad one fails the request up front,
+but only a session start uses it: the session takes it from the same read as
+the rest of the item, holds it zeroized, drops it right after logging in to
+the target, and never logs it, returns it to the agent or writes it to the
 audit log.
 
 Example (category Server, tag `warden:ssh-target`, title `nas`):

@@ -215,8 +215,10 @@ never is, though a holder of the pinned private key could still sign with
 SHA-1. Any other key aborts with a fixed message. warden logs in as the
 approved user with the item's credential: an Ed25519 private key or a password
 (exactly one; see [1password-items.md](1password-items.md)). The credential is
-held zeroized and never logged, returned or audited. No forwarding of any kind
-is requested.
+read and validated whenever the target item is read (at request, at approval
+and at session start) but used only at session start, where it is held
+zeroized and dropped right after the onward login. It is never logged,
+returned or audited. No forwarding of any kind is requested.
 
 **Session policy.** One session channel per connection. Allowed: `pty-req`,
 `env` (only `LANG`, `LC_*` and `TERM`, at most 16 variables, values of at most
@@ -251,13 +253,18 @@ input to the target not drained` (stall). Residual: when the
 target stops reading its input, an agent that disconnects is noticed only
 after up to 60 s, so its slot is held that long.
 
-**Teardown.** A running session ends, with both connections cut by a hard
-cut within 5 s, when its grant or agent is revoked (immediately, when the
-revoke goes through the broker; otherwise found by a check of live grants
-every second), when the grant's window ends (enforced from memory on every
-tick), after 15 minutes with no bytes in either direction, when a flow-control
-watchdog fires, or when the relay shuts down. Each started session records
-exactly one `relay_session_ended` event.
+**Teardown.** A running session ends when its grant or agent is revoked, when
+the grant's window ends, after 15 minutes with no bytes in either direction,
+when a flow-control watchdog fires, or when the relay shuts down. A revocation
+that goes through the broker reaches the session at once, and expiry is
+enforced from memory on a check every second, so the session is told to end
+within about 1 s; it then has at most 1 s to close before both connections
+are cut hard. A revocation made by another process (the server CLI) is found
+by the check of live grants every second, each query bounded to 1.5 s: with a
+healthy database the session ends within about 5 to 6 s in the worst case.
+When the database cannot be read, the relay fails closed (below), which ends
+the session within about 10 to 11 s. Each started session records exactly one
+`relay_session_ended` event.
 
 **Fail closed.** The grant check is a database query bounded to 1.5 s. If no
 query has succeeded for 10 s, every relayed session ends (reason `grant state
@@ -288,8 +295,9 @@ local listener; `WARDEN_RELAY_HOST_KEY_PATH` (default
 use. The file is created atomically with mode 0600 and never overwritten. An
 existing file must be a regular file (not a symbolic link) owned by the broker
 user, not accessible to group or others, and hold an unencrypted OpenSSH
-Ed25519 key; anything else stops the server at startup. Its public half is returned in every relay grant, and the CLI
-pins it (and only it) for the relay. The relay address is public information.
+Ed25519 key; anything else stops the server at startup. Its public half is
+returned in every relay grant, and the CLI pins it (and only it) for the
+relay. The relay address is public information.
 
 ### 8.3 HTTP proxy mode (secret injection)
 

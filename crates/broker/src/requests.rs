@@ -479,7 +479,8 @@ impl Requests {
     /// [`RequestError::Rejected`] for policy violations,
     /// [`RequestError::KeyInUse`] if the SSH public key backs another live
     /// request or grant, the target or secret errors from the backend,
-    /// [`RequestError::AgentRevoked`], or storage failures. No row is stored and nobody is notified on error.
+    /// [`RequestError::AgentRevoked`], or storage failures. No row is stored
+    /// and nobody is notified on error.
     pub async fn create(
         &self,
         agent: &AgentName,

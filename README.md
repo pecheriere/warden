@@ -54,7 +54,8 @@ phone --- HTTPS (tailnet) ------------> approval page (WebAuthn passkey)
 ## Components
 
 - `warden-server` (crate `warden-broker`): the agent API, the approval web UI,
-  the SSH CA, the SSH relay, the HTTP proxy, notifier dispatch, the hash-chained audit log and SQLite state.
+  the SSH CA, the SSH relay, the HTTP proxy, notifier dispatch, the
+  hash-chained audit log and SQLite state.
   It runs as a container.
 - `warden` (crate `warden-broker-cli`): the command-line client. It requests
   access, waits for the decision, keeps the ephemeral key in a per-grant
@@ -221,13 +222,12 @@ listeners on loopback. The sidecar publishes the agent API and the approval UI
 as two Tailscale Serve ports (proxying to `127.0.0.1:8080` and
 `127.0.0.1:8081`) with separate tailnet grants. Serve sets the
 `Tailscale-User-Login` header that warden checks; nothing else can reach the
-listeners to forge it. Grant the approval
-port to the owner's phone only, and the API and relay ports to the machine the
-agent runs on (the relay is a raw TCP forward, so the tailnet policy is its
-only network-level restriction). Keep the Connect server on an internal network that only warden can
-reach, run warden with all capabilities dropped and a read-only root
-filesystem, and back up the `/data` volume. Details and the reasons are in the
-threat model.
+listeners to forge it. Grant the approval port to the owner's phone only, and
+the API and relay ports to the machine the agent runs on (the relay is a raw
+TCP forward, so the tailnet policy is its only network-level restriction). Keep
+the Connect server on an internal network that only warden can reach, run
+warden with all capabilities dropped and a read-only root filesystem, and back
+up the `/data` volume. Details and the reasons are in the threat model.
 
 ## Security model
 
@@ -235,10 +235,10 @@ An agent can only request; a passkey approval from the owner's enrolled device,
 reachable only over the tailnet, is required for every grant; certificates are
 valid for at most four hours for one ephemeral key; relayed sessions end at
 revocation or expiry and the target's credential never leaves the broker; API
-secrets never leave the broker except toward their approved origin; secrets never reach
-notifiers; and every step is written to a tamper-evident audit log. The actors,
-anti-goals, accepted residual risks and deployment assumptions are in
-[docs/threat-model.md](docs/threat-model.md).
+secrets never leave the broker except toward their approved origin; secrets
+never reach notifiers; and every step is written to a tamper-evident audit log.
+The actors, anti-goals, accepted residual risks and deployment assumptions are
+in [docs/threat-model.md](docs/threat-model.md).
 
 ## Development
 
