@@ -10,6 +10,10 @@ use url::Url;
 use crate::policy::onepassword::parse_host_port;
 use crate::proxy::ProxyLimits;
 
+/// Largest value accepted for `WARDEN_RELAY_MAX_SESSIONS`: each session
+/// holds two SSH connections and their buffers.
+const MAX_RELAY_SESSIONS_CAP: usize = 1024;
+
 /// Largest value accepted for `WARDEN_PROXY_MAX_RESPONSE_BYTES`: a response
 /// is held in memory whole (and base64-encoded once more for the agent), so
 /// the cap bounds what one call can make the broker allocate.
@@ -134,6 +138,9 @@ pub struct RelayConfig {
     /// `WARDEN_RELAY_HOST_KEY_PATH`, default `/data/relay_host_ed25519`:
     /// the relay's Ed25519 host key, created on first use.
     pub host_key_path: PathBuf,
+    /// `WARDEN_RELAY_MAX_SESSIONS`, default 16: relayed sessions open at
+    /// once, across all grants.
+    pub max_sessions: usize,
 }
 
 /// Full server configuration.
@@ -246,6 +253,18 @@ impl Config {
             host_key_path: get("WARDEN_RELAY_HOST_KEY_PATH")
                 .unwrap_or_else(|| "/data/relay_host_ed25519".to_owned())
                 .into(),
+            max_sessions: match get("WARDEN_RELAY_MAX_SESSIONS") {
+                None => 16,
+                Some(raw) => raw
+                    .trim()
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|n| (1..=MAX_RELAY_SESSIONS_CAP).contains(n))
+                    .ok_or(ConfigError::Invalid {
+                        var: "WARDEN_RELAY_MAX_SESSIONS",
+                        reason: "must be a whole number from 1 to 1024",
+                    })?,
+            },
         };
 
         Ok(Self {

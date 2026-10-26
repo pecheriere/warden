@@ -18,7 +18,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
-use warden_broker_proto::{AgentName, Fingerprint, Id};
+use warden_broker_proto::{AgentName, Fingerprint, Id, TargetName, UnixUser};
 
 /// `prev` of the first line in a log.
 const GENESIS: &str = "0000000000000000000000000000000000000000000000000000000000000000";
@@ -120,6 +120,52 @@ pub enum AuditEvent {
         redactions: u32,
         /// `ok`, or the message the agent was given.
         outcome: String,
+    },
+    /// A relayed SSH session is about to reach its target. Written before
+    /// the relay opens any connection to the target; the session does not
+    /// start if this entry cannot be written.
+    RelaySessionStarted {
+        /// Grant id.
+        grant_id: Id,
+        /// Target name.
+        target: TargetName,
+        /// Login user on the target.
+        user: UnixUser,
+        /// The command of an `exec` session (at most 200 characters, cut
+        /// with `…`); `None` for a shell.
+        command: Option<String>,
+    },
+    /// A relayed SSH session ended. Follows its `relay_session_started`.
+    RelaySessionEnded {
+        /// Grant id.
+        grant_id: Id,
+        /// Why it ended (a fixed phrase, never secrets).
+        reason: String,
+        /// Bytes the agent sent on to the target.
+        bytes_to_target: u64,
+        /// Bytes the target sent back (stdout and stderr).
+        bytes_from_target: u64,
+        /// The command's exit status, if the target reported one.
+        exit_status: Option<u32>,
+    },
+    /// The relay refused to start a session on an authenticated
+    /// connection: the grant or the target's policy changed since login.
+    RelaySessionRefused {
+        /// Grant id.
+        grant_id: Id,
+        /// Why (a fixed phrase, never secrets).
+        reason: String,
+    },
+    /// A connection to the relay ended without logging in after trying to.
+    /// Holds no key material.
+    RelayLoginRefused {
+        /// The user name asked for (the target), or `<invalid>` if it is
+        /// not a valid target name.
+        user: String,
+        /// The peer's IP address.
+        peer: String,
+        /// Refused login attempts.
+        attempts: u32,
     },
     /// An agent was added.
     AgentAdded {

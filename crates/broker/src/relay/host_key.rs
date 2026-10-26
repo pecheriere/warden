@@ -5,8 +5,11 @@
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read as _, Write as _};
-use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
+
+use rustix::fs::{Mode, OFlags};
 
 use ssh_key::rand_core::OsRng;
 use ssh_key::{Algorithm, HashAlg, LineEnding, PrivateKey};
@@ -14,6 +17,10 @@ use zeroize::Zeroizing;
 
 /// Largest key file read; an OpenSSH Ed25519 key is about 400 bytes.
 const MAX_FILE_BYTES: u64 = 16 * 1024;
+
+/// A temporary key file older than this was left by a creator that died
+/// before linking it into place; a live creator links within milliseconds.
+const STALE_TMP_AGE: Duration = Duration::from_secs(60);
 
 /// The relay host key could not be loaded or created. Messages never carry
 /// key material.
@@ -43,6 +50,9 @@ pub enum HostKeyError {
     /// The blocking file work could not run to completion.
     #[error("relay host key: loading task failed")]
     Task,
+    /// The key could not be handed to the SSH server.
+    #[error("relay host key: cannot be loaded into the SSH server")]
+    Server,
 }
 
 /// The relay's Ed25519 host key. The private half is wiped from memory when
@@ -67,6 +77,13 @@ impl RelayHostKey {
     /// If the key cannot be encoded.
     pub fn public_key_openssh(&self) -> Result<String, HostKeyError> {
         Ok(self.key.public_key().to_openssh()?)
+    }
+
+    /// The key as the SSH server library's type, converted through its
+    /// OpenSSH text (held in a wiped buffer).
+    pub(crate) fn russh_private_key(&self) -> Result<russh::keys::PrivateKey, HostKeyError> {
+        let text = self.key.to_openssh(LineEnding::LF)?;
+        russh::keys::PrivateKey::from_openssh(text.as_str()).map_err(|_| HostKeyError::Server)
     }
 
     /// The public key's SHA-256 fingerprint (`SHA256:…`), for logs.
@@ -96,9 +113,10 @@ pub async fn load_or_create(path: PathBuf) -> Result<RelayHostKey, HostKeyError>
 /// directory, synced, then hard-linked into place, which fails rather than
 /// replaces if another process created the key meanwhile (that key is then
 /// loaded instead), so the file is never seen half written and is never
-/// overwritten. An existing file must be a regular file, not readable or
-/// writable by group or others, holding an unencrypted OpenSSH Ed25519
-/// private key.
+/// overwritten; temporary files a crashed creator left behind are removed
+/// first. An existing file must be a regular file (not a symbolic link)
+/// owned by this process's user, not readable or writable by group or
+/// others, holding an unencrypted OpenSSH Ed25519 private key.
 ///
 /// # Errors
 /// [`HostKeyError::Io`] if the file or its directory cannot be read or
@@ -128,11 +146,35 @@ fn invalid(path: &Path, reason: &'static str) -> HostKeyError {
 }
 
 fn load(path: &Path) -> Result<RelayHostKey, HostKeyError> {
-    let file = File::open(path).map_err(io_error(path))?;
+    load_owned_by(path, rustix::process::geteuid().as_raw())
+}
+
+/// Load the key at `path`, which must belong to user `owner`.
+fn load_owned_by(path: &Path, owner: u32) -> Result<RelayHostKey, HostKeyError> {
+    // Refuse a link before opening (a clear message), and open without
+    // following one, so a link swapped in between is refused too.
+    if fs::symlink_metadata(path)
+        .map_err(io_error(path))?
+        .file_type()
+        .is_symlink()
+    {
+        return Err(invalid(path, "is a symbolic link"));
+    }
+    let file = File::from(
+        rustix::fs::open(
+            path,
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(|e| io_error(path)(e.into()))?,
+    );
     // Checked on the open file, so the checks and the read see the same one.
     let meta = file.metadata().map_err(io_error(path))?;
     if !meta.is_file() {
         return Err(invalid(path, "is not a regular file"));
+    }
+    if meta.uid() != owner {
+        return Err(invalid(path, "is owned by another user"));
     }
     if meta.permissions().mode() & 0o077 != 0 {
         return Err(invalid(
@@ -171,6 +213,7 @@ fn create(path: &Path) -> Result<RelayHostKey, HostKeyError> {
     let name = path
         .file_name()
         .ok_or_else(|| invalid(path, "does not name a file"))?;
+    remove_stale_tmp(dir, name);
     let mut suffix = [0_u8; 8];
     getrandom::fill(&mut suffix)
         .map_err(|_| io_error(path)(io::Error::other("OS random number generator unavailable")))?;
@@ -197,6 +240,44 @@ fn create(path: &Path) -> Result<RelayHostKey, HostKeyError> {
     Ok(RelayHostKey { key })
 }
 
+/// Remove temporary key files (`.<name>.<hex>.tmp`) in `dir` older than
+/// [`STALE_TMP_AGE`]: a creator that died between writing and linking
+/// leaves one behind, holding a private key nobody will use. Best effort: a
+/// file that cannot be inspected or removed is left alone.
+fn remove_stale_tmp(dir: &Path, name: &std::ffi::OsStr) {
+    let Some(name) = name.to_str() else {
+        return;
+    };
+    let prefix = format!(".{name}.");
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    let now = SystemTime::now();
+    for entry in entries.flatten() {
+        let file_name = entry.file_name();
+        let Some(file_name) = file_name.to_str() else {
+            continue;
+        };
+        let is_tmp = file_name
+            .strip_prefix(&prefix)
+            .and_then(|rest| rest.strip_suffix(".tmp"))
+            .is_some_and(|hex| hex.len() == 16 && hex.bytes().all(|b| b.is_ascii_hexdigit()));
+        if !is_tmp {
+            continue;
+        }
+        let stale = entry
+            .metadata()
+            .ok()
+            .filter(fs::Metadata::is_file)
+            .and_then(|meta| meta.modified().ok())
+            .and_then(|modified| now.duration_since(modified).ok())
+            .is_some_and(|age| age > STALE_TMP_AGE);
+        if stale && let Err(e) = fs::remove_file(entry.path()) {
+            tracing::warn!(file = %entry.path().display(), error = %e, "could not remove a stale relay host key temporary file");
+        }
+    }
+}
+
 /// Write `bytes` to a new file at `path`, mode 0600, and sync it.
 fn write_new(path: &Path, bytes: &[u8]) -> Result<(), HostKeyError> {
     let mut file = OpenOptions::new()
@@ -213,7 +294,9 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<(), HostKeyError> {
 mod tests {
     use std::os::unix::fs::PermissionsExt as _;
 
-    use super::{HostKeyError, load_or_create, load_or_create_blocking};
+    use std::time::{Duration, SystemTime};
+
+    use super::{HostKeyError, load_or_create, load_or_create_blocking, load_owned_by};
 
     fn mode(path: &std::path::Path) -> u32 {
         std::fs::metadata(path).unwrap().permissions().mode() & 0o777
@@ -286,6 +369,61 @@ mod tests {
             // The bad file is left alone, never replaced.
             assert_eq!(std::fs::read_to_string(&path).unwrap(), contents);
         }
+    }
+
+    #[test]
+    fn refuses_a_symbolic_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("elsewhere");
+        load_or_create_blocking(&real).unwrap();
+        let path = dir.path().join("relay_host_ed25519");
+        std::os::unix::fs::symlink(&real, &path).unwrap();
+        let err = load_or_create_blocking(&path).unwrap_err();
+        assert!(matches!(err, HostKeyError::Invalid { .. }), "{err:?}");
+        assert!(err.to_string().contains("symbolic link"), "{err}");
+        // A dangling link is refused too, not followed to create a key.
+        let dangling = dir.path().join("dangling");
+        std::os::unix::fs::symlink(dir.path().join("absent"), &dangling).unwrap();
+        let err = load_or_create_blocking(&dangling).unwrap_err();
+        assert!(err.to_string().contains("symbolic link"), "{err}");
+        assert!(!dir.path().join("absent").exists());
+    }
+
+    #[test]
+    fn refuses_a_key_owned_by_another_user() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("relay_host_ed25519");
+        load_or_create_blocking(&path).unwrap();
+        let me = rustix::process::geteuid().as_raw();
+        load_owned_by(&path, me).unwrap();
+        let err = load_owned_by(&path, me.wrapping_add(1)).unwrap_err();
+        assert!(matches!(err, HostKeyError::Invalid { .. }), "{err:?}");
+        assert!(err.to_string().contains("another user"), "{err}");
+    }
+
+    #[test]
+    fn creating_removes_stale_temporary_files_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let stale = dir.path().join(".relay_host_ed25519.00112233aabbccdd.tmp");
+        let fresh = dir.path().join(".relay_host_ed25519.0123456789abcdef.tmp");
+        let other = dir.path().join(".other.00112233aabbccdd.tmp");
+        for file in [&stale, &fresh, &other] {
+            std::fs::write(file, "leftover").unwrap();
+        }
+        let old = SystemTime::now() - Duration::from_secs(3600);
+        for file in [&stale, &other] {
+            std::fs::File::options()
+                .write(true)
+                .open(file)
+                .unwrap()
+                .set_modified(old)
+                .unwrap();
+        }
+        load_or_create_blocking(&dir.path().join("relay_host_ed25519")).unwrap();
+        assert!(!stale.exists());
+        // A recent one may belong to a creator still running.
+        assert!(fresh.exists());
+        assert!(other.exists());
     }
 
     #[test]

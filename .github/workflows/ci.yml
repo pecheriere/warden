@@ -26,6 +26,14 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - name: Install OpenSSH
         run: sudo apt-get update && sudo apt-get install -y openssh-server openssh-client
+      # The relay's password-target tests log in to a throwaway sshd as the
+      # runner account, checked through PAM: give it a random password.
+      - name: Give the runner account a login password
+        run: |
+          password="$(openssl rand -hex 24)"
+          echo "::add-mask::$password"
+          echo "$USER:$password" | sudo chpasswd
+          echo "WARDEN_TEST_LOGIN_PASSWORD=$password" >> "$GITHUB_ENV"
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - run: cargo test --workspace --all-features --locked

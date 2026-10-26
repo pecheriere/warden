@@ -1,0 +1,223 @@
+//! A throwaway, unprivileged OpenSSH `sshd` on a loopback port, as the
+//! target of relayed sessions: it logs in only the current user, with a
+//! public key or (on Linux) the user's password.
+//!
+//! Password login needs the user's real password, checked through PAM:
+//! an unprivileged `sshd` cannot read the shadow file itself, but PAM's
+//! `unix_chkpwd` helper verifies the calling user's own password. CI sets
+//! a random password on its runner account and passes it in
+//! [`LOGIN_PASSWORD_VAR`]. On macOS an unprivileged `sshd` cannot check
+//! passwords at all, so password targets exist only on Linux.
+//!
+//! It accepts the environment variables `LANG`, `LC_*` and `EVIL` from
+//! clients, so tests can tell what the relay passes on, and allows no
+//! forwarding of its own.
+
+use std::fmt::Write as _;
+use std::fs;
+use std::io::Write as _;
+use std::net::{Ipv4Addr, TcpListener};
+use std::os::unix::fs::OpenOptionsExt as _;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
+
+use ssh_key::rand_core::OsRng;
+use ssh_key::{Algorithm, LineEnding, PrivateKey, PublicKey};
+use tempfile::TempDir;
+
+/// Where OpenSSH's server is expected.
+pub const SSHD: &str = "/usr/sbin/sshd";
+
+/// Environment variable holding the current user's login password, for
+/// password targets (Linux only).
+pub const LOGIN_PASSWORD_VAR: &str = "WARDEN_TEST_LOGIN_PASSWORD";
+
+/// How the `sshd` lets the current user log in.
+#[derive(Debug, Clone)]
+pub enum SshdLogin {
+    /// With this public key only.
+    Key(PublicKey),
+    /// With the user's password only (Linux; see the module docs).
+    #[cfg(target_os = "linux")]
+    Password,
+}
+
+/// A running `sshd`, killed on drop.
+pub struct Sshd {
+    child: Child,
+    port: u16,
+    host_key: PublicKey,
+    log: PathBuf,
+    _dir: TempDir,
+}
+
+impl Drop for Sshd {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+impl Sshd {
+    /// Start an `sshd` for the current user that accepts only `login`.
+    ///
+    /// # Panics
+    /// If `sshd` is missing or does not start listening within 10 s.
+    #[must_use]
+    pub fn start(login: &SshdLogin) -> Self {
+        assert!(
+            Path::new(SSHD).exists(),
+            "{SSHD} not found: the relay tests need OpenSSH's sshd \
+             (on Debian/Ubuntu: apt-get install openssh-server)"
+        );
+        // Short path under /tmp: sshd refuses overlong socket and file paths
+        // on some systems, and macOS's per-user TMPDIR is long.
+        let dir = tempfile::Builder::new()
+            .prefix("wrsshd")
+            .tempdir_in("/tmp")
+            .expect("sshd temp dir");
+        let host = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).expect("host key");
+        let host_key_path = dir.path().join("host_ed25519");
+        write_private(
+            &host_key_path,
+            &host.to_openssh(LineEnding::LF).expect("encode host key"),
+        );
+        let mut config = format!(
+            "HostKey {}\nPidFile none\nListenAddress 127.0.0.1\nStrictModes no\n\
+             LogLevel VERBOSE\nKbdInteractiveAuthentication no\n\
+             AllowTcpForwarding no\nX11Forwarding no\nAllowAgentForwarding no\n\
+             AcceptEnv LANG LC_* EVIL\n",
+            host_key_path.display()
+        );
+        match login {
+            SshdLogin::Key(key) => {
+                let authorized = dir.path().join("authorized_keys");
+                write_private(
+                    &authorized,
+                    &format!("{}\n", key.to_openssh().expect("encode login key")),
+                );
+                writeln!(
+                    config,
+                    "AuthorizedKeysFile {}\nPasswordAuthentication no\n\
+                     AuthenticationMethods publickey",
+                    authorized.display()
+                )
+                .expect("writing to a String cannot fail");
+                if cfg!(target_os = "linux") {
+                    config.push_str("UsePAM no\n");
+                }
+            }
+            #[cfg(target_os = "linux")]
+            SshdLogin::Password => config.push_str(
+                "AuthorizedKeysFile none\nPasswordAuthentication yes\nUsePAM yes\n\
+                 AuthenticationMethods password\n",
+            ),
+        }
+        let config_path = dir.path().join("sshd_config");
+        write_private(&config_path, &config);
+        let log = dir.path().join("sshd.log");
+
+        let port = free_port();
+        let child = Command::new(SSHD)
+            .arg("-D")
+            .arg("-E")
+            .arg(&log)
+            .arg("-f")
+            .arg(&config_path)
+            .arg("-p")
+            .arg(port.to_string())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap_or_else(|e| panic!("cannot start {SSHD}: {e}"));
+        let mut sshd = Self {
+            child,
+            port,
+            host_key: host.public_key().clone(),
+            log,
+            _dir: dir,
+        };
+        // Wait for its own word rather than probing the port, so the log
+        // shows only the connections tests make.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !sshd.log().contains("Server listening on") {
+            if let Some(status) = sshd.child.try_wait().expect("sshd status") {
+                panic!("sshd exited early with {status}: {}", sshd.log());
+            }
+            assert!(Instant::now() < deadline, "sshd did not start listening");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        sshd
+    }
+
+    /// The loopback port it listens on.
+    #[must_use]
+    pub const fn port(&self) -> u16 {
+        self.port
+    }
+
+    /// Its host public key.
+    #[must_use]
+    pub const fn host_key(&self) -> &PublicKey {
+        &self.host_key
+    }
+
+    /// Everything it has logged so far (`LogLevel VERBOSE`).
+    #[must_use]
+    pub fn log(&self) -> String {
+        fs::read_to_string(&self.log).unwrap_or_default()
+    }
+}
+
+/// The user this process runs as: the only user an unprivileged `sshd`
+/// can log in.
+///
+/// # Panics
+/// If `id -un` fails.
+#[must_use]
+pub fn current_user() -> String {
+    let out = Command::new("id").arg("-un").output().expect("run id -un");
+    assert!(out.status.success(), "id -un failed");
+    String::from_utf8(out.stdout)
+        .expect("user name is UTF-8")
+        .trim()
+        .to_owned()
+}
+
+/// The current user's login password, from [`LOGIN_PASSWORD_VAR`].
+///
+/// # Panics
+/// If the variable is unset: password targets cannot be tested without it,
+/// and the test must fail rather than pass without checking anything.
+#[cfg(target_os = "linux")]
+#[must_use]
+pub fn login_password() -> zeroize::Zeroizing<String> {
+    match std::env::var(LOGIN_PASSWORD_VAR) {
+        Ok(password) if !password.is_empty() => zeroize::Zeroizing::new(password),
+        _ => panic!(
+            "{LOGIN_PASSWORD_VAR} is unset: password-target relay tests log in to a \
+             throwaway sshd as the current user and need that user's password \
+             (CI sets a random one on its runner account)"
+        ),
+    }
+}
+
+fn free_port() -> u16 {
+    TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .and_then(|l| l.local_addr())
+        .expect("free loopback port")
+        .port()
+}
+
+fn write_private(path: &Path, contents: &str) {
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+        .expect("create fixture file");
+    file.write_all(contents.as_bytes())
+        .expect("write fixture file");
+}

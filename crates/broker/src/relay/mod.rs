@@ -11,6 +11,11 @@ use crate::config::RelayAddress;
 use self::host_key::RelayHostKey;
 
 pub mod host_key;
+mod onward;
+mod server;
+mod session;
+
+pub use server::{RelayLimits, RelayServer};
 
 /// What a relay grant tells the agent: where the relay listens for it and
 /// the relay's host key to pin. Public information only.

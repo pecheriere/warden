@@ -340,6 +340,17 @@ pub struct RelayGrantRecord {
     pub not_after: i64,
 }
 
+/// Active relay grants for a target (`?1` now, `?2` the target), with the
+/// request that bound their key, longest lasting first. Grants are found by
+/// `not_after` through its index, so a login check never scans the history.
+const ACTIVE_RELAY_GRANTS: &str = "\
+    SELECT g.id, g.agent, g.not_after, g.view, r.body \
+    FROM grants g JOIN requests r ON r.id = g.request_id \
+    WHERE g.not_after > ?1 AND g.revoked_at IS NULL \
+    AND json_extract(g.view, '$.access.kind') = 'relay' \
+    AND json_extract(g.view, '$.access.target') = ?2 \
+    ORDER BY g.not_after DESC, g.id";
+
 /// The request lifecycle service.
 #[derive(Clone)]
 pub struct Requests {
@@ -1038,18 +1049,11 @@ impl Requests {
         target: &TargetName,
         public_key: &ssh_key::PublicKey,
     ) -> Result<Option<RelayGrantRecord>, RequestError> {
-        let rows = sqlx::query(
-            "SELECT g.id, g.agent, g.not_after, g.view, r.body \
-             FROM grants g JOIN requests r ON r.id = g.request_id \
-             WHERE g.revoked_at IS NULL AND g.not_after > ? \
-             AND json_extract(g.view, '$.access.kind') = 'relay' \
-             AND json_extract(g.view, '$.access.target') = ? \
-             ORDER BY g.not_after DESC, g.id",
-        )
-        .bind(self.clock.now())
-        .bind(target.as_str())
-        .fetch_all(&self.pool)
-        .await?;
+        let rows = sqlx::query(ACTIVE_RELAY_GRANTS)
+            .bind(self.clock.now())
+            .bind(target.as_str())
+            .fetch_all(&self.pool)
+            .await?;
         for row in &rows {
             let body: String = row.try_get("body")?;
             let request: CreateRequest = serde_json::from_str(&body)?;
@@ -1171,13 +1175,28 @@ impl Requests {
     }
 }
 
+/// The bound key of every live SSH access: pending requests not past their
+/// deadline (`pending` = 1), and requests whose grant is neither revoked nor
+/// expired (`pending` = 0). `?1` is now, `?2` now minus the pending TTL. Both
+/// halves read through an index (pending requests are at most
+/// [`PENDING_TTL_SECS`] old; grants are found by `not_after`), so the check
+/// never scans the whole history.
+const LIVE_SSH_KEYS: &str = "\
+    SELECT r.agent, r.body, 1 AS pending FROM requests r \
+    WHERE r.created_at > ?2 AND r.status = 'pending' AND r.expires_at > ?1 \
+    AND json_extract(r.body, '$.access.kind') = 'ssh' \
+    UNION ALL \
+    SELECT r.agent, r.body, 0 AS pending FROM grants g JOIN requests r ON r.id = g.request_id \
+    WHERE g.not_after > ?1 AND g.revoked_at IS NULL \
+    AND json_extract(r.body, '$.access.kind') = 'ssh'";
+
 /// Refuse `public_key` for `agent`'s request on `target` if it is bound to
-/// a live SSH request (pending and not past its deadline) or one with a
-/// live grant (neither revoked nor expired) that belongs to another agent or
-/// to another target: each ephemeral key backs exactly one live access, so
-/// the relay can attribute a key to one grant. The same agent and target is
-/// the dedupe path and is left to it. Keys are compared by key data, so
-/// comments do not matter.
+/// a live SSH access (see [`LIVE_SSH_KEYS`]) other than the agent's own
+/// pending request for the same target, which is the dedupe path and is
+/// left to it: each ephemeral key backs exactly one live access, so the
+/// relay can attribute a key to one grant. A live grant holds its key even
+/// for its own agent and target. Keys are compared by key data, so comments
+/// do not matter.
 ///
 /// # Errors
 /// [`RequestError::KeyInUse`]; storage failures; [`RequestError::Corrupt`]
@@ -1192,16 +1211,11 @@ async fn check_key_unbound(
     let offered = ssh_key::PublicKey::from_openssh(public_key).map_err(|_| {
         RequestError::Rejected("public_key must be an OpenSSH ssh-ed25519 public key".to_owned())
     })?;
-    let rows = sqlx::query(
-        "SELECT r.agent, r.body FROM requests r \
-         WHERE json_extract(r.body, '$.access.kind') = 'ssh' \
-         AND ((r.status = 'pending' AND r.expires_at > ?1) \
-              OR EXISTS (SELECT 1 FROM grants g WHERE g.request_id = r.id \
-                         AND g.revoked_at IS NULL AND g.not_after > ?1))",
-    )
-    .bind(now)
-    .fetch_all(&mut *conn)
-    .await?;
+    let rows = sqlx::query(LIVE_SSH_KEYS)
+        .bind(now)
+        .bind(now - PENDING_TTL_SECS)
+        .fetch_all(&mut *conn)
+        .await?;
     for row in &rows {
         let body: String = row.try_get("body")?;
         let request: CreateRequest = serde_json::from_str(&body)?;
@@ -1221,7 +1235,10 @@ async fn check_key_unbound(
             continue;
         }
         let bound_agent: AgentName = parse(row, "agent")?;
-        if bound_agent != *agent || bound_target != target {
+        let pending: bool = row.try_get("pending")?;
+        // Only the agent's own pending request for the same target may
+        // share the key: that is the dedupe path, which returns it.
+        if !pending || bound_agent != *agent || bound_target != target {
             return Err(RequestError::KeyInUse);
         }
     }
@@ -1475,9 +1492,55 @@ pub async fn sweep_loop(
 
 #[cfg(test)]
 mod tests {
-    use super::{AuditEvent, AuditLog, RequestError, audit_and_commit, begin};
+    use super::{
+        ACTIVE_RELAY_GRANTS, AuditEvent, AuditLog, LIVE_SSH_KEYS, RequestError, audit_and_commit,
+        begin,
+    };
     use crate::store;
+    use sqlx::Row as _;
     use warden_broker_proto::Id;
+
+    /// The query plan of `sql`, one step per line.
+    async fn plan(pool: &sqlx::SqlitePool, sql: &str) -> Vec<String> {
+        // Test-only: `sql` is one of this module's constant queries.
+        sqlx::query(sqlx::AssertSqlSafe(format!("EXPLAIN QUERY PLAN {sql}")))
+            .bind(0_i64)
+            .bind("x")
+            .fetch_all(pool)
+            .await
+            .unwrap()
+            .iter()
+            .map(|row| row.get::<String, _>("detail"))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn live_access_lookups_never_scan_whole_tables() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = store::open(&dir.path().join("warden.db")).await.unwrap();
+        let keys = plan(&pool, LIVE_SSH_KEYS).await;
+        assert!(
+            keys.iter()
+                .any(|s| s.contains("USING INDEX requests_created_at")),
+            "{keys:?}"
+        );
+        let grants = plan(&pool, ACTIVE_RELAY_GRANTS).await;
+        for steps in [&keys, &grants] {
+            assert!(
+                steps
+                    .iter()
+                    .any(|s| s.contains("USING INDEX grants_not_after")),
+                "{steps:?}"
+            );
+            // A bare SCAN reads every row of a table.
+            assert!(
+                !steps
+                    .iter()
+                    .any(|s| s.starts_with("SCAN ") && !s.contains("INDEX")),
+                "{steps:?}"
+            );
+        }
+    }
 
     #[tokio::test]
     async fn failed_commit_is_recorded_as_not_taking_effect() {

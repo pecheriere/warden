@@ -32,6 +32,7 @@ use webauthn_rs::prelude::{
 };
 use zeroize::Zeroizing;
 
+pub mod sshd;
 pub mod upstream;
 
 pub use upstream::{HttpsUpstream, Received};
@@ -46,7 +47,7 @@ use crate::policy::{
     SshTarget, ValueFormat, not_a_relay_target,
 };
 use crate::proxy::ProxyLimits;
-use crate::relay::{RelayEndpoint, host_key};
+use crate::relay::{RelayEndpoint, RelayLimits, RelayServer, host_key};
 use crate::requests::{Clock, Requests};
 use crate::{AppState, agents, store};
 
@@ -549,6 +550,12 @@ pub struct TestBroker {
     audit_path: PathBuf,
     default_passkey: tokio::sync::Mutex<Option<SoftAuthenticator>>,
     servers: Mutex<Vec<AbortHandle>>,
+    relays: Mutex<
+        Vec<(
+            tokio::sync::watch::Sender<bool>,
+            tokio::task::JoinHandle<()>,
+        )>,
+    >,
     dir: Option<TempDir>,
     proxy: ProxyLimits,
     relay: bool,
@@ -559,6 +566,11 @@ impl Drop for TestBroker {
         if let Ok(servers) = self.servers.get_mut() {
             for server in servers.drain(..) {
                 server.abort();
+            }
+        }
+        if let Ok(relays) = self.relays.get_mut() {
+            for (_, relay) in relays.drain(..) {
+                relay.abort();
             }
         }
     }
@@ -717,6 +729,7 @@ impl TestBroker {
             audit_path,
             default_passkey: tokio::sync::Mutex::new(None),
             servers: Mutex::new(Vec::new()),
+            relays: Mutex::new(Vec::new()),
             dir,
             proxy,
             relay,
@@ -793,6 +806,59 @@ impl TestBroker {
         let approval = bound.pop().expect("approval listener");
         let api = bound.pop().expect("api listener");
         BaseUrls { api, approval }
+    }
+
+    /// Run the SSH relay with the default limits on an ephemeral loopback
+    /// port until the broker is dropped or [`TestBroker::stop_relay`] is
+    /// called; returns its address. It presents the host key relay grants
+    /// carry.
+    ///
+    /// # Panics
+    /// If the host key cannot be loaded or the listener cannot be bound.
+    pub async fn spawn_relay(&self) -> std::net::SocketAddr {
+        self.spawn_relay_with(RelayLimits::default()).await
+    }
+
+    /// Like [`TestBroker::spawn_relay`], with `limits`.
+    ///
+    /// # Panics
+    /// If the host key cannot be loaded or the listener cannot be bound.
+    pub async fn spawn_relay_with(&self, limits: RelayLimits) -> std::net::SocketAddr {
+        let key = host_key::load_or_create(self.db_path.with_file_name("relay_host_ed25519"))
+            .await
+            .expect("relay host key");
+        let server = RelayServer::new(
+            self.state.requests.clone(),
+            self.backend.clone(),
+            self.state.audit.clone(),
+            &key,
+            limits,
+        )
+        .expect("relay server");
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("bind relay listener");
+        let addr = listener.local_addr().expect("relay listener address");
+        let (stop, stop_rx) = tokio::sync::watch::channel(false);
+        let task = tokio::spawn(server.serve(listener, stop_rx));
+        self.relays
+            .lock()
+            .expect("relays lock poisoned")
+            .push((stop, task));
+        addr
+    }
+
+    /// Stop every relay this broker runs, as on shutdown, and wait until
+    /// they have ended their sessions.
+    ///
+    /// # Panics
+    /// If a relay task failed.
+    pub async fn stop_relay(&self) {
+        let relays = std::mem::take(&mut *self.relays.lock().expect("relays lock poisoned"));
+        for (stop, task) in relays {
+            stop.send_replace(true);
+            task.await.expect("relay task");
+        }
     }
 
     /// Shared state of the broker.

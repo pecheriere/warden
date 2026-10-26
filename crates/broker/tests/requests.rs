@@ -582,6 +582,38 @@ async fn public_key_bound_once_across_agents() {
 }
 
 #[tokio::test]
+async fn same_agent_same_target_live_grant_key_refused() {
+    let h = harness().await;
+    let key = ed25519_public();
+    let (_, token) =
+        create_notified(&h, "bot", ssh_request("pi", "alice", Window::M30, &key)).await;
+    let grant = grant_for(&h, Window::M15);
+    h.requests
+        .mark_approved(&token, Window::M15, grant.clone(), "pk1")
+        .await
+        .unwrap();
+    // No pending request holds the slot any more, but the live grant still
+    // holds the key: a second request with it, even from the same agent for
+    // the same target, would bind one key to two grants.
+    let err = h
+        .requests
+        .create(
+            &agent("bot"),
+            ssh_request("pi", "alice", Window::M30, &recommented(&key)),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, RequestError::KeyInUse), "{err:?}");
+    assert_eq!(row_count(&h.pool, "requests").await, 1);
+
+    h.requests
+        .revoke_grant(&grant.grant_id, "test")
+        .await
+        .unwrap();
+    create_notified(&h, "bot", ssh_request("pi", "alice", Window::M30, &key)).await;
+}
+
+#[tokio::test]
 async fn bound_key_freed_when_pending_request_expires() {
     let h = harness().await;
     let key = ed25519_public();

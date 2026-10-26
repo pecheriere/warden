@@ -264,6 +264,38 @@ fn config_relay_defaults_and_public_address() {
     assert!(err.to_string().contains("WARDEN_RELAY_LISTEN"), "{err}");
 }
 
+#[test]
+fn config_relay_max_sessions() {
+    let with = |value: &'static str| {
+        move |v: &str| {
+            if v == "WARDEN_RELAY_MAX_SESSIONS" {
+                Some(value.to_owned())
+            } else {
+                env(v)
+            }
+        }
+    };
+    assert_eq!(Config::from_lookup(env).unwrap().relay.max_sessions, 16);
+    assert_eq!(
+        Config::from_lookup(with("4")).unwrap().relay.max_sessions,
+        4
+    );
+    assert_eq!(
+        Config::from_lookup(with("1024"))
+            .unwrap()
+            .relay
+            .max_sessions,
+        1024
+    );
+    for bad in ["0", "1025", "-1", "many", "1.5"] {
+        let err = Config::from_lookup(with(bad)).unwrap_err();
+        assert!(
+            err.to_string().contains("WARDEN_RELAY_MAX_SESSIONS"),
+            "{bad}: {err}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn add_audited_records_agent_added() {
     let dir = tempfile::tempdir().unwrap();
