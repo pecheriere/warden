@@ -5,14 +5,15 @@ use std::net::Ipv6Addr;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
 use http::{HeaderName, Method};
 use rustls_pki_types::CertificateDer;
 use rustls_pki_types::pem::PemObject as _;
 use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
-use ssh_key::private::{EcdsaKeypair, KeypairData, RsaKeypair};
-use ssh_key::{LineEnding, PrivateKey, PublicKey};
+use ssh_key::{Algorithm, LineEnding, PrivateKey, PublicKey};
 use tokio::sync::OnceCell;
 use url::{Origin, Url};
 use warden_broker_proto::{SecretName, TargetName, UnixUser, Window};
@@ -28,8 +29,6 @@ const CA_TAG: &str = "warden:ssh-ca";
 const API_TAG: &str = "warden:api-secret";
 const MIN_CREDENTIAL_CHARS: usize = 12;
 const CA_FIELD_ID: &str = "private_key";
-/// Shortest RSA modulus accepted for a relay target's login key.
-const MIN_RSA_BITS: usize = 2048;
 const TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Deserialize)]
@@ -487,8 +486,8 @@ fn parse_target(
 
 /// The onward credential: exactly one of `private_key` and `password` for a
 /// relay target, neither for a cert target. A blank field counts as absent.
-/// The password is taken verbatim; the key is trimmed, checked and
-/// normalised to OpenSSH format.
+/// The password is taken verbatim; the key is trimmed, checked (Ed25519
+/// only) and normalised to OpenSSH format.
 fn parse_credential(
     title: &str,
     mode: SshMode,
@@ -524,71 +523,79 @@ fn parse_credential(
     }
 }
 
-/// Check a relay target's login key and return it in OpenSSH format. Accepts
-/// unencrypted Ed25519, ECDSA (P-256, P-384, P-521) and RSA (at least
-/// [`MIN_RSA_BITS`]) keys, as OpenSSH or PKCS#8 PEM. The input is never
-/// echoed.
+/// Check a relay target's login key and return it in OpenSSH format. Only
+/// unencrypted Ed25519 keys are accepted, as OpenSSH or PKCS#8 PEM: warden
+/// performs no RSA or NIST-curve private-key operation. The key type is read
+/// from the container (the OpenSSH public key, the PKCS#8 algorithm
+/// identifier) before any private key material is decoded, so another key
+/// type is refused without being loaded. The input is never echoed.
 fn parse_relay_key(text: &str) -> Result<Zeroizing<String>, &'static str> {
-    const UNREADABLE: &str = "is not a readable OpenSSH or PKCS#8 PEM private key \
-        (convert a PKCS#1 or SEC1 key with ssh-keygen -p -f <file>)";
-    let key = if text.starts_with("-----BEGIN OPENSSH PRIVATE KEY-----") {
-        PrivateKey::from_openssh(text).map_err(|_| UNREADABLE)?
+    const UNREADABLE: &str = "is not a readable OpenSSH or PKCS#8 PEM private key";
+    const NOT_ED25519: &str =
+        "relay keys must be Ed25519; use a password for targets that need another key type";
+    let is_ed25519 = if text.starts_with("-----BEGIN OPENSSH PRIVATE KEY-----") {
+        openssh_key_type(text).ok_or(UNREADABLE)? == b"ssh-ed25519"
     } else if text.starts_with("-----BEGIN PRIVATE KEY-----") {
-        pkcs8_private_key(text).ok_or(UNREADABLE)?
+        pkcs8_algorithm(text).ok_or(UNREADABLE)? == ed25519_dalek::pkcs8::ALGORITHM_OID
     } else {
         return Err(UNREADABLE);
     };
+    if !is_ed25519 {
+        return Err(NOT_ED25519);
+    }
+    let key = parse_private_key(text).ok_or(UNREADABLE)?;
     if key.is_encrypted() {
         return Err("is passphrase-protected; an unencrypted key is required");
     }
-    match key.key_data() {
-        KeypairData::Ed25519(_) | KeypairData::Ecdsa(_) => {}
-        KeypairData::Rsa(pair) if rsa_bits(pair) >= MIN_RSA_BITS => {}
-        KeypairData::Rsa(_) => return Err("is an RSA key shorter than 2048 bits"),
-        _ => return Err("must be an Ed25519, ECDSA or RSA key"),
+    if key.algorithm() != Algorithm::Ed25519 {
+        return Err(NOT_ED25519);
     }
     key.to_openssh(LineEnding::LF).map_err(|_| UNREADABLE)
 }
 
-/// Decode a PKCS#8 PEM Ed25519, ECDSA or RSA private key.
-fn pkcs8_private_key(text: &str) -> Option<PrivateKey> {
-    use ed25519_dalek::pkcs8::DecodePrivateKey as _;
-    if let Ok(signing) = ed25519_dalek::SigningKey::from_pkcs8_pem(text) {
-        return Some(PrivateKey::from(ssh_key::private::Ed25519Keypair::from(
-            signing,
-        )));
+/// The key type of an OpenSSH private key file (`ssh-ed25519`, `ssh-rsa`,
+/// ...), read from the public key that precedes the private section. Only
+/// single-key files are accepted.
+fn openssh_key_type(text: &str) -> Option<Vec<u8>> {
+    let body = Zeroizing::new(
+        text.lines()
+            .map(str::trim)
+            .filter(|l| !l.starts_with("-----"))
+            .collect::<String>(),
+    );
+    let bytes = Zeroizing::new(STANDARD.decode(body.as_bytes()).ok()?);
+    let mut rest = bytes.strip_prefix(b"openssh-key-v1\0")?;
+    // Cipher name, KDF name and KDF options.
+    for _ in 0..3 {
+        ssh_string(&mut rest)?;
     }
-    let data = if let Ok(k) = p256::SecretKey::from_pkcs8_pem(text) {
-        KeypairData::from(EcdsaKeypair::NistP256 {
-            public: k.public_key().into(),
-            private: k.into(),
-        })
-    } else if let Ok(k) = p384::SecretKey::from_pkcs8_pem(text) {
-        KeypairData::from(EcdsaKeypair::NistP384 {
-            public: k.public_key().into(),
-            private: k.into(),
-        })
-    } else if let Ok(k) = p521::SecretKey::from_pkcs8_pem(text) {
-        KeypairData::from(EcdsaKeypair::NistP521 {
-            public: k.public_key().into(),
-            private: k.into(),
-        })
-    } else {
-        let k = rsa::RsaPrivateKey::from_pkcs8_pem(text).ok()?;
-        KeypairData::from(RsaKeypair::try_from(&k).ok()?)
-    };
-    PrivateKey::new(data, "").ok()
+    let count = rest.get(..4)?;
+    if count != 1_u32.to_be_bytes() {
+        return None;
+    }
+    rest = &rest[4..];
+    let mut public_key = ssh_string(&mut rest)?;
+    ssh_string(&mut public_key).map(<[u8]>::to_vec)
 }
 
-/// Size of an RSA key's modulus in bits.
-fn rsa_bits(pair: &RsaKeypair) -> usize {
-    match pair.public.n.as_positive_bytes() {
-        Some([first, rest @ ..]) => {
-            let top = usize::try_from(u8::BITS - first.leading_zeros()).unwrap_or(0);
-            rest.len() * 8 + top
-        }
-        _ => 0,
+/// Take one length-prefixed SSH `string` off the front of `input`.
+fn ssh_string<'a>(input: &mut &'a [u8]) -> Option<&'a [u8]> {
+    let (len, rest) = input.split_first_chunk::<4>()?;
+    let len = usize::try_from(u32::from_be_bytes(*len)).ok()?;
+    let (value, rest) = rest.split_at_checked(len)?;
+    *input = rest;
+    Some(value)
+}
+
+/// The algorithm identifier of a PKCS#8 PEM private key, without decoding
+/// the private key it wraps.
+fn pkcs8_algorithm(text: &str) -> Option<ed25519_dalek::pkcs8::ObjectIdentifier> {
+    let (label, document) = ed25519_dalek::pkcs8::SecretDocument::from_pem(text).ok()?;
+    if label != "PRIVATE KEY" {
+        return None;
     }
+    let info = ed25519_dalek::pkcs8::PrivateKeyInfo::try_from(document.as_bytes()).ok()?;
+    Some(info.algorithm.oid)
 }
 
 /// Validate an API secret item. Optional fields that are absent or blank

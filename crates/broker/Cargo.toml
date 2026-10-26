@@ -49,12 +49,7 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 sqlx.workspace = true
-# RSA and NIST curves: relay targets may log in with RSA or ECDSA keys.
-ssh-key = { workspace = true, features = ["rsa", "p256", "p384", "p521"] }
-rsa.workspace = true
-p256.workspace = true
-p384.workspace = true
-p521.workspace = true
+ssh-key.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true

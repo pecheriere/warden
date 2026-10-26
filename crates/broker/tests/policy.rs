@@ -3,7 +3,7 @@
 use secrecy::SecretString;
 use serde_json::{Value, json};
 use ssh_key::rand_core::OsRng;
-use ssh_key::{Algorithm, EcdsaCurve, LineEnding, PrivateKey};
+use ssh_key::{Algorithm, LineEnding, PrivateKey};
 use url::Url;
 use warden_broker::policy::{
     ApiSecretPolicy, OnePasswordConnect, PolicyError, RelayCredential, SecretBackend, SshMode,
@@ -29,6 +29,8 @@ const THROWAWAY_RSA: &str = include_str!("fixtures/throwaway-test-only-rsa.key")
 const THROWAWAY_ENCRYPTED: &str =
     include_str!("fixtures/throwaway-test-only-ed25519-encrypted.key");
 const THROWAWAY_ECDSA: &str = include_str!("fixtures/throwaway-test-only-ecdsa.key");
+const THROWAWAY_RSA_PKCS8: &str = include_str!("fixtures/throwaway-test-only-rsa-pkcs8.key");
+const THROWAWAY_ECDSA_PKCS8: &str = include_str!("fixtures/throwaway-test-only-ecdsa-pkcs8.key");
 
 fn target(name: &str) -> TargetName {
     TargetName::try_from(name.to_owned()).unwrap()
@@ -1088,42 +1090,6 @@ async fn relay_item_needs_exactly_one_credential() {
     assert!(!format!("{t:?}").contains(NAS_PASSWORD));
 }
 
-fn ecdsa_pkcs8(curve: EcdsaCurve) -> (String, PrivateKey) {
-    use p256::pkcs8::EncodePrivateKey as _;
-    use p256::pkcs8::LineEnding as PemLineEnding;
-    let key = PrivateKey::random(&mut OsRng, Algorithm::Ecdsa { curve }).unwrap();
-    let bytes = key.key_data().ecdsa().unwrap().private_key_bytes().to_vec();
-    let pem = match curve {
-        EcdsaCurve::NistP256 => p256::SecretKey::from_slice(&bytes)
-            .unwrap()
-            .to_pkcs8_pem(PemLineEnding::LF),
-        EcdsaCurve::NistP384 => p384::SecretKey::from_slice(&bytes)
-            .unwrap()
-            .to_pkcs8_pem(PemLineEnding::LF),
-        EcdsaCurve::NistP521 => p521::SecretKey::from_slice(&bytes)
-            .unwrap()
-            .to_pkcs8_pem(PemLineEnding::LF),
-    }
-    .unwrap();
-    (pem.to_string(), key)
-}
-
-fn rsa_fixture() -> (rsa::RsaPrivateKey, PrivateKey) {
-    // Built from the components: ssh-key 0.6.7's own conversion passes `p`
-    // twice instead of `p` and `q`.
-    let key = PrivateKey::from_openssh(THROWAWAY_RSA).unwrap();
-    let pair = key.key_data().rsa().unwrap();
-    let big = |m: &ssh_key::Mpint| rsa::BigUint::from_bytes_be(m.as_positive_bytes().unwrap());
-    let rsa = rsa::RsaPrivateKey::from_components(
-        big(&pair.public.n),
-        big(&pair.public.e),
-        big(&pair.private.d),
-        vec![big(&pair.private.p), big(&pair.private.q)],
-    )
-    .unwrap();
-    (rsa, key)
-}
-
 #[tokio::test]
 async fn relay_key_and_password_parse() {
     // A password is used verbatim, surrounding spaces included.
@@ -1136,10 +1102,24 @@ async fn relay_key_and_password_parse() {
     let (_, cred) = relay_with(&spaced).await.unwrap();
     assert!(matches!(&cred, RelayCredential::Password(p) if p.as_str() == " pass phrase "));
 
-    // Keys: OpenSSH or PKCS#8, Ed25519, ECDSA or RSA, normalised to OpenSSH.
-    let ed = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
-    let ed_pkcs8 = {
-        let pair = ed.key_data().ed25519().unwrap();
+    // A key is returned in OpenSSH format.
+    let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+    let (_, cred) = relay_with(&nas_with_key(&key.to_openssh(LineEnding::LF).unwrap()))
+        .await
+        .unwrap();
+    let RelayCredential::Key(openssh) = &cred else {
+        panic!("expected a key, got {cred:?}");
+    };
+    let parsed = PrivateKey::from_openssh(openssh.as_str()).unwrap();
+    assert_eq!(parsed.public_key().key_data(), key.public_key().key_data());
+}
+
+#[tokio::test]
+async fn relay_ed25519_key_accepted() {
+    // OpenSSH or PKCS#8, normalised to OpenSSH.
+    let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+    let pkcs8 = {
+        let pair = key.key_data().ed25519().unwrap();
         let signing = ed25519_dalek::SigningKey::from_bytes(&pair.private.to_bytes());
         ed25519_dalek::pkcs8::EncodePrivateKey::to_pkcs8_pem(
             &signing,
@@ -1148,73 +1128,75 @@ async fn relay_key_and_password_parse() {
         .unwrap()
         .to_string()
     };
-    let (rsa, rsa_key) = rsa_fixture();
-    let rsa_pkcs8 = {
-        use rsa::pkcs8::EncodePrivateKey as _;
-        rsa.to_pkcs8_pem(rsa::pkcs8::LineEnding::LF)
-            .unwrap()
-            .to_string()
-    };
-    let ecdsa = PrivateKey::from_openssh(THROWAWAY_ECDSA).unwrap();
-    let mut cases = vec![
-        (
-            "ed25519 openssh",
-            ed.to_openssh(LineEnding::LF).unwrap().to_string(),
-            ed.clone(),
-        ),
-        ("ed25519 pkcs8", ed_pkcs8, ed),
-        ("rsa openssh", THROWAWAY_RSA.to_owned(), rsa_key.clone()),
-        ("rsa pkcs8", rsa_pkcs8, rsa_key),
-        ("ecdsa openssh", THROWAWAY_ECDSA.to_owned(), ecdsa),
-    ];
-    for curve in [
-        EcdsaCurve::NistP256,
-        EcdsaCurve::NistP384,
-        EcdsaCurve::NistP521,
-    ] {
-        let (pem, key) = ecdsa_pkcs8(curve);
-        cases.push(("ecdsa pkcs8", pem, key));
-    }
-    for (name, text, expected) in cases {
+    let openssh = key.to_openssh(LineEnding::LF).unwrap().to_string();
+    for text in [openssh, pkcs8] {
         let (_, cred) = relay_with(&nas_with_key(&text)).await.unwrap();
-        let RelayCredential::Key(openssh) = &cred else {
-            panic!("{name}: expected a key, got {cred:?}");
+        let RelayCredential::Key(normalised) = &cred else {
+            panic!("expected a key, got {cred:?}");
         };
-        let parsed = PrivateKey::from_openssh(openssh.as_str()).unwrap();
-        assert_eq!(
-            parsed.public_key().key_data(),
-            expected.public_key().key_data(),
-            "{name}"
-        );
+        assert!(normalised.starts_with("-----BEGIN OPENSSH PRIVATE KEY-----"));
+        let parsed = PrivateKey::from_openssh(normalised.as_str()).unwrap();
+        assert_eq!(parsed.public_key().key_data(), key.public_key().key_data());
     }
 
-    // Refused: passphrase-protected, PKCS#1, short RSA, garbage.
-    let pkcs1 = {
-        use rsa::pkcs1::EncodeRsaPrivateKey as _;
-        rsa.to_pkcs1_pem(rsa::pkcs1::LineEnding::LF)
-            .unwrap()
-            .to_string()
-    };
-    let short_rsa = {
-        let small = rsa::RsaPrivateKey::new(&mut OsRng, 1024).unwrap();
-        let pair = ssh_key::private::RsaKeypair::try_from(&small).unwrap();
-        PrivateKey::new(ssh_key::private::KeypairData::from(pair), "")
-            .unwrap()
-            .to_openssh(LineEnding::LF)
-            .unwrap()
-            .to_string()
-    };
+    // Still refused: passphrase-protected, PKCS#1, garbage.
     for (text, why) in [
-        (THROWAWAY_ENCRYPTED.to_owned(), "passphrase-protected"),
-        (pkcs1, "not a readable"),
-        (short_rsa, "shorter than 2048 bits"),
-        ("TOP-SECRET-MARKER not a key".to_owned(), "not a readable"),
+        (THROWAWAY_ENCRYPTED, "passphrase-protected"),
+        (
+            "-----BEGIN RSA PRIVATE KEY-----\nTOP-SECRET-MARKER\n-----END RSA PRIVATE KEY-----",
+            "not a readable",
+        ),
+        ("TOP-SECRET-MARKER not a key", "not a readable"),
+        (
+            "-----BEGIN OPENSSH PRIVATE KEY-----\nTOP-SECRET-MARKER\n-----END OPENSSH PRIVATE KEY-----",
+            "not a readable",
+        ),
     ] {
-        let err = relay_with(&nas_with_key(&text)).await.unwrap_err();
+        let err = relay_with(&nas_with_key(text)).await.unwrap_err();
         assert_invalid_target(&err, "nas", "private_key", "TOP-SECRET-MARKER");
         let shown = err.to_string();
         assert!(shown.contains(why), "{shown}");
         assert!(!shown.contains("PRIVATE KEY"), "{shown}");
+    }
+}
+
+#[tokio::test]
+async fn relay_rsa_and_ecdsa_keys_rejected() {
+    // warden performs no RSA or NIST-curve private-key operation: these key
+    // types are refused from their container's type information.
+    for (name, text) in [
+        ("rsa openssh", THROWAWAY_RSA),
+        ("rsa pkcs8", THROWAWAY_RSA_PKCS8),
+        ("ecdsa openssh", THROWAWAY_ECDSA),
+        ("ecdsa pkcs8", THROWAWAY_ECDSA_PKCS8),
+    ] {
+        let err = relay_with(&nas_with_key(text)).await.unwrap_err();
+        match &err {
+            PolicyError::Invalid {
+                item,
+                field,
+                reason,
+            } => {
+                assert_eq!(item, "nas", "{name}");
+                assert_eq!(field, "private_key", "{name}");
+                assert_eq!(
+                    reason,
+                    "relay keys must be Ed25519; use a password for targets that need another key type",
+                    "{name}"
+                );
+            }
+            other => panic!("{name}: expected Invalid, got {other:?}"),
+        }
+        // Through the policy-only lookup too.
+        let server = item_server(NAS_ID, &nas_with_key(text)).await;
+        let err = backend(&server)
+            .ssh_target(&target("nas"))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, PolicyError::Invalid { field, .. } if field == "private_key"),
+            "{name}: {err:?}"
+        );
     }
 }
 

@@ -40,12 +40,6 @@ webauthn-authenticator-rs = { version = "=0.5.5", features = ["softpasskey"] }
 ssh-key = { version = "0.6.7", features = ["ed25519", "std", "getrandom"] }
 ed25519-dalek = { version = "2.2.0", default-features = false, features = ["pkcs8", "pem", "zeroize"] }
 ssh-agent-lib = "0.6.0"
-# PKCS#8 decoding of RSA and ECDSA onward-login keys for relay targets (the
-# same versions ssh-key's own RSA and NIST-curve support uses).
-rsa = { version = "0.9.10", default-features = false, features = ["std", "pem"] }
-p256 = { version = "0.13.2", default-features = false, features = ["arithmetic", "pem", "std"] }
-p384 = { version = "0.13.1", default-features = false, features = ["arithmetic", "pem", "std"] }
-p521 = { version = "0.13.3", default-features = false, features = ["arithmetic", "pem", "std"] }
 sha2 = "0.11.1"
 zeroize = "1.9.1"
 subtle = "2.6.1"

@@ -35,12 +35,12 @@ A target with mode `relay` is reached through warden: the agent connects to
 warden, and warden logs in to the target with a credential that never leaves
 it. The item holds that credential in **exactly one** of two fields:
 
-- `private_key`: an unencrypted Ed25519, ECDSA (P-256, P-384 or P-521) or RSA
-  (at least 2048 bits) private key, in OpenSSH
+- `private_key`: an **unencrypted Ed25519** private key, in OpenSSH
   (`-----BEGIN OPENSSH PRIVATE KEY-----`) or PKCS#8
-  (`-----BEGIN PRIVATE KEY-----`) PEM format. Passphrase-protected keys, and
-  PKCS#1 (`BEGIN RSA PRIVATE KEY`) or SEC1 (`BEGIN EC PRIVATE KEY`) files,
-  are rejected; convert those with `ssh-keygen -p -f <file>`.
+  (`-----BEGIN PRIVATE KEY-----`) PEM format. RSA and ECDSA keys are
+  refused (warden performs no RSA or NIST-curve private-key operation): use
+  a password for a target that cannot accept an Ed25519 key.
+  Passphrase-protected keys are refused too.
 - `password`: the account's password, at least one character, used verbatim
   (surrounding spaces included). The Server category's built-in `password`
   field can hold it.
