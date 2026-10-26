@@ -25,6 +25,7 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::TcpStream;
 use warden_broker::policy::{RelayCredential, SshMode, SshTarget};
 use warden_broker::relay::RelayLimits;
+use warden_broker::requests::Clock as _;
 use warden_broker::testkit::TestBroker;
 use warden_broker::testkit::sshd::{HostKeyType, Sshd, SshdLogin, current_user};
 use warden_broker_proto::{
@@ -1333,6 +1334,187 @@ async fn shutdown_during_onward_setup_records_end() {
     );
     let out = client.await.unwrap();
     assert_ne!(out.status.code(), Some(0));
+}
+
+/// Log `agent` in, open its session channel and ask for `echo ok`; the
+/// reply and everything after it are collected on a task. Returns the
+/// connection, the task, and when the start was asked for.
+async fn exec_in_background(
+    s: &Setup,
+    agent: &Agent,
+) -> (
+    Connected,
+    tokio::task::JoinHandle<(bool, Vec<u8>, Collected)>,
+    Instant,
+) {
+    let c = login(&s.broker, s.relay, TARGET, &agent.key).await;
+    let mut channel = c.handle.channel_open_session().await.unwrap();
+    channel.exec(true, "echo ok").await.unwrap();
+    let asked = Instant::now();
+    let task = tokio::spawn(async move {
+        let mut stderr = Vec::new();
+        let replied = reply_keeping_stderr(&mut channel, &mut stderr).await;
+        let out = collect(&mut channel).await;
+        stderr.extend_from_slice(&out.stderr);
+        (replied, stderr, out)
+    });
+    (c, task, asked)
+}
+
+/// The session was refused once for `reason`, on record, before anything
+/// started or reached the target.
+async fn assert_refused_once(s: &Setup, reason: &str) {
+    let refused = await_events(&s.broker, "relay_session_refused", 1).await;
+    // Give a duplicate a chance to show up.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let refused_now = events_of(&s.broker, "relay_session_refused");
+    assert_eq!(refused_now.len(), 1, "{:?}", audit_events(&s.broker));
+    assert_eq!(
+        refused[0]["reason"],
+        reason,
+        "{:?}",
+        audit_events(&s.broker)
+    );
+    assert!(events_of(&s.broker, "relay_session_started").is_empty());
+    assert!(events_of(&s.broker, "relay_session_ended").is_empty());
+    assert_eq!(sshd_connections(&s.sshd), 0, "{}", s.sshd.log());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stop_during_slow_target_read_is_prompt() {
+    let s = key_target().await;
+    let agent = approved_agent(&s.broker, "bot").await;
+    // The secret backend takes a minute to answer.
+    s.broker
+        .backend
+        .set_relay_read_delay(Some(Duration::from_secs(60)));
+    let (_c, client, _) = exec_in_background(&s, &agent).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let stopping = Instant::now();
+    tokio::time::timeout(Duration::from_secs(5), s.broker.stop_relay())
+        .await
+        .expect("the relay stopped without waiting for the target read");
+    assert!(
+        stopping.elapsed() < Duration::from_secs(3),
+        "{:?}",
+        stopping.elapsed()
+    );
+    // Refused, not started: so no end either.
+    assert_refused_once(&s, "relay shutting down").await;
+    tokio::time::timeout(Duration::from_secs(5), client)
+        .await
+        .expect("the agent got an answer or was hung up on")
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn revoke_during_slow_target_read_refuses() {
+    let s = key_target().await;
+    let agent = approved_agent(&s.broker, "bot").await;
+    s.broker
+        .backend
+        .set_relay_read_delay(Some(Duration::from_secs(60)));
+    let (_c, client, _) = exec_in_background(&s, &agent).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let revoking = Instant::now();
+    s.broker
+        .state()
+        .requests
+        .revoke_grant(&agent.grant_id, "owner")
+        .await
+        .unwrap();
+    let (replied, stderr, out) = tokio::time::timeout(Duration::from_secs(3), client)
+        .await
+        .expect("refused without waiting for the target read")
+        .unwrap();
+    assert!(revoking.elapsed() < Duration::from_secs(3));
+    assert!(replied);
+    assert_eq!(out.exit_status, Some(255), "{out:?}");
+    assert!(out.stdout.is_empty(), "{out:?}");
+    assert!(
+        text(&stderr).contains("warden relay: access revoked"),
+        "{}",
+        text(&stderr)
+    );
+    assert_refused_once(&s, "revoked").await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn revoke_during_slow_grant_lookup_refuses() {
+    let s = key_target().await;
+    let agent = approved_agent(&s.broker, "bot").await;
+    // Logged in, channel open: the next grant lookup is the session's.
+    let c = login(&s.broker, s.relay, TARGET, &agent.key).await;
+    let mut channel = c.handle.channel_open_session().await.unwrap();
+
+    // Every connection of the pool taken: a grant lookup now waits for one
+    // (sqlx's 30 s acquire timeout), as on a hung disk. The grant is
+    // revoked meanwhile through one of them, as by another process.
+    let mut held = Vec::new();
+    while let Ok(Ok(conn)) =
+        tokio::time::timeout(Duration::from_millis(500), s.broker.state().pool.acquire()).await
+    {
+        held.push(conn);
+    }
+    let revoked = sqlx::query("UPDATE grants SET revoked_at = ? WHERE id = ?")
+        .bind(s.broker.clock.now())
+        .bind(agent.grant_id.as_str())
+        .execute(&mut *held[0])
+        .await
+        .unwrap();
+    assert_eq!(revoked.rows_affected(), 1);
+
+    channel.exec(true, "echo ok").await.unwrap();
+    let asked = Instant::now();
+    let mut stderr = Vec::new();
+    assert!(reply_keeping_stderr(&mut channel, &mut stderr).await);
+    let out = collect(&mut channel).await;
+    stderr.extend_from_slice(&out.stderr);
+    // Bounded by the 1.5 s grant query timeout, not the pool's 30 s.
+    assert!(
+        asked.elapsed() < Duration::from_secs(4),
+        "{:?}",
+        asked.elapsed()
+    );
+    assert_eq!(out.exit_status, Some(255), "{out:?}");
+    assert!(out.stdout.is_empty(), "{out:?}");
+    assert!(
+        text(&stderr).contains("warden relay: access cannot be checked right now"),
+        "{}",
+        text(&stderr)
+    );
+    assert_refused_once(&s, "grant lookup failed").await;
+    drop(held);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn slow_target_read_is_refused_after_its_bound() {
+    let s = key_target().await;
+    let agent = approved_agent(&s.broker, "bot").await;
+    s.broker
+        .backend
+        .set_relay_read_delay(Some(Duration::from_secs(60)));
+    let (_c, client, asked) = exec_in_background(&s, &agent).await;
+    let (replied, stderr, out) = tokio::time::timeout(Duration::from_secs(15), client)
+        .await
+        .expect("refused once the target read took too long")
+        .unwrap();
+    // The read is given 10 s.
+    let waited = asked.elapsed();
+    assert!(
+        waited >= Duration::from_millis(9500) && waited < Duration::from_secs(13),
+        "{waited:?}"
+    );
+    assert!(replied);
+    assert_eq!(out.exit_status, Some(255), "{out:?}");
+    assert!(
+        text(&stderr).contains("warden relay: the target's policy cannot be read right now"),
+        "{}",
+        text(&stderr)
+    );
+    assert_refused_once(&s, "target lookup failed").await;
 }
 
 #[tokio::test(flavor = "multi_thread")]

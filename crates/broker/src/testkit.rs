@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use axum::Router;
@@ -113,7 +114,7 @@ impl CapturingNotifier {
     /// If none arrives within 5 s.
     pub async fn next(&self) -> Doorbell {
         let mut rx = self.rx.lock().await;
-        tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+        tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await
             .expect("no doorbell within 5 s")
             .expect("capture channel closed")
@@ -210,6 +211,7 @@ pub struct FakeBackend {
     ca: PrivateKey,
     target_outage: Mutex<Option<String>>,
     ca_outage: Mutex<Option<String>>,
+    relay_read_delay: Mutex<Option<Duration>>,
 }
 
 impl FakeBackend {
@@ -227,6 +229,7 @@ impl FakeBackend {
             ca: PrivateKey::random(&mut OsRng, Algorithm::Ed25519).expect("CA key generation"),
             target_outage: Mutex::new(None),
             ca_outage: Mutex::new(None),
+            relay_read_delay: Mutex::new(None),
         }
     }
 
@@ -405,6 +408,16 @@ impl FakeBackend {
         *self.ca_outage.lock().expect("outage lock poisoned") = detail.map(str::to_owned);
     }
 
+    /// Make every read of a relay target with its credential take `delay`
+    /// before answering, as a slow secret backend would (`None` restores
+    /// them).
+    ///
+    /// # Panics
+    /// If the lock is poisoned.
+    pub fn set_relay_read_delay(&self, delay: Option<Duration>) {
+        *self.relay_read_delay.lock().expect("delay lock poisoned") = delay;
+    }
+
     fn outage(slot: &Mutex<Option<String>>) -> Result<(), PolicyError> {
         match slot
             .lock()
@@ -439,6 +452,13 @@ impl SecretBackend for FakeBackend {
         &self,
         name: &TargetName,
     ) -> Result<(SshTarget, RelayCredential), PolicyError> {
+        let delay = *self
+            .relay_read_delay
+            .lock()
+            .map_err(|_| PolicyError::Unavailable("fake backend lock poisoned".to_owned()))?;
+        if let Some(delay) = delay {
+            tokio::time::sleep(delay).await;
+        }
         Self::outage(&self.target_outage)?;
         let targets = self
             .targets

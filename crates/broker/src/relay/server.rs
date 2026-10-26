@@ -50,7 +50,7 @@ use tokio::time::Instant;
 use warden_broker_proto::{Id, TargetName};
 
 use crate::audit::{AuditEvent, AuditLog};
-use crate::policy::{PolicyError, SecretBackend, SshMode};
+use crate::policy::{PolicyError, RelayCredential, SecretBackend, SshMode, SshTarget};
 use crate::requests::{GrantEnd, RelayGrantRecord, RequestError, Requests};
 
 use super::host_key::{HostKeyError, RelayHostKey};
@@ -100,6 +100,18 @@ const FAIL_CLOSED_AFTER: Duration = Duration::from_secs(10);
 
 /// Longest a grant query may take; past it, it counts as failed.
 const GRANT_QUERY_TIMEOUT: Duration = Duration::from_millis(1500);
+
+/// Longest read of a relay target's item (policy and credential) when a
+/// session starts; past it, the session is refused.
+const TARGET_READ_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// A session refused because its grant could not be looked up in time.
+const GRANT_LOOKUP_FAILED: Refusal =
+    Refusal::new("grant lookup failed", session::reason::GRANT_STATE_NOTICE);
+
+/// A session refused because its target is no longer a relay target.
+const NOT_A_RELAY_TARGET: Refusal =
+    Refusal::new("target is no longer a relay target", NO_LONGER_VALID);
 
 /// How often a run of failed grant queries is logged.
 const CHECK_FAILURE_LOG_EVERY: Duration = Duration::from_secs(30);
@@ -983,8 +995,93 @@ async fn refuse_session(
     message
 }
 
+/// Why a session may not start: the reason on record and the message for
+/// the agent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Refusal {
+    reason: &'static str,
+    message: &'static str,
+}
+
+impl Refusal {
+    const fn new(reason: &'static str, message: &'static str) -> Self {
+        Self { reason, message }
+    }
+}
+
+/// Check, before anything is recorded, that `login`'s grant is still active
+/// and that its target is still the relay destination the owner approved
+/// (address, port and pinned host keys, by digest) with the approved user
+/// allowed; return the target's policy and onward credential, from one read
+/// of its item. The grant lookup is bounded by [`GRANT_QUERY_TIMEOUT`] and
+/// the read by [`TARGET_READ_TIMEOUT`].
+async fn check_session(
+    shared: &Shared,
+    login: &Login,
+) -> Result<(SshTarget, RelayCredential), Refusal> {
+    let grant = &login.grant;
+    // The grant may have been revoked or expired since login.
+    let lookup = shared
+        .requests
+        .active_relay_grant(&grant.target, &login.key);
+    match tokio::time::timeout(GRANT_QUERY_TIMEOUT, lookup).await {
+        Ok(Ok(Some(now))) if now.grant_id == grant.grant_id => {}
+        Ok(Ok(_)) => return Err(Refusal::new("grant no longer active", NO_LONGER_VALID)),
+        Ok(Err(e)) => {
+            tracing::error!(grant = %grant.grant_id, error = %e, "relay: grant lookup failed");
+            return Err(GRANT_LOOKUP_FAILED);
+        }
+        Err(_) => {
+            tracing::error!(grant = %grant.grant_id, timeout = ?GRANT_QUERY_TIMEOUT, "relay: grant lookup timed out");
+            return Err(GRANT_LOOKUP_FAILED);
+        }
+    }
+    // The policy and the credential, in one read.
+    let read = shared.backend.relay_target_with_credential(&grant.target);
+    let (target, credential) = match tokio::time::timeout(TARGET_READ_TIMEOUT, read).await {
+        Ok(Ok(read)) => read,
+        Ok(Err(PolicyError::Invalid { field, .. })) if field == "mode" => {
+            return Err(NOT_A_RELAY_TARGET);
+        }
+        Ok(Err(PolicyError::NotFound(_))) => {
+            return Err(Refusal::new("target no longer exists", NO_LONGER_VALID));
+        }
+        Ok(Err(PolicyError::Unavailable(detail))) => {
+            tracing::error!(grant = %grant.grant_id, detail, "relay: secret backend unavailable");
+            return Err(Refusal::new("secret backend unavailable", UNAVAILABLE));
+        }
+        Ok(Err(e)) => {
+            tracing::warn!(grant = %grant.grant_id, error = %e, "relay: target policy invalid");
+            return Err(Refusal::new("target policy invalid", NO_LONGER_VALID));
+        }
+        Err(_) => {
+            tracing::error!(grant = %grant.grant_id, timeout = ?TARGET_READ_TIMEOUT, "relay: target lookup timed out");
+            return Err(Refusal::new("target lookup failed", UNAVAILABLE));
+        }
+    };
+    if target.mode != SshMode::Relay {
+        return Err(NOT_A_RELAY_TARGET);
+    }
+    if !target.users.contains(&grant.user) {
+        return Err(Refusal::new(
+            "user no longer allowed on the target",
+            NO_LONGER_VALID,
+        ));
+    }
+    // The relay connects only where the owner approved: same address and
+    // port, same pinned host keys. A rotated credential alone is fine.
+    if target.destination_digest() != grant.destination_digest {
+        return Err(Refusal::new("target policy changed", NO_LONGER_VALID));
+    }
+    Ok((target, credential))
+}
+
 /// Everything between the agent's `shell`/`exec` and a running session on
 /// the target. Returns the message for the agent on failure.
+///
+/// A stop, revocation or expiry ends it at any point: while the session is
+/// checked (nothing recorded yet) it is refused, on record; once its start
+/// is recorded, its end is.
 async fn open_target(
     shared: &Shared,
     login: &Login,
@@ -995,61 +1092,30 @@ async fn open_target(
     live: &mut Registration,
 ) -> Result<onward::Started, &'static str> {
     let grant = &login.grant;
-    let refuse = |reason, message| refuse_session(shared, &grant.grant_id, reason, message);
+    let refuse =
+        |refusal: Refusal| refuse_session(shared, &grant.grant_id, refusal.reason, refusal.message);
     // Failed closed: no grant can be told revoked, so none is used.
     if shared.grant_state_lost.load(Ordering::Acquire) {
-        return Err(refuse(
+        return Err(refuse(Refusal::new(
             session::reason::GRANT_STATE_UNAVAILABLE,
             session::reason::GRANT_STATE_NOTICE,
-        )
+        ))
         .await);
     }
-    // The grant may have been revoked or expired since login.
-    match shared
-        .requests
-        .active_relay_grant(&grant.target, &login.key)
-        .await
-    {
-        Ok(Some(now)) if now.grant_id == grant.grant_id => {}
-        Ok(_) => return Err(refuse("grant no longer active", NO_LONGER_VALID).await),
-        Err(e) => {
-            tracing::error!(grant = %grant.grant_id, error = %e, "relay: grant lookup failed");
-            return Err(refuse("grant lookup failed", session::reason::GRANT_STATE_NOTICE).await);
-        }
-    }
-    // The policy and the credential, in one read.
-    let (target, credential) = match shared
-        .backend
-        .relay_target_with_credential(&grant.target)
-        .await
-    {
-        Ok(read) => read,
-        Err(PolicyError::Invalid { field, .. }) if field == "mode" => {
-            return Err(refuse("target is no longer a relay target", NO_LONGER_VALID).await);
-        }
-        Err(PolicyError::NotFound(_)) => {
-            return Err(refuse("target no longer exists", NO_LONGER_VALID).await);
-        }
-        Err(PolicyError::Unavailable(detail)) => {
-            tracing::error!(grant = %grant.grant_id, detail, "relay: secret backend unavailable");
-            return Err(refuse("secret backend unavailable", UNAVAILABLE).await);
-        }
-        Err(e) => {
-            tracing::warn!(grant = %grant.grant_id, error = %e, "relay: target policy invalid");
-            return Err(refuse("target policy invalid", NO_LONGER_VALID).await);
-        }
+    // Neither a slow database nor a slow secret backend holds up a stop,
+    // a revocation or an expiry.
+    let checked = tokio::select! {
+        checked = check_session(shared, login) => checked,
+        () = stopping(stop) => Err(Refusal::new(session::reason::SHUTDOWN, SHUTTING_DOWN)),
+        ending = live.ended() => Err(Refusal::new(
+            ending,
+            session::reason::notice(ending).unwrap_or(NO_LONGER_VALID),
+        )),
     };
-    if target.mode != SshMode::Relay {
-        return Err(refuse("target is no longer a relay target", NO_LONGER_VALID).await);
-    }
-    if !target.users.contains(&grant.user) {
-        return Err(refuse("user no longer allowed on the target", NO_LONGER_VALID).await);
-    }
-    // The relay connects only where the owner approved: same address and
-    // port, same pinned host keys. A rotated credential alone is fine.
-    if target.destination_digest() != grant.destination_digest {
-        return Err(refuse("target policy changed", NO_LONGER_VALID).await);
-    }
+    let (target, credential) = match checked {
+        Ok(checked) => checked,
+        Err(refusal) => return Err(refuse(refusal).await),
+    };
     // Pre-flight: on record before any byte reaches the target.
     let started = AuditEvent::RelaySessionStarted {
         grant_id: grant.grant_id.clone(),

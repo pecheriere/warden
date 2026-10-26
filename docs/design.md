@@ -261,7 +261,13 @@ exactly one `relay_session_ended` event.
 query has succeeded for 10 s, every relayed session ends (reason `grant state
 unavailable`) and no session starts until a query succeeds; a refused start is
 audited as `relay_session_refused`. A target item that cannot be read at
-session start refuses the session too.
+session start refuses the session too. Session setup is bounded and never
+holds up teardown: the grant lookup at session start is bounded to 1.5 s
+(`grant lookup failed`) and the target item read to 10 s (`target lookup
+failed`), and a stop, revocation or expiry during setup refuses the session
+at once. A session is either refused (one `relay_session_refused`) or
+started and ended (one `relay_session_started`, one
+`relay_session_ended`).
 
 **Audit.** `relay_session_started` (grant, target, user, and for `exec` the
 command truncated to 200 characters) is written before any byte reaches the
