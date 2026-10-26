@@ -62,6 +62,14 @@ until you need it. The owner sees the secret's name, and the approval page
 shows the one origin, path prefix and methods the secret may be used for,
 the header and value format it is sent in, and whether a CA is pinned.
 
+Some targets are reached through the broker's SSH relay instead of with a
+certificate. You do not need to know which: `warden request ssh` and
+`warden ssh` work the same way. The target's login credential stays on the
+broker, and you never see it. Through the relay, port forwarding (`-L`, `-R`,
+`-D`), agent forwarding, X11 and subsystems such as `sftp` are refused
+(this includes `scp` in its sftp mode), so move files with a command that
+reads or writes stdin and stdout instead.
+
 ## The fingerprint check
 
 `warden request` prints this to stderr:
@@ -138,6 +146,17 @@ takes at most 30 seconds. If the owner changes the secret's policy after you
 were approved, or revokes the grant, or the grant expires, the broker answers
 409 (also when this happens while a call is out: the response is withheld)
 and you request again.
+
+A relayed session can end with ssh's exit status 255 and a message
+beginning `warden relay:` on stderr. This happens when the access is no longer
+valid (revoked or expired), the broker cannot read the target's policy or the
+state of grants right now, the session could not be recorded, forwarding or a
+subsystem was asked for, or the broker is shutting down. A session also ends
+when it carries no data for 15 minutes, when the target stops reading and the
+broker gives up (`flow control`), or when the window ends. Do not retry in a
+loop: check `warden status`, and request again if the grant is gone. A refused
+start and a target that refuses its login look alike to ssh (255), and
+the owner can tell them apart in the audit log.
 
 `warden status` lists the grants on this machine and the broker's view of
 your live grants.

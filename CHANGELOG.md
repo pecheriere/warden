@@ -4,6 +4,41 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] - unreleased
+
+### Added
+
+- SSH relay mode for targets that cannot trust a CA. `warden request ssh` and
+  `warden ssh` work as before; the broker runs an SSH relay that
+  authenticates the agent by the ephemeral public key the owner approved
+  (user name = target name; a key can be bound to one live request or grant
+  at a time) and logs in to the target with the item's Ed25519 private key or
+  password. The target's host keys must be pinned; key exchange negotiates only
+  their algorithms (Ed25519, RSA and ECDSA host keys verify, SHA-1 is never
+  negotiated). Port, agent and X11 forwarding and subsystems are refused, the
+  environment is filtered, and there are limits of 4 sessions per grant,
+  `WARDEN_RELAY_MAX_SESSIONS` overall (default 16) and for connections not yet
+  logged in.
+- Sessions end at revocation, expiry, 15 minutes without traffic, a 30 s wait
+  for an unstarted session, or a flow-control watchdog (2 s wedge, 60 s
+  stall), and fail closed when grant state cannot be read for 10 s.
+- Audit events `relay_session_started` (before any byte reaches the target),
+  `relay_session_ended`, `relay_session_refused` and `relay_login_refused`.
+- Configuration `WARDEN_RELAY_LISTEN`, `WARDEN_RELAY_PUBLIC_ADDR`,
+  `WARDEN_RELAY_HOST_KEY_PATH` and `WARDEN_RELAY_MAX_SESSIONS`.
+- Target items accept `private_key` (unencrypted Ed25519) or `password` for
+  `mode=relay`.
+
+### Changed
+
+- Wire format: `GrantAccess` has a new `relay` kind (target, user, relay host
+  and port, relay host key); the CLI's local `grant.json` records a `route`
+  (`direct` or `relay`, default `direct`). Agents and brokers should both be
+  0.3.0; a 0.2.x CLI cannot use a relay grant.
+- A public key can be bound to one live request or grant at a time across all
+  agents; reusing one is a 409.
+- The SSH destination digest covers the target's mode.
+
 ## [0.2.0] - unreleased
 
 ### Added

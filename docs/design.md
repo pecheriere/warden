@@ -1,9 +1,9 @@
 # warden — design
 
 This document records the intent and design of warden. It describes the full
-v1 design; the current release (0.2.0) implements the SSH certificate mode
-(§8.1) and the HTTP proxy mode (§8.3). SSH relay mode (§8.2) is designed here
-but not implemented yet. Where the implementation deviates from this design, the
+v1 design; the current release (0.3.0) implements the SSH certificate mode
+(§8.1), the SSH relay mode (§8.2) and the HTTP proxy mode (§8.3). Where the
+implementation deviates from this design, the
 [threat model](threat-model.md) says how and why.
 
 ## 1. Intent
@@ -177,15 +177,106 @@ The CLI always gets a terminal state: `approved`, `denied`, `expired`, or
 
 ### 8.2 SSH relay mode
 
-- The agent authenticates to warden's SSH relay (a `russh` server) with a
-  certificate issued as in §8.1 but whose principal is
-  `relay:<target>:<user>` and which is valid only for the relay.
-- warden opens the onward session to the target (`russh` client) with the
-  credential from the target's 1Password item (private key or password),
-  verifies the target's **pinned host key** from that item, and relays pty,
-  exec and channel data. No agent forwarding, no port forwarding in v1.
-- warden tears down relay sessions at grant expiry or revoke.
-- `warden ssh <target>` hides the difference between the modes.
+For targets that cannot trust a CA. The agent connects to warden's SSH relay
+(a `russh` server); warden opens the onward session to the target itself, with
+a credential that never leaves the broker. The request flow, approval and CLI
+commands are those of §8.1: `warden request ssh <target>` and
+`warden ssh <target>` hide the difference between the modes.
+
+**Agent authentication.** No certificate is issued. The agent logs in with the
+ephemeral Ed25519 key whose public half is part of the request and of the
+fingerprint the owner approved, so the approval is bound to that exact key
+(an equivalent binding to a relay certificate, without a second principal
+namespace). The user name is the **target name**; the Unix account on the
+target is the one that was approved. Only public-key login exists (no
+password, no keyboard-interactive), with 3 attempts and 10 s to log in. A
+login is accepted iff an active grant (not revoked, before its end) exists for
+that target whose bound key equals the offered key; an unknown target, an
+unapproved key and an inactive grant are refused identically. A public key can
+be bound to one live request or grant at a time, across all agents (a second
+request with it is a 409), so another agent cannot use a key it merely
+learned, and every relay session is attributed to the agent that was
+approved.
+
+**Onward connection.** warden reads the target item once when the session
+starts (policy and credential in one read) and re-checks that the mode is
+still `relay` and the approved user is still allowed. It connects with a 10 s
+timeout per step and verifies the target's **pinned host key**: the item's
+`host_keys` are required (no trust on first use) and key exchange negotiates
+only the algorithms of the pinned keys, so an unpinned algorithm cannot be
+offered. Ed25519, RSA and ECDSA host keys verify (appliances commonly have
+RSA or ECDSA host keys); for RSA, `rsa-sha2-256/512` is negotiated and SHA-1
+never is, though a holder of the pinned private key could still sign with
+SHA-1. Any other key aborts with a fixed message. warden logs in as the
+approved user with the item's credential: an Ed25519 private key or a password
+(exactly one; see [1password-items.md](1password-items.md)). The credential is
+held zeroized and never logged, returned or audited. No forwarding of any kind
+is requested.
+
+**Session policy.** One session channel per connection. Allowed: `pty-req`,
+`env` (only `LANG`, `LC_*` and `TERM`, at most 16 variables, values of at most
+256 bytes), `window-change`, `signal`, then `shell` or `exec`. Refused with a
+message on the session's stderr: port forwarding (local and remote), agent
+forwarding, X11 and subsystems (sftp included). Before the session starts, at
+most 32 messages or 64 KiB of input are accepted; past that the connection is
+hung up. A connection that starts no session within 30 s is hung up, as is
+one whose session is over and that the agent does not leave (2 s). A refused
+start reaches OpenSSH as a session that exited 255 with a message on stderr
+(a failed request would make the client drop the message); the audit trail
+holds the precise reason.
+
+**Limits.** At most 4 concurrent sessions per grant and 16 overall
+(`WARDEN_RELAY_MAX_SESSIONS`, 1 to 1024). Before login, at most 10 connections
+overall and 5 per source address. Behind Tailscale Serve every peer arrives
+from `127.0.0.1`, so the per-address limit acts as a global limit of 5
+connections logging in at once.
+
+**Flow control.** warden pulls data out of both SSH connections continuously
+and holds it in byte-bounded queues (2 MiB towards the target, 8 MiB towards
+the agent), so memory per session is bounded. The SSH library offers no
+reader-driven back-pressure, so liveness is enforced by two watchdogs instead
+of by blocking: a wedge watchdog ends a session whose two directions are both
+held up with nothing delivered for 2 s (the two connections are waiting on
+each other), and a stall watchdog ends a session in which one direction has
+held data for 60 s without delivering any of it (its receiver does not read).
+Both measure only while data is held, so an idle session is not affected. The
+session ends with the audited reason `flow control: …`. Residual: when the
+target stops reading its input, an agent that disconnects is noticed only
+after up to 60 s, so its slot is held that long.
+
+**Teardown.** A running session ends, with both connections cut by a hard
+cut within 5 s, when its grant or agent is revoked (immediately, when the
+revoke goes through the broker; otherwise found by a check of live grants
+every second), when the grant's window ends (enforced from memory on every
+tick), after 15 minutes with no bytes in either direction, when a flow-control
+watchdog fires, or when the relay shuts down. Each started session records
+exactly one `relay_session_ended` event.
+
+**Fail closed.** The grant check is a database query bounded to 1.5 s. If no
+query has succeeded for 10 s, every relayed session ends (reason `grant state
+unavailable`) and no session starts until a query succeeds; a refused start is
+audited as `relay_session_refused`. A target item that cannot be read at
+session start refuses the session too.
+
+**Audit.** `relay_session_started` (grant, target, user, and for `exec` the
+command truncated to 200 characters) is written before any byte reaches the
+target; if it cannot be written the session does not start.
+`relay_session_ended` carries the reason, the bytes moved in each direction
+and the exit status. `relay_session_refused` records a start refused after a
+successful login (the grant or the policy changed), and `relay_login_refused`
+a connection that tried to log in and was turned away. Neither holds key
+material.
+
+**Configuration.** `WARDEN_RELAY_PUBLIC_ADDR` (`host:port`, required for relay
+targets; when unset, requests for relay targets are refused) is the address
+agents connect to; `WARDEN_RELAY_LISTEN` (default `127.0.0.1:2222`) is the
+local listener; `WARDEN_RELAY_HOST_KEY_PATH` (default
+`/data/relay_host_ed25519`) is the relay's Ed25519 host key, generated on first
+use. The file is created atomically with mode 0600 and never overwritten. An
+existing file must be a regular file (not a symbolic link) owned by the broker
+user, not accessible to group or others, and hold an unencrypted OpenSSH
+Ed25519 key; anything else stops the server at startup. Its public half is returned in every relay grant, and the CLI
+pins it (and only it) for the relay. The relay address is public information.
 
 ### 8.3 HTTP proxy mode (secret injection)
 
@@ -327,7 +418,8 @@ header **and an agent key**:
 - The agent name is recorded on requests, grants and audit events, and shown
   on the approval page ("requested by `laptop`").
 - Grants are bound to the requesting agent key; another agent's key cannot use
-  them. Relay certificates carry the agent name in the key id.
+  them. A relay grant is bound to the agent that requested it, and the relay
+  logs the grant id with every session.
 - `warden-server agent list|revoke <name>`: revoke disables the key
   immediately, cancels its pending requests, ends its grants and kills its
   relay sessions.
@@ -385,7 +477,12 @@ in-flight requests and enrolled passkeys (re-enroll).
   (HTTPS), approval UI (HTTPS), SSH relay (TCP). The tailnet policy grants
   each port to its own set of devices (see §9): the approval UI to the owner's
   phone only, the API and relay to the workstation the agent runs on. Nothing
-  is published on the LAN.
+  is published on the LAN. The relay listener stays on loopback
+  (`WARDEN_RELAY_LISTEN`) and is published as a Tailscale Serve **TCP**
+  forward; `WARDEN_RELAY_PUBLIC_ADDR` is its tailnet address and port. Serve
+  does not add identity to a raw TCP stream and every peer appears as
+  `127.0.0.1`, so the relay authenticates the agent itself (by key) and the
+  tailnet policy is the only network-level restriction on who reaches it.
 - **Tailscale is a hard requirement in v1** (decision). Caller identity sits
   behind an internal trait so other identity sources (mTLS, OIDC) can be
   added later, but only the Tailscale implementation ships.
@@ -409,6 +506,14 @@ in-flight requests and enrolled passkeys (re-enroll).
   and exits 5 when there is no active one. `--fail` exits 22 on an upstream
   status of 400 or more, as `curl --fail` does, and still writes the body.
   The CLI refuses non-https URLs and bodies over 1 MiB before sending.
+- Relay targets need no different commands: `warden request ssh` and
+  `warden ssh` work as for certificate targets. The grant tells the CLI to
+  connect to the relay's address and log in as the target name, with the
+  relay's host key pinned and the same per-grant `ssh-agent` holding the key
+  (no certificate). The CLI records the route in the local `grant.json`;
+  records without one are direct. A 0.2.x CLI does not know the relay grant
+  kind: it cannot use such a grant and fails with an error instead of
+  connecting anywhere (broker and CLI should both be 0.3.0).
 - Requests block (with progress on stderr) until a terminal state; exit codes
   distinguish approved / denied / expired / error.
 - A short usage doc ([agent-usage.md](agent-usage.md)) tells the agent to

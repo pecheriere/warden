@@ -25,7 +25,7 @@ error.
 | `mode`       | `cert` or `relay`. |
 | `users`      | Comma-separated Unix accounts that may be requested, each matching `^[a-z_][a-z0-9_-]{0,31}$`. |
 | `max_window` | Longest window that may be granted: `15m`, `30m`, `1h` or `4h`. |
-| `host_keys`  | One or more OpenSSH public key lines (`ssh-ed25519 AAAA...`), newline-separated. Any key algorithm is accepted: these are the target's host keys. They are pinned: there is no trust on first use. |
+| `host_keys`  | One or more OpenSSH public key lines (`ssh-ed25519 AAAA...`), newline-separated. Any key algorithm is accepted: these are the target's host keys. They are pinned: there is no trust on first use. Required for both modes; for relay targets the onward connection negotiates only the algorithms of these keys. |
 | `private_key` | Relay targets only: the private key warden logs in to the target with. See below. |
 | `password`    | Relay targets only: the password warden logs in to the target with. See below. |
 
@@ -35,7 +35,8 @@ A target with mode `relay` is reached through warden: the agent connects to
 warden, and warden logs in to the target with a credential that never leaves
 it. The item holds that credential in **exactly one** of two fields:
 
-- `private_key`: an **unencrypted Ed25519** private key, in OpenSSH
+- `private_key`: an **unencrypted Ed25519** private key (the only key type
+  warden handles privately; it holds no RSA or NIST-curve private key), in OpenSSH
   (`-----BEGIN OPENSSH PRIVATE KEY-----`) or PKCS#8
   (`-----BEGIN PRIVATE KEY-----`) PEM format. RSA and ECDSA keys are
   refused (warden performs no RSA or NIST-curve private-key operation): use
