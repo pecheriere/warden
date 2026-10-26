@@ -373,8 +373,9 @@ async fn request_grant(
 ) -> Result<GrantView> {
     let created = client.create(req).await?;
     if created.fingerprint != fingerprint(&config.agent, req) {
-        // The broker answered with another pending request for this target,
-        // made with a different key: its grant would be useless here.
+        // The broker answered with another pending request of this agent for
+        // the same target or secret, made with a different goal, window or
+        // (for SSH) key: approving it would not grant what was asked here.
         bail!(
             "a request {subject} is already pending (fingerprint {}); wait for it to be decided or expire",
             created.fingerprint
