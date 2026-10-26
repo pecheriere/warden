@@ -222,8 +222,9 @@ stands now (see "Changes during approval and use" below):
   `Accept-Encoding`, `Range`, `If-Range` (they could make the answer carry the
   secret compressed or in fragments), the method and URL override headers
   (`X-HTTP-Method-Override`, `X-HTTP-Method`, `X-Method-Override`,
-  `X-Original-URL`, `X-Rewrite-URL`) or the forwarding headers (`Forwarded`,
-  `X-Forwarded-Host`, `-For`, `-Proto`, `-Port`, `X-Real-IP`). Names and
+  `X-Original-URL`, `X-Rewrite-URL`) or the forwarding and host-override
+  headers (`Forwarded`, `Via`, `X-Forwarded-Host`, `-For`, `-Proto`, `-Port`,
+  `-Server`, `-Prefix`, `X-Real-IP`, `X-Host`, `X-Original-Host`). Names and
   values with CR, LF or NUL are refused.
 - *Body:* at most 1 MiB once decoded (the route accepts 2 MiB of JSON).
 

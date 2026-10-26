@@ -93,9 +93,10 @@ const ENCODED_SEPARATORS: [&str; 8] = ["%2e", "%2f", "%5c", "%3b", "%25", "%c0",
 /// `Accept-Encoding`, `Range` and `If-Range` would let the response carry the
 /// secret compressed or in fragments that redaction cannot see; the method
 /// and URL overrides make some servers apply another method or path than the
-/// one checked; the forwarding headers make some servers (and the proxies in
-/// front of them) route to another virtual host or trust another client.
-const REFUSED_HEADERS: [&str; 14] = [
+/// one checked; the forwarding and host-override headers (`Via` included)
+/// make some servers (and the proxies in front of them) route to another
+/// virtual host or path prefix, or trust another client.
+const REFUSED_HEADERS: [&str; 19] = [
     "accept-encoding",
     "range",
     "if-range",
@@ -110,6 +111,11 @@ const REFUSED_HEADERS: [&str; 14] = [
     "x-forwarded-proto",
     "x-forwarded-port",
     "x-real-ip",
+    "x-forwarded-server",
+    "x-forwarded-prefix",
+    "x-host",
+    "x-original-host",
+    "via",
 ];
 
 /// Parse the URL and check it against the policy. The path is inspected as
@@ -480,6 +486,11 @@ mod tests {
             "X-Forwarded-Proto",
             "X-Forwarded-Port",
             "X-Real-IP",
+            "X-Forwarded-Server",
+            "x-forwarded-prefix",
+            "X-Host",
+            "X-Original-Host",
+            "Via",
         ] {
             assert!(
                 matches!(
