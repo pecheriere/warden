@@ -23,6 +23,7 @@ use ssh_agent_lib::agent::Session as _;
 use ssh_agent_lib::proto::{
     AddIdentity, AddIdentityConstrained, KeyConstraint, PrivateCredential, PrivateKeyData,
 };
+use ssh_key::private::KeypairData;
 use ssh_key::{Algorithm, Certificate, PrivateKey, PublicKey};
 use warden_broker_proto::{Id, TargetName, UnixUser};
 
@@ -44,6 +45,20 @@ pub struct GrantAgent {
     pub pid: u32,
 }
 
+/// How a grant reaches its target.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Route {
+    /// Straight to the target, which trusts the grant's certificate.
+    /// Records written before relay grants existed have no route and are
+    /// direct.
+    #[default]
+    Direct,
+    /// Through the broker's relay, logging in as the target's name with the
+    /// grant's plain key; the relay logs in to the target as the user.
+    Relay,
+}
+
 /// What `grant.json` records about a grant. Holds no secrets.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GrantRecord {
@@ -51,11 +66,14 @@ pub struct GrantRecord {
     pub grant_id: Id,
     /// Target name the grant was requested for.
     pub target: TargetName,
-    /// Host to connect to, from the signed grant.
+    /// How ssh reaches the target.
+    #[serde(default)]
+    pub route: Route,
+    /// Host to connect to, from the grant: the target's, or the relay's.
     pub host: String,
     /// Port to connect to.
     pub port: u16,
-    /// Unix account the certificate is valid for.
+    /// Unix account the grant logs in to on the target.
     pub user: UnixUser,
     /// End of validity, Unix seconds.
     pub not_after: i64,
@@ -286,20 +304,51 @@ pub async fn add_cert(
         .ed25519()
         .ok_or_else(|| anyhow!("only Ed25519 keys are supported"))?
         .clone();
+    add_identity(
+        agent,
+        PrivateCredential::Cert {
+            algorithm: Algorithm::Ed25519,
+            certificate: Box::new(cert.clone()),
+            privkey: PrivateKeyData::Ed25519(keypair),
+            comment: "warden grant".to_owned(),
+        },
+        secs,
+    )
+    .await
+}
+
+/// Add `key` alone (no certificate) to `agent`, constrained to `lifetime`:
+/// the relay accepts it because it is the key bound to the approved request.
+///
+/// # Errors
+/// If `key` is not Ed25519 or the agent refuses.
+pub async fn add_key(agent: &GrantAgent, key: &PrivateKey, lifetime: Duration) -> Result<()> {
+    let secs = lifetime_secs(lifetime)?;
+    let keypair = key
+        .key_data()
+        .ed25519()
+        .ok_or_else(|| anyhow!("only Ed25519 keys are supported"))?
+        .clone();
+    add_identity(
+        agent,
+        PrivateCredential::Key {
+            privkey: KeypairData::Ed25519(keypair),
+            comment: "warden grant".to_owned(),
+        },
+        secs,
+    )
+    .await
+}
+
+/// Add `credential` to `agent` with a lifetime of `secs`.
+async fn add_identity(agent: &GrantAgent, credential: PrivateCredential, secs: u32) -> Result<()> {
     let stream = tokio::net::UnixStream::connect(&agent.socket)
         .await
         .with_context(|| format!("cannot connect to ssh-agent at {}", agent.socket.display()))?;
     let mut client = ssh_agent_lib::client::Client::new(stream);
     client
         .add_identity_constrained(AddIdentityConstrained {
-            identity: AddIdentity {
-                credential: PrivateCredential::Cert {
-                    algorithm: Algorithm::Ed25519,
-                    certificate: Box::new(cert.clone()),
-                    privkey: PrivateKeyData::Ed25519(keypair),
-                    comment: "warden grant".to_owned(),
-                },
-            },
+            identity: AddIdentity { credential },
             constraints: vec![KeyConstraint::Lifetime(secs)],
         })
         .await
@@ -485,9 +534,13 @@ mod tests {
     use ssh_key::{Algorithm, PrivateKey};
     use warden_broker_proto::Id;
 
+    use ssh_agent_lib::agent::Session as _;
+    use ssh_agent_lib::proto::PublicCredential;
+
     use super::{
-        GrantRecord, cleanup_expired_in, is_safe_host, kill, load_grants, parse_agent_pid, record,
-        socket_dir, socket_path, start_in, write_known_hosts, write_new_private,
+        GrantRecord, Route, add_key, cleanup_expired_in, is_safe_host, kill, load_grants,
+        parse_agent_pid, record, socket_dir, socket_path, start_in, write_known_hosts,
+        write_new_private,
     };
 
     fn host_key() -> String {
@@ -555,6 +608,95 @@ mod tests {
         assert!(write_known_hosts(dir.path(), "*", 22, &[key]).is_err());
     }
 
+    /// A relay grant pins the relay's host key at the relay's address, so
+    /// ssh accepts the relay and nothing else.
+    #[test]
+    fn known_hosts_pin_relay_key_at_relay_address() {
+        let dir = tempfile::tempdir().unwrap();
+        let relay_key = host_key();
+        let path = write_known_hosts(
+            dir.path(),
+            "relay.example.com",
+            2222,
+            &[format!("{relay_key} warden-relay")],
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            format!("[relay.example.com]:2222 {relay_key}\n")
+        );
+        assert_eq!(mode(&path), 0o600);
+        let other = tempfile::tempdir().unwrap();
+        assert!(write_known_hosts(other.path(), "-relay", 2222, &[relay_key]).is_err());
+    }
+
+    #[test]
+    fn records_without_route_are_direct() {
+        let raw = serde_json::json!({
+            "grant_id": Id::random(),
+            "target": "pi",
+            "host": "192.0.2.2",
+            "port": 22,
+            "user": "alice",
+            "not_after": 10,
+            "socket": "/tmp/s.sock",
+            "pid": 1,
+        });
+        let rec: GrantRecord = serde_json::from_value(raw.clone()).unwrap();
+        assert_eq!(rec.route, Route::Direct);
+        let mut relayed = raw;
+        relayed["route"] = "relay".into();
+        let rec: GrantRecord = serde_json::from_value(relayed).unwrap();
+        assert_eq!(rec.route, Route::Relay);
+        assert_eq!(serde_json::to_value(&rec).unwrap()["route"], "relay");
+    }
+
+    /// The relay authenticates the bound key itself: the agent holds the
+    /// plain key, no certificate.
+    #[tokio::test]
+    async fn relay_key_is_added_without_certificate() {
+        let root = roots();
+        let id = Id::random();
+        let agent = start_in(
+            &root.path().join("grants"),
+            &root.path().join("s"),
+            &id,
+            Duration::from_secs(60),
+        )
+        .unwrap();
+        let _stop = StopOnDrop(agent.socket.clone(), agent.pid);
+        let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+        add_key(&agent, &key, Duration::from_secs(60))
+            .await
+            .unwrap();
+
+        let stream = tokio::net::UnixStream::connect(&agent.socket)
+            .await
+            .unwrap();
+        let mut client = ssh_agent_lib::client::Client::new(stream);
+        let ids = client.request_identities().await.unwrap();
+        assert_eq!(ids.len(), 1);
+        assert_eq!(
+            ids[0].credential,
+            PublicCredential::Key(key.public_key().key_data().clone())
+        );
+    }
+
+    #[tokio::test]
+    async fn add_key_refuses_ended_grant() {
+        let root = roots();
+        let agent = start_in(
+            &root.path().join("grants"),
+            &root.path().join("s"),
+            &Id::random(),
+            Duration::from_secs(60),
+        )
+        .unwrap();
+        let _stop = StopOnDrop(agent.socket.clone(), agent.pid);
+        let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+        assert!(add_key(&agent, &key, Duration::ZERO).await.is_err());
+    }
+
     #[test]
     fn safe_hosts() {
         assert!(is_safe_host("192.0.2.2"));
@@ -604,6 +746,7 @@ mod tests {
         let rec = GrantRecord {
             grant_id: id.clone(),
             target: "pi".parse().unwrap(),
+            route: Route::Direct,
             host: "127.0.0.1".to_owned(),
             port: 22,
             user: "alice".parse().unwrap(),

@@ -558,7 +558,8 @@ pub struct TestBroker {
     >,
     dir: Option<TempDir>,
     proxy: ProxyLimits,
-    relay: bool,
+    /// `WARDEN_RELAY_PUBLIC_ADDR`, if the relay is configured.
+    relay: Option<String>,
 }
 
 impl Drop for TestBroker {
@@ -593,7 +594,24 @@ impl TestBroker {
     /// # Panics
     /// If any part of the setup fails.
     pub async fn without_relay() -> Self {
-        Self::fresh(ProxyLimits::default(), false).await
+        Self::fresh(ProxyLimits::default(), None).await
+    }
+
+    /// Like [`TestBroker::new`], with the relay already running on an
+    /// ephemeral loopback port that is also its public address: relay
+    /// grants name where it really listens, so a client following a grant
+    /// (like the `warden` CLI) reaches it. Returns the relay's address too.
+    ///
+    /// # Panics
+    /// If any part of the setup fails.
+    pub async fn with_reachable_relay() -> (Self, std::net::SocketAddr) {
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("bind relay listener");
+        let addr = listener.local_addr().expect("relay listener address");
+        let broker = Self::fresh(ProxyLimits::default(), Some(addr.to_string())).await;
+        broker.serve_relay(listener, RelayLimits::default()).await;
+        (broker, addr)
     }
 
     /// Like [`TestBroker::new`], with proxied calls held to `proxy` (for
@@ -602,10 +620,14 @@ impl TestBroker {
     /// # Panics
     /// If any part of the setup fails.
     pub async fn with_proxy_limits(proxy: ProxyLimits) -> Self {
-        Self::fresh(proxy, true).await
+        Self::fresh(
+            proxy,
+            Some(format!("{RELAY_PUBLIC_HOST}:{RELAY_PUBLIC_PORT}")),
+        )
+        .await
     }
 
-    async fn fresh(proxy: ProxyLimits, relay: bool) -> Self {
+    async fn fresh(proxy: ProxyLimits, relay: Option<String>) -> Self {
         let dir = tempfile::tempdir().expect("temp dir");
         let db_path = dir.path().join("warden.db");
         let audit_path = dir.path().join("audit.jsonl");
@@ -629,7 +651,7 @@ impl TestBroker {
     /// # Panics
     /// If any part of the setup fails.
     pub async fn restart(self) -> Self {
-        let relay = self.relay;
+        let relay = self.relay.clone();
         self.restart_with(relay).await
     }
 
@@ -639,10 +661,10 @@ impl TestBroker {
     /// # Panics
     /// If any part of the setup fails.
     pub async fn restart_without_relay(self) -> Self {
-        self.restart_with(false).await
+        self.restart_with(None).await
     }
 
-    async fn restart_with(mut self, relay: bool) -> Self {
+    async fn restart_with(mut self, relay: Option<String>) -> Self {
         self.state.pool.close().await;
         let passkey = std::mem::take(self.default_passkey.get_mut());
         let next = Self::build(
@@ -666,15 +688,13 @@ impl TestBroker {
         clock: Arc<ManualClock>,
         backend: Arc<FakeBackend>,
         proxy: ProxyLimits,
-        relay: bool,
+        relay: Option<String>,
     ) -> Self {
         let pool = store::open(&db_path).await.expect("open database");
         let audit = Arc::new(AuditLog::open(&audit_path).await.expect("open audit log"));
         let host_key_path = db_path.with_file_name("relay_host_ed25519");
         let mut config = Config::from_lookup(|var| match var {
-            "WARDEN_RELAY_PUBLIC_ADDR" if relay => {
-                Some(format!("{RELAY_PUBLIC_HOST}:{RELAY_PUBLIC_PORT}"))
-            }
+            "WARDEN_RELAY_PUBLIC_ADDR" => relay.clone(),
             "WARDEN_RELAY_HOST_KEY_PATH" => Some(host_key_path.display().to_string()),
             other => test_env(other),
         })
@@ -824,6 +844,17 @@ impl TestBroker {
     /// # Panics
     /// If the host key cannot be loaded or the listener cannot be bound.
     pub async fn spawn_relay_with(&self, limits: RelayLimits) -> std::net::SocketAddr {
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("bind relay listener");
+        let addr = listener.local_addr().expect("relay listener address");
+        self.serve_relay(listener, limits).await;
+        addr
+    }
+
+    /// Run the SSH relay with `limits` on `listener` until the broker is
+    /// dropped or [`TestBroker::stop_relay`] is called.
+    async fn serve_relay(&self, listener: tokio::net::TcpListener, limits: RelayLimits) {
         let key = host_key::load_or_create(self.db_path.with_file_name("relay_host_ed25519"))
             .await
             .expect("relay host key");
@@ -835,17 +866,12 @@ impl TestBroker {
             limits,
         )
         .expect("relay server");
-        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
-            .await
-            .expect("bind relay listener");
-        let addr = listener.local_addr().expect("relay listener address");
         let (stop, stop_rx) = tokio::sync::watch::channel(false);
         let task = tokio::spawn(server.serve(listener, stop_rx));
         self.relays
             .lock()
             .expect("relays lock poisoned")
             .push((stop, task));
-        addr
     }
 
     /// Stop every relay this broker runs, as on shutdown, and wait until

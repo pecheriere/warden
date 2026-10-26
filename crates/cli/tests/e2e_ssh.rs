@@ -3,20 +3,24 @@
 //! trusts the broker's CA and maps the target-scoped principal to the user,
 //! as the documented host setup does.
 
+mod common;
+
 use std::fs;
-use std::io::Write as _;
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
-use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
 
 use ssh_key::rand_core::OsRng;
 use ssh_key::{Algorithm, LineEnding, PrivateKey};
 use tempfile::TempDir;
 use warden_broker::policy::{SshMode, SshTarget};
+use warden_broker::testkit::sshd::current_user;
 use warden_broker::testkit::{BaseUrls, CapturingNotifier, TestBroker};
 use warden_broker_proto::{TargetName, UnixUser, Window};
+
+use common::{Cli, STATE_DIR, approve, approved_grant, now, spawn_request, write_private};
 
 const SSHD: &str = "/usr/sbin/sshd";
 const TARGET: &str = "box";
@@ -35,38 +39,12 @@ impl Drop for Sshd {
     }
 }
 
-fn now() -> i64 {
-    i64::try_from(
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs(),
-    )
-    .unwrap()
-}
-
-fn current_user() -> String {
-    let out = Command::new("id").arg("-un").output().unwrap();
-    assert!(out.status.success());
-    String::from_utf8(out.stdout).unwrap().trim().to_owned()
-}
-
 fn free_port() -> u16 {
     TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
         .unwrap()
         .local_addr()
         .unwrap()
         .port()
-}
-
-fn write_private(path: &Path, contents: &str) {
-    let mut f = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(path)
-        .unwrap();
-    f.write_all(contents.as_bytes()).unwrap();
 }
 
 /// Start `sshd` as the current user, trusting `ca_pub` for user certificates
@@ -140,96 +118,6 @@ fn start_sshd(ca_pub: &str, host_target: &str) -> (Sshd, ssh_key::PublicKey) {
     (sshd, host.public_key().clone())
 }
 
-/// Everything the CLI writes lives under one short temporary root.
-struct Cli {
-    root: TempDir,
-    key: String,
-}
-
-/// State and temp dirs contain a space, like macOS `~/Library/Application Support`:
-/// paths handed to ssh options must survive ssh's whitespace splitting.
-const STATE_DIR: &str = "app state";
-const TMP_DIR: &str = "my tmp";
-
-impl Cli {
-    fn new(server: &url::Url, agent: &str, key: String) -> Self {
-        let root = tempfile::Builder::new()
-            .prefix("wdn")
-            .tempdir_in("/tmp")
-            .unwrap();
-        for sub in ["config/warden", STATE_DIR, TMP_DIR] {
-            fs::create_dir_all(root.path().join(sub)).unwrap();
-        }
-        write_private(
-            &root.path().join("config/warden/config.toml"),
-            &format!("server = \"{server}\"\nagent = \"{agent}\"\n"),
-        );
-        Self { root, key }
-    }
-
-    fn command(&self) -> Command {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_warden"));
-        cmd.env("XDG_CONFIG_HOME", self.root.path().join("config"))
-            .env("XDG_STATE_HOME", self.root.path().join(STATE_DIR))
-            .env("TMPDIR", self.root.path().join(TMP_DIR))
-            .env("WARDEN_AGENT_KEY", &self.key)
-            .stdin(Stdio::null());
-        cmd
-    }
-
-    fn run(&self, args: &[&str]) -> Output {
-        self.command().args(args).output().unwrap()
-    }
-
-    /// Kill every per-grant agent the CLI left running.
-    fn kill_agents(&self) {
-        let grants = self.root.path().join(STATE_DIR).join("warden/grants");
-        let Ok(entries) = fs::read_dir(grants) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            let Ok(raw) = fs::read_to_string(entry.path().join("grant.json")) else {
-                continue;
-            };
-            let record: serde_json::Value = serde_json::from_str(&raw).unwrap();
-            let _ = Command::new("ssh-agent")
-                .arg("-k")
-                .env("SSH_AGENT_PID", record["pid"].to_string())
-                .env("SSH_AUTH_SOCK", record["socket"].as_str().unwrap())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
-        }
-    }
-
-    /// Every file under the CLI's directories containing `needle`.
-    fn files_containing(&self, needle: &str) -> Vec<PathBuf> {
-        fn walk(dir: &Path, needle: &[u8], hits: &mut Vec<PathBuf>) {
-            for entry in fs::read_dir(dir).unwrap().flatten() {
-                let path = entry.path();
-                let kind = entry.file_type().unwrap();
-                if kind.is_dir() {
-                    walk(&path, needle, hits);
-                } else if kind.is_file() {
-                    let bytes = fs::read(&path).unwrap();
-                    if bytes.windows(needle.len()).any(|w| w == needle) {
-                        hits.push(path);
-                    }
-                }
-            }
-        }
-        let mut hits = Vec::new();
-        walk(self.root.path(), needle.as_bytes(), &mut hits);
-        hits
-    }
-}
-
-impl Drop for Cli {
-    fn drop(&mut self) {
-        self.kill_agents();
-    }
-}
-
 /// A broker whose `box` target is the throwaway `sshd` (set up as the host
 /// of target `box`), with an agent `e2e` configured in a fresh CLI environment.
 struct Setup {
@@ -271,63 +159,10 @@ async fn setup_with_host_target(host_target: &str) -> Setup {
     }
 }
 
-/// Start `warden request ssh box …` in the background.
-fn spawn_request(cli: &Cli) -> Child {
-    let user = current_user();
-    cli.command()
-        .args([
-            "request",
-            "ssh",
-            TARGET,
-            "--user",
-            &user,
-            "--for",
-            "15m",
-            "--goal",
-            "run the e2e test",
-        ])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap()
-}
-
-/// Approve the request behind `token` as the owner.
-async fn approve(broker: &TestBroker, token: &str) {
-    let approved = broker.approve(token, Window::M15).await;
-    assert!(approved.status.is_success(), "{}", approved.body);
-}
-
-/// Wait for a `warden request` to succeed; return the grant id it printed
-/// and its stderr.
-async fn approved_grant(child: Child) -> (String, String) {
-    let out = tokio::task::spawn_blocking(move || child.wait_with_output())
-        .await
-        .unwrap()
-        .unwrap();
-    let stdout = String::from_utf8(out.stdout).unwrap();
-    let stderr = String::from_utf8(out.stderr).unwrap();
-    assert_eq!(
-        out.status.code(),
-        Some(0),
-        "stdout: {stdout}\nstderr: {stderr}"
-    );
-    assert!(
-        stderr.contains("fingerprint ") && stderr.contains("waiting for approval"),
-        "{stderr}"
-    );
-    let rest = stdout
-        .strip_prefix("approved: grant ")
-        .unwrap_or_else(|| panic!("unexpected stdout: {stdout}"));
-    let (grant, until) = rest.split_once(" until ").unwrap();
-    assert!(!until.trim().is_empty());
-    (grant.to_owned(), stderr)
-}
-
 /// Run `warden request ssh box …`, approve it when the doorbell rings, and
 /// return the grant id the CLI printed.
 async fn request_and_approve(s: &Setup) -> String {
-    let child = spawn_request(&s.cli);
+    let child = spawn_request(&s.cli, TARGET);
     let token = CapturingNotifier::token(&s.broker.capture.next().await);
     approve(&s.broker, &token).await;
     approved_grant(child).await.0
@@ -411,7 +246,7 @@ async fn poll_survives_server_restart_mid_wait() {
         cli,
         urls,
     } = setup().await;
-    let child = spawn_request(&cli);
+    let child = spawn_request(&cli, TARGET);
     let token = CapturingNotifier::token(&broker.capture.next().await);
 
     // The broker process goes away while the CLI is long-polling: its

@@ -119,7 +119,8 @@ enum Cmd {
 
 #[derive(Debug, Subcommand)]
 enum RequestKind {
-    /// An SSH certificate for a user on a target.
+    /// SSH access as a user on a target: a certificate, or for a relay
+    /// target a session through the broker's relay.
     Ssh {
         /// Target name.
         target: TargetName,
@@ -459,33 +460,88 @@ fn next_retry_delay(delay: Duration) -> Duration {
     delay.saturating_mul(2).min(MAX_RETRY_DELAY)
 }
 
-/// Start the grant's agent, load the key and certificate into it, pin the
-/// host keys and record the grant. On failure nothing is left behind.
+/// What to install locally for an approved SSH grant.
+#[derive(Debug)]
+struct SshSetup<'a> {
+    /// Straight to the target, or through the relay.
+    route: agent::Route,
+    /// Where ssh connects: the target's or the relay's address.
+    host: &'a str,
+    port: u16,
+    /// Host keys pinned for `host:port`.
+    host_keys: &'a [String],
+    /// The certificate loaded with the key (direct grants only: the relay
+    /// authenticates the bound key itself).
+    certificate: Option<Certificate>,
+}
+
+/// Check that `grant` is an SSH grant for `target` as `user` and say how
+/// to install it.
+///
+/// # Errors
+/// If the grant is for something else or carries an invalid host or
+/// certificate.
+fn ssh_setup<'a>(
+    target: &TargetName,
+    user: &UnixUser,
+    grant: &'a GrantView,
+) -> Result<SshSetup<'a>> {
+    let (setup, granted_user) = match &grant.access {
+        GrantAccess::Ssh(ssh) => (
+            SshSetup {
+                route: agent::Route::Direct,
+                host: &ssh.host,
+                port: ssh.port,
+                host_keys: &ssh.host_keys,
+                certificate: Some(
+                    Certificate::from_openssh(&ssh.certificate)
+                        .context("the grant's certificate is invalid")?,
+                ),
+            },
+            &ssh.user,
+        ),
+        GrantAccess::Relay(relay) => {
+            ensure!(
+                &relay.target == target,
+                "the grant is for target {}, not {target}",
+                relay.target
+            );
+            (
+                SshSetup {
+                    route: agent::Route::Relay,
+                    host: &relay.relay_host,
+                    port: relay.relay_port,
+                    host_keys: std::slice::from_ref(&relay.relay_host_key),
+                    certificate: None,
+                },
+                &relay.user,
+            )
+        }
+        GrantAccess::Api(_) => bail!("the broker returned a non-ssh grant for an ssh request"),
+    };
+    ensure!(
+        granted_user == user,
+        "the grant is for user {granted_user}, not {user}"
+    );
+    ensure!(
+        agent::is_safe_host(setup.host),
+        "the grant's host {:?} is invalid",
+        setup.host
+    );
+    ensure!(setup.port != 0, "the grant's port is invalid");
+    Ok(setup)
+}
+
+/// Start the grant's agent, load the key (and, for a direct grant, its
+/// certificate) into it, pin the host keys of where ssh connects and record
+/// the grant. On failure nothing is left behind.
 async fn install_grant(
     target: &TargetName,
     user: &UnixUser,
     key: &PrivateKey,
     grant: &GrantView,
 ) -> Result<()> {
-    let ssh = match &grant.access {
-        GrantAccess::Ssh(ssh) => ssh,
-        GrantAccess::Relay(_) => {
-            bail!("target {target} is a relay target, which this version of warden cannot use yet")
-        }
-        GrantAccess::Api(_) => bail!("the broker returned a non-ssh grant for an ssh request"),
-    };
-    let cert = Certificate::from_openssh(&ssh.certificate)
-        .context("the grant's certificate is invalid")?;
-    ensure!(
-        &ssh.user == user,
-        "the grant is for user {}, not {user}",
-        ssh.user
-    );
-    ensure!(
-        agent::is_safe_host(&ssh.host),
-        "the grant's host {:?} is invalid",
-        ssh.host
-    );
+    let setup = ssh_setup(target, user, grant)?;
     let remaining = grant.not_after.saturating_sub(unix_now());
     let lifetime = Duration::from_secs(
         u64::try_from(remaining)
@@ -495,25 +551,29 @@ async fn install_grant(
     );
 
     let agent = agent::start(&grant.grant_id, lifetime)?;
-    let setup = async {
+    let install = async {
         agent::record(
             &agent,
             &agent::GrantRecord {
                 grant_id: grant.grant_id.clone(),
                 target: target.clone(),
-                host: ssh.host.clone(),
-                port: ssh.port,
+                route: setup.route,
+                host: setup.host.to_owned(),
+                port: setup.port,
                 user: user.clone(),
                 not_after: grant.not_after,
                 socket: agent.socket.clone(),
                 pid: agent.pid,
             },
         )?;
-        agent::add_cert(&agent, key, &cert, lifetime).await?;
-        agent::write_known_hosts(&agent.dir, &ssh.host, ssh.port, &ssh.host_keys)?;
+        match &setup.certificate {
+            Some(cert) => agent::add_cert(&agent, key, cert, lifetime).await?,
+            None => agent::add_key(&agent, key, lifetime).await?,
+        }
+        agent::write_known_hosts(&agent.dir, setup.host, setup.port, setup.host_keys)?;
         Ok::<_, anyhow::Error>(())
     };
-    if let Err(e) = setup.await {
+    if let Err(e) = install.await {
         if let Err(cleanup) = agent::discard(&agent.dir, &agent.socket, agent.pid) {
             eprintln!("warden: warning: {cleanup:#}");
         }
@@ -581,11 +641,9 @@ async fn status() -> Result<()> {
     for (dir, record) in agent::load_grants(&grants) {
         match record {
             Ok(r) => println!(
-                "  {}  {}@{}:{}  grant {}  until {}",
+                "  {}  {}  grant {}  until {}",
                 r.target,
-                r.user,
-                r.host,
-                r.port,
+                local_subject(&r),
                 r.grant_id,
                 local_time(r.not_after)
             ),
@@ -622,6 +680,15 @@ async fn status() -> Result<()> {
     Ok(())
 }
 
+/// How `status` shows where a local grant connects.
+fn local_subject(record: &agent::GrantRecord) -> String {
+    let (user, host, port) = (&record.user, &record.host, record.port);
+    match record.route {
+        agent::Route::Direct => format!("{user}@{host}:{port}"),
+        agent::Route::Relay => format!("{user} via relay {host}:{port}"),
+    }
+}
+
 async fn revoke(grant: &Id) -> Result<()> {
     // Stop the local agent first: the grant is unusable here whatever the
     // broker answers.
@@ -641,11 +708,107 @@ async fn revoke(grant: &Id) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use warden_broker_proto::{GrantAccess, GrantView, Id, RequestStatus, SshGrant};
+    use ssh_key::rand_core::OsRng;
+    use ssh_key::{Algorithm, PrivateKey};
+    use warden_broker_proto::{GrantAccess, GrantView, Id, RelayGrant, RequestStatus, SshGrant};
 
+    use std::path::PathBuf;
     use std::time::{Duration, Instant};
 
-    use super::{CallError, next_retry_delay, terminal_exit_code, wait_for_decision};
+    use super::{
+        CallError, local_subject, next_retry_delay, ssh_setup, terminal_exit_code,
+        wait_for_decision,
+    };
+    use crate::agent::{GrantRecord, Route};
+
+    fn relay_view(relay: RelayGrant) -> GrantView {
+        GrantView {
+            grant_id: Id::random(),
+            not_before: 0,
+            not_after: 1,
+            access: GrantAccess::Relay(relay),
+        }
+    }
+
+    fn nas_relay() -> RelayGrant {
+        RelayGrant {
+            target: "nas".parse().unwrap(),
+            user: "backup".parse().unwrap(),
+            relay_host: "relay.example.com".to_owned(),
+            relay_port: 2222,
+            relay_host_key: PrivateKey::random(&mut OsRng, Algorithm::Ed25519)
+                .unwrap()
+                .public_key()
+                .to_openssh()
+                .unwrap(),
+        }
+    }
+
+    /// A relay grant connects to the relay, pins only the relay's host key
+    /// and loads no certificate.
+    #[test]
+    fn relay_grant_installs_relay_address_and_key_without_certificate() {
+        let relay = nas_relay();
+        let view = relay_view(relay.clone());
+        let setup = ssh_setup(&relay.target, &relay.user, &view).unwrap();
+        assert_eq!(setup.route, Route::Relay);
+        assert_eq!(setup.host, "relay.example.com");
+        assert_eq!(setup.port, 2222);
+        assert_eq!(setup.host_keys, [relay.relay_host_key]);
+        assert!(setup.certificate.is_none());
+    }
+
+    #[test]
+    fn relay_grant_for_something_else_is_refused() {
+        let relay = nas_relay();
+        let user = relay.user.clone();
+        let target = relay.target.clone();
+        let refused = |view: GrantView| ssh_setup(&target, &user, &view).unwrap_err().to_string();
+
+        let other_target = relay_view(RelayGrant {
+            target: "pi".parse().unwrap(),
+            ..relay.clone()
+        });
+        assert!(refused(other_target).contains("target pi"));
+        let other_user = relay_view(RelayGrant {
+            user: "root".parse().unwrap(),
+            ..relay.clone()
+        });
+        assert!(refused(other_user).contains("user root"));
+        for host in ["-oProxyCommand=x", "a b", ""] {
+            let bad = relay_view(RelayGrant {
+                relay_host: host.to_owned(),
+                ..relay.clone()
+            });
+            assert!(refused(bad).contains("host"), "{host:?}");
+        }
+        let no_port = relay_view(RelayGrant {
+            relay_port: 0,
+            ..relay
+        });
+        assert!(refused(no_port).contains("port"));
+    }
+
+    #[test]
+    fn status_says_when_a_grant_goes_through_the_relay() {
+        let mut record = GrantRecord {
+            grant_id: Id::random(),
+            target: "nas".parse().unwrap(),
+            route: Route::Relay,
+            host: "relay.example.com".to_owned(),
+            port: 2222,
+            user: "backup".parse().unwrap(),
+            not_after: 1,
+            socket: PathBuf::from("/tmp/s.sock"),
+            pid: 1,
+        };
+        assert_eq!(
+            local_subject(&record),
+            "backup via relay relay.example.com:2222"
+        );
+        record.route = Route::Direct;
+        assert_eq!(local_subject(&record), "backup@relay.example.com:2222");
+    }
 
     #[test]
     fn retry_delay_doubles_up_to_15s() {
