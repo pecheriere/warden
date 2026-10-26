@@ -55,6 +55,7 @@ url.workspace = true
 warden-broker-proto.workspace = true
 webauthn-rs.workspace = true
 maud.workspace = true
+percent-encoding.workspace = true
 zeroize.workspace = true
 openssl = { workspace = true, optional = true }
 # Optional: only for the testkit feature (in-process test broker, soft passkey).
@@ -74,3 +75,4 @@ tempfile.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 wiremock.workspace = true
+proptest.workspace = true
