@@ -67,7 +67,10 @@ pub struct GrantRecord {
 
 /// Create `dir` (and parents) if needed and make sure it is a real
 /// directory owned by us with mode 0700.
-fn private_dir(dir: &Path) -> Result<()> {
+///
+/// # Errors
+/// If it cannot be created, is not a directory, or belongs to someone else.
+pub fn private_dir(dir: &Path) -> Result<()> {
     fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
@@ -89,7 +92,10 @@ fn private_dir(dir: &Path) -> Result<()> {
 }
 
 /// Write `contents` to a new file `path` with mode 0600.
-fn write_new_private(path: &Path, contents: &[u8]) -> Result<()> {
+///
+/// # Errors
+/// If the file exists or cannot be written.
+pub fn write_new_private(path: &Path, contents: &[u8]) -> Result<()> {
     let mut file = fs::OpenOptions::new()
         .write(true)
         .create_new(true)

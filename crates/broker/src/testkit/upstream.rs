@@ -31,6 +31,9 @@ pub const HUGE_BYTES: usize = 2 * 1024 * 1024;
 /// First bytes `/slow` sends before stalling.
 pub const SLOW_PREFIX: &[u8] = b"partial body that must never reach the agent";
 
+/// Body served by `/binary`: not valid UTF-8.
+pub const BINARY_BODY: &[u8] = b"\xff\xfe\x00binary\x80";
+
 /// How long `/delayed` waits before answering.
 pub const DELAY: Duration = Duration::from_secs(1);
 
@@ -60,6 +63,8 @@ pub struct Received {
 /// - `/slow`: [`SLOW_PREFIX`], then nothing for a minute;
 /// - `/delayed`: `late answer`, after [`DELAY`];
 /// - `/gzip`: a body labelled `Content-Encoding: gzip`;
+/// - `/status/<code>`: that status, body `status <code>`;
+/// - `/binary`: [`BINARY_BODY`], which is not UTF-8;
 /// - anything else: `200` with `hello from upstream`.
 pub struct HttpsUpstream {
     origin: Url,
@@ -223,6 +228,15 @@ async fn handle(State(log): State<Log>, req: Request) -> Response {
         "/delayed" => {
             tokio::time::sleep(DELAY).await;
             respond(StatusCode::OK, &[], Body::from("late answer"))
+        }
+        "/binary" => respond(StatusCode::OK, &[], Body::from(BINARY_BODY)),
+        path if path.starts_with("/status/") => {
+            let code = path["/status/".len()..]
+                .parse::<u16>()
+                .ok()
+                .and_then(|c| StatusCode::from_u16(c).ok())
+                .unwrap_or(StatusCode::BAD_REQUEST);
+            respond(code, &[], Body::from(format!("status {}", code.as_u16())))
         }
         "/gzip" => respond(
             StatusCode::OK,

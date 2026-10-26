@@ -10,7 +10,10 @@ use anyhow::{Context as _, Result};
 use reqwest::{Response, StatusCode};
 use serde::de::DeserializeOwned;
 use url::Url;
-use warden_broker_proto::{ApiError, CreateRequest, CreatedResponse, GrantView, Id, RequestStatus};
+use warden_broker_proto::{
+    ApiError, CreateRequest, CreatedResponse, GrantView, Id, ProxyRequest, ProxyResponse,
+    RequestStatus,
+};
 use zeroize::Zeroizing;
 
 use crate::config::check_server_url;
@@ -100,6 +103,16 @@ impl Client {
     /// If the server is unreachable or refuses.
     pub async fn grants(&self) -> Result<Vec<GrantView>, CallError> {
         let resp = self.send(self.http.get(self.url("v1/grants")?)).await?;
+        json(resp, StatusCode::OK).await
+    }
+
+    /// Have the broker make `call` through api grant `id`.
+    ///
+    /// # Errors
+    /// If the server is unreachable or refuses.
+    pub async fn proxy(&self, id: &Id, call: &ProxyRequest) -> Result<ProxyResponse, CallError> {
+        let url = self.url(&format!("v1/grants/{id}/http"))?;
+        let resp = self.send(self.http.post(url).json(call)).await?;
         json(resp, StatusCode::OK).await
     }
 
