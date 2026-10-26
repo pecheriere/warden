@@ -5,4 +5,4 @@ pub mod redact;
 pub mod rules;
 
 pub use redact::{Needles, redact};
-pub use rules::{Prepared, Refusal, check};
+pub use rules::{OUTBOUND_ACCEPT_ENCODING, Prepared, Refusal, check};

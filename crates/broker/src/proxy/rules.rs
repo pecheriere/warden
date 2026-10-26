@@ -75,13 +75,34 @@ pub fn check(
     })
 }
 
+/// The `Accept-Encoding` the outbound client sends: responses must arrive
+/// uncompressed so redaction can see the secret. Agents may not set it.
+pub const OUTBOUND_ACCEPT_ENCODING: &str = "identity";
+
 /// The only spelling of the scheme accepted in the URL as sent.
 const SCHEME_PREFIX: &str = "https://";
 
-/// Percent-encodings refused in the path, lowercase: `.`, `/`, `\` (which
-/// servers may decode into dot segments or separators) and `%` (which a
-/// server decoding twice would turn into any of them).
-const ENCODED_SEPARATORS: [&str; 4] = ["%2e", "%2f", "%5c", "%25"];
+/// Percent-encodings refused in the path, lowercase: `.`, `/`, `\` and `;`
+/// (which servers may decode into dot segments, separators or parameters),
+/// `%` (which a server decoding twice would turn into any of them), the
+/// overlong UTF-8 lead bytes `%c0`/`%c1` (decoded by lax servers as `.` or
+/// `/`) and IIS-style `%u` escapes.
+const ENCODED_SEPARATORS: [&str; 8] = ["%2e", "%2f", "%5c", "%3b", "%25", "%c0", "%c1", "%u"];
+
+/// Headers an agent may not set although they are not reserved:
+/// `Accept-Encoding`, `Range` and `If-Range` would let the response carry the
+/// secret compressed or in fragments that redaction cannot see; the others
+/// make some servers apply another method or path than the one checked.
+const REFUSED_HEADERS: [&str; 8] = [
+    "accept-encoding",
+    "range",
+    "if-range",
+    "x-http-method-override",
+    "x-http-method",
+    "x-method-override",
+    "x-original-url",
+    "x-rewrite-url",
+];
 
 /// Parse the URL and check it against the policy. The path is inspected as
 /// sent, before the URL parser normalises it, and the parsed path must equal
@@ -176,7 +197,10 @@ fn check_headers(policy: &ApiSecretPolicy, raw: &[(String, String)]) -> Result<H
         }
         let name = HeaderName::from_bytes(name.as_bytes())
             .map_err(|_| Refusal::Header("invalid header name".to_owned()))?;
-        if name == policy.header || is_reserved_header(&name) {
+        if name == policy.header
+            || is_reserved_header(&name)
+            || REFUSED_HEADERS.contains(&name.as_str())
+        {
             return Err(Refusal::Header(format!("\"{name}\" may not be set")));
         }
         let value = HeaderValue::from_str(value)
@@ -345,6 +369,14 @@ mod tests {
             "/api/x%5cadmin",
             "/api/x%5Cadmin",
             "/api/x%252e%252e/admin",
+            "/api/%c0%ae%c0%ae/admin",
+            "/api/%C0%AE/x",
+            "/api/%c1%9c/x",
+            "/api/%C1%9C/x",
+            "/api/%u002e%u002e/admin",
+            "/api/%U002E/x",
+            "/api/x%3bjsessionid=1",
+            "/api/x%3B/y",
             "/api\\..\\admin",
             "/api/x\\y",
             "/api//admin",
@@ -470,6 +502,34 @@ mod tests {
         assert!(!refusal.to_string().contains("s3cr3t"));
         // Authorization is an ordinary header when the secret uses another.
         assert!(check(&p, &with_header("Authorization", "Bearer mine"), MAX).is_ok());
+    }
+
+    #[test]
+    fn rules_refuse_encoding_range_and_override_headers() {
+        let p = policy("/", &[Method::GET]);
+        for name in [
+            "Accept-Encoding",
+            "accept-encoding",
+            "ACCEPT-ENCODING",
+            "Range",
+            "range",
+            "If-Range",
+            "IF-RANGE",
+            "X-HTTP-Method-Override",
+            "x-http-method",
+            "X-Method-Override",
+            "X-Original-URL",
+            "x-rewrite-url",
+        ] {
+            assert!(
+                matches!(
+                    check(&p, &with_header(name, "x"), MAX),
+                    Err(Refusal::Header(_))
+                ),
+                "{name}"
+            );
+        }
+        assert_eq!(super::OUTBOUND_ACCEPT_ENCODING, "identity");
     }
 
     #[test]
