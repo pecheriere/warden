@@ -118,6 +118,9 @@ pub enum RequestError {
     /// No target has this name.
     #[error("unknown target {0}")]
     UnknownTarget(String),
+    /// No API secret has this name.
+    #[error("unknown API secret {0}")]
+    UnknownSecret(String),
     /// The target's policy item is malformed.
     #[error("target {target}: field {field} invalid: {reason}")]
     TargetInvalid {
@@ -170,6 +173,7 @@ impl From<PolicyError> for RequestError {
     fn from(e: PolicyError) -> Self {
         match e {
             PolicyError::NotFound(name) => Self::UnknownTarget(name),
+            PolicyError::UnknownSecret(name) => Self::UnknownSecret(name),
             PolicyError::Invalid {
                 item,
                 field,

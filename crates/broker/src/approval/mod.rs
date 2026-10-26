@@ -216,7 +216,9 @@ fn request_error(e: &RequestError) -> Response {
         }
         RequestError::Rejected(_) => json_error(StatusCode::BAD_REQUEST, e.to_string()),
         RequestError::Unavailable(detail) => backend_unavailable(detail),
-        RequestError::UnknownTarget(_) | RequestError::TargetInvalid { .. } => {
+        RequestError::UnknownTarget(_)
+        | RequestError::UnknownSecret(_)
+        | RequestError::TargetInvalid { .. } => {
             json_error(StatusCode::SERVICE_UNAVAILABLE, e.to_string())
         }
         _ => internal("request", e),
@@ -261,7 +263,11 @@ async fn approve_page(State(state): State<AppState>, Path(token): Path<String>) 
             )
                 .into_response()
         }
-        Err(e @ (RequestError::UnknownTarget(_) | RequestError::TargetInvalid { .. })) => (
+        Err(
+            e @ (RequestError::UnknownTarget(_)
+            | RequestError::UnknownSecret(_)
+            | RequestError::TargetInvalid { .. }),
+        ) => (
             StatusCode::SERVICE_UNAVAILABLE,
             pages::unavailable(&e.to_string()),
         )

@@ -65,7 +65,9 @@ const fn status_of(e: &RequestError) -> Option<StatusCode> {
         RequestError::Rejected(_) | RequestError::TargetInvalid { .. } => {
             Some(StatusCode::BAD_REQUEST)
         }
-        RequestError::UnknownTarget(_) | RequestError::NotFound => Some(StatusCode::NOT_FOUND),
+        RequestError::UnknownTarget(_)
+        | RequestError::UnknownSecret(_)
+        | RequestError::NotFound => Some(StatusCode::NOT_FOUND),
         RequestError::AlreadyDecided => Some(StatusCode::CONFLICT),
         RequestError::AgentRevoked => Some(StatusCode::UNAUTHORIZED),
         RequestError::Unavailable(_) | RequestError::Contended => {

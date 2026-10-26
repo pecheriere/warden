@@ -22,20 +22,25 @@ use tokio::task::AbortHandle;
 use tower::ServiceExt as _;
 use url::Url;
 use warden_broker_proto::{
-    Access, AgentName, CreateRequest, CreatedResponse, Goal, TargetName, UnixUser, Window,
+    Access, AgentName, CreateRequest, CreatedResponse, Goal, SecretName, TargetName, UnixUser,
+    Window,
 };
 use webauthn_authenticator_rs::WebauthnAuthenticator;
 use webauthn_authenticator_rs::softpasskey::SoftPasskey;
 use webauthn_rs::prelude::{
     CreationChallengeResponse, PublicKeyCredential, RequestChallengeResponse,
 };
+use zeroize::Zeroizing;
 
 use crate::approval::passkeys::Passkeys;
 use crate::audit::AuditLog;
 use crate::config::Config;
 use crate::identity::TailscaleServeIdentity;
 use crate::notify::{Doorbell, Notifier, NotifyError};
-use crate::policy::{CaKey, PolicyError, SecretBackend, SshMode, SshTarget};
+use crate::policy::{
+    ApiSecretPolicy, CaKey, PolicyError, SecretBackend, SecretValue, SshMode, SshTarget,
+    ValueFormat,
+};
 use crate::requests::{Clock, Requests};
 use crate::{AppState, agents, store};
 
@@ -178,11 +183,12 @@ pub const PI_HOST: &str = "192.0.2.10";
 /// A software passkey that claims user verification, as Face ID would.
 pub type SoftAuthenticator = WebauthnAuthenticator<SoftPasskey>;
 
-/// An in-memory [`SecretBackend`]: targets can be changed at any time, the
-/// CA key is generated per backend, and either lookup can be made to fail as
-/// if the backend were down.
+/// An in-memory [`SecretBackend`]: targets and API secrets can be changed at
+/// any time, the CA key is generated per backend, and target or CA lookups
+/// can be made to fail as if the backend were down.
 pub struct FakeBackend {
     targets: Mutex<HashMap<String, SshTarget>>,
+    api_secrets: Mutex<HashMap<String, (ApiSecretPolicy, Zeroizing<String>)>>,
     ca: PrivateKey,
     target_outage: Mutex<Option<String>>,
     ca_outage: Mutex<Option<String>>,
@@ -198,6 +204,7 @@ impl FakeBackend {
         let pi = Self::pi_target();
         Self {
             targets: Mutex::new(HashMap::from([(pi.name.as_str().to_owned(), pi)])),
+            api_secrets: Mutex::new(HashMap::new()),
             ca: PrivateKey::random(&mut OsRng, Algorithm::Ed25519).expect("CA key generation"),
             target_outage: Mutex::new(None),
             ca_outage: Mutex::new(None),
@@ -252,6 +259,55 @@ impl FakeBackend {
             .get(name)
             .cloned()
             .expect("no such fake target")
+    }
+
+    /// API secret `github`: origin `https://api.example.com`, header
+    /// `Authorization: Bearer {{secret}}`, `GET` only, path prefix `/`, no
+    /// pinned CA, max window 1h. Not added to any backend by itself.
+    ///
+    /// # Panics
+    /// Never: every part is a valid constant.
+    #[must_use]
+    pub fn example_api_secret() -> ApiSecretPolicy {
+        ApiSecretPolicy {
+            name: SecretName::try_from("github".to_owned()).expect("valid secret name"),
+            origin: Url::parse("https://api.example.com")
+                .expect("valid origin")
+                .origin(),
+            header: http::header::AUTHORIZATION,
+            format: ValueFormat::default(),
+            methods: vec![http::Method::GET],
+            path_prefix: "/".to_owned(),
+            ca_pem: None,
+            max_window: Window::H1,
+        }
+    }
+
+    /// Add or replace an API secret and its value.
+    ///
+    /// # Panics
+    /// If the lock is poisoned.
+    pub fn set_api_secret(&self, policy: ApiSecretPolicy, value: &str) {
+        self.api_secrets
+            .lock()
+            .expect("api secrets lock poisoned")
+            .insert(
+                policy.name.as_str().to_owned(),
+                (policy, Zeroizing::new(value.to_owned())),
+            );
+    }
+
+    fn api_entry<T>(
+        &self,
+        name: &SecretName,
+        pick: impl FnOnce(&(ApiSecretPolicy, Zeroizing<String>)) -> T,
+    ) -> Result<T, PolicyError> {
+        self.api_secrets
+            .lock()
+            .map_err(|_| PolicyError::Unavailable("fake backend lock poisoned".to_owned()))?
+            .get(name.as_str())
+            .map(pick)
+            .ok_or_else(|| PolicyError::UnknownSecret(name.as_str().to_owned()))
     }
 
     /// The CA's public key.
@@ -311,6 +367,14 @@ impl SecretBackend for FakeBackend {
     async fn ssh_ca(&self) -> Result<CaKey, PolicyError> {
         Self::outage(&self.ca_outage)?;
         CaKey::new(self.ca.clone())
+    }
+
+    async fn api_secret(&self, name: &SecretName) -> Result<ApiSecretPolicy, PolicyError> {
+        self.api_entry(name, |(policy, _)| policy.clone())
+    }
+
+    async fn api_secret_value(&self, name: &SecretName) -> Result<SecretValue, PolicyError> {
+        self.api_entry(name, |(_, value)| SecretValue::new(value.clone()))
     }
 }
 
