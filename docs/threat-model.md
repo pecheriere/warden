@@ -47,7 +47,6 @@ defends against it.
   Connect token.
 - **Silent failure.** The CLI always receives an explicit terminal state:
   `approved`, `denied`, `expired` or `error` with a message.
-
 - **An API secret reaches the agent.** In proxy mode the broker reads the
   secret from 1Password only when a call is made, builds the header from the
   policy, sends the call itself and redacts the answer. The agent supplies no

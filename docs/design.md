@@ -1,9 +1,9 @@
 # warden — design
 
 This document records the intent and design of warden. It describes the full
-v1 design; the current release implements the SSH certificate mode (§8.1).
-SSH relay mode (§8.2) and HTTP proxy mode (§8.3) are designed here but not yet
-implemented. Where the implementation deviates from this design, the
+v1 design; the current release (0.2.0) implements the SSH certificate mode
+(§8.1) and the HTTP proxy mode (§8.3). SSH relay mode (§8.2) is designed here
+but not implemented yet. Where the implementation deviates from this design, the
 [threat model](threat-model.md) says how and why.
 
 ## 1. Intent
@@ -64,8 +64,8 @@ and secure by construction.
 ## 4. Anti-goals (failure even if it "works")
 
 - The agent can obtain a secret value by any path the design permits
-  (echoing, redirecting to another host, putting the placeholder in a URL or
-  body).
+  (echoing, redirecting it to another host, or smuggling it into a URL,
+  header or body).
 - An approval can be forged, replayed, widened (longer window, other host,
   other secret) or applied to a different request than the one displayed.
 - A notification channel (Home Assistant, ntfy, push providers) sees secret
@@ -231,14 +231,15 @@ A refusal is a 400 whose message names the rule, never the secret.
 
 **The outbound call.** warden sends `Accept-Encoding: identity` and refuses a
 response with any other `Content-Encoding` or a `Transfer-Encoding` other
-than `chunked` (502), because redaction cannot see inside compressed data.
+than `chunked` or `identity` (502), because redaction cannot see inside compressed data.
 Redirects are **not followed** (a redirect to another origin would carry the
 header); the 3xx is returned to the agent. No outbound proxy is used and
 nothing is retried. Limits: request body 1 MiB, response body 1 MiB
 (`WARDEN_PROXY_MAX_RESPONSE_BYTES`, at most 64 MiB), 30 s for the whole call,
 10 s to connect. Over the response limit the agent gets a 502 and nothing
 partial. Upstream trouble is a 502 or 504 with a fixed message that never
-quotes upstream text.
+quotes upstream text. A secret that cannot be written into a header, or an
+HTTP client that cannot be built, is a 500.
 
 **TLS.** Strict verification with hostname checking always on, and no leaf
 pinning. By default the system roots are used. If the item has `ca_pem`,
@@ -273,9 +274,10 @@ the format and the CA), or the secret is gone or invalid, the call is a 409
 grant revoked while a call is in flight yields a 409 and the response is
 discarded. The window and the secret value are not part of the digest.
 
-**Audit.** `proxy_call_started` is appended **before** the request is sent
-(if it cannot be written, the call is not made), and `proxy_call` after it
-ends, whatever the outcome: grant, method, origin and path (never the query
+**Audit.** `proxy_call_started` is written **before** the request is sent; if
+it cannot be written, the call is refused and nothing is sent. `proxy_call` is
+written after the call ends, whatever the outcome; if that write fails, the
+agent gets a 500 and no response. It records: grant, method, origin and path (never the query
 string, which may carry the agent's own data), status, response size,
 redaction count and outcome. The secret never appears. The call runs on its
 own task, so an agent that disconnects can neither stop it halfway nor keep
