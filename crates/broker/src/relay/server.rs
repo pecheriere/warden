@@ -28,11 +28,12 @@
 //!   grant or agent is revoked (told at once by the request service; found
 //!   by a check every [`GRANT_CHECK_EVERY`] when another process revoked
 //!   it), when the grant's window ends, or after
-//!   [`RelayLimits::idle_timeout`] with no bytes either way. When the
-//!   state of grants cannot be read for [`FAIL_CLOSED_AFTER`] in a row, the
-//!   relay fails closed: every session ends and none starts until it can.
+//!   [`RelayLimits::idle_timeout`] with no bytes either way. When no query
+//!   of the state of grants has succeeded for [`FAIL_CLOSED_AFTER`], the
+//!   relay fails closed: every session ends and none starts until one does.
 
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
@@ -50,7 +51,7 @@ use warden_broker_proto::{Id, TargetName};
 
 use crate::audit::{AuditEvent, AuditLog};
 use crate::policy::{PolicyError, SecretBackend, SshMode};
-use crate::requests::{GrantEnd, RelayGrantRecord, Requests};
+use crate::requests::{GrantEnd, RelayGrantRecord, RequestError, Requests};
 
 use super::host_key::{HostKeyError, RelayHostKey};
 use super::onward;
@@ -92,9 +93,16 @@ const SESSION_OVER: &str = "warden relay: session over";
 /// another process; this one's are told at once) and expiry.
 const GRANT_CHECK_EVERY: Duration = Duration::from_secs(1);
 
-/// How long the grant check may fail in a row before the relay fails
-/// closed: every session ends and none starts until a check succeeds.
+/// How long the grant check may go without a successful query before the
+/// relay fails closed: every session ends and none starts until one
+/// succeeds.
 const FAIL_CLOSED_AFTER: Duration = Duration::from_secs(10);
+
+/// Longest a grant query may take; past it, it counts as failed.
+const GRANT_QUERY_TIMEOUT: Duration = Duration::from_millis(1500);
+
+/// How often a run of failed grant queries is logged.
+const CHECK_FAILURE_LOG_EVERY: Duration = Duration::from_secs(30);
 
 /// Longest wait for a connection to end after the relay hung up on it.
 const GOODBYE_WAIT: Duration = Duration::from_secs(2);
@@ -277,70 +285,141 @@ impl RelayServer {
     }
 }
 
-/// End the live sessions whose grant was revoked or expired, every
+/// End the live sessions whose grant expired or was revoked, every
 /// `every`; fail closed while the state of grants cannot be read. Never
 /// returns.
+///
+/// Expiry is enforced on every tick from memory, whatever the database
+/// does. Revocation needs a query: at most one runs at a time, each bounded
+/// by [`GRANT_QUERY_TIMEOUT`], and the ticks go on meanwhile, so a query
+/// that hangs counts as failed and the outage (time since the last
+/// successful query) is seen as it grows.
 async fn check_grants_every(shared: &Shared, every: Duration) {
+    let requests = &shared.requests;
+    let sessions = requests.live_sessions();
     let mut ticker = tokio::time::interval(every);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    let mut outage = Outage::default();
+    let mut health = CheckHealth::new(Instant::now());
+    let mut query: Option<GrantQuery> = None;
     loop {
-        ticker.tick().await;
-        let readable = check_grants(&shared.requests).await;
-        let lost = outage.record(readable, Instant::now());
-        let was_lost = shared.grant_state_lost.swap(lost, Ordering::AcqRel);
-        if lost {
-            if !was_lost {
-                tracing::error!("relay: grant state unreadable for too long; ending every session");
+        tokio::select! {
+            _ = ticker.tick() => {
+                sessions.expire_due(requests.now());
+                if query.is_none() {
+                    query = Some(grant_query(requests.clone(), sessions.grant_ids()));
+                }
+                mark_grant_state(shared, health.lost(Instant::now()));
             }
-            // Also sessions that started just before the flag was set.
-            shared.requests.live_sessions().fail_closed();
-        } else if was_lost {
-            tracing::info!("relay: grant state readable again");
-        }
-    }
-}
-
-/// Failures of the grant check in a row.
-#[derive(Debug, Default)]
-struct Outage {
-    /// When the current run of failures began.
-    since: Option<Instant>,
-}
-
-impl Outage {
-    /// Record a check made at `now`; whether the state of grants has been
-    /// unreadable for [`FAIL_CLOSED_AFTER`] or longer.
-    fn record(&mut self, readable: bool, now: Instant) -> bool {
-        if readable {
-            self.since = None;
-            return false;
-        }
-        now.duration_since(*self.since.get_or_insert(now)) >= FAIL_CLOSED_AFTER
-    }
-}
-
-/// End the live sessions whose grant is past its window (known without the
-/// database) or revoked, in one lookup for all of them. The lookup runs
-/// even with no live session, so it also tells whether the state of grants
-/// can be read; returns whether it could.
-async fn check_grants(requests: &Requests) -> bool {
-    let sessions = requests.live_sessions();
-    sessions.expire_due(requests.now());
-    match requests.ended_grants(&sessions.grant_ids()).await {
-        Ok(ended) => {
-            for (grant_id, end) in ended {
-                match end {
-                    GrantEnd::Revoked => sessions.revoke_grant(&grant_id),
-                    GrantEnd::Expired => sessions.expire_grant(&grant_id),
+            Some(result) = in_flight(&mut query) => {
+                query = None;
+                let now = Instant::now();
+                match result {
+                    Ok(ended) => {
+                        for (grant_id, end) in ended {
+                            match end {
+                                GrantEnd::Revoked => sessions.revoke_grant(&grant_id),
+                                GrantEnd::Expired => sessions.expire_grant(&grant_id),
+                            }
+                        }
+                        health.succeeded(now);
+                        mark_grant_state(shared, false);
+                    }
+                    Err(failure) => {
+                        if health.failed(now) {
+                            tracing::warn!(error = %failure, "relay: checking the grants of live sessions failed");
+                        }
+                    }
                 }
             }
-            true
         }
-        Err(e) => {
-            tracing::error!(error = %e, "relay: checking the grants of live sessions failed");
-            false
+    }
+}
+
+/// A grant query on its way.
+type GrantQuery = Pin<Box<dyn Future<Output = Result<Vec<(Id, GrantEnd)>, CheckFailure>> + Send>>;
+
+/// Why a grant query failed.
+#[derive(Debug, thiserror::Error)]
+enum CheckFailure {
+    #[error(transparent)]
+    Query(#[from] RequestError),
+    #[error("no answer within {GRANT_QUERY_TIMEOUT:?}")]
+    TimedOut,
+}
+
+/// Which of `grant_ids` ended, asked of the database within
+/// [`GRANT_QUERY_TIMEOUT`]. The lookup runs even with no live session, so
+/// it also tells whether the state of grants can be read.
+fn grant_query(requests: Requests, grant_ids: Vec<Id>) -> GrantQuery {
+    Box::pin(async move {
+        tokio::time::timeout(GRANT_QUERY_TIMEOUT, requests.ended_grants(&grant_ids))
+            .await
+            .map_err(|_| CheckFailure::TimedOut)?
+            .map_err(CheckFailure::from)
+    })
+}
+
+/// The answer of the query in flight; never resolves without one.
+async fn in_flight(
+    query: &mut Option<GrantQuery>,
+) -> Option<Result<Vec<(Id, GrantEnd)>, CheckFailure>> {
+    match query {
+        Some(query) => Some(query.await),
+        None => std::future::pending().await,
+    }
+}
+
+/// Fail closed (`lost`), or open again, logging the transitions.
+fn mark_grant_state(shared: &Shared, lost: bool) {
+    let was_lost = shared.grant_state_lost.swap(lost, Ordering::AcqRel);
+    if lost {
+        if !was_lost {
+            tracing::error!("relay: grant state unreadable for too long; ending every session");
         }
+        // Also sessions that started just before the flag was set.
+        shared.requests.live_sessions().fail_closed();
+    } else if was_lost {
+        tracing::info!("relay: grant state readable again");
+    }
+}
+
+/// How the grant queries are going.
+#[derive(Debug)]
+struct CheckHealth {
+    /// When the last query succeeded (or checking began).
+    last_success: Instant,
+    /// When a failure was last logged, in the current run of failures.
+    last_logged: Option<Instant>,
+}
+
+impl CheckHealth {
+    const fn new(now: Instant) -> Self {
+        Self {
+            last_success: now,
+            last_logged: None,
+        }
+    }
+
+    fn succeeded(&mut self, now: Instant) {
+        self.last_success = now;
+        self.last_logged = None;
+    }
+
+    /// Record a failed query at `now`; whether to log it (the first of a
+    /// run, then every [`CHECK_FAILURE_LOG_EVERY`]).
+    fn failed(&mut self, now: Instant) -> bool {
+        let log = self
+            .last_logged
+            .is_none_or(|logged| now.duration_since(logged) >= CHECK_FAILURE_LOG_EVERY);
+        if log {
+            self.last_logged = Some(now);
+        }
+        log
+    }
+
+    /// Whether, at `now`, no query has succeeded for [`FAIL_CLOSED_AFTER`].
+    fn lost(&self, now: Instant) -> bool {
+        now.duration_since(self.last_success) >= FAIL_CLOSED_AFTER
     }
 }
 
@@ -1354,7 +1433,7 @@ mod tests {
     use tokio::time::Instant;
 
     use super::{
-        Conn, GOODBYE_WAIT, NOT_STARTED, Outage, OverOnDrop, Phase, Refusals, Relayed,
+        CheckHealth, Conn, GOODBYE_WAIT, NOT_STARTED, OverOnDrop, Phase, Refusals, Relayed,
         SESSION_OVER, no_more_use,
     };
 
@@ -1368,19 +1447,34 @@ mod tests {
     }
 
     #[test]
-    fn fails_closed_after_ten_seconds_of_failures_in_a_row() {
+    fn fails_closed_ten_seconds_after_the_last_success() {
         let start = Instant::now();
         let at = |secs| start + Duration::from_secs(secs);
-        let mut outage = Outage::default();
-        assert!(!outage.record(false, at(0)));
-        assert!(!outage.record(false, at(9)));
-        // One success starts the count again.
-        assert!(!outage.record(true, at(10)));
-        assert!(!outage.record(false, at(11)));
-        assert!(!outage.record(false, at(20)));
-        assert!(outage.record(false, at(21)));
-        assert!(outage.record(false, at(22)));
-        assert!(!outage.record(true, at(23)));
+        let mut health = CheckHealth::new(start);
+        // Measured from the start until a first success.
+        assert!(!health.lost(at(9)));
+        assert!(health.lost(at(10)));
+        health.succeeded(at(10));
+        assert!(!health.lost(at(19)));
+        // A query that hangs (no failure recorded yet) still loses it.
+        assert!(health.lost(at(20)));
+        health.succeeded(at(21));
+        assert!(!health.lost(at(30)));
+    }
+
+    #[test]
+    fn failures_logged_first_then_every_thirty_seconds() {
+        let start = Instant::now();
+        let at = |secs| start + Duration::from_secs(secs);
+        let mut health = CheckHealth::new(start);
+        assert!(health.failed(at(1)));
+        assert!(!health.failed(at(2)));
+        assert!(!health.failed(at(30)));
+        assert!(health.failed(at(31)));
+        assert!(!health.failed(at(32)));
+        // A success ends the run: the next failure is logged.
+        health.succeeded(at(33));
+        assert!(health.failed(at(34)));
     }
 
     #[tokio::test(start_paused = true)]

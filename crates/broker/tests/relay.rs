@@ -1865,3 +1865,93 @@ async fn db_unreadable_fails_closed() {
 
     assert_ended_once_then_stop(&s, 1, "grant state unavailable").await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hung_grant_query_still_fails_closed_and_expires() {
+    let s = key_target().await;
+    // `bot`'s grant ends 10 minutes before `other`'s.
+    let expiring = approved_agent(&s.broker, "bot").await;
+    s.broker.clock.advance(600);
+    let other = approved_agent(&s.broker, "other").await;
+    let (ending, _ending_channel) = hold_session(&s, &expiring.key).await;
+    let (kept, _kept_channel) = hold_session(&s, &other.key).await;
+
+    // Every connection of the pool taken: from now on a grant query waits
+    // for one (sqlx's 30 s acquire timeout), as on a hung disk. The last
+    // successful check was at most one tick (1 s) before this.
+    let hung = Instant::now();
+    let mut held = Vec::new();
+    while let Ok(Ok(conn)) =
+        tokio::time::timeout(Duration::from_millis(500), s.broker.state().pool.acquire()).await
+    {
+        held.push(conn);
+    }
+    assert!(!held.is_empty());
+
+    // `bot`'s window ends: expiry needs no query, so it is not held up.
+    s.broker.clock.advance(15 * 60 - 600 + 1);
+    let expired = Instant::now();
+    assert_both_sides_closed(&s, &ending, 1, expired + Duration::from_secs(5)).await;
+    let ended = await_events(&s.broker, "relay_session_ended", 1).await;
+    assert_eq!(ended[0]["grant_id"], expiring.grant_id.as_str());
+    assert_eq!(ended[0]["reason"], "expired");
+
+    // `other`'s session ends once no query has succeeded for 10 s: not
+    // before 9 s after the queries started hanging.
+    tokio::time::sleep_until((hung + Duration::from_millis(8900)).into()).await;
+    assert!(!kept.handle.is_closed(), "failed closed too early");
+    assert_eq!(events_of(&s.broker, "relay_session_ended").len(), 1);
+    assert_both_sides_closed(&s, &kept, 0, hung + Duration::from_secs(14)).await;
+    let ended = await_events(&s.broker, "relay_session_ended", 2).await;
+    assert_eq!(ended[1]["grant_id"], other.grant_id.as_str());
+    assert_eq!(ended[1]["reason"], "grant state unavailable");
+
+    drop(held);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(events_of(&s.broker, "relay_session_ended").len(), 2);
+    tokio::time::timeout(Duration::from_secs(3), s.broker.stop_relay())
+        .await
+        .expect("the relay stopped promptly");
+    assert_eq!(events_of(&s.broker, "relay_session_ended").len(), 2);
+    assert_each_start_ended(&s.broker).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn connection_closed_once_its_session_is_over() {
+    let s = key_target().await;
+    let agent = approved_agent(&s.broker, "bot").await;
+    let c = login(&s.broker, s.relay, TARGET, &agent.key).await;
+    let mut channel = c.handle.channel_open_session().await.unwrap();
+    // The start is refused (the grant was revoked after login) ...
+    s.broker
+        .state()
+        .requests
+        .revoke_grant(&agent.grant_id, "owner")
+        .await
+        .unwrap();
+    channel.exec(true, "echo ok").await.unwrap();
+    let mut stderr = Vec::new();
+    assert!(reply_keeping_stderr(&mut channel, &mut stderr).await);
+    let out = collect(&mut channel).await;
+    assert_eq!(out.exit_status, Some(255), "{out:?}");
+    let over = Instant::now();
+    // ... and the agent keeps the connection: the relay hangs up after a
+    // 2 s wait for it to leave.
+    while !c.handle.is_closed() {
+        assert!(
+            over.elapsed() < Duration::from_secs(4),
+            "the connection was not closed"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        over.elapsed() >= Duration::from_millis(1500),
+        "{:?}",
+        over.elapsed()
+    );
+    assert_eq!(events_of(&s.broker, "relay_session_refused").len(), 1);
+    assert!(events_of(&s.broker, "relay_session_started").is_empty());
+    tokio::time::timeout(Duration::from_secs(3), s.broker.stop_relay())
+        .await
+        .expect("the relay stopped promptly");
+}
