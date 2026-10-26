@@ -28,9 +28,12 @@
 //!   grant or agent is revoked (told at once by the request service; found
 //!   by a check every [`GRANT_CHECK_EVERY`] when another process revoked
 //!   it), when the grant's window ends, or after
-//!   [`RelayLimits::idle_timeout`] with no bytes either way.
+//!   [`RelayLimits::idle_timeout`] with no bytes either way. When the
+//!   state of grants cannot be read for [`FAIL_CLOSED_AFTER`] in a row, the
+//!   relay fails closed: every session ends and none starts until it can.
 
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -58,7 +61,7 @@ use super::session::{
 
 /// Told to an agent whose grant or target changed since it logged in.
 const NO_LONGER_VALID: &str = "warden relay: this access is no longer valid";
-/// Told to an agent when the grant or policy cannot be read.
+/// Told to an agent when the policy cannot be read.
 const UNAVAILABLE: &str = "warden relay: the target's policy cannot be read right now";
 /// Told to an agent when the session task failed unexpectedly.
 const INTERNAL: &str = "warden relay: internal error";
@@ -88,6 +91,10 @@ const SESSION_OVER: &str = "warden relay: session over";
 /// How often the grants of live sessions are checked for revocation (by
 /// another process; this one's are told at once) and expiry.
 const GRANT_CHECK_EVERY: Duration = Duration::from_secs(1);
+
+/// How long the grant check may fail in a row before the relay fails
+/// closed: every session ends and none starts until a check succeeds.
+const FAIL_CLOSED_AFTER: Duration = Duration::from_secs(10);
 
 /// Longest wait for a connection to end after the relay hung up on it.
 const GOODBYE_WAIT: Duration = Duration::from_secs(2);
@@ -156,6 +163,9 @@ struct Shared {
     limits: RelayLimits,
     slots: Arc<SessionSlots>,
     preauth: Arc<PreAuthLimiter>,
+    /// Whether the relay failed closed: the state of grants has not been
+    /// readable for [`FAIL_CLOSED_AFTER`].
+    grant_state_lost: AtomicBool,
 }
 
 /// The SSH relay listener.
@@ -213,6 +223,7 @@ impl RelayServer {
                     limits.max_unauthenticated,
                     limits.max_unauthenticated_per_ip,
                 ),
+                grant_state_lost: AtomicBool::new(false),
             }),
             config: Arc::new(config),
         })
@@ -223,7 +234,7 @@ impl RelayServer {
     /// (recording `relay_session_ended`) and return once all are gone.
     pub async fn serve(self, listener: TcpListener, mut stop: watch::Receiver<bool>) {
         let mut connections = JoinSet::new();
-        let checking = check_grants_every(&self.shared.requests, GRANT_CHECK_EVERY);
+        let checking = check_grants_every(&self.shared, GRANT_CHECK_EVERY);
         tokio::pin!(checking);
         loop {
             tokio::select! {
@@ -267,26 +278,56 @@ impl RelayServer {
 }
 
 /// End the live sessions whose grant was revoked or expired, every
-/// `every`. Never returns.
-async fn check_grants_every(requests: &Requests, every: Duration) {
+/// `every`; fail closed while the state of grants cannot be read. Never
+/// returns.
+async fn check_grants_every(shared: &Shared, every: Duration) {
     let mut ticker = tokio::time::interval(every);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut outage = Outage::default();
     loop {
         ticker.tick().await;
-        check_grants(requests).await;
+        let readable = check_grants(&shared.requests).await;
+        let lost = outage.record(readable, Instant::now());
+        let was_lost = shared.grant_state_lost.swap(lost, Ordering::AcqRel);
+        if lost {
+            if !was_lost {
+                tracing::error!("relay: grant state unreadable for too long; ending every session");
+            }
+            // Also sessions that started just before the flag was set.
+            shared.requests.live_sessions().fail_closed();
+        } else if was_lost {
+            tracing::info!("relay: grant state readable again");
+        }
+    }
+}
+
+/// Failures of the grant check in a row.
+#[derive(Debug, Default)]
+struct Outage {
+    /// When the current run of failures began.
+    since: Option<Instant>,
+}
+
+impl Outage {
+    /// Record a check made at `now`; whether the state of grants has been
+    /// unreadable for [`FAIL_CLOSED_AFTER`] or longer.
+    fn record(&mut self, readable: bool, now: Instant) -> bool {
+        if readable {
+            self.since = None;
+            return false;
+        }
+        now.duration_since(*self.since.get_or_insert(now)) >= FAIL_CLOSED_AFTER
     }
 }
 
 /// End the live sessions whose grant is past its window (known without the
-/// database) or revoked, in one lookup for all of them.
-async fn check_grants(requests: &Requests) {
+/// database) or revoked, in one lookup for all of them. The lookup runs
+/// even with no live session, so it also tells whether the state of grants
+/// can be read; returns whether it could.
+async fn check_grants(requests: &Requests) -> bool {
     let sessions = requests.live_sessions();
     sessions.expire_due(requests.now());
-    let ids = sessions.grant_ids();
-    if ids.is_empty() {
-        return;
-    }
-    match requests.ended_grants(&ids).await {
+    match requests.ended_grants(&sessions.grant_ids()).await {
         Ok(ended) => {
             for (grant_id, end) in ended {
                 match end {
@@ -294,10 +335,12 @@ async fn check_grants(requests: &Requests) {
                     GrantEnd::Expired => sessions.expire_grant(&grant_id),
                 }
             }
+            true
         }
-        // Expiry is still enforced above; revocations by this process are
-        // told directly.
-        Err(e) => tracing::error!(error = %e, "relay: checking the grants of live sessions failed"),
+        Err(e) => {
+            tracing::error!(error = %e, "relay: checking the grants of live sessions failed");
+            false
+        }
     }
 }
 
@@ -874,6 +917,14 @@ async fn open_target(
 ) -> Result<onward::Started, &'static str> {
     let grant = &login.grant;
     let refuse = |reason, message| refuse_session(shared, &grant.grant_id, reason, message);
+    // Failed closed: no grant can be told revoked, so none is used.
+    if shared.grant_state_lost.load(Ordering::Acquire) {
+        return Err(refuse(
+            session::reason::GRANT_STATE_UNAVAILABLE,
+            session::reason::GRANT_STATE_NOTICE,
+        )
+        .await);
+    }
     // The grant may have been revoked or expired since login.
     match shared
         .requests
@@ -884,7 +935,7 @@ async fn open_target(
         Ok(_) => return Err(refuse("grant no longer active", NO_LONGER_VALID).await),
         Err(e) => {
             tracing::error!(grant = %grant.grant_id, error = %e, "relay: grant lookup failed");
-            return Err(refuse("grant lookup failed", UNAVAILABLE).await);
+            return Err(refuse("grant lookup failed", session::reason::GRANT_STATE_NOTICE).await);
         }
     }
     // The policy and the credential, in one read.
@@ -1303,8 +1354,8 @@ mod tests {
     use tokio::time::Instant;
 
     use super::{
-        Conn, GOODBYE_WAIT, NOT_STARTED, OverOnDrop, Phase, Refusals, Relayed, SESSION_OVER,
-        no_more_use,
+        Conn, GOODBYE_WAIT, NOT_STARTED, Outage, OverOnDrop, Phase, Refusals, Relayed,
+        SESSION_OVER, no_more_use,
     };
 
     fn conn() -> Conn {
@@ -1314,6 +1365,22 @@ mod tests {
             relayed: Mutex::new(Relayed::None),
             phase: tokio::sync::watch::channel(Phase::Waiting).0,
         }
+    }
+
+    #[test]
+    fn fails_closed_after_ten_seconds_of_failures_in_a_row() {
+        let start = Instant::now();
+        let at = |secs| start + Duration::from_secs(secs);
+        let mut outage = Outage::default();
+        assert!(!outage.record(false, at(0)));
+        assert!(!outage.record(false, at(9)));
+        // One success starts the count again.
+        assert!(!outage.record(true, at(10)));
+        assert!(!outage.record(false, at(11)));
+        assert!(!outage.record(false, at(20)));
+        assert!(outage.record(false, at(21)));
+        assert!(outage.record(false, at(22)));
+        assert!(!outage.record(true, at(23)));
     }
 
     #[tokio::test(start_paused = true)]

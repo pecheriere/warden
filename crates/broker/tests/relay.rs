@@ -1821,3 +1821,47 @@ async fn unstarted_authenticated_connection_is_closed() {
         .expect("the relay stopped promptly");
     assert_each_start_ended(&s.broker).await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn db_unreadable_fails_closed() {
+    let s = key_target().await;
+    let agent = approved_agent(&s.broker, "bot").await;
+    let (running, mut running_channel) = hold_session(&s, &agent.key).await;
+    // Logged in before the outage, its session not started yet.
+    let waiting = login(&s.broker, s.relay, TARGET, &agent.key).await;
+    let mut waiting_channel = waiting.handle.channel_open_session().await.unwrap();
+
+    // Every query fails from now on.
+    s.broker.state().pool.close().await;
+    let lost = Instant::now();
+    // Not before the state has been unreadable for 10 s ...
+    tokio::time::sleep(Duration::from_secs(8)).await;
+    assert!(!running.handle.is_closed(), "ended before 10 s of failures");
+    assert!(events_of(&s.broker, "relay_session_ended").is_empty());
+    // ... then the session ends, both sides closed.
+    assert_both_sides_closed(&s, &running, 0, lost + Duration::from_secs(15)).await;
+    let out = collect(&mut running_channel).await;
+    assert!(
+        text(&out.stderr).contains("warden relay: access cannot be checked right now"),
+        "{out:?}"
+    );
+
+    // A session cannot start meanwhile, on record.
+    waiting_channel.exec(true, "echo ok").await.unwrap();
+    let mut stderr = Vec::new();
+    assert!(reply_keeping_stderr(&mut waiting_channel, &mut stderr).await);
+    let out = collect(&mut waiting_channel).await;
+    stderr.extend_from_slice(&out.stderr);
+    assert!(out.stdout.is_empty(), "{out:?}");
+    assert_eq!(out.exit_status, Some(255));
+    assert!(
+        text(&stderr).contains("warden relay: access cannot be checked right now"),
+        "{}",
+        text(&stderr)
+    );
+    let refused = await_events(&s.broker, "relay_session_refused", 1).await;
+    assert_eq!(refused.len(), 1, "{:?}", audit_events(&s.broker));
+    assert_eq!(refused[0]["reason"], "grant state unavailable");
+
+    assert_ended_once_then_stop(&s, 1, "grant state unavailable").await;
+}

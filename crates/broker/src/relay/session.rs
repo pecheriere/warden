@@ -48,12 +48,20 @@ pub(crate) mod reason {
     pub const EXPIRED: &str = "expired";
     /// No bytes went either way for the idle timeout.
     pub const IDLE: &str = "idle timeout";
+    /// The state of grants could not be read for too long: the relay
+    /// cannot tell revoked grants, so it ends every session.
+    pub const GRANT_STATE_UNAVAILABLE: &str = "grant state unavailable";
+
+    /// Told to agents whose session ends, or cannot start, while the state
+    /// of grants cannot be read.
+    pub const GRANT_STATE_NOTICE: &str = "warden relay: access cannot be checked right now";
 
     /// Whether the relay ends a session ended for `reason` by force: both
     /// connections are cut after a short grace, whatever their state.
     #[must_use]
     pub fn forced(reason: &str) -> bool {
-        reason.starts_with(FLOW_CONTROL) || matches!(reason, REVOKED | EXPIRED | IDLE)
+        reason.starts_with(FLOW_CONTROL)
+            || matches!(reason, REVOKED | EXPIRED | IDLE | GRANT_STATE_UNAVAILABLE)
     }
 
     /// What the agent is told when its session ends for `reason`, if
@@ -64,6 +72,7 @@ pub(crate) mod reason {
             REVOKED => Some("warden relay: access revoked"),
             EXPIRED => Some("warden relay: access expired"),
             IDLE => Some("warden relay: session idle for too long"),
+            GRANT_STATE_UNAVAILABLE => Some(GRANT_STATE_NOTICE),
             _ => None,
         }
     }
@@ -146,6 +155,11 @@ impl LiveSessions {
     /// seconds), as known when they started.
     pub(crate) fn expire_due(&self, now: i64) {
         self.end_where(|s| s.not_after <= now, reason::EXPIRED);
+    }
+
+    /// End every session: the state of grants cannot be read.
+    pub(crate) fn fail_closed(&self) {
+        self.end_where(|_| true, reason::GRANT_STATE_UNAVAILABLE);
     }
 
     /// The grants with live sessions, each once.
@@ -1085,6 +1099,18 @@ mod tests {
         assert_eq!(told(&mut c1).await, Some(reason::REVOKED));
         sessions.expire_grant(&c.grant_id);
         assert_eq!(told(&mut c1).await, Some(reason::REVOKED));
+        let mut fresh = sessions.register(&grant("d", 400));
+        sessions.fail_closed();
+        assert_eq!(
+            told(&mut fresh).await,
+            Some(reason::GRANT_STATE_UNAVAILABLE)
+        );
+        assert_eq!(
+            told(&mut c1).await,
+            Some(reason::REVOKED),
+            "the first reason stands"
+        );
+        drop(fresh);
 
         // Dropped registrations are no longer listed.
         drop((a1, a2, b1));
@@ -1099,6 +1125,7 @@ mod tests {
             reason::REVOKED,
             reason::EXPIRED,
             reason::IDLE,
+            reason::GRANT_STATE_UNAVAILABLE,
             reason::DOWNSTREAM_STALLED,
             reason::UPSTREAM_STALLED,
         ] {
