@@ -91,9 +91,11 @@ const ENCODED_SEPARATORS: [&str; 8] = ["%2e", "%2f", "%5c", "%3b", "%25", "%c0",
 
 /// Headers an agent may not set although they are not reserved:
 /// `Accept-Encoding`, `Range` and `If-Range` would let the response carry the
-/// secret compressed or in fragments that redaction cannot see; the others
-/// make some servers apply another method or path than the one checked.
-const REFUSED_HEADERS: [&str; 8] = [
+/// secret compressed or in fragments that redaction cannot see; the method
+/// and URL overrides make some servers apply another method or path than the
+/// one checked; the forwarding headers make some servers (and the proxies in
+/// front of them) route to another virtual host or trust another client.
+const REFUSED_HEADERS: [&str; 14] = [
     "accept-encoding",
     "range",
     "if-range",
@@ -102,6 +104,12 @@ const REFUSED_HEADERS: [&str; 8] = [
     "x-method-override",
     "x-original-url",
     "x-rewrite-url",
+    "forwarded",
+    "x-forwarded-host",
+    "x-forwarded-for",
+    "x-forwarded-proto",
+    "x-forwarded-port",
+    "x-real-ip",
 ];
 
 /// Parse the URL and check it against the policy. The path is inspected as
@@ -466,6 +474,12 @@ mod tests {
             "TE",
             "Trailer",
             "Upgrade",
+            "Forwarded",
+            "X-Forwarded-Host",
+            "x-forwarded-for",
+            "X-Forwarded-Proto",
+            "X-Forwarded-Port",
+            "X-Real-IP",
         ] {
             assert!(
                 matches!(

@@ -179,13 +179,18 @@ fn assert_response_clean(resp: &TestResponse, secret: &str) {
     }
 }
 
-fn proxy_calls(broker: &TestBroker) -> Vec<Value> {
+/// Audit events of the given types, oldest first.
+fn audit_events(broker: &TestBroker, types: &[&str]) -> Vec<Value> {
     std::fs::read_to_string(broker.audit_path())
         .unwrap()
         .lines()
         .map(|line| serde_json::from_str::<Value>(line).unwrap()["event"].clone())
-        .filter(|event| event["type"] == "proxy_call")
+        .filter(|event| types.iter().any(|t| event["type"] == *t))
         .collect()
+}
+
+fn proxy_calls(broker: &TestBroker) -> Vec<Value> {
+    audit_events(broker, &["proxy_call"])
 }
 
 #[tokio::test]
@@ -618,9 +623,80 @@ async fn every_call_audited_without_secret() {
     assert_eq!(calls, expected);
     assert!(echo.redactions > 0);
 
+    // Each call that went out was recorded as started before it was sent;
+    // refused calls never started.
+    let events = audit_events(&s.broker, &["proxy_call_started", "proxy_call"]);
+    let types: Vec<&str> = events.iter().map(|e| e["type"].as_str().unwrap()).collect();
+    assert_eq!(
+        types,
+        [
+            "proxy_call_started",
+            "proxy_call",
+            "proxy_call_started",
+            "proxy_call",
+            "proxy_call_started",
+            "proxy_call",
+            "proxy_call",
+            "proxy_call_started",
+            "proxy_call",
+            "proxy_call",
+        ]
+    );
+    assert_eq!(
+        events[0],
+        json!({"type": "proxy_call_started", "grant_id": grant, "method": "GET",
+               "url": format!("{origin}/v1/hello")})
+    );
+
     let log = std::fs::read_to_string(s.broker.audit_path()).unwrap();
     assert!(!log.contains("agent-query-value"));
     assert_clean(&log, SECRET, "audit log");
     assert_clean(&log, ROTATED, "audit log");
     audit::verify(s.broker.audit_path()).unwrap();
+}
+
+#[tokio::test]
+async fn proxy_refused_when_audit_unwritable() {
+    let s = setup().await;
+    // Another writer holds the audit log's lock: the pre-flight entry
+    // cannot be written, so nothing may be sent.
+    let holder = std::fs::File::open(s.broker.audit_path()).unwrap();
+    holder.lock().unwrap();
+    let resp = get(&s, "/v1/hello").await;
+    holder.unlock().unwrap();
+    assert_eq!(
+        resp.status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "{}",
+        resp.body
+    );
+    assert_eq!(resp.body, r#"{"error":"internal error"}"#);
+    assert!(s.upstream.received().is_empty());
+    assert!(audit_events(&s.broker, &["proxy_call_started", "proxy_call"]).is_empty());
+
+    // Once the log is writable again, calls go through.
+    let (proxied, _) = proxied(&get(&s, "/v1/hello").await);
+    assert_eq!(proxied.status, 200);
+}
+
+#[tokio::test]
+async fn revoked_during_call_withholds_response() {
+    let s = setup().await;
+    let call = get(&s, "/delayed");
+    let revoke = async {
+        while s.upstream.received().is_empty() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        s.broker
+            .api_post(&s.key, &format!("/v1/grants/{}/revoke", s.grant))
+            .await
+    };
+    let (resp, revoked) = tokio::join!(call, revoke);
+    assert_eq!(revoked.status, StatusCode::NO_CONTENT, "{}", revoked.body);
+    assert_eq!(resp.status, StatusCode::CONFLICT, "{}", resp.body);
+    assert_eq!(resp.body, r#"{"error":"grant revoked during the call"}"#);
+    let calls = proxy_calls(&s.broker);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0]["outcome"], "grant revoked during the call");
+    assert_eq!(calls[0]["status"], 200);
 }

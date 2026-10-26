@@ -91,6 +91,17 @@ pub enum AuditEvent {
         /// Who revoked it.
         by: String,
     },
+    /// A proxied HTTP call is about to be sent with an API secret. Written
+    /// before anything leaves the broker; the call is not made if this
+    /// entry cannot be written.
+    ProxyCallStarted {
+        /// Grant id.
+        grant_id: Id,
+        /// Request method.
+        method: String,
+        /// Origin and path of the URL (no query).
+        url: String,
+    },
     /// An agent asked the broker to make an HTTP call with an API secret.
     /// Recorded for every call on a usable grant, whether it was refused,
     /// failed or answered. Never holds the secret or the query string.

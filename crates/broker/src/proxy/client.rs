@@ -174,7 +174,12 @@ fn client_for(policy: &ApiSecretPolicy, limits: &ProxyLimits) -> Result<Client, 
         if roots.is_empty() {
             return Err(ProxyError::PinnedCa);
         }
-        // Only these roots: the system and built-in ones are not consulted.
+        // Only these roots: in reqwest 0.13, `tls_certs_only` takes the
+        // `with_root_certificates` branch of the rustls setup, whose root
+        // store starts empty and holds just `roots`; the platform verifier
+        // (and with it the system roots) is not used. `add_root_certificate`
+        // alone would merge with the system roots instead. Re-check this
+        // on every reqwest upgrade.
         builder = builder.tls_certs_only(roots);
     }
     builder.build().map_err(|e| {
@@ -232,8 +237,9 @@ const DROPPED_HEADERS: [&str; 9] = [
 ];
 
 /// What the agent gets back: hop-by-hop headers (the fixed list, plus any
-/// named in `Connection`) and `Content-Length` dropped, every header value
-/// and the body redacted, and the total number of redactions.
+/// named in `Connection`), `Content-Length` and headers whose name holds
+/// the secret dropped, every other header value and the body redacted, and
+/// the total number of redactions (a dropped name counts its matches).
 #[must_use]
 pub fn redact_response(upstream: &Upstream, needles: &Needles) -> ProxyResponse {
     let named_by_connection: Vec<String> = upstream
@@ -252,6 +258,13 @@ pub fn redact_response(upstream: &Upstream, needles: &Needles) -> ProxyResponse 
             || DROPPED_HEADERS.contains(&name)
             || named_by_connection.iter().any(|n| n == name)
         {
+            continue;
+        }
+        // A name carrying the secret cannot be redacted into a valid
+        // header name: the whole header goes.
+        let (_, in_name) = redact(name.as_bytes(), needles);
+        if in_name > 0 {
+            redactions = redactions.saturating_add(in_name);
             continue;
         }
         let (clean, count) = redact(value.as_bytes(), needles);
@@ -350,6 +363,27 @@ mod tests {
             b"token=[REDACTED]&again=[REDACTED]"
         );
         assert_eq!(response.redactions, 4);
+    }
+
+    #[test]
+    fn header_names_carrying_the_secret_are_dropped_and_counted() {
+        let secret = "abcdef0123456789";
+        let needles = Needles::new(secret, &format!("Bearer {secret}"));
+        let upstream = Upstream {
+            status: StatusCode::OK,
+            headers: headers(&[
+                ("x-abcdef0123456789", "v"),
+                ("x-token-abcdef0123456789-end", "w"),
+                ("x-plain", "fine"),
+            ]),
+            body: Vec::new(),
+        };
+        let response = redact_response(&upstream, &needles);
+        assert_eq!(
+            response.headers,
+            [("x-plain".to_owned(), "fine".to_owned())]
+        );
+        assert_eq!(response.redactions, 2);
     }
 
     #[test]

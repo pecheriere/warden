@@ -31,6 +31,9 @@ pub const HUGE_BYTES: usize = 2 * 1024 * 1024;
 /// First bytes `/slow` sends before stalling.
 pub const SLOW_PREFIX: &[u8] = b"partial body that must never reach the agent";
 
+/// How long `/delayed` waits before answering.
+pub const DELAY: Duration = Duration::from_secs(1);
+
 /// A request the upstream received.
 #[derive(Debug, Clone)]
 pub struct Received {
@@ -55,6 +58,7 @@ pub struct Received {
 /// - `/huge`, `/huge-chunked`: [`HUGE_BYTES`] bytes, with and without
 ///   `Content-Length`;
 /// - `/slow`: [`SLOW_PREFIX`], then nothing for a minute;
+/// - `/delayed`: `late answer`, after [`DELAY`];
 /// - `/gzip`: a body labelled `Content-Encoding: gzip`;
 /// - anything else: `200` with `hello from upstream`.
 pub struct HttpsUpstream {
@@ -216,6 +220,10 @@ async fn handle(State(log): State<Log>, req: Request) -> Response {
         "/huge" => respond(StatusCode::OK, &[], Body::from(vec![b'a'; HUGE_BYTES])),
         "/huge-chunked" => respond(StatusCode::OK, &[], huge_chunked()),
         "/slow" => respond(StatusCode::OK, &[], slow()),
+        "/delayed" => {
+            tokio::time::sleep(DELAY).await;
+            respond(StatusCode::OK, &[], Body::from("late answer"))
+        }
         "/gzip" => respond(
             StatusCode::OK,
             &[("content-encoding", "gzip".to_owned())],

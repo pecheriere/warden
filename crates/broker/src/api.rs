@@ -343,8 +343,10 @@ impl CallRecord {
     }
 }
 
-/// Make the call and record it. If the audit entry cannot be written, the
-/// agent gets an internal error instead of the response.
+/// Make the call and record its result. If the result entry cannot be
+/// written, the agent gets an internal error instead of the response. A
+/// call whose pre-flight entry could not be written was never sent and gets
+/// no result entry either.
 async fn audited_call(
     state: AppState,
     agent: AgentName,
@@ -353,7 +355,10 @@ async fn audited_call(
     req: ProxyRequest,
 ) -> Result<ProxyResponse, Failure> {
     let mut record = CallRecord::new(&req);
-    let result = call(&state, &grant, &req, &mut record).await;
+    let result = call(&state, &agent, &grant_id, &grant, &req, &mut record).await;
+    if let Err(Failure::Request(RequestError::Audit(_))) = &result {
+        return result;
+    }
     let outcome = match &result {
         Ok(_) => "ok".to_owned(),
         Err(failure) => failure.outcome(),
@@ -376,9 +381,13 @@ async fn audited_call(
 }
 
 /// Check `req` against the secret's current policy, which must still be
-/// the approved one, then send it with the secret and redact the answer.
+/// the approved one; record that the call starts (or refuse it if that
+/// cannot be recorded); send it with the secret; and redact the answer,
+/// unless the grant ended while the call was out.
 async fn call(
     state: &AppState,
+    agent: &AgentName,
+    grant_id: &Id,
     grant: &ApiGrant,
     req: &ProxyRequest,
     record: &mut CallRecord,
@@ -399,12 +408,31 @@ async fn call(
         .await
         .map_err(policy_failure)?;
     let needles = Needles::new(secret.expose(), &policy.format.render(secret.expose()));
+    let started = AuditEvent::ProxyCallStarted {
+        grant_id: grant_id.clone(),
+        method: record.method.clone(),
+        url: record.url.clone(),
+    };
+    if let Err(e) = state.audit.append(started).await {
+        tracing::error!(grant = %grant_id, error = %e, "could not audit a proxy call start; not sending it");
+        return Err(Failure::Request(RequestError::Audit(e)));
+    }
     let upstream = proxy::forward(&policy, &secret, prepared, &limits)
         .await
         .map_err(|e| Failure::Client(e.status(), e.to_string()))?;
     drop(secret);
     record.status = Some(upstream.status.as_u16());
     record.response_bytes = u64::try_from(upstream.body.len()).unwrap_or(u64::MAX);
+    match usable_api_grant(state, agent, grant_id).await {
+        Ok(_) => {}
+        Err(Failure::Client(StatusCode::CONFLICT | StatusCode::NOT_FOUND, _)) => {
+            return Err(Failure::Client(
+                StatusCode::CONFLICT,
+                "grant revoked during the call".to_owned(),
+            ));
+        }
+        Err(other) => return Err(other),
+    }
     let response = proxy::redact_response(&upstream, &needles);
     record.redactions = response.redactions;
     Ok(response)
