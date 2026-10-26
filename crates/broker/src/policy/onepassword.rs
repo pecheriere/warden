@@ -592,13 +592,11 @@ fn parse_website(item: &ApiItem) -> Result<Origin, &'static str> {
 fn parse_methods(list: &str) -> Result<Vec<Method>, &'static str> {
     let mut methods: Vec<Method> = Vec::new();
     for token in list.split(',').map(str::trim) {
-        if token.is_empty() || !token.bytes().all(|b| b.is_ascii_uppercase()) {
-            return Err(
-                "must be a comma-separated list of uppercase method names, such as GET, POST",
-            );
-        }
-        let method =
-            Method::from_bytes(token.as_bytes()).map_err(|_| "contains an invalid method name")?;
+        // Uppercase ASCII letters are always a valid method token.
+        let method = Some(token)
+            .filter(|t| !t.is_empty() && t.bytes().all(|b| b.is_ascii_uppercase()))
+            .and_then(|t| Method::from_bytes(t.as_bytes()).ok())
+            .ok_or("must be a comma-separated list of uppercase method names, such as GET, POST")?;
         if !methods.contains(&method) {
             methods.push(method);
         }

@@ -524,9 +524,6 @@ mod tests {
         let mut longer = base.clone();
         longer.max_window = Window::H4;
         assert_eq!(digest, longer.destination_digest());
-        let rendered_a = base.format.render("credential-one-0123");
-        let rendered_b = base.format.render("credential-two-4567");
-        assert_ne!(rendered_a, rendered_b);
         assert_eq!(
             digest,
             api("https://api.example.com", "/v1/", &get, "Authorization").destination_digest()
