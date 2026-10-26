@@ -69,6 +69,8 @@ pub struct Sshd {
     port: u16,
     host_keys: Vec<PublicKey>,
     log: PathBuf,
+    /// The `AuthorizedKeysFile` of a key login.
+    authorized_keys: Option<PathBuf>,
     _dir: TempDir,
 }
 
@@ -133,7 +135,7 @@ impl Sshd {
             writeln!(config, "HostKey {}", path.display())
                 .expect("writing to a String cannot fail");
         }
-        match login {
+        let authorized_keys = match login {
             SshdLogin::Key(key) => {
                 let authorized = dir.path().join("authorized_keys");
                 write_private(
@@ -150,13 +152,17 @@ impl Sshd {
                 if cfg!(target_os = "linux") {
                     config.push_str("UsePAM no\n");
                 }
+                Some(authorized)
             }
             #[cfg(target_os = "linux")]
-            SshdLogin::Password => config.push_str(
-                "AuthorizedKeysFile none\nPasswordAuthentication yes\nUsePAM yes\n\
-                 AuthenticationMethods password\n",
-            ),
-        }
+            SshdLogin::Password => {
+                config.push_str(
+                    "AuthorizedKeysFile none\nPasswordAuthentication yes\nUsePAM yes\n\
+                     AuthenticationMethods password\n",
+                );
+                None
+            }
+        };
         let config_path = dir.path().join("sshd_config");
         write_private(&config_path, &config);
         let log = dir.path().join("sshd.log");
@@ -180,6 +186,7 @@ impl Sshd {
             port,
             host_keys: public_keys,
             log,
+            authorized_keys,
             _dir: dir,
         };
         // Wait for its own word rather than probing the port, so the log
@@ -214,6 +221,25 @@ impl Sshd {
     #[must_use]
     pub fn host_keys(&self) -> &[PublicKey] {
         &self.host_keys
+    }
+
+    /// From the next login on, accept only `key` (as when a target's login
+    /// key is rotated). The file is replaced whole, so `sshd` never reads a
+    /// partly written one.
+    ///
+    /// # Panics
+    /// If it was started with [`SshdLogin::Password`] or the file cannot be
+    /// replaced.
+    pub fn authorize_only(&self, key: &PublicKey) {
+        let authorized = self.authorized_keys.as_ref().expect("a key login sshd");
+        let next = authorized.with_extension("next");
+        // Left over from an earlier rotation only if that one failed.
+        let _ = fs::remove_file(&next);
+        write_private(
+            &next,
+            &format!("{}\n", key.to_openssh().expect("encode login key")),
+        );
+        fs::rename(&next, authorized).expect("replace authorized_keys");
     }
 
     /// Everything it has logged so far (`LogLevel VERBOSE`).

@@ -1045,6 +1045,11 @@ async fn open_target(
     if !target.users.contains(&grant.user) {
         return Err(refuse("user no longer allowed on the target", NO_LONGER_VALID).await);
     }
+    // The relay connects only where the owner approved: same address and
+    // port, same pinned host keys. A rotated credential alone is fine.
+    if target.destination_digest() != grant.destination_digest {
+        return Err(refuse("target policy changed", NO_LONGER_VALID).await);
+    }
     // Pre-flight: on record before any byte reaches the target.
     let started = AuditEvent::RelaySessionStarted {
         grant_id: grant.grant_id.clone(),

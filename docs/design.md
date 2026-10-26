@@ -200,7 +200,12 @@ approved.
 
 **Onward connection.** warden reads the target item once when the session
 starts (policy and credential in one read) and re-checks that the mode is
-still `relay` and the approved user is still allowed. It connects with a 10 s
+still `relay`, that the approved user is still allowed, and that the
+destination is still the one the owner approved: the grant stores the digest
+of the target's address, port and pinned host keys taken at approval, and a
+session whose target no longer matches it is refused (audited as `target
+policy changed`) before any onward connection is made. A rotated credential
+alone does not change the destination. It connects with a 10 s
 timeout per step and verifies the target's **pinned host key**: the item's
 `host_keys` are required (no trust on first use) and key exchange negotiates
 only the algorithms of the pinned keys, so an unpinned algorithm cannot be

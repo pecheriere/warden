@@ -741,6 +741,7 @@ mod tests {
                 .public_key()
                 .to_openssh()
                 .unwrap(),
+            digest: "ab".repeat(32),
         }
     }
 

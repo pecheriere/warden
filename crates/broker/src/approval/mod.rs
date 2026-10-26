@@ -564,8 +564,10 @@ fn ssh_grant(
 
 /// The grant for approving `view` on a relay target with `window` at `now`:
 /// valid from `now` for exactly the window, naming where the agent reaches
-/// `relay` and its host key. There is no certificate: the relay admits the
-/// agent by the public key bound into the approved request.
+/// `relay` and its host key, and carrying the digest of the approved
+/// destination, which the relay checks at every session start. There is no
+/// certificate: the relay admits the agent by the public key bound into the
+/// approved request.
 fn relay_grant(
     view: &PendingView,
     relay: &RelayEndpoint,
@@ -586,6 +588,7 @@ fn relay_grant(
             relay_host: relay.host.clone(),
             relay_port: relay.port,
             relay_host_key: relay.host_key.clone(),
+            digest: view.destination.digest(),
         }),
     })
 }

@@ -337,6 +337,10 @@ pub struct RelayGrantRecord {
     pub target: TargetName,
     /// Unix account the relay logs in to the target as.
     pub user: UnixUser,
+    /// Digest of the destination the owner approved (see
+    /// [`SshTarget::destination_digest`]): a session starts only while the
+    /// target still matches it.
+    pub destination_digest: String,
     /// End of validity, Unix seconds.
     pub not_after: i64,
 }
@@ -1150,6 +1154,7 @@ impl Requests {
                 agent: parse(row, "agent")?,
                 target: grant.target,
                 user: grant.user,
+                destination_digest: grant.digest,
                 not_after: row.try_get("not_after")?,
             }));
         }

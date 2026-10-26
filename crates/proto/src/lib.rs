@@ -417,6 +417,10 @@ pub struct RelayGrant {
     pub relay_port: u16,
     /// The relay's host public key, OpenSSH format, for pinning.
     pub relay_host_key: String,
+    /// Lowercase hex digest of the approved destination (target address,
+    /// port and pinned host keys): a session is refused once the target no
+    /// longer matches it.
+    pub digest: String,
 }
 
 /// Brokered API grant details. The secret value is never part of it.
@@ -726,11 +730,15 @@ mod tests {
             relay_host: "warden.example.ts.net".to_owned(),
             relay_port: 2222,
             relay_host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample".to_owned(),
+            digest: "cd".repeat(32),
         });
         let json = serde_json::to_string(&relay).unwrap();
         assert_eq!(
             json,
-            r#"{"kind":"relay","target":"nas","user":"backup","relay_host":"warden.example.ts.net","relay_port":2222,"relay_host_key":"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample"}"#
+            format!(
+                r#"{{"kind":"relay","target":"nas","user":"backup","relay_host":"warden.example.ts.net","relay_port":2222,"relay_host_key":"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample","digest":"{}"}}"#,
+                "cd".repeat(32)
+            )
         );
         assert_eq!(serde_json::from_str::<GrantAccess>(&json).unwrap(), relay);
         // Names are validated on the way in.

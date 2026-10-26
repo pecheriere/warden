@@ -1057,6 +1057,7 @@ mod tests {
             agent: AgentName::try_from(agent.to_owned()).unwrap(),
             target: TargetName::try_from("nas".to_owned()).unwrap(),
             user: UnixUser::try_from("backup".to_owned()).unwrap(),
+            destination_digest: "ab".repeat(32),
             not_after,
         }
     }

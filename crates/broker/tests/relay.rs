@@ -752,6 +752,70 @@ async fn session_refused_when_target_policy_changed() {
     assert!(events_of(&s.broker, "relay_session_started").is_empty());
 }
 
+/// Replace target `nas` with `changed` after `agent` was approved, then
+/// check that a session is refused before the relay connects anywhere,
+/// on record as `target policy changed`.
+async fn assert_refused_after_destination_change(s: &Setup, agent: &Agent, changed: SshTarget) {
+    s.broker
+        .backend
+        .set_relay_target(changed, RelayCredential::Key(openssh_private(&s.onward)));
+    let ssh = OpenSsh::new(&s.broker, s.relay, &agent.key);
+    let out = ssh.run(&["echo", "ok"]).await;
+    assert_ne!(out.status.code(), Some(0));
+    assert!(out.stdout.is_empty(), "{}", text(&out.stdout));
+    assert!(
+        text(&out.stderr).contains("warden relay: this access is no longer valid"),
+        "{}",
+        text(&out.stderr)
+    );
+    let refused = await_events(&s.broker, "relay_session_refused", 1).await;
+    assert_eq!(refused[0]["reason"], "target policy changed");
+    assert_eq!(refused[0]["grant_id"], agent.grant_id.as_str());
+    assert!(events_of(&s.broker, "relay_session_started").is_empty());
+    assert_eq!(sshd_connections(&s.sshd), 0, "{}", s.sshd.log());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn session_refused_when_address_changed_after_approval() {
+    let s = key_target().await;
+    let agent = approved_agent(&s.broker, "bot").await;
+    // Another name for the same sshd: the relay would reach it, but it is
+    // not the address the owner approved.
+    let mut moved = nas(&s.sshd);
+    moved.host = "localhost".to_owned();
+    assert_refused_after_destination_change(&s, &agent, moved).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn session_refused_when_host_keys_changed_after_approval() {
+    let s = key_target().await;
+    let agent = approved_agent(&s.broker, "bot").await;
+    // The sshd's own key is still pinned, next to one the owner never saw.
+    let mut repinned = nas(&s.sshd);
+    repinned.host_keys.push(random_key().public_key().clone());
+    assert_refused_after_destination_change(&s, &agent, repinned).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rotated_credential_alone_still_works() {
+    let s = key_target().await;
+    let agent = approved_agent(&s.broker, "bot").await;
+    // The target's login key is rotated after approval: the destination
+    // is unchanged, so the session runs with the new credential.
+    let rotated = random_key();
+    s.sshd.authorize_only(rotated.public_key());
+    s.broker.backend.set_relay_target(
+        nas(&s.sshd),
+        RelayCredential::Key(openssh_private(&rotated)),
+    );
+    let ssh = OpenSsh::new(&s.broker, s.relay, &agent.key);
+    let out = ssh.run(&["echo", "rotated"]).await;
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    assert_eq!(text(&out.stdout), "rotated\n");
+    assert!(events_of(&s.broker, "relay_session_refused").is_empty());
+    await_events(&s.broker, "relay_session_ended", 1).await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn forwarding_and_subsystems_refused() {
     let s = key_target().await;
@@ -990,11 +1054,16 @@ async fn credential_never_logged_or_audited() {
         RelayCredential::Key(openssh_private(&wrong_key)),
     );
     let refused = ssh.run(&["true"]).await;
+    // A host key mismatch needs a grant approved for the wrong pin: one
+    // whose pin changed since approval is refused before connecting.
     s.broker.backend.set_relay_target(
         nas_pinned(&s.sshd, random_key().public_key().clone()),
         RelayCredential::Key(openssh_private(&s.onward)),
     );
-    let mismatch = ssh.run(&["true"]).await;
+    let mispinned = approved_agent(&s.broker, "other").await;
+    let mismatch = OpenSsh::new(&s.broker, s.relay, &mispinned.key)
+        .run(&["true"])
+        .await;
     await_events(&s.broker, "relay_session_ended", 3).await;
     let right = RelayCredential::Key(openssh_private(&s.onward));
     let wrong = RelayCredential::Key(openssh_private(&wrong_key));
@@ -1555,11 +1624,17 @@ async fn every_started_session_has_exactly_one_end() {
         RelayCredential::Key(openssh_private(&random_key())),
     );
     ssh.run(&["true"]).await;
+    // A host key mismatch needs a grant approved for the wrong pin: one
+    // whose pin changed since approval is refused before connecting.
     s.broker.backend.set_relay_target(
         nas_pinned(&s.sshd, random_key().public_key().clone()),
         RelayCredential::Key(openssh_private(&s.onward)),
     );
-    ssh.run(&["true"]).await;
+    let mispinned = approved_agent(&s.broker, "other").await;
+    OpenSsh::new(&s.broker, s.relay, &mispinned.key)
+        .run(&["true"])
+        .await;
+    // Back to the destination `bot` was approved for.
     s.broker.backend.set_relay_target(
         nas(&s.sshd),
         RelayCredential::Key(openssh_private(&s.onward)),
