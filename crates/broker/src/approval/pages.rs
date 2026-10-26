@@ -50,11 +50,12 @@ fn layout(title: &str, with_script: bool, content: &Markup) -> Markup {
 
 /// `ssh user@target (host:port)` for a request and the address it reaches.
 fn access_line(request: &CreateRequest, host: &str, port: u16) -> String {
-    let Access::Ssh { target, user, .. } = &request.access;
-    if host.contains(':') {
-        format!("ssh {user}@{target} ([{host}]:{port})")
-    } else {
-        format!("ssh {user}@{target} ({host}:{port})")
+    match &request.access {
+        Access::Ssh { target, user, .. } if host.contains(':') => {
+            format!("ssh {user}@{target} ([{host}]:{port})")
+        }
+        Access::Ssh { target, user, .. } => format!("ssh {user}@{target} ({host}:{port})"),
+        Access::Api { secret } => format!("api {secret}"),
     }
 }
 
@@ -195,12 +196,15 @@ pub fn history(entries: &[HistoryEntry]) -> Markup {
                 }
                 tbody {
                     @for entry in entries {
-                        @let Access::Ssh { target, user, .. } = &entry.request.access;
+                        @let subject = match &entry.request.access {
+                            Access::Ssh { target, user, .. } => format!("{user}@{target}"),
+                            Access::Api { secret } => format!("api:{secret}"),
+                        };
                         tr {
                             td { (utc(entry.created_at)) }
                             td { bdi { (entry.agent) } }
                             td { bdi { (entry.request.goal) } }
-                            td { code { (user) "@" (target) } }
+                            td { code { (subject) } }
                             td { code { (entry.fingerprint) } }
                             td { (entry.status) }
                             td {

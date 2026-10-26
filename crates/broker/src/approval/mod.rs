@@ -15,7 +15,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use ssh_key::PublicKey;
-use warden_broker_proto::{Access, ApiError, GrantView, Id, SshGrant, Window};
+use warden_broker_proto::{Access, ApiError, GrantAccess, GrantView, Id, SshGrant, Window};
 use webauthn_rs::prelude::{PublicKeyCredential, RegisterPublicKeyCredential};
 
 use crate::AppState;
@@ -309,7 +309,9 @@ fn internal_page(context: &str, error: &dyn std::fmt::Display) -> Response {
 
 /// Whether the target as it is now still allows `view`'s request for `window`.
 fn check_policy(view: &PendingView, window: Window) -> Result<(), String> {
-    let Access::Ssh { user, .. } = &view.request.access;
+    let Access::Ssh { user, .. } = &view.request.access else {
+        return Err("api access is not supported yet".to_owned());
+    };
     let target: &SshTarget = &view.target;
     if !target.users.contains(user) {
         return Err(format!(
@@ -461,7 +463,10 @@ fn build_grant(
         target,
         user,
         public_key,
-    } = &view.request.access;
+    } = &view.request.access
+    else {
+        return Err(("access kind", "api access is not supported yet".to_owned()));
+    };
     let public_key =
         PublicKey::from_openssh(public_key).map_err(|e| ("stored public key", e.to_string()))?;
     let length = i64::try_from(window.secs()).map_err(|e| ("window length", e.to_string()))?;
@@ -496,13 +501,13 @@ fn build_grant(
         grant_id,
         not_before: now,
         not_after,
-        ssh: SshGrant {
+        access: GrantAccess::Ssh(SshGrant {
             certificate,
             host: view.target.host.clone(),
             port: view.target.port,
             user: user.clone(),
             host_keys,
-        },
+        }),
     };
     Ok((grant, cert.key_id().to_owned()))
 }

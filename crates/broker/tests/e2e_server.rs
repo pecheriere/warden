@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use ssh_key::Certificate;
 use warden_broker::requests;
 use warden_broker::testkit::{TEST_OWNER, TestBroker};
-use warden_broker_proto::{CreatedResponse, GrantView, Id, RequestStatus, Window};
+use warden_broker_proto::{CreatedResponse, GrantAccess, GrantView, Id, RequestStatus, Window};
 
 fn body(goal: &str, window: Window) -> Value {
     serde_json::to_value(TestBroker::pi_request(goal, window)).unwrap()
@@ -61,7 +61,10 @@ async fn full_flow_request_approve_returns_cert() {
     let RequestStatus::Approved(view) = status else {
         panic!("long poll should return the approval, got {status:?}");
     };
-    let cert = Certificate::from_openssh(&view.ssh.certificate).unwrap();
+    let GrantAccess::Ssh(ssh) = &view.access else {
+        panic!("expected an ssh grant");
+    };
+    let cert = Certificate::from_openssh(&ssh.certificate).unwrap();
     assert_eq!(
         cert.key_id(),
         format!("warden:bot:{}", view.grant_id.as_str())

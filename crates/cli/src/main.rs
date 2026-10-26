@@ -15,8 +15,8 @@ use ssh_key::rand_core::OsRng;
 use ssh_key::{Algorithm, Certificate, PrivateKey};
 use url::Url;
 use warden_broker_proto::{
-    Access, AgentName, CreateRequest, Goal, GrantView, Id, RequestStatus, TargetName, UnixUser,
-    Window, fingerprint,
+    Access, AgentName, CreateRequest, Goal, GrantAccess, GrantView, Id, RequestStatus, TargetName,
+    UnixUser, Window, fingerprint,
 };
 use zeroize::Zeroizing;
 
@@ -352,17 +352,20 @@ async fn install_grant(
     key: &PrivateKey,
     grant: &GrantView,
 ) -> Result<()> {
-    let cert = Certificate::from_openssh(&grant.ssh.certificate)
+    let GrantAccess::Ssh(ssh) = &grant.access else {
+        bail!("the broker returned a non-ssh grant for an ssh request");
+    };
+    let cert = Certificate::from_openssh(&ssh.certificate)
         .context("the grant's certificate is invalid")?;
     ensure!(
-        &grant.ssh.user == user,
+        &ssh.user == user,
         "the grant is for user {}, not {user}",
-        grant.ssh.user
+        ssh.user
     );
     ensure!(
-        agent::is_safe_host(&grant.ssh.host),
+        agent::is_safe_host(&ssh.host),
         "the grant's host {:?} is invalid",
-        grant.ssh.host
+        ssh.host
     );
     let remaining = grant.not_after.saturating_sub(unix_now());
     let lifetime = Duration::from_secs(
@@ -379,8 +382,8 @@ async fn install_grant(
             &agent::GrantRecord {
                 grant_id: grant.grant_id.clone(),
                 target: target.clone(),
-                host: grant.ssh.host.clone(),
-                port: grant.ssh.port,
+                host: ssh.host.clone(),
+                port: ssh.port,
                 user: user.clone(),
                 not_after: grant.not_after,
                 socket: agent.socket.clone(),
@@ -388,12 +391,7 @@ async fn install_grant(
             },
         )?;
         agent::add_cert(&agent, key, &cert, lifetime).await?;
-        agent::write_known_hosts(
-            &agent.dir,
-            &grant.ssh.host,
-            grant.ssh.port,
-            &grant.ssh.host_keys,
-        )?;
+        agent::write_known_hosts(&agent.dir, &ssh.host, ssh.port, &ssh.host_keys)?;
         Ok::<_, anyhow::Error>(())
     };
     if let Err(e) = setup.await {
@@ -438,11 +436,12 @@ async fn status() -> Result<()> {
     let (_, client) = client()?;
     println!("broker grants:");
     for g in client.grants().await? {
+        let subject = match &g.access {
+            GrantAccess::Ssh(ssh) => format!("{}@{}:{}", ssh.user, ssh.host, ssh.port),
+            GrantAccess::Api(api) => format!("api:{}", api.secret),
+        };
         println!(
-            "  {}@{}:{}  grant {}  until {}",
-            g.ssh.user,
-            g.ssh.host,
-            g.ssh.port,
+            "  {subject}  grant {}  until {}",
             g.grant_id,
             local_time(g.not_after)
         );
@@ -465,7 +464,7 @@ async fn revoke(grant: &Id) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use warden_broker_proto::{GrantView, Id, RequestStatus, SshGrant};
+    use warden_broker_proto::{GrantAccess, GrantView, Id, RequestStatus, SshGrant};
 
     use std::time::{Duration, Instant};
 
@@ -558,13 +557,13 @@ mod tests {
             grant_id: Id::random(),
             not_before: 0,
             not_after: 1,
-            ssh: SshGrant {
+            access: GrantAccess::Ssh(SshGrant {
                 certificate: String::new(),
                 host: "h".to_owned(),
                 port: 22,
                 user: "u".parse().unwrap(),
                 host_keys: Vec::new(),
-            },
+            }),
         };
         assert_eq!(terminal_exit_code(&RequestStatus::Pending), None);
         assert_eq!(terminal_exit_code(&RequestStatus::Approved(grant)), Some(0));

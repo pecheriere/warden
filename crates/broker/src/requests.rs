@@ -19,8 +19,8 @@ use sqlx::{Row as _, Sqlite, SqlitePool, Transaction};
 use tokio::sync::broadcast;
 use url::Url;
 use warden_broker_proto::{
-    Access, AgentName, CreateRequest, CreatedResponse, Fingerprint, GrantView, Id, RequestStatus,
-    Window, fingerprint,
+    Access, AgentName, CreateRequest, CreatedResponse, Fingerprint, GrantAccess, GrantView, Id,
+    RequestStatus, Window, fingerprint,
 };
 
 use crate::agents::{self, AgentError};
@@ -304,7 +304,12 @@ impl Requests {
             target,
             user,
             public_key,
-        } = &req.access;
+        } = &req.access
+        else {
+            return Err(RequestError::Rejected(
+                "api access is not supported yet".to_owned(),
+            ));
+        };
         check_ed25519(public_key)?;
         let policy = self.backend.ssh_target(target).await?;
         if !policy.users.contains(user) {
@@ -388,16 +393,15 @@ impl Requests {
         if inserted.rows_affected() == 0 {
             return Err(RequestError::AgentRevoked);
         }
-        let Access::Ssh { target, user, .. } = &req.access;
+        let subject = match &req.access {
+            Access::Ssh { target, user, .. } => format!("ssh {user}@{target}"),
+            Access::Api { secret } => format!("api {secret}"),
+        };
         let created = AuditEvent::RequestCreated {
             id: id.clone(),
             agent: agent.clone(),
             fingerprint: fp.clone(),
-            summary: format!(
-                "ssh {user}@{target} for {}: {}",
-                window_label(req.window),
-                req.goal
-            ),
+            summary: format!("{subject} for {}: {}", window_label(req.window), req.goal),
         };
         audit_and_commit(
             &self.audit,
@@ -568,7 +572,11 @@ impl Requests {
         .ok_or(RequestError::NotFound)?;
         let body: String = row.try_get("body")?;
         let request: CreateRequest = serde_json::from_str(&body)?;
-        let Access::Ssh { target, .. } = &request.access;
+        let Access::Ssh { target, .. } = &request.access else {
+            return Err(RequestError::Rejected(
+                "api access is not supported yet".to_owned(),
+            ));
+        };
         let target = self.backend.ssh_target(target).await?;
         Ok(PendingView {
             id: parse(&row, "id")?,
@@ -835,13 +843,18 @@ impl Requests {
                 let body: String = row.try_get("body")?;
                 let view: String = row.try_get("view")?;
                 let view: GrantView = serde_json::from_str(&view)?;
+                let GrantAccess::Ssh(ssh) = view.access else {
+                    return Err(RequestError::Rejected(
+                        "api access is not supported yet".to_owned(),
+                    ));
+                };
                 Ok(ActiveGrant {
                     grant_id: parse(row, "id")?,
                     agent: parse(row, "agent")?,
                     fingerprint: parse(row, "fingerprint")?,
                     request: serde_json::from_str(&body)?,
-                    host: view.ssh.host,
-                    port: view.ssh.port,
+                    host: ssh.host,
+                    port: ssh.port,
                     not_after: row.try_get("not_after")?,
                 })
             })

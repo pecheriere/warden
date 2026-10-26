@@ -157,9 +157,12 @@ impl Notifier for Fallback {
 /// Build the owner notification for a new request.
 #[must_use]
 pub fn doorbell(agent: &AgentName, req: &CreateRequest, url: Url) -> Doorbell {
-    let Access::Ssh { target, user, .. } = &req.access;
+    let subject = match &req.access {
+        Access::Ssh { target, user, .. } => format!("ssh {user}@{target}"),
+        Access::Api { secret } => format!("api {secret}"),
+    };
     Doorbell {
-        title: format!("warden: {agent} wants ssh {user}@{target}"),
+        title: format!("warden: {agent} wants {subject}"),
         message: truncate_goal(req.goal.as_str()),
         url,
     }

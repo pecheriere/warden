@@ -14,7 +14,7 @@ use warden_broker::requests::Clock as _;
 use warden_broker::testkit::{
     PI_HOST, SoftAuthenticator, TEST_ORIGIN, TEST_OWNER, TEST_START, TestBroker,
 };
-use warden_broker_proto::{AgentName, CreatedResponse, Id, RequestStatus, Window};
+use warden_broker_proto::{AgentName, CreatedResponse, GrantAccess, Id, RequestStatus, Window};
 use webauthn_authenticator_rs::WebauthnAuthenticator;
 use webauthn_authenticator_rs::softpasskey::SoftPasskey;
 use webauthn_rs::prelude::{Passkey, RequestChallengeResponse};
@@ -299,10 +299,13 @@ async fn approve_applies_window_chosen_at_begin() {
     assert_eq!(now, TEST_START + 42);
     assert_eq!(view.not_before, now);
     assert_eq!(view.not_after, now + 900);
-    assert_eq!(view.ssh.host, PI_HOST);
-    assert_eq!(view.ssh.port, 22);
-    assert_eq!(view.ssh.user.as_str(), "alice");
-    assert_eq!(view.ssh.host_keys.len(), 1);
+    let GrantAccess::Ssh(ssh) = &view.access else {
+        panic!("expected an ssh grant");
+    };
+    assert_eq!(ssh.host, PI_HOST);
+    assert_eq!(ssh.port, 22);
+    assert_eq!(ssh.user.as_str(), "alice");
+    assert_eq!(ssh.host_keys.len(), 1);
     let window: i64 = sqlx::query("SELECT window_secs FROM grants")
         .fetch_one(&broker.state().pool)
         .await
@@ -310,7 +313,7 @@ async fn approve_applies_window_chosen_at_begin() {
         .get(0);
     assert_eq!(window, 900);
 
-    let cert = Certificate::from_openssh(&view.ssh.certificate).unwrap();
+    let cert = Certificate::from_openssh(&ssh.certificate).unwrap();
     assert_eq!(cert.valid_before(), u64::try_from(now + 900).unwrap());
     assert_eq!(cert.valid_principals(), ["warden:pi:alice"]);
     assert_eq!(

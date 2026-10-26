@@ -18,8 +18,8 @@ use warden_broker::requests::{RequestError, Requests};
 use warden_broker::testkit::{CapturingNotifier, FailingNotifier, ManualClock};
 use warden_broker::{agents, audit, store};
 use warden_broker_proto::{
-    Access, AgentName, CreateRequest, CreatedResponse, Goal, GrantView, Id, RequestStatus,
-    SshGrant, TargetName, UnixUser, Window, fingerprint,
+    Access, AgentName, CreateRequest, CreatedResponse, Goal, GrantAccess, GrantView, Id,
+    RequestStatus, SshGrant, TargetName, UnixUser, Window, fingerprint,
 };
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -212,13 +212,13 @@ fn grant_for(h: &Harness, window: Window) -> GrantView {
         grant_id: Id::random(),
         not_before: now,
         not_after: now + i64::try_from(window.secs()).unwrap(),
-        ssh: SshGrant {
+        access: GrantAccess::Ssh(SshGrant {
             certificate: "ssh-ed25519-cert-v01@openssh.com AAAA".to_owned(),
             host: "192.0.2.10".to_owned(),
             port: 22,
             user: UnixUser::try_from("alice".to_owned()).unwrap(),
             host_keys: vec![],
-        },
+        }),
     }
 }
 
@@ -236,10 +236,28 @@ fn message(err: &RequestError) -> String {
 // --- create -----------------------------------------------------------------
 
 #[tokio::test]
+async fn api_access_is_refused_until_supported() {
+    let h = harness().await;
+    let req = CreateRequest {
+        goal: Goal::try_from("call the api".to_owned()).unwrap(),
+        access: Access::Api {
+            secret: "github".parse().unwrap(),
+        },
+        window: Window::M15,
+    };
+    let err = h.requests.create(&agent("bot"), req).await.unwrap_err();
+    assert!(matches!(err, RequestError::Rejected(_)), "{err:?}");
+    assert_eq!(message(&err), "api access is not supported yet");
+    assert_eq!(row_count(&h.pool, "requests").await, 0);
+}
+
+#[tokio::test]
 async fn create_notifies_with_link_and_no_secret() {
     let h = harness().await;
     let req = pi_request();
-    let Access::Ssh { public_key, .. } = &req.access;
+    let Access::Ssh { public_key, .. } = &req.access else {
+        panic!("pi_request is an ssh request");
+    };
     let public_key = public_key.clone();
     let created = h.requests.create(&agent("bot"), req.clone()).await.unwrap();
     assert_eq!(created.fingerprint, fingerprint(&agent("bot"), &req));
