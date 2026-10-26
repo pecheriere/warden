@@ -429,9 +429,24 @@ async fn call(
         }
         Err(other) => return Err(other),
     }
-    let response = proxy::redact_response(&upstream, &needles);
+    // Redaction scans every needle over up to 1 MiB, then the result is
+    // base64 encoded: both run off the async workers. The needles are
+    // moved in and wiped when the work ends.
+    let response = off_runtime(move || proxy::redact_response(&upstream, &needles)).await?;
     record.redactions = response.redactions;
     Ok(response)
+}
+
+/// Run `work` on the blocking thread pool, off the async workers: CPU-bound
+/// work on a large response must not stall other requests. A panic in
+/// `work` is an internal error.
+async fn off_runtime<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, Failure> {
+    tokio::task::spawn_blocking(work).await.map_err(|e| {
+        tracing::error!(error = %e, "blocking work failed");
+        Failure::Request(RequestError::Internal("blocking work failed"))
+    })
 }
 
 /// A failed policy or secret lookup at call time: an outage is a 503 with
@@ -476,6 +491,35 @@ mod tests {
         assert_eq!(
             status_of(&RequestError::UnknownSecret("nope".to_owned())),
             Some(StatusCode::NOT_FOUND)
+        );
+    }
+
+    #[test]
+    fn off_runtime_leaves_the_async_worker_free() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let (tx, rx) = std::sync::mpsc::channel();
+            // The runtime's only worker must stay free to run this task
+            // while the work waits for it.
+            let ping = tokio::spawn(async move { tx.send(()).unwrap() });
+            let got = off_runtime(move || rx.recv_timeout(Duration::from_secs(5)).is_ok()).await;
+            ping.await.unwrap();
+            assert!(matches!(got, Ok(true)));
+        });
+    }
+
+    #[tokio::test]
+    async fn failed_off_runtime_work_is_an_internal_error() {
+        let got = off_runtime(|| -> u8 { panic!("redaction bug") }).await;
+        let Err(failure) = got else {
+            panic!("expected a failure")
+        };
+        assert_eq!(failure.outcome(), "internal error");
+        assert_eq!(
+            failure.into_response().status(),
+            StatusCode::INTERNAL_SERVER_ERROR
         );
     }
 }
