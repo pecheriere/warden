@@ -108,7 +108,7 @@ pub fn write_new_private(path: &Path, contents: &[u8]) -> Result<()> {
         .filter(|d| !d.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
     let temp = dir.join(format!(".{}.{}.tmp", name.to_string_lossy(), Id::random()));
-    let written = write_temp(&temp, contents).and_then(|()| publish(&temp, path, contents));
+    let written = write_temp(&temp, contents).and_then(|()| publish(&temp, path, dir, contents));
     if written.is_err() {
         // Best effort: the temporary file may not exist, and the error that
         // matters is the one being returned.
@@ -130,17 +130,14 @@ fn write_temp(temp: &Path, contents: &[u8]) -> Result<()> {
         .with_context(|| format!("cannot write {}", temp.display()))
 }
 
-/// Rename `temp` to `path` unless `path` exists, and sync the directory.
-/// An existing `path` with the same contents counts as written.
-fn publish(temp: &Path, path: &Path, contents: &[u8]) -> Result<()> {
+/// Rename `temp` to `path` unless `path` exists, and sync `dir`, which
+/// holds both. An existing `path` with the same contents counts as written.
+fn publish(temp: &Path, path: &Path, dir: &Path, contents: &[u8]) -> Result<()> {
     use rustix::fs::{CWD, RenameFlags, renameat_with};
     match renameat_with(CWD, temp, CWD, path, RenameFlags::NOREPLACE) {
-        Ok(()) => {
-            let dir = path.parent().unwrap_or_else(|| Path::new("."));
-            fs::File::open(dir)
-                .and_then(|d| d.sync_all())
-                .with_context(|| format!("cannot sync {}", dir.display()))
-        }
+        Ok(()) => fs::File::open(dir)
+            .and_then(|d| d.sync_all())
+            .with_context(|| format!("cannot sync {}", dir.display())),
         Err(rustix::io::Errno::EXIST) => {
             fs::remove_file(temp).with_context(|| format!("cannot remove {}", temp.display()))?;
             let existing =
