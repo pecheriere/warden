@@ -268,12 +268,17 @@ destination rules are the real control.
 **Changes during approval and use.** The approval binds a digest of the
 destination: origin, path prefix, header name, value format, pinned CA and the
 set of methods. If the item changes between the request and the approval, the
-approval is refused with a 409 and the owner reloads and reviews. At call
-time warden re-reads the policy; if the digest no longer matches (including
-the format and the CA), or the secret is gone or invalid, the call is a 409
-(`policy changed; request access again`) and the agent must request again. A
-grant revoked while a call is in flight yields a 409 and the response is
-discarded. The window and the secret value are not part of the digest.
+approval is refused with a 409 and the owner reloads and reviews. The approval
+page shows the value format with the secret as `…` (for example `Bearer …`)
+and whether a CA is pinned. At call time warden re-reads the item once and
+takes both the policy and the secret value from that single read, so an item
+edited in between can never pair the old destination with a new credential.
+If the digest no longer matches (including the format and the CA), or the
+secret is gone or invalid, the call is a 409 (`policy changed; request access
+again`) and the agent must request again. A grant that is revoked or expires
+while a call is in flight yields a 409 (`grant revoked during the call` or
+`grant expired during the call`) and the response is discarded. The window
+and the secret value are not part of the digest.
 
 **Audit.** `proxy_call_started` is written **before** the request is sent; if
 it cannot be written, the call is refused and nothing is sent. `proxy_call` is

@@ -59,7 +59,8 @@ warden request api github --for 15m \
 
 The same rules apply: a precise goal, the shortest window, and no request
 until you need it. The owner sees the secret's name, and the approval page
-shows the one origin, path prefix and methods the secret may be used for.
+shows the one origin, path prefix and methods the secret may be used for,
+the header and value format it is sent in, and whether a CA is pinned.
 
 ## The fingerprint check
 
@@ -134,8 +135,9 @@ Redirects are not followed; a 3xx comes back to you as is. Responses over the
 broker's size limit (1 MiB by default) or compressed are an error, and the
 secret is replaced by `[REDACTED]` wherever it shows up in a response. A call
 takes at most 30 seconds. If the owner changes the secret's policy after you
-were approved, or revokes the grant, the broker answers 409 and you request
-again.
+were approved, or revokes the grant, or the grant expires, the broker answers
+409 (also when this happens while a call is out: the response is withheld)
+and you request again.
 
 `warden status` lists the grants on this machine and the broker's view of
 your live grants.

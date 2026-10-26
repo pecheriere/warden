@@ -48,7 +48,8 @@ defends against it.
 - **Silent failure.** The CLI always receives an explicit terminal state:
   `approved`, `denied`, `expired` or `error` with a message.
 - **An API secret reaches the agent.** In proxy mode the broker reads the
-  secret from 1Password only when a call is made, builds the header from the
+  secret from 1Password only when a call is made, in the same single read of
+  the item as the policy it is checked against, builds the header from the
   policy, sends the call itself and redacts the answer. The agent supplies no
   placeholder and no part of the header. The destination is the item's origin
   (exact match), a path prefix on a segment boundary, and an allowed method
@@ -73,11 +74,13 @@ guarantee because the server is the trusted party:
   the person or agent that made the request, they can compare the two before
   approving. A mismatch means the owner is looking at a different request and
   should deny it.
-- The destination the page shows (host, port and the target's host keys) is
-  bound too. The page embeds a digest of it, the ceremony begins only if the
-  target still has that digest, and the approval completes only if the
-  target re-read at that moment still matches. If the 1Password item changed
-  in between, the owner is asked to reload and review.
+- The destination the page shows (host, port and the target's host keys; for
+  an API secret its origin, path prefix, methods, header, value format and
+  whether a CA is pinned) is bound too. The page embeds a digest of it, the
+  ceremony begins only if the target or secret still has that digest, and the
+  approval completes only if the item re-read at that moment still matches.
+  If the 1Password item changed in between, the owner is asked to reload and
+  review.
 - The certificate is signed for the exact ephemeral public key in the request.
   One certificate is issued per grant. The grant id is not a bearer credential
   and cannot mint further certificates.
