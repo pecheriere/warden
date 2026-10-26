@@ -388,12 +388,17 @@ async fn cancelled_append_does_not_poison() {
     let path = dir.path().join("audit.jsonl");
     let log = AuditLog::open(&path).await.unwrap();
 
-    // Poll the append once (it starts its blocking write), then drop it.
-    let cancelled = tokio::time::timeout(std::time::Duration::ZERO, log.append(denied())).await;
+    // Hold the file lock so the append's blocking write is parked waiting for
+    // it; dropping the future then cancels it mid-flight deterministically.
+    let holder = fs::File::open(&path).unwrap();
+    holder.lock().unwrap();
+    let cancelled =
+        tokio::time::timeout(std::time::Duration::from_millis(200), log.append(denied())).await;
     assert!(
         cancelled.is_err(),
-        "append finished before it could be dropped"
+        "append finished while the lock was held"
     );
+    holder.unlock().unwrap();
 
     log.append(denied()).await.unwrap();
     // The dropped append still completed; both lines are on the chain.
