@@ -7,18 +7,21 @@ yanked = "deny"
 unmaintained = "all"
 ignore = [
     # rsa and crypto-bigint come in through ssh-agent-lib 0.6.0, which enables
-    # ssh-key's "crypto" feature (RSA and NIST curves) unconditionally, and
-    # rsa also through russh's "rsa" feature, which the relay enables only
-    # to verify the signatures of targets' pinned RSA host keys (the relay
-    # negotiates only rsa-sha2-256 and -512, though russh accepts a SHA-1
-    # signature from the key's holder): public-key operations, which the Marvin timing attack of
-    # RUSTSEC-2023-0071 does not affect. warden only ever holds Ed25519
-    # private keys (the CA, the CLI's ephemeral keys, the relay host key and
-    # relay targets' login keys, which are refused unless Ed25519), so no RSA
-    # or NIST-curve private-key operation and no vulnerable crypto-bigint
-    # path runs. Remove these entries once the dependencies drop RSA or the
-    # advisories are patched.
-    { id = "RUSTSEC-2023-0071", reason = "rsa via ssh-agent-lib and russh; RSA is used only to verify host-key signatures, never with a private key" },
+    # ssh-key 0.6's "crypto" feature (RSA and NIST curves) unconditionally.
+    # The pre-release rsa 0.10.0-rc comes in through russh 0.64.1 (directly
+    # and through ssh-key 0.7.0-rc), whose "rsa" feature the relay enables
+    # only to verify the signatures of targets' pinned RSA host keys (the
+    # relay negotiates only rsa-sha2-256 and -512, though russh accepts a
+    # SHA-1 signature from the key's holder). Both are used for public-key
+    # operations only, which the Marvin timing attack of RUSTSEC-2023-0071
+    # does not affect. warden only ever holds Ed25519 private keys (the CA,
+    # the CLI's ephemeral keys, the relay host key and relay targets' login
+    # keys, which are refused unless Ed25519), so no RSA or NIST-curve
+    # private-key operation and no vulnerable crypto-bigint path runs.
+    # Remove these entries once the dependencies drop RSA or the advisories
+    # are patched; revisit the rsa 0.10 pre-release when russh moves to a
+    # stable rsa release.
+    { id = "RUSTSEC-2023-0071", reason = "rsa 0.9 via ssh-agent-lib and rsa 0.10.0-rc via russh 0.64.1; RSA only verifies host-key signatures, never with a private key" },
     { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5 pulled in by ssh-key NIST curves via ssh-agent-lib; only Ed25519 is used" },
 ]
 
