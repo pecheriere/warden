@@ -709,7 +709,7 @@ async fn revoke(grant: &Id) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use ssh_key::rand_core::OsRng;
-    use ssh_key::{Algorithm, PrivateKey};
+    use ssh_key::{Algorithm, PrivateKey, certificate};
     use warden_broker_proto::{GrantAccess, GrantView, Id, RelayGrant, RequestStatus, SshGrant};
 
     use std::path::PathBuf;
@@ -743,6 +743,44 @@ mod tests {
                 .unwrap(),
             digest: "ab".repeat(32),
         }
+    }
+
+    /// A direct grant for `alice@pi` reaching `pi.example.com:<port>`, with
+    /// a certificate signed by a throwaway CA.
+    fn pi_direct(port: u16) -> GrantView {
+        let ca = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+        let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+        let mut cert =
+            certificate::Builder::new_with_random_nonce(&mut OsRng, key.public_key(), 0, 1)
+                .unwrap();
+        cert.cert_type(certificate::CertType::User).unwrap();
+        cert.valid_principal("alice").unwrap();
+        GrantView {
+            grant_id: Id::random(),
+            not_before: 0,
+            not_after: 1,
+            access: GrantAccess::Ssh(SshGrant {
+                certificate: cert.sign(&ca).unwrap().to_openssh().unwrap(),
+                host: "pi.example.com".to_owned(),
+                port,
+                user: "alice".parse().unwrap(),
+                host_keys: Vec::new(),
+            }),
+        }
+    }
+
+    #[test]
+    fn direct_grant_with_port_zero_is_refused() {
+        let (target, user) = ("pi".parse().unwrap(), "alice".parse().unwrap());
+        let ok = pi_direct(22);
+        let setup = ssh_setup(&target, &user, &ok).unwrap();
+        assert_eq!(setup.route, Route::Direct);
+        assert_eq!((setup.host, setup.port), ("pi.example.com", 22));
+        assert!(setup.certificate.is_some());
+
+        let no_port = pi_direct(0);
+        let refused = ssh_setup(&target, &user, &no_port).unwrap_err();
+        assert!(refused.to_string().contains("port"), "{refused}");
     }
 
     /// A relay grant connects to the relay, pins only the relay's host key
