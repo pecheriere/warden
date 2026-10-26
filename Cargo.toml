@@ -64,7 +64,7 @@ apple-native-keyring-store = { version = "1.0.2", features = ["keychain"] }
 rpassword = "7.5.4"
 jiff = "0.2.38"
 toml = "1.1.8"
-rustix = { version = "1.1.5", default-features = false, features = ["std", "process"] }
+rustix = { version = "1.1.5", default-features = false, features = ["std", "process", "fs"] }
 dirs = "7.0.0"
 
 # Serialization, errors, logging

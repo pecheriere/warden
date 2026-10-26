@@ -177,7 +177,7 @@ async fn main() -> ExitCode {
     if let Err(e) = agent::cleanup_expired(now) {
         eprintln!("warden: warning: {e:#}");
     }
-    if let Err(e) = http::cleanup_expired(now) {
+    if let Err(e) = http::cleanup_expired(now, &mut std::io::stderr().lock()) {
         eprintln!("warden: warning: {e:#}");
     }
     match run(cli.command).await {

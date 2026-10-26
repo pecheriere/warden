@@ -76,8 +76,9 @@ fn save_in(dir: &Path, record: &ApiRecord) -> Result<()> {
     )
 }
 
-/// Every readable record under `dir`, and the error for each file that is
-/// not one.
+/// Every readable record under `dir`, and the error for each record file
+/// that is not one. Hidden files (records still being written) are not
+/// records.
 fn load_in(dir: &Path) -> Vec<(PathBuf, Result<ApiRecord>)> {
     let Ok(entries) = fs::read_dir(dir) else {
         return Vec::new();
@@ -85,6 +86,11 @@ fn load_in(dir: &Path) -> Vec<(PathBuf, Result<ApiRecord>)> {
     entries
         .flatten()
         .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+        .filter(|e| {
+            let path = e.path();
+            !e.file_name().to_string_lossy().starts_with('.')
+                && path.extension().is_some_and(|ext| ext == "json")
+        })
         .map(|e| {
             let path = e.path();
             let record = fs::read(&path)
@@ -135,21 +141,33 @@ pub fn discard(grant_id: &Id) -> Result<bool> {
     }
 }
 
-/// Delete the records of grants ended by `now`.
+/// Delete the records of grants ended by `now`. A record that cannot be
+/// read is kept, with a warning on `warn`.
 ///
 /// # Errors
 /// If the state directory is unusable or a record cannot be removed; every
 /// record is still attempted.
-pub fn cleanup_expired(now: i64) -> Result<()> {
-    cleanup_expired_in(&api_grants_dir()?, now)
+pub fn cleanup_expired(now: i64, warn: &mut impl std::io::Write) -> Result<()> {
+    cleanup_expired_in(&api_grants_dir()?, now, warn)
 }
 
-fn cleanup_expired_in(dir: &Path, now: i64) -> Result<()> {
+fn cleanup_expired_in(dir: &Path, now: i64, warn: &mut impl std::io::Write) -> Result<()> {
     let mut failures = Vec::new();
     for (path, record) in load_in(dir) {
-        let ended = record.as_ref().map_or(true, |r| r.not_after <= now);
-        if ended && let Err(e) = fs::remove_file(&path) {
-            failures.push(format!("{}: {e}", path.display()));
+        match record {
+            Ok(r) if r.not_after <= now => {
+                if let Err(e) = fs::remove_file(&path) {
+                    failures.push(format!("{}: {e}", path.display()));
+                }
+            }
+            Ok(_) => {}
+            Err(e) => writeln!(
+                warn,
+                "warden: warning: skipping {}: {}",
+                sanitize(&path.display().to_string()),
+                sanitize(&format!("{e:#}"))
+            )
+            .context("cannot write a warning")?,
         }
     }
     ensure!(
@@ -451,24 +469,66 @@ mod tests {
         assert_eq!(active_in(dir.path(), &name, 300), None);
     }
 
+    fn names_in(dir: &std::path::Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        names
+    }
+
     #[test]
-    fn cleanup_removes_only_ended_and_unreadable_records() {
+    fn cleanup_removes_only_ended_records() {
         use std::os::unix::fs::PermissionsExt as _;
         let dir = tempfile::tempdir().unwrap();
         let (live, ended) = (record("svc", 500), record("svc", 100));
         save_in(dir.path(), &live).unwrap();
         save_in(dir.path(), &ended).unwrap();
-        std::fs::write(dir.path().join("junk.json"), "{").unwrap();
-        cleanup_expired_in(dir.path(), 200).unwrap();
-        let left: Vec<_> = std::fs::read_dir(dir.path())
-            .unwrap()
-            .map(|e| e.unwrap().file_name().into_string().unwrap())
-            .collect();
+        let mut warnings = Vec::new();
+        cleanup_expired_in(dir.path(), 200, &mut warnings).unwrap();
+        assert!(warnings.is_empty());
+        let left = names_in(dir.path());
         assert_eq!(left, [format!("{}.json", live.grant_id)]);
         let mode = std::fs::metadata(dir.path().join(left[0].as_str()))
             .unwrap()
             .permissions()
             .mode();
         assert_eq!(mode & 0o777, 0o600);
+    }
+
+    /// A record that cannot be read may be one another `warden` is writing,
+    /// or one the user wants to look at: it is left alone, with a warning.
+    #[test]
+    fn cleanup_keeps_unparseable_record_and_warns() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("junk.json"), "{").unwrap();
+        let mut warnings = Vec::new();
+        cleanup_expired_in(dir.path(), 200, &mut warnings).unwrap();
+        assert_eq!(names_in(dir.path()), ["junk.json"]);
+        let warnings = String::from_utf8(warnings).unwrap();
+        assert!(
+            warnings.starts_with("warden: warning: skipping ") && warnings.contains("junk.json"),
+            "{warnings}"
+        );
+        assert_eq!(warnings.lines().count(), 1, "{warnings}");
+    }
+
+    /// Two `warden request api` runs for the same secret can receive the
+    /// same grant: saving its identical record again succeeds.
+    #[test]
+    fn saving_the_same_record_twice_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let rec = record("svc", 500);
+        save_in(dir.path(), &rec).unwrap();
+        save_in(dir.path(), &rec).unwrap();
+        assert_eq!(names_in(dir.path()), [format!("{}.json", rec.grant_id)]);
+        let changed = ApiRecord {
+            not_after: 600,
+            ..rec.clone()
+        };
+        assert!(save_in(dir.path(), &changed).is_err());
+        let secret = SecretName::try_from("svc".to_owned()).unwrap();
+        assert_eq!(active_in(dir.path(), &secret, 100), Some(rec));
     }
 }
