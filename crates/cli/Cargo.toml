@@ -29,6 +29,7 @@ ssh-agent-lib.workspace = true
 ssh-key.workspace = true
 tokio.workspace = true
 toml.workspace = true
+unicode-properties.workspace = true
 url.workspace = true
 warden-broker-proto.workspace = true
 zeroize.workspace = true

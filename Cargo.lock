@@ -3926,6 +3926,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "toml",
+ "unicode-properties",
  "url",
  "warden-broker",
  "warden-broker-proto",
