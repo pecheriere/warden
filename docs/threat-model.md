@@ -131,7 +131,11 @@ These were recorded during implementation and are accepted for this release.
   authenticator that goes backwards or repeats) is refused with a fixed
   message, no grant is issued, and `passkey_counter_regressed` is audited.
   Two signatures from the same authenticator that arrive out of order are
-  refused the same way; the owner simply approves again. Passkeys that always
+  refused the same way; the owner simply approves again. An approval of a
+  request that was already decided is refused as such before the passkey is
+  checked, but two approvals of the same request finishing at the same moment
+  can still be refused as a counter regression (and audited); exactly one of
+  them is approved. Passkeys that always
   report a counter of 0 (most platform passkeys) cannot be checked this way: a
   cloned one of those is not detected.
 - **Goals are free text.** The goal is a single line of at most 500 characters
