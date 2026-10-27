@@ -161,13 +161,14 @@ These were recorded during implementation and are accepted for this release.
   checks it on every call; the agent never supplies it again, so a call
   outside the grant is refused even if the item allows it. Editing the item
   after approval invalidates the grant through the destination digest.
-- **The owner decides, and can misjudge.** The approval page and the
-  notification say **Read-only** or **Can modify:** with the methods, and a
-  pending read-only request never absorbs a write request. A phone owner who
-  approves a "Can modify" request without reading it, or on a persuasive
-  goal, grants write access for the window. Residual: warden shows the scope;
-  it does not decide whether the goal justifies it. Prefer short write
-  windows and a separate read-only grant for the rest.
+- **The owner decides, and can misjudge.** The approval page shows
+  **Read-only** or **Can modify:** with the methods; the notification says
+  `(read-only)` or `(CAN MODIFY: …)` with them. A pending read-only request
+  never absorbs a write request. A phone owner who approves a "Can modify"
+  request without reading it, or on a persuasive goal, grants write access for
+  the window. Residual: warden shows the scope; it does not decide whether the
+  goal justifies it. Prefer short write windows and a separate read-only grant
+  for the rest.
 - **The query string and body are the agent's.** They are not restricted by
   the policy, and the query is not written to the audit log.
 - **Redirects and other origins.** Redirects are never followed, so the secret

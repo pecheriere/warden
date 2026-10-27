@@ -139,10 +139,11 @@ warden http github PUT https://api.github.com/repos/alice/widgets/x \
 ```
 
 `warden http <secret> <METHOD> <url>` uses the newest active `api` grant for
-the secret whose methods and path prefix cover the call. The response body goes to stdout, unchanged. With `-i`, the status
-line and response headers go to stderr. `-H 'Name: value'` adds a request
-header (repeatable). `-d` gives the body inline, and `--data-file <path>`
-reads it from a file (`-` for standard input). A body is at most 1 MiB.
+the secret whose methods and path prefix cover the call. The response body goes
+to stdout, unchanged. With `-i`, the status line and response headers go to
+stderr. `-H 'Name: value'` adds a request header (repeatable). `-d` gives the
+body inline, and `--data-file <path>` reads it from a file (`-` for standard
+input). A body is at most 1 MiB.
 
 The broker refuses, with a message that names the rule (exit 1):
 

@@ -15,9 +15,10 @@ All notable changes to this project are recorded here. The format follows
   outside the item is refused when the request is made.
 - The broker stores the approved scope in the grant and enforces it on every
   call, in addition to the item's policy.
-- The approval page, the notification (Home Assistant and ntfy) and the
-  `request_created` audit summary say **Read-only**, or **Can modify:** with
-  the non-read-only methods.
+- The approval page shows **Read-only**, or **Can modify:** with the
+  non-read-only methods, as a warning. The notification (Home Assistant and
+  ntfy) and the `request_created` audit summary read `api <secret>
+  (read-only)` or `api <secret> (CAN MODIFY: POST, PUT)`.
 - An agent may hold several grants for one secret. `warden http` uses the
   newest active grant that covers the method and path, and otherwise exits 5
   with the `warden request api … --methods` command to run.
@@ -32,7 +33,7 @@ All notable changes to this project are recorded here. The format follows
 - Wire format: `Access::Api` has optional `methods` and `path_prefix`, and
   the API grant carries the approved methods and prefix. Requests without them
   keep their fingerprint. The CLI's local API grant record stores them;
-  records from 0.3 read as `GET` and `/`.
+  records from 0.3 read as `GET` and `/`, so they are never widened.
 
 ## [0.3.0] - unreleased
 

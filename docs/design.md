@@ -1,7 +1,7 @@
 # warden — design
 
 This document records the intent and design of warden. It describes the full
-v1 design; the current release (0.3.0) implements the SSH certificate mode
+v1 design; the current release (0.4.0) implements the SSH certificate mode
 (§8.1), the SSH relay mode (§8.2) and the HTTP proxy mode (§8.3). Where the
 implementation deviates from this design, the
 [threat model](threat-model.md) says how and why.
@@ -340,13 +340,13 @@ stands now (see "Changes during approval and use" below):
   Userinfo and fragments are refused. The URL must be printable ASCII with no
   spaces.
 - *Path:* under `path_prefix` (the narrower of the item's and the grant's),
-  matched on a segment boundary (`/api` covers
-  `/api` and `/api/x`, not `/apiary`; a prefix ending in `/` covers what is
-  below it). The path is inspected as sent, before URL normalisation, and
-  refused if it has `.` or `..` segments, `//`, `;`, `\`, or the encodings
-  `%2e`, `%2f`, `%5c`, `%3b`, `%25`, `%c0`, `%c1` and `%u` (any case). A
-  path the URL parser would rewrite is refused too, so the path that was
-  checked is the path that is sent. The query string is not restricted.
+  matched on a segment boundary (`/api` covers `/api` and `/api/x`, not
+  `/apiary`; a prefix ending in `/` covers what is below it). The path is
+  inspected as sent, before URL normalisation, and refused if it has `.` or
+  `..` segments, `//`, `;`, `\`, or the encodings `%2e`, `%2f`, `%5c`, `%3b`,
+  `%25`, `%c0`, `%c1` and `%u` (any case). A path the URL parser would rewrite
+  is refused too, so the path that was checked is the path that is sent. The
+  query string is not restricted.
 - *Method:* one of the item's `methods` (default `GET`) and, since 0.4, one
   of the methods of the grant. `CONNECT` and `TRACE` are always refused, even
   if listed.
@@ -401,19 +401,19 @@ destination rules are the real control.
 
 **Changes during approval and use.** The approval binds a digest of the
 destination: origin, path prefix, header name, value format, pinned CA and the
-set of methods. The digest is the item's, not the narrowed scope's, so it
-still detects item edits: if the owner removes a method from the item after
-approval, calls are refused as below. If the item changes between the request and the approval, the
-approval is refused with a 409 and the owner reloads and reviews. The approval
-page shows the value format with the secret as `…` (for example `Bearer …`)
-and whether a CA is pinned. At call time warden re-reads the item once and
-takes both the policy and the secret value from that single read, so an item
-edited in between can never pair the old destination with a new credential.
-If the digest no longer matches (including the format and the CA), or the
-secret is gone or invalid, the call is a 409 (`policy changed; request access
-again`) and the agent must request again. A grant that is revoked or expires
-while a call is in flight yields a 409 (`grant revoked during the call` or
-`grant expired during the call`) and the response is discarded. The window
+set of methods. The digest is the item's, not the narrowed scope's, so it still
+detects item edits: if the owner removes a method from the item after approval,
+calls are refused as below. If the item changes between the request and the
+approval, the approval is refused with a 409 and the owner reloads and reviews.
+The approval page shows the value format with the secret as `…` (for example
+`Bearer …`) and whether a CA is pinned. At call time warden re-reads the item
+once and takes both the policy and the secret value from that single read, so
+an item edited in between can never pair the old destination with a new
+credential. If the digest no longer matches (including the format and the CA),
+or the secret is gone or invalid, the call is a 409 (`policy changed; request
+access again`) and the agent must request again. A grant that is revoked or
+expires while a call is in flight yields a 409 (`grant revoked during the call`
+or `grant expired during the call`) and the response is discarded. The window
 and the secret value are not part of the digest.
 
 **Audit.** `proxy_call_started` is written **before** the request is sent; if
@@ -470,13 +470,13 @@ header **and an agent key**:
   relay sessions.
 - On macOS, the CLI reads the key from the Keychain (not a config file).
 
-The approval page and the notification (Home Assistant and ntfy), and the
-`request_created` audit summary, say whether an API request can modify
-anything. A read-only scope shows the word **Read-only**. Any other scope
-shows **Can modify:** followed by the non-read-only methods (for example `Can
-modify: POST, PUT`; in the notification and audit summary `api github (CAN
-MODIFY: POST, PUT)`), styled as a warning on the page. The page also shows the
-methods and the path prefix of the narrowed scope.
+The approval page, the notification (Home Assistant and ntfy) and the
+`request_created` audit summary say whether an API request can modify
+anything. The page shows **Read-only**, or **Can modify:** followed by the
+non-read-only methods (for example `Can modify: POST, PUT`), styled as a
+warning, together with the methods and the path prefix of the narrowed scope.
+The notification and the audit summary show `api github (read-only)` or `api
+github (CAN MODIFY: POST, PUT)`.
 
 ## 10. Policy: 1Password as the source of truth
 
@@ -554,14 +554,14 @@ in-flight requests and enrolled passkeys (re-enroll).
   `warden ssh …`, `warden http …`, `warden revoke <grant>`.
 - `warden http <secret> <METHOD> <url> [-H 'Name: value']… [-d <body> |
   --data-file <path|->] [-i] [--fail]` calls an API through the newest active
-  `api` grant for the secret that covers the method and the path. The response body goes to stdout unchanged, and
-  with `-i` the status line and headers go to stderr. The CLI records an `api`
-  grant locally (secret name, origin, grant id, end time, methods and path
-  prefix; never a secret; records from 0.3 read as `GET` and `/`) and exits 5
-  when no active grant covers the call, with a hint naming `warden request api
-  --methods`. `--fail` exits 22 on an upstream
-  status of 400 or more, as `curl --fail` does, and still writes the body.
-  The CLI refuses non-https URLs and bodies over 1 MiB before sending.
+  `api` grant for the secret that covers the method and the path. The response
+  body goes to stdout unchanged, and with `-i` the status line and headers go
+  to stderr. The CLI records an `api` grant locally (secret name, origin, grant
+  id, end time, methods and path prefix; never a secret; records from 0.3 read
+  as `GET` and `/`) and exits 5 when no active grant covers the call, with a
+  hint naming `warden request api --methods`. `--fail` exits 22 on an upstream
+  status of 400 or more, as `curl --fail` does, and still writes the body. The
+  CLI refuses non-https URLs and bodies over 1 MiB before sending.
 - Relay targets need no different commands: `warden request ssh` and
   `warden ssh` work as for certificate targets. The grant tells the CLI to
   connect to the relay's address and log in as the target name, with the
