@@ -12,14 +12,13 @@ use std::time::Duration;
 use russh::client;
 use russh::server;
 use russh::{Channel, ChannelId, ChannelMsg, ChannelReadHalf, ChannelWriteHalf, Disconnect, Pty};
-use tokio::io::{AsyncWriteExt as _, Join, ReadHalf, SimplexStream};
 use tokio::net::TcpStream;
-use tokio::net::tcp::OwnedWriteHalf;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, watch};
-use tokio::task::JoinHandle;
 use warden_broker_proto::{AgentName, Id};
 
 use crate::requests::RelayGrantRecord;
+
+use super::read_ahead::AgentGone;
 
 /// Longest command recorded in the audit log, in characters.
 const COMMAND_AUDIT_CHARS: usize = 200;
@@ -535,72 +534,6 @@ pub(crate) fn with_cutoff(socket: TcpStream) -> std::io::Result<(TcpStream, Cuto
     Ok((TcpStream::from_std(socket)?, cutoff))
 }
 
-/// The SSH window the relay grants an agent's session channel (russh's
-/// default, stated here because [`READ_AHEAD_BYTES`] depends on it).
-pub(crate) const AGENT_WINDOW_BYTES: u32 = 2 * 1024 * 1024;
-
-/// Bytes of an agent's connection read ahead of the SSH library. The
-/// library grants the agent window only as it handles the agent's data,
-/// so once it stops (its event loop held up) the agent can send at most
-/// one window of channel data, plus framing, before the close that ends
-/// its connection. Twice the window holds that, so the close is seen.
-const READ_AHEAD_BYTES: u32 = 2 * AGENT_WINDOW_BYTES;
-
-/// An agent's connection as the SSH library uses it: its socket read
-/// ahead into a bounded buffer, its writes going straight out.
-pub(crate) type AgentStream = Join<ReadHalf<SimplexStream>, OwnedWriteHalf>;
-
-/// Reads an agent's socket ahead of the SSH library; stops when dropped.
-#[derive(Debug)]
-pub(crate) struct ReadAhead(JoinHandle<()>);
-
-impl Drop for ReadAhead {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
-}
-
-/// Resolves once the agent has closed its connection (or it failed), as
-/// the read-ahead saw it, whatever state the SSH library is in.
-#[derive(Debug, Clone)]
-pub(crate) struct AgentGone(watch::Receiver<bool>);
-
-impl AgentGone {
-    async fn wait(&mut self) {
-        // The sender is dropped only once the close is recorded, or with
-        // the connection: nothing to wait for then.
-        if self.0.wait_for(|gone| *gone).await.is_err() {
-            std::future::pending::<()>().await;
-        }
-    }
-}
-
-/// Read `socket` ahead of the SSH library, up to [`READ_AHEAD_BYTES`],
-/// so that the agent closing its connection is seen even while the
-/// library's event loop is held up (see [`agent_left`]). The library still
-/// gets every byte, in order, then the end of the stream. Only what the
-/// agent sends past its window (which no client needs) can fill the
-/// buffer; then the socket is no longer read until the library catches up,
-/// as without the read-ahead.
-pub(crate) fn read_ahead(socket: TcpStream) -> (AgentStream, AgentGone, ReadAhead) {
-    let (mut from_agent, to_agent) = socket.into_split();
-    let (buffered, mut ahead) =
-        tokio::io::simplex(usize::try_from(READ_AHEAD_BYTES).unwrap_or(usize::MAX));
-    let (gone, gone_rx) = watch::channel(false);
-    let task = tokio::spawn(async move {
-        // Ends when the agent closes the connection, it fails or is cut,
-        // or the SSH library is gone; each is the end of the agent here.
-        let _ = tokio::io::copy(&mut from_agent, &mut ahead).await;
-        gone.send_replace(true);
-        let _ = ahead.shutdown().await;
-    });
-    (
-        tokio::io::join(buffered, to_agent),
-        AgentGone(gone_rx),
-        ReadAhead(task),
-    )
-}
-
 /// Both ends of a started session.
 pub(crate) struct Ends {
     /// The agent's session channel.
@@ -856,7 +789,9 @@ pub(crate) async fn relay(
 /// agent leave itself, after what the agent sent before leaving, which is
 /// still delivered. But while the relay waits for room in the input's
 /// queue (the target not reading), the library's whole event loop is held
-/// up and sees nothing; the read-ahead (see [`read_ahead`]) still does.
+/// up and sees nothing; the read-ahead (see [`super::read_ahead`]) still
+/// does. Input still held when the agent leaves is dropped: nobody is left
+/// to see what it would have done.
 /// Only it and the session's counters are looked at: nothing here waits
 /// on either connection.
 async fn agent_left(mut gone: AgentGone, up: &Progress) {
@@ -1129,8 +1064,8 @@ mod tests {
     use crate::requests::RelayGrantRecord;
 
     use super::{
-        AgentGone, LiveSessions, Outcome, PreAuthLimiter, Program, Progress, Queue, Registration,
-        SessionSlots, SlotRefusal, Watch, agent_left, env_allowed, read_ahead, reason, watchdog,
+        LiveSessions, Outcome, PreAuthLimiter, Program, Progress, Queue, Registration,
+        SessionSlots, SlotRefusal, Watch, agent_left, env_allowed, reason, watchdog,
     };
 
     fn data(len: usize) -> russh::ChannelMsg {
@@ -1164,41 +1099,13 @@ mod tests {
         assert!(!queue.push(data(1)).await, "the other end is gone");
     }
 
-    #[tokio::test]
-    async fn read_ahead_sees_the_agent_leave_while_nothing_is_read() {
-        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let mut agent = tokio::net::TcpStream::connect(listener.local_addr().unwrap())
-            .await
-            .unwrap();
-        let (socket, _) = listener.accept().await.unwrap();
-        let (mut stream, mut gone, _reading) = read_ahead(socket);
-        // A window's worth of input, then the agent leaves; nothing reads
-        // the stream meanwhile (the SSH library held up).
-        let sent: Vec<u8> = (0..2 * 1024 * 1024_u32)
-            .map(|i| u8::try_from(i % 251).unwrap())
-            .collect();
-        agent.write_all(&sent).await.unwrap();
-        drop(agent);
-        tokio::time::timeout(Duration::from_secs(5), gone.wait())
-            .await
-            .expect("the close was seen");
-        // The library still gets every byte, in order, then the end.
-        let mut got = Vec::new();
-        stream.read_to_end(&mut got).await.unwrap();
-        assert!(got == sent, "{} bytes of {}", got.len(), sent.len());
-        // Writes still go out.
-        stream.write_all(b"bye").await.unwrap();
-    }
-
     #[tokio::test(start_paused = true)]
     async fn agent_left_ends_once_input_is_held_without_delivery() {
         let (told, rx) = tokio::sync::watch::channel(false);
         let up = Progress::default();
         up.waiting.store(true, Ordering::Release);
         up.queued.store(10, Ordering::Release);
-        let left = agent_left(AgentGone(rx), &up);
+        let left = agent_left(super::AgentGone::new(rx), &up);
         tokio::pin!(left);
         // Held up, but the agent is still there: nothing ends.
         tokio::select! {

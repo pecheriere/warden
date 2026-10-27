@@ -241,8 +241,11 @@ These were recorded during implementation and are accepted for this release.
   directions are held up at once (`flow control: both directions held up`).
   A target that stops reading its input is a target
   failure, and the session ends. An agent that disconnects meanwhile is
-  still seen, through a bounded read-ahead (4 MiB) on its connection, and
-  its session ends about 2 s later (`client closed`). An agent that keeps
+  still seen, through a read-ahead on its connection, and its session ends
+  about 2 s later (`client closed`); its input still held is dropped. The
+  read-ahead holds at most 64 KiB before login (so 10 unauthenticated
+  connections hold at most 640 KiB) and 4 MiB after (64 MiB at 16
+  sessions), plus a 16 KiB read buffer per connection. An agent that keeps
   its connection open and sends past its window (no client does) fills
   only the read-ahead; its session ends by the 60 s stall rule.
 - **The per-address pre-login limit is global behind Tailscale Serve.** The

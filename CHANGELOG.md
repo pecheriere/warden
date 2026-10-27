@@ -34,9 +34,11 @@ All notable changes to this project are recorded here. The format follows
 - A relay session whose target stopped reading its input ends about 2 s
   after the agent disconnects (reason `client closed`), instead of when the
   60 s flow-control stall watchdog fires: the relay reads the agent's
-  connection ahead of the SSH library (up to 4 MiB, twice the agent's
-  window), so the agent leaving is seen even while that library is held up.
-  The session still gets exactly one `relay_session_ended` entry.
+  connection ahead of the SSH library (at most 64 KiB before login and
+  4 MiB after, twice the agent's window), so the agent leaving is seen even
+  while that library is held up. Input still held for the target when the
+  agent leaves is dropped. The session still gets exactly one
+  `relay_session_ended` entry.
 
 ### Added
 

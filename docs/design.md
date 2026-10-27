@@ -260,16 +260,22 @@ held data for 60 s without delivering any of it (its receiver does not read).
 Both measure only while data is held, so an idle session is not affected. The
 session ends with the audited reason `flow control: both directions held up`
 (wedge), or `flow control: output to the agent not drained` or `flow control:
-input to the target not drained` (stall). The relay reads each agent's
-connection ahead of the SSH library, up to 4 MiB (twice the 2 MiB window
-the agent is granted, so more than an agent can send once the library stops
-granting window): while the target does not read its input, the library is
-held up, but an agent that disconnects is still seen. Once its input has
-then been held for 2 s with nothing delivered, the session ends with the
-reason `client closed`, its slot freed, a few seconds after the agent left
-rather than at the stall watchdog. An agent that sends past its window (no
-client does) only fills the read-ahead and is ended by the stall watchdog,
-as before.
+input to the target not drained` (stall).
+
+The relay reads each agent's connection ahead of the SSH library, so that
+an agent that disconnects is seen even while the library is held up by a
+target that does not read its input. What is read ahead is capped exactly:
+at most 64 KiB before the agent has logged in and 4 MiB after (each chunk
+counts for at least 64 bytes, so small reads cannot hold more), plus one
+16 KiB read buffer per connection; memory is freed as the library reads it.
+4 MiB is twice the 2 MiB window the agent is granted, so more than the
+channel data an agent can send once the library stops granting window, and
+its close is always reached. Once an agent has left and its input has been
+held for 2 s with nothing delivered, the session ends with the reason
+`client closed`, its slot freed; the input still held is dropped, as nobody
+is left to see its effect. Messages outside the channel have no window: an
+agent that keeps sending them (no client does) only fills the read-ahead,
+and its session is ended by the stall watchdog, as before.
 
 **Teardown.** A running session ends when its grant or agent is revoked, when
 the grant's window ends, after 15 minutes with no bytes in either direction,
