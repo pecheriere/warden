@@ -508,7 +508,7 @@ async fn request_grant(
     let Some(created) = created else {
         exit_on_interrupt(
             interrupt,
-            "interrupted again; the request may have been made; it expires unanswered on the broker"
+            "interrupted again; the request may have been made: check `warden status` and revoke any grant it shows"
                 .to_owned(),
         );
         eprintln!("warden: interrupted; withdrawing the request (Ctrl-C again to stop at once)…");
