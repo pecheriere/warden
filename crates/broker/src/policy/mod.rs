@@ -422,6 +422,33 @@ pub struct ApiScope {
     pub path_prefix: String,
 }
 
+impl ApiScope {
+    /// The methods of the scope that can change state at the upstream, that
+    /// is every one but `GET` and `HEAD`, in the scope's order. Empty exactly
+    /// when the scope is read-only.
+    #[must_use]
+    pub fn modifying_methods(&self) -> Vec<&str> {
+        self.methods
+            .iter()
+            .map(Method::as_str)
+            .filter(|m| !READ_ONLY_METHODS.contains(m))
+            .collect()
+    }
+
+    /// How the owner is told what an API request is for: `api <secret>
+    /// (read-only)` or `api <secret> (CAN MODIFY: POST, PUT)`. The
+    /// notification, the audit summary and the approval page share it.
+    #[must_use]
+    pub fn subject(&self, secret: impl fmt::Display) -> String {
+        let modifying = self.modifying_methods();
+        if modifying.is_empty() {
+            format!("api {secret} (read-only)")
+        } else {
+            format!("api {secret} (CAN MODIFY: {})", modifying.join(", "))
+        }
+    }
+}
+
 impl TryFrom<&ApiGrant> for ApiScope {
     type Error = String;
 

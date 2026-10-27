@@ -486,7 +486,7 @@ impl Requests {
         agent: &AgentName,
         req: CreateRequest,
     ) -> Result<CreatedResponse, RequestError> {
-        let dedupe_key = match &req.access {
+        let (dedupe_key, subject) = match &req.access {
             Access::Ssh {
                 target,
                 user,
@@ -506,7 +506,10 @@ impl Requests {
                         "target {target}: {RELAY_NOT_CONFIGURED}"
                     )));
                 }
-                format!("{agent}|ssh|{target}")
+                (
+                    format!("{agent}|ssh|{target}"),
+                    format!("ssh {user}@{target}"),
+                )
             }
             Access::Api {
                 secret,
@@ -524,10 +527,13 @@ impl Requests {
                     .scope(methods.as_deref(), path_prefix.as_deref())
                     .map_err(RequestError::Rejected)?;
                 let methods: Vec<&str> = scope.methods.iter().map(http::Method::as_str).collect();
-                format!(
-                    "{agent}|api|{secret}|{}|{}",
-                    methods.join(","),
-                    scope.path_prefix
+                (
+                    format!(
+                        "{agent}|api|{secret}|{}|{}",
+                        methods.join(","),
+                        scope.path_prefix
+                    ),
+                    scope.subject(secret),
                 )
             }
         };
@@ -539,11 +545,16 @@ impl Requests {
             // Insert and ring as one detached unit: a caller dropped while the
             // insert commits must not leave a pending row nobody was told about.
             let inserted = {
-                let (this, agent, req, key) =
-                    (self.clone(), agent.clone(), req.clone(), dedupe_key.clone());
+                let (this, agent, req, key, subject) = (
+                    self.clone(),
+                    agent.clone(),
+                    req.clone(),
+                    dedupe_key.clone(),
+                    subject.clone(),
+                );
                 detached(async move {
-                    let created = this.insert(&agent, &req, &key, &token).await?;
-                    this.spawn_notify(created.id.clone(), doorbell(&agent, &req, link));
+                    let created = this.insert(&agent, &req, &subject, &key, &token).await?;
+                    this.spawn_notify(created.id.clone(), doorbell(&agent, &subject, &req, link));
                     Ok(created)
                 })
                 .await
@@ -566,6 +577,7 @@ impl Requests {
         &self,
         agent: &AgentName,
         req: &CreateRequest,
+        subject: &str,
         dedupe_key: &str,
         token: &str,
     ) -> Result<CreatedResponse, RequestError> {
@@ -601,10 +613,6 @@ impl Requests {
         if inserted.rows_affected() == 0 {
             return Err(RequestError::AgentRevoked);
         }
-        let subject = match &req.access {
-            Access::Ssh { target, user, .. } => format!("ssh {user}@{target}"),
-            Access::Api { secret, .. } => format!("api {secret}"),
-        };
         let created = AuditEvent::RequestCreated {
             id: id.clone(),
             agent: agent.clone(),

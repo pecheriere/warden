@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use url::Url;
-use warden_broker_proto::{Access, AgentName, CreateRequest};
+use warden_broker_proto::{AgentName, CreateRequest};
 
 mod ha;
 mod ntfy;
@@ -154,13 +154,10 @@ impl Notifier for Fallback {
     }
 }
 
-/// Build the owner notification for a new request.
+/// Build the owner notification for a new request; `subject` says what it
+/// is for (`ssh user@target`, or an API scope's [`subject`](crate::policy::ApiScope::subject)).
 #[must_use]
-pub fn doorbell(agent: &AgentName, req: &CreateRequest, url: Url) -> Doorbell {
-    let subject = match &req.access {
-        Access::Ssh { target, user, .. } => format!("ssh {user}@{target}"),
-        Access::Api { secret, .. } => format!("api {secret}"),
-    };
+pub fn doorbell(agent: &AgentName, subject: &str, req: &CreateRequest, url: Url) -> Doorbell {
     Doorbell {
         title: format!("warden: {agent} wants {subject}"),
         message: truncate_goal(req.goal.as_str()),

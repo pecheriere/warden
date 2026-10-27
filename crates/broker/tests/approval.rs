@@ -13,8 +13,8 @@ use warden_broker::approval::passkeys;
 use warden_broker::policy::{ApiSecretPolicy, RelayCredential, ValueFormat};
 use warden_broker::requests::{Clock as _, RequestError};
 use warden_broker::testkit::{
-    FakeBackend, NAS_HOST, PI_HOST, RELAY_PUBLIC_HOST, RELAY_PUBLIC_PORT, SoftAuthenticator,
-    TEST_ORIGIN, TEST_OWNER, TEST_START, TestBroker,
+    CapturingNotifier, FakeBackend, NAS_HOST, PI_HOST, RELAY_PUBLIC_HOST, RELAY_PUBLIC_PORT,
+    SoftAuthenticator, TEST_ORIGIN, TEST_OWNER, TEST_START, TestBroker,
 };
 use warden_broker_proto::{
     Access, AgentName, ApiGrant, CreateRequest, CreatedResponse, Goal, GrantAccess, Id,
@@ -1057,7 +1057,7 @@ async fn api_request_notifies_and_approves() {
     let (broker, created, token) = api_pending().await;
     let bells = broker.capture.rung();
     assert_eq!(bells.len(), 1);
-    assert_eq!(bells[0].title, "warden: bot wants api github");
+    assert_eq!(bells[0].title, "warden: bot wants api github (read-only)");
     assert_eq!(bells[0].message, "list the open pull requests");
     broker.clock.advance(7);
 
@@ -1588,4 +1588,78 @@ async fn approval_refused_when_item_drops_requested_method() {
     assert_eq!(finish.status, StatusCode::CONFLICT, "{}", finish.body);
     assert_eq!(grant_count(&broker).await, 0);
     assert_eq!(status(&broker, &created.id).await, RequestStatus::Pending);
+}
+
+#[tokio::test]
+async fn page_marks_read_only() {
+    let (broker, _created, token) = api_pending().await;
+    let page = broker.get(&format!("/approve/{token}")).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    assert!(
+        page.body
+            .contains(r#"<strong class="readonly">Read-only</strong>"#),
+        "{}",
+        page.body
+    );
+    assert!(!page.body.contains("Can modify"), "{}", page.body);
+}
+
+#[tokio::test]
+async fn page_warns_can_modify() {
+    let broker = scoped_broker().await;
+    let mut policy = FakeBackend::example_api_secret();
+    policy.methods = vec![Method::GET, Method::POST, Method::PUT];
+    "/v1/".clone_into(&mut policy.path_prefix);
+    broker.backend.set_api_secret(policy, API_CREDENTIAL);
+    create_scoped(&broker, scoped_request(Some(&["PUT", "GET", "POST"]), None))
+        .await
+        .unwrap();
+    let bell = broker.capture.rung().pop().unwrap();
+    let token = CapturingNotifier::token(&bell);
+    let page = broker.get(&format!("/approve/{token}")).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    assert!(
+        page.body
+            .contains(r#"<strong class="warning">Can modify: POST, PUT</strong>"#),
+        "{}",
+        page.body
+    );
+    assert!(!page.body.contains("Read-only"), "{}", page.body);
+}
+
+#[tokio::test]
+async fn notification_says_can_modify() {
+    let broker = scoped_broker().await;
+    create_scoped(&broker, scoped_request(Some(&["POST", "GET"]), None))
+        .await
+        .unwrap();
+    create_scoped(&broker, scoped_request(None, Some("/v1/repos")))
+        .await
+        .unwrap();
+    let titles: Vec<String> = broker.capture.rung().into_iter().map(|b| b.title).collect();
+    assert_eq!(
+        titles,
+        [
+            "warden: bot wants api github (CAN MODIFY: POST)",
+            "warden: bot wants api github (read-only)",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn audit_summary_includes_scope() {
+    let broker = scoped_broker().await;
+    create_scoped(&broker, scoped_request(Some(&["POST", "GET"]), None))
+        .await
+        .unwrap();
+    create_scoped(&broker, scoped_request(None, None))
+        .await
+        .unwrap();
+    assert_eq!(
+        broker.audit_summaries(),
+        [
+            "api github (CAN MODIFY: POST) for 15m: list the open pull requests",
+            "api github (read-only) for 15m: list the open pull requests",
+        ]
+    );
 }
