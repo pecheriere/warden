@@ -240,7 +240,9 @@ fn passkey_error(e: &PasskeyError) -> Response {
         }
         PasskeyError::CeremonyExpired => StatusCode::GONE,
         PasskeyError::NoPasskeys | PasskeyError::AlreadyEnrolled => StatusCode::CONFLICT,
-        PasskeyError::Verification(_) | PasskeyError::UnknownCredential => {
+        PasskeyError::Verification(_)
+        | PasskeyError::UnknownCredential
+        | PasskeyError::CounterRegressed => {
             tracing::warn!(error = %e, "passkey verification failed");
             StatusCode::FORBIDDEN
         }

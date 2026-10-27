@@ -69,6 +69,10 @@ pub enum PasskeyError {
     /// The authenticator's response did not verify.
     #[error("passkey verification failed")]
     Verification(#[source] WebauthnError),
+    /// The authenticator's signature counter did not increase: a possible
+    /// cloned authenticator. Deliberately says no more than this.
+    #[error("passkey refused: its signature counter went backwards")]
+    CounterRegressed,
     /// The assertion was made with a credential that is not enrolled (any
     /// more).
     #[error("passkey verification failed: credential not enrolled")]
@@ -341,12 +345,13 @@ impl Passkeys {
     }
 
     /// Verify the assertion for approval `ceremony` and return exactly what
-    /// `begin_approval` bound it to. The passkey's stored counter is updated.
+    /// `begin_approval` bound it to. The passkey's stored counter is raised, never
+    /// lowered: an assertion whose counter is not above it is refused.
     ///
     /// # Errors
     /// [`PasskeyError::CeremonyExpired`], [`PasskeyError::WrongCeremony`],
     /// [`PasskeyError::Verification`], [`PasskeyError::UnknownCredential`],
-    /// storage failures.
+    /// [`PasskeyError::CounterRegressed`], storage failures.
     pub async fn finish_approval(
         &self,
         ceremony: &Id,
@@ -370,17 +375,64 @@ impl Passkeys {
             .into_iter()
             .find(|(_, passkey)| passkey.cred_id() == result.cred_id())
             .ok_or(PasskeyError::UnknownCredential)?;
-        if passkey.update_credential(&result) == Some(true) {
-            sqlx::query("UPDATE passkeys SET credential = ? WHERE id = ?")
-                .bind(serde_json::to_string(&passkey)?)
-                .bind(&passkey_id)
-                .execute(&self.pool)
-                .await?;
-        }
+        // Backup flags may change without the counter moving; the counter
+        // itself is guarded in `store_counter`, not by this in-memory copy.
+        passkey.update_credential(&result);
+        self.store_counter(
+            &passkey_id,
+            &serde_json::to_string(&passkey)?,
+            result.counter(),
+        )
+        .await?;
         Ok(ApprovedCeremony {
             binding,
             passkey_id,
         })
+    }
+
+    /// Store `credential` and `counter` for passkey `passkey_id` only if
+    /// `counter` is above the stored one (or both are 0, as for passkeys that
+    /// never count), in one statement so that concurrent approvals cannot
+    /// lower it. Any other counter is a possible cloned authenticator:
+    /// audited, nothing stored, and the approval must not proceed.
+    ///
+    /// # Errors
+    /// [`PasskeyError::CounterRegressed`], [`PasskeyError::UnknownCredential`]
+    /// if the passkey was removed meanwhile, storage and audit failures.
+    async fn store_counter(
+        &self,
+        passkey_id: &str,
+        credential: &str,
+        counter: u32,
+    ) -> Result<(), PasskeyError> {
+        let counter = i64::from(counter);
+        let stored = sqlx::query(
+            "UPDATE passkeys SET credential = ?1, counter = ?2 \
+             WHERE id = ?3 AND (counter < ?2 OR (counter = 0 AND ?2 = 0))",
+        )
+        .bind(credential)
+        .bind(counter)
+        .bind(passkey_id)
+        .execute(&self.pool)
+        .await?;
+        if stored.rows_affected() == 1 {
+            return Ok(());
+        }
+        let exists = sqlx::query("SELECT 1 FROM passkeys WHERE id = ?")
+            .bind(passkey_id)
+            .fetch_optional(&self.pool)
+            .await?
+            .is_some();
+        if !exists {
+            return Err(PasskeyError::UnknownCredential);
+        }
+        self.audit
+            .append(AuditEvent::PasskeyCounterRegressed {
+                passkey_id: passkey_id.to_owned(),
+            })
+            .await
+            .map_err(PasskeyError::Audit)?;
+        Err(PasskeyError::CounterRegressed)
     }
 
     /// Every enrolled passkey with its id.
@@ -509,7 +561,108 @@ fn valid_label(label: &str) -> Result<String, PasskeyError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{PasskeyError, normalize_code, valid_label};
+    use std::sync::Arc;
+
+    use sqlx::Row as _;
+    use url::Url;
+
+    use super::{PasskeyError, Passkeys, normalize_code, valid_label};
+    use crate::audit::AuditLog;
+    use crate::requests::SystemClock;
+
+    /// A passkey service over a fresh database holding one row `p1` whose
+    /// credential text is `"c0"` and whose counter is `counter`. `store_counter`
+    /// treats the credential as opaque text, so no real passkey is needed.
+    async fn service_with_passkey(
+        dir: &tempfile::TempDir,
+        counter: i64,
+    ) -> (Passkeys, std::path::PathBuf) {
+        let pool = crate::store::open(&dir.path().join("warden.db"))
+            .await
+            .unwrap();
+        let audit_path = dir.path().join("audit.jsonl");
+        let audit = Arc::new(AuditLog::open(&audit_path).await.unwrap());
+        sqlx::query(
+            "INSERT INTO passkeys (id, label, credential, created_at, counter) \
+             VALUES ('p1', 'l', 'c0', 1, ?)",
+        )
+        .bind(counter)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let url = Url::parse("https://warden.example.test/").unwrap();
+        let service = Passkeys::new(pool, audit, &url, Arc::new(SystemClock)).unwrap();
+        (service, audit_path)
+    }
+
+    async fn row(service: &Passkeys) -> (String, i64) {
+        let row = sqlx::query("SELECT credential, counter FROM passkeys WHERE id = 'p1'")
+            .fetch_one(&service.pool)
+            .await
+            .unwrap();
+        (row.get("credential"), row.get("counter"))
+    }
+
+    #[tokio::test]
+    async fn counter_not_lowered_by_late_finish() {
+        let dir = tempfile::tempdir().unwrap();
+        let (service, audit_path) = service_with_passkey(&dir, 0).await;
+        // Two finishes verified against the same old credential; 5 lands
+        // first, 3 arrives late.
+        service.store_counter("p1", "c5", 5).await.unwrap();
+        let late = service.store_counter("p1", "c3", 3).await;
+        assert!(
+            matches!(late, Err(PasskeyError::CounterRegressed)),
+            "{late:?}"
+        );
+        assert_eq!(row(&service).await, ("c5".to_owned(), 5));
+        // Replaying the stored counter is refused too.
+        let replay = service.store_counter("p1", "c5b", 5).await;
+        assert!(matches!(replay, Err(PasskeyError::CounterRegressed)));
+        assert_eq!(row(&service).await, ("c5".to_owned(), 5));
+        // A higher one still lands, and each refusal was audited.
+        service.store_counter("p1", "c6", 6).await.unwrap();
+        assert_eq!(row(&service).await, ("c6".to_owned(), 6));
+        let log = std::fs::read_to_string(audit_path).unwrap();
+        assert_eq!(log.matches("passkey_counter_regressed").count(), 2, "{log}");
+    }
+
+    #[tokio::test]
+    async fn counter_regression_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let (service, _) = service_with_passkey(&dir, 4).await;
+        // A non-zero authenticator reporting 0 is a regression as well.
+        for counter in [0, 3, 4] {
+            let refused = service.store_counter("p1", "bad", counter).await;
+            assert!(
+                matches!(refused, Err(PasskeyError::CounterRegressed)),
+                "{counter}: {refused:?}"
+            );
+        }
+        assert_eq!(row(&service).await, ("c0".to_owned(), 4));
+        // A passkey removed meanwhile is not mistaken for a clone.
+        let gone = service.store_counter("nope", "x", 9).await;
+        assert!(matches!(gone, Err(PasskeyError::UnknownCredential)));
+    }
+
+    #[tokio::test]
+    async fn zero_counter_authenticators_still_work() {
+        let dir = tempfile::tempdir().unwrap();
+        let (service, audit_path) = service_with_passkey(&dir, 0).await;
+        // Platform passkeys report 0 forever: accepted every time, with the
+        // credential (backup flags) still stored.
+        service.store_counter("p1", "c-a", 0).await.unwrap();
+        service.store_counter("p1", "c-b", 0).await.unwrap();
+        assert_eq!(row(&service).await, ("c-b".to_owned(), 0));
+        // An authenticator that starts counting later is accepted.
+        service.store_counter("p1", "c-c", 1).await.unwrap();
+        assert_eq!(row(&service).await, ("c-c".to_owned(), 1));
+        assert!(
+            !std::fs::read_to_string(audit_path)
+                .unwrap()
+                .contains("passkey_counter_regressed")
+        );
+    }
 
     #[test]
     fn codes_ignore_case_spaces_and_dashes() {
