@@ -60,7 +60,7 @@ async fn ha_posts_expected_json() {
         .expect(1)
         .mount(&server)
         .await;
-    ha(&server).ring(&bell()).await.unwrap();
+    assert_eq!(ha(&server).ring(&bell()).await.unwrap(), "homeassistant");
 }
 
 #[tokio::test]
@@ -79,7 +79,7 @@ async fn ntfy_sets_click_title_priority_and_bearer() {
         .await;
     let url = Url::parse(&format!("{}/warden", server.uri())).unwrap();
     let n = Ntfy::new(url, Some(SecretString::from("tk_secret".to_owned()))).unwrap();
-    n.ring(&bell()).await.unwrap();
+    assert_eq!(n.ring(&bell()).await.unwrap(), "ntfy");
     let received = server.received_requests().await.unwrap();
     assert_eq!(received[0].body, b"update packages");
 }
@@ -113,7 +113,7 @@ async fn fallback_uses_secondary_on_primary_500() {
         .mount(&secondary)
         .await;
     let f = Fallback::new(ha(&primary), vec![ntfy(&secondary)]);
-    f.ring(&bell()).await.unwrap();
+    assert_eq!(f.ring(&bell()).await.unwrap(), "ntfy");
 }
 
 #[tokio::test]
@@ -131,7 +131,7 @@ async fn fallback_uses_secondary_on_primary_timeout() {
         .await;
     let f = Fallback::new(ha(&primary), vec![ntfy(&secondary)]);
     let start = Instant::now();
-    f.ring(&bell()).await.unwrap();
+    assert_eq!(f.ring(&bell()).await.unwrap(), "ntfy");
     assert!(start.elapsed() < Duration::from_secs(7));
 }
 
@@ -156,7 +156,7 @@ async fn fallback_reports_both_failures() {
         failures,
         &[
             NotifyError::Status {
-                notifier: "ha",
+                notifier: "homeassistant",
                 status: 500
             },
             NotifyError::Status {
@@ -166,7 +166,10 @@ async fn fallback_reports_both_failures() {
         ]
     );
     let text = err.to_string();
-    assert!(text.contains("ha returned HTTP 500") && text.contains("ntfy returned HTTP 503"));
+    assert!(
+        text.contains("homeassistant returned HTTP 500") && text.contains("ntfy returned HTTP 503"),
+        "{text}"
+    );
 }
 
 #[tokio::test]
@@ -265,7 +268,7 @@ async fn answering(status: u16, expected_calls: u64) -> MockServer {
 async fn a_single_built_channel_works_alone() {
     let server = answering(200, 1).await;
     let chain = Fallback::new(built(&ntfy_settings(&server)), vec![]);
-    chain.ring(&bell()).await.unwrap();
+    assert_eq!(chain.ring(&bell()).await.unwrap(), "ntfy");
 }
 
 #[tokio::test]
@@ -279,7 +282,7 @@ async fn chain_stops_at_the_first_channel_that_accepts() {
         built(&ha_settings(&first)),
         vec![built(&ntfy_settings(&second)), built(&ha_settings(&third))],
     );
-    chain.ring(&bell()).await.unwrap();
+    assert_eq!(chain.ring(&bell()).await.unwrap(), "ntfy");
 }
 
 #[tokio::test]

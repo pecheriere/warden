@@ -23,9 +23,13 @@ All notable changes to this project are recorded here. The format follows
   (`homeassistant`, `ntfy`) in priority order and the first that accepts wins,
   the rest are fallbacks. Any single channel works alone. Settings are
   `WARDEN_NOTIFY_HOMEASSISTANT_WEBHOOK_URL`, `WARDEN_NOTIFY_NTFY_URL` and
-  `WARDEN_NOTIFY_NTFY_TOKEN`. Startup refuses an empty list, unknown or
-  repeated names, and missing settings. `docs/notifications.md` documents the
-  built-ins and a checklist for adding a channel.
+  `WARDEN_NOTIFY_NTFY_TOKEN`. Startup refuses an empty list, unknown,
+  upper-case or repeated names, missing settings, and settings for a channel
+  not listed in `WARDEN_NOTIFY`. Logs, errors and the audit log call each
+  channel by its `WARDEN_NOTIFY` name, and the `notified` audit entry names
+  the channel that delivered the notification (it was always `fallback`).
+  `docs/notifications.md` documents the built-ins and a checklist for adding
+  a channel.
 - An agent can cancel its own pending request: `warden request cancel <id>`
   (`POST /v1/requests/{id}/cancel`, 404 for another agent's or an unknown
   request, 409 once it is no longer pending), audited as `request_cancelled`.

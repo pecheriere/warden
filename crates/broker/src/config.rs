@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use secrecy::SecretString;
 use url::Url;
 
-use crate::notify::{ChannelKind, ChannelSettings, parse_channels};
+use crate::notify::{ChannelKind, ChannelList, parse_channels};
 use crate::policy::onepassword::parse_host_port;
 use crate::proxy::ProxyLimits;
 
@@ -60,6 +60,9 @@ pub enum ConfigError {
         /// URL or token is never echoed).
         name: Option<String>,
     },
+    /// `WARDEN_NOTIFY` names a channel with upper-case letters.
+    #[error("WARDEN_NOTIFY: channel names are lowercase: {}", ChannelKind::known())]
+    UppercaseChannel,
     /// `WARDEN_NOTIFY` names a channel twice.
     #[error("WARDEN_NOTIFY lists channel {0} twice")]
     DuplicateChannel(&'static str),
@@ -201,7 +204,7 @@ pub struct Config {
     pub vault: String,
     /// The enabled notification channels in priority order: `WARDEN_NOTIFY`
     /// and the `WARDEN_NOTIFY_<KIND>_*` settings. Never empty.
-    pub notify: Vec<ChannelSettings>,
+    pub notify: ChannelList,
     /// Limits of proxied API calls; `WARDEN_PROXY_MAX_RESPONSE_BYTES` sets
     /// the response size (default 1 MiB, at most 64 MiB),
     /// `WARDEN_PROXY_MAX_CALLS_PER_AGENT` (default 4, 1 to 64) and

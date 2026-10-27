@@ -145,6 +145,33 @@ impl ChannelSettings {
     }
 }
 
+/// The enabled channels in priority order. Never empty: the first one is
+/// held apart, so the notifier chain built from it always has a primary.
+#[derive(Debug, Clone)]
+pub struct ChannelList {
+    primary: ChannelSettings,
+    fallbacks: Vec<ChannelSettings>,
+}
+
+impl ChannelList {
+    /// The channel tried first.
+    #[must_use]
+    pub const fn primary(&self) -> &ChannelSettings {
+        &self.primary
+    }
+
+    /// The channels tried, in order, when the ones before them fail.
+    #[must_use]
+    pub fn fallbacks(&self) -> &[ChannelSettings] {
+        &self.fallbacks
+    }
+
+    /// Every channel, in priority order.
+    pub fn iter(&self) -> impl Iterator<Item = &ChannelSettings> {
+        std::iter::once(&self.primary).chain(&self.fallbacks)
+    }
+}
+
 fn parse_url(var: &'static str, value: &str) -> Result<Url, ConfigError> {
     Url::parse(value).map_err(|_| ConfigError::Invalid {
         var,
@@ -171,7 +198,7 @@ fn echoable(name: &str) -> Option<String> {
 /// setting of an unlisted channel is present.
 pub fn parse_channels(
     lookup: &impl Fn(&str) -> Option<String>,
-) -> Result<Vec<ChannelSettings>, ConfigError> {
+) -> Result<ChannelList, ConfigError> {
     let get = |var: &'static str| lookup(var).filter(|v| !v.trim().is_empty());
     for (var, replacement) in REMOVED {
         // Set, even to nothing: a leftover empty variable is still a stale
@@ -188,6 +215,9 @@ pub fn parse_channels(
                 var: LIST_VAR,
                 reason: "contains an empty channel name",
             });
+        }
+        if entry.chars().any(char::is_uppercase) {
+            return Err(ConfigError::UppercaseChannel);
         }
         let kind = ChannelKind::parse(entry).ok_or_else(|| ConfigError::UnknownChannel {
             name: echoable(entry),
@@ -207,10 +237,14 @@ pub fn parse_channels(
             });
         }
     }
-    kinds
+    let mut settings = kinds
         .into_iter()
-        .map(|kind| ChannelSettings::parse(kind, &get))
-        .collect()
+        .map(|kind| ChannelSettings::parse(kind, &get));
+    let primary = settings.next().ok_or(ConfigError::NoChannels)??;
+    Ok(ChannelList {
+        primary,
+        fallbacks: settings.collect::<Result<_, _>>()?,
+    })
 }
 
 #[cfg(test)]

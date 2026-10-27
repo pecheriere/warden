@@ -16,7 +16,7 @@ mod channels;
 mod ha;
 mod ntfy;
 
-pub use channels::{ChannelKind, ChannelSettings, parse_channels};
+pub use channels::{ChannelKind, ChannelList, ChannelSettings, parse_channels};
 pub use ha::HaWebhook;
 pub use ntfy::Ntfy;
 
@@ -96,11 +96,13 @@ pub trait Notifier: Send + Sync + 'static {
     /// Short stable name, used in errors and logs.
     fn name(&self) -> &'static str;
 
-    /// Deliver the notification.
+    /// Deliver the notification and return the name of the channel that
+    /// delivered it: the notifier's own name, or for a chain such as
+    /// [`Fallback`] the channel that accepted it.
     ///
     /// # Errors
     /// Returns [`NotifyError`] when delivery fails.
-    async fn ring(&self, d: &Doorbell) -> Result<(), NotifyError>;
+    async fn ring(&self, d: &Doorbell) -> Result<&'static str, NotifyError>;
 }
 
 /// Tries its notifiers in priority order and stops at the first that
@@ -123,7 +125,11 @@ impl Fallback {
         }
     }
 
-    async fn ring_one(&self, n: &Arc<dyn Notifier>, d: &Doorbell) -> Result<(), NotifyError> {
+    async fn ring_one(
+        &self,
+        n: &Arc<dyn Notifier>,
+        d: &Doorbell,
+    ) -> Result<&'static str, NotifyError> {
         tokio::time::timeout(self.timeout, n.ring(d))
             .await
             .unwrap_or(Err(NotifyError::Timeout {
@@ -139,11 +145,11 @@ impl Notifier for Fallback {
         "fallback"
     }
 
-    async fn ring(&self, d: &Doorbell) -> Result<(), NotifyError> {
+    async fn ring(&self, d: &Doorbell) -> Result<&'static str, NotifyError> {
         let mut failures = Vec::new();
         for (i, n) in self.channels.iter().enumerate() {
             match self.ring_one(n, d).await {
-                Ok(()) => return Ok(()),
+                Ok(channel) => return Ok(channel),
                 Err(e) => {
                     if let Some(next) = self.channels.get(i + 1) {
                         tracing::warn!(
