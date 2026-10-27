@@ -4,6 +4,18 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Proxied API calls in flight are limited per agent
+  (`WARDEN_PROXY_MAX_CALLS_PER_AGENT`, default 4, 1 to 64) and overall
+  (`WARDEN_PROXY_MAX_CALLS`, default 16, 1 to 256, at least the per-agent
+  limit; the broker refuses to start otherwise). A call over a limit gets a
+  429 `too many concurrent calls`, is audited as a refused `proxy_call`, and
+  never reaches the upstream. A slot is released when the call ends,
+  whatever the outcome, including an agent that disconnects.
+
 ## [0.4.0] - unreleased
 
 ### Added

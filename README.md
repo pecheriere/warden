@@ -158,6 +158,9 @@ Assistant first and fall back to ntfy; see
    (default `Warden`), `WARDEN_HA_WEBHOOK_URL`, `WARDEN_NTFY_URL`,
    `WARDEN_NTFY_TOKEN`, `WARDEN_PROXY_MAX_RESPONSE_BYTES` (largest response
    a proxied API call may return, default `1048576`, at most `67108864`),
+   `WARDEN_PROXY_MAX_CALLS_PER_AGENT` (proxied calls in flight per agent,
+   default `4`, 1 to 64), `WARDEN_PROXY_MAX_CALLS` (in flight overall,
+   default `16`, 1 to 256, at least the per-agent limit),
    `WARDEN_RELAY_LISTEN`, `WARDEN_RELAY_PUBLIC_ADDR`,
    `WARDEN_RELAY_HOST_KEY_PATH` and `WARDEN_RELAY_MAX_SESSIONS`. At least one
    notifier is required.

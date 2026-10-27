@@ -47,7 +47,7 @@ use crate::policy::{
     ApiSecretPolicy, CaKey, PolicyError, RelayCredential, SecretBackend, SecretValue, SshMode,
     SshTarget, ValueFormat, not_a_relay_target,
 };
-use crate::proxy::ProxyLimits;
+use crate::proxy::{CallSlots, ProxyLimits};
 use crate::relay::{RelayEndpoint, RelayLimits, RelayServer, host_key};
 use crate::requests::{Clock, Requests};
 use crate::{AppState, agents, store};
@@ -749,13 +749,14 @@ impl TestBroker {
         .expect("passkey service");
         let state = AppState {
             pool,
-            config,
+            config: config.clone(),
             identity: Arc::new(TailscaleServeIdentity),
             audit,
             backend: backend.clone(),
             clock: clock.clone(),
             requests,
             passkeys: Arc::new(passkeys),
+            proxy_calls: CallSlots::new(config.proxy.max_calls_per_agent, config.proxy.max_calls),
         };
         let (api_router, router) = crate::build_routers(state.clone());
         Self {

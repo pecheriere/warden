@@ -29,16 +29,23 @@ pub struct ProxyLimits {
     pub timeout: Duration,
     /// Time allowed for connecting (TCP and TLS).
     pub connect_timeout: Duration,
+    /// Calls one agent may have in flight at once.
+    pub max_calls_per_agent: usize,
+    /// Calls in flight at once, across all agents.
+    pub max_calls: usize,
 }
 
 impl Default for ProxyLimits {
-    /// 1 MiB each way, 30 s in total, 10 s to connect.
+    /// 1 MiB each way, 30 s in total, 10 s to connect, 4 calls in flight per
+    /// agent and 16 overall.
     fn default() -> Self {
         Self {
             max_request_bytes: 1024 * 1024,
             max_response_bytes: 1024 * 1024,
             timeout: Duration::from_secs(30),
             connect_timeout: Duration::from_secs(10),
+            max_calls_per_agent: 4,
+            max_calls: 16,
         }
     }
 }

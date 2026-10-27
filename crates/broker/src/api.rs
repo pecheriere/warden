@@ -373,7 +373,9 @@ impl CallRecord {
     }
 }
 
-/// Make the call and record its result. If the result entry cannot be
+/// Make the call and record its result. A call that finds the agent or the
+/// broker at its limit of calls in flight is refused (429) before anything
+/// is sent, and recorded like any other refused call. If the result entry cannot be
 /// written, the agent gets an internal error instead of the response. A
 /// call whose pre-flight entry could not be written was never sent and gets
 /// no result entry either.
@@ -385,7 +387,15 @@ async fn audited_call(
     req: ProxyRequest,
 ) -> Result<ProxyResponse, Failure> {
     let mut record = CallRecord::new(&req);
-    let result = call(&state, &agent, &grant_id, &grant, &req, &mut record).await;
+    // The slot lives in this task, which runs to the end whether or not the
+    // agent stays connected, and is released on every way out of it.
+    let result = match state.proxy_calls.try_acquire(&agent) {
+        Ok(_slot) => call(&state, &agent, &grant_id, &grant, &req, &mut record).await,
+        Err(refused) => Err(Failure::Client(
+            StatusCode::TOO_MANY_REQUESTS,
+            refused.to_string(),
+        )),
+    };
     if let Err(Failure::Request(RequestError::Audit(_))) = &result {
         return result;
     }

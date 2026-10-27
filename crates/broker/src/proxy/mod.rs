@@ -5,7 +5,9 @@
 pub mod client;
 pub mod redact;
 pub mod rules;
+pub mod slots;
 
 pub use client::{ProxyError, ProxyLimits, Upstream, forward, redact_response};
 pub use redact::{Needles, redact};
 pub use rules::{OUTBOUND_ACCEPT_ENCODING, Prepared, Refusal, check};
+pub use slots::{CallSlot, CallSlots, TooManyCalls};

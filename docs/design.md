@@ -371,7 +371,14 @@ Redirects are **not followed** (a redirect to another origin would carry the
 header); the 3xx is returned to the agent. No outbound proxy is used and
 nothing is retried. Limits: request body 1 MiB, response body 1 MiB
 (`WARDEN_PROXY_MAX_RESPONSE_BYTES`, at most 64 MiB), 30 s for the whole call,
-10 s to connect. Over the response limit the agent gets a 502 and nothing
+10 s to connect. At most 4 calls per agent and 16 overall may be in flight
+at once (`WARDEN_PROXY_MAX_CALLS_PER_AGENT`, 1 to 64, and
+`WARDEN_PROXY_MAX_CALLS`, 1 to 256, never below the per-agent limit; the
+broker refuses to start otherwise). A call over either limit is refused with
+a 429 (`too many concurrent calls`) before anything is sent upstream, and
+audited as a `proxy_call` with no status. A call holds its slot until it has
+finished and been audited, even if the agent hangs up, and always gives it
+back. Over the response limit the agent gets a 502 and nothing
 partial. Upstream trouble is a 502 or 504 with a fixed message that never
 quotes upstream text. A secret that cannot be written into a header, or an
 HTTP client that cannot be built, is a 500.
