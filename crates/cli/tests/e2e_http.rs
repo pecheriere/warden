@@ -101,26 +101,27 @@ async fn setup() -> Setup {
     }
 }
 
-fn spawn_request(cli: &Cli) -> Child {
+fn spawn_request(cli: &Cli, scope: &[&str]) -> Child {
     cli.command()
-        .args([
-            "request",
-            "api",
-            SECRET_NAME,
-            "--for",
-            "15m",
-            "--goal",
-            "call the e2e api",
-        ])
+        .args(["request", "api", SECRET_NAME])
+        .args(scope)
+        .args(["--for", "15m", "--goal", "call the e2e api"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .unwrap()
 }
 
-/// Request api access, approve it as the owner, return the CLI's output.
+/// Request read-only api access, approve it as the owner, return the CLI's
+/// output.
 async fn request_and_approve(s: &Setup) -> Output {
-    let child = spawn_request(&s.cli);
+    request_scope_and_approve(s, &[]).await
+}
+
+/// Request api access with the extra `scope` arguments, approve it as the
+/// owner, return the CLI's output.
+async fn request_scope_and_approve(s: &Setup, scope: &[&str]) -> Output {
+    let child = spawn_request(&s.cli, scope);
     let token = CapturingNotifier::token(&s.broker.capture.next().await);
     let approved = s.broker.approve(&token, Window::M15).await;
     assert!(approved.status.is_success(), "{}", approved.body);
@@ -137,9 +138,13 @@ fn text(bytes: &[u8]) -> String {
 #[tokio::test(flavor = "multi_thread")]
 async fn e2e_request_api_approve_and_call() {
     let s = setup().await;
-    let req = request_and_approve(&s).await;
+    let req = request_scope_and_approve(&s, &["--methods", "GET,POST"]).await;
     assert_eq!(req.status.code(), Some(0), "stderr: {}", text(&req.stderr));
     let granted = text(&req.stdout);
+    assert!(
+        granted.contains("can modify: POST") && granted.contains("methods GET, POST"),
+        "{granted}"
+    );
     let Some((grant, _)) = granted
         .strip_prefix("approved: grant ")
         .and_then(|r| r.split_once(" until "))
@@ -169,13 +174,12 @@ async fn e2e_request_api_approve_and_call() {
         format!("Bearer {SECRET}")
     );
 
-    // A GET with a body and a header (a plain request is read-only, so a
-    // write would be refused), and an echo that would carry the
+    // A POST with a body and a header, and an echo that would carry the
     // secret back if the broker did not redact it.
     let post = s.cli.run(&[
         "http",
         SECRET_NAME,
-        "GET",
+        "POST",
         &s.upstream.url("/echo"),
         "-H",
         "X-Trace: abc:def",
@@ -279,14 +283,14 @@ async fn e2e_http_binary_body_is_written_raw() {
 #[tokio::test(flavor = "multi_thread")]
 async fn e2e_http_body_from_stdin_and_local_limits() {
     let s = setup().await;
-    let req = request_and_approve(&s).await;
+    let req = request_scope_and_approve(&s, &["--methods", "GET,POST"]).await;
     assert_eq!(req.status.code(), Some(0));
     let url = s.upstream.url("/echo");
 
     let mut child = s
         .cli
         .command()
-        .args(["http", SECRET_NAME, "GET", &url, "--data-file", "-"])
+        .args(["http", SECRET_NAME, "POST", &url, "--data-file", "-"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -335,10 +339,25 @@ async fn e2e_http_broker_refusal_prints_message_and_exits_1() {
     let s = setup().await;
     let req = request_and_approve(&s).await;
     assert_eq!(req.status.code(), Some(0));
-    // The policy allows GET and POST only.
+    // The CLI itself never sends a call outside the recorded scope ...
+    let local = s
+        .cli
+        .run(&["http", SECRET_NAME, "POST", &s.upstream.url("/hello")]);
+    assert_eq!(local.status.code(), Some(5));
+    assert!(s.upstream.received().is_empty());
+
+    // ... so widen the record by hand: the broker still refuses, because it
+    // enforces the scope it stored at approval.
+    let dir = s.cli.root.path().join("state/warden/api-grants");
+    for entry in fs::read_dir(&dir).unwrap().flatten() {
+        let mut record: serde_json::Value =
+            serde_json::from_slice(&fs::read(entry.path()).unwrap()).unwrap();
+        record["methods"] = serde_json::json!(["GET", "POST"]);
+        fs::write(entry.path(), serde_json::to_vec(&record).unwrap()).unwrap();
+    }
     let out = s
         .cli
-        .run(&["http", SECRET_NAME, "DELETE", &s.upstream.url("/hello")]);
+        .run(&["http", SECRET_NAME, "POST", &s.upstream.url("/hello")]);
     assert_eq!(out.status.code(), Some(1));
     assert!(out.stdout.is_empty());
     assert!(
@@ -347,4 +366,47 @@ async fn e2e_http_broker_refusal_prints_message_and_exits_1() {
         text(&out.stderr)
     );
     assert!(s.upstream.received().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn e2e_read_only_then_write_grant() {
+    let s = setup().await;
+    let read = request_and_approve(&s).await;
+    assert_eq!(read.status.code(), Some(0), "{}", text(&read.stderr));
+    let granted = text(&read.stdout);
+    assert!(
+        granted.contains("read-only") && !granted.contains("can modify"),
+        "{granted}"
+    );
+
+    let url = s.upstream.url("/echo");
+    let denied = s.cli.run(&["http", SECRET_NAME, "POST", &url, "-d", "x"]);
+    assert_eq!(denied.status.code(), Some(5));
+    let hint = text(&denied.stderr);
+    assert!(
+        hint.contains("allows POST /echo") && hint.contains("--methods POST"),
+        "{hint}"
+    );
+    assert!(s.upstream.received().is_empty());
+
+    let write = request_scope_and_approve(&s, &["--methods", "POST", "--path", "/echo"]).await;
+    assert_eq!(write.status.code(), Some(0), "{}", text(&write.stderr));
+    let granted = text(&write.stdout);
+    assert!(
+        granted.contains("can modify: POST") && granted.contains("/echo"),
+        "{granted}"
+    );
+
+    let post = s.cli.run(&["http", SECRET_NAME, "POST", &url, "-d", "x"]);
+    assert_eq!(post.status.code(), Some(0), "{}", text(&post.stderr));
+    assert!(text(&post.stdout).contains("body: x"));
+    // The write grant is narrow: other paths still need the read grant.
+    let elsewhere = s
+        .cli
+        .run(&["http", SECRET_NAME, "POST", &s.upstream.url("/other")]);
+    assert_eq!(elsewhere.status.code(), Some(5));
+    let get = s
+        .cli
+        .run(&["http", SECRET_NAME, "GET", &s.upstream.url("/hello")]);
+    assert_eq!(get.status.code(), Some(0), "{}", text(&get.stderr));
 }

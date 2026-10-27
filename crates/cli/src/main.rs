@@ -16,8 +16,9 @@ use ssh_key::rand_core::OsRng;
 use ssh_key::{Algorithm, Certificate, PrivateKey};
 use url::Url;
 use warden_broker_proto::{
-    Access, AgentName, CreateRequest, Goal, GrantAccess, GrantView, Id, RequestStatus, SecretName,
-    TargetName, UnixUser, Window, fingerprint,
+    Access, AgentName, ApiGrant, CreateRequest, Goal, GrantAccess, GrantView, Id,
+    READ_ONLY_METHODS, RequestStatus, SecretName, TargetName, UnixUser, Window, fingerprint,
+    is_read_only,
 };
 use zeroize::Zeroizing;
 
@@ -138,6 +139,13 @@ enum RequestKind {
     Api {
         /// Secret name.
         secret: SecretName,
+        /// Methods to allow, comma separated (default: read-only, GET and
+        /// HEAD); the broker refuses any the secret does not allow.
+        #[arg(long, value_delimiter = ',')]
+        methods: Option<Vec<String>>,
+        /// Limit the grant to this path prefix (default: the secret's).
+        #[arg(long)]
+        path: Option<String>,
         /// Window length: 15m, 30m, 1h or 4h.
         #[arg(long = "for")]
         window: Window,
@@ -209,10 +217,12 @@ async fn run(cmd: Cmd) -> Result<()> {
             kind:
                 RequestKind::Api {
                     secret,
+                    methods,
+                    path,
                     window,
                     goal,
                 },
-        } => request_api(secret, window, goal).await,
+        } => request_api(secret, methods, path, window, goal).await,
         Cmd::Http {
             secret,
             method,
@@ -327,14 +337,24 @@ async fn request_ssh(target: TargetName, user: UnixUser, window: Window, goal: G
     Ok(())
 }
 
-async fn request_api(secret: SecretName, window: Window, goal: Goal) -> Result<()> {
+async fn request_api(
+    secret: SecretName,
+    methods: Option<Vec<String>>,
+    path: Option<String>,
+    window: Window,
+    goal: Goal,
+) -> Result<()> {
     let (config, client) = client()?;
     let req = CreateRequest {
         goal,
         access: Access::Api {
             secret: secret.clone(),
-            methods: None,
-            path_prefix: None,
+            methods: methods.map(|m| {
+                m.iter()
+                    .map(|method| method.trim().to_ascii_uppercase())
+                    .collect()
+            }),
+            path_prefix: path,
         },
         window,
     };
@@ -354,7 +374,30 @@ async fn request_api(secret: SecretName, window: Window, goal: Goal) -> Result<(
         grant.not_after,
     ))?;
     announce(&grant);
+    println!("{}", api_scope(api));
     Ok(())
+}
+
+/// The scope of `api` for the owner-facing line after approval: whether it
+/// can modify anything, the methods and where it applies.
+fn api_scope(api: &ApiGrant) -> String {
+    let access = if is_read_only(&api.methods) {
+        "read-only".to_owned()
+    } else {
+        let modifying: Vec<&str> = api
+            .methods
+            .iter()
+            .map(String::as_str)
+            .filter(|m| !READ_ONLY_METHODS.contains(m))
+            .collect();
+        format!("can modify: {}", modifying.join(", "))
+    };
+    format!(
+        "scope: {access}; methods {}; {}{}",
+        api.methods.join(", "),
+        api.origin,
+        api.path_prefix
+    )
 }
 
 fn announce(grant: &GrantView) {
@@ -608,16 +651,28 @@ struct HttpCall {
 }
 
 async fn run_http(call: HttpCall, include: bool, fail: bool) -> Result<()> {
-    let Some(grant) = http::active(&call.secret, unix_now())? else {
-        let secret = &call.secret;
+    let secret = &call.secret;
+    let active = http::active(secret, unix_now())?;
+    if active.is_empty() {
         return Err(Exit::new(
             EXIT_NO_GRANT,
             format!("no active api grant for {secret}; run warden request api {secret} --for <window> --goal <text>"),
         )
         .into());
-    };
+    }
     let body = http::read_body(call.data.as_deref(), call.data_file.as_deref())?;
     let proxy = http::proxy_request(&call.method, &call.url, call.headers, body.as_deref())?;
+    let path = url::Url::parse(&proxy.url)
+        .context("the broker request holds an invalid URL")?
+        .path()
+        .to_owned();
+    let Some(grant) = http::covering(&active, &proxy.method, &path) else {
+        return Err(Exit::new(
+            EXIT_NO_GRANT,
+            http::no_covering_message(secret, &proxy.method, &path),
+        )
+        .into());
+    };
     let (_, client) = client()?;
     let resp = client.proxy(&grant.grant_id, &proxy).await?;
     let reply = http::decode(&resp)?;
