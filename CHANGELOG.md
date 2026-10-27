@@ -4,63 +4,68 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.6.0] - unreleased
 
 ### Added
 
-- Agents can be registered with an SSH public key instead of a bearer key
-  (`ssh-ed25519` or `ecdsa-sha2-nistp256`; security keys, RSA, other curves
-  and certificates are refused, as are the published test keys of the
-  protocol document): `warden-server agent add <name> --public-key '<line>'`
-  creates a key-signed agent without a bearer key, `warden-server agent set-key
-  <name> '<line>'` switches an existing agent (its bearer key stops working at
-  once), and `agent list` shows the kind of authentication and the key's
-  `SHA256:` fingerprint. Each change is audited as `agent_key_set`.
-- The broker accepts signed agent requests (protocol `warden-request-v1`,
-  described in `docs/agent-protocol.md`): a key-signed agent sends
-  `Warden-Agent`, `Warden-Timestamp`, `Warden-Nonce` and `Warden-Signature`
-  (an SSHSIG, namespace `warden-request-v1`, hash `sha512` or `sha256`) on
-  every call, including long polls and proxied calls. The broker refuses with
-  401 a missing, repeated or malformed header, an oversized signature, any
-  other (reserved) `Warden-*` header, a `Warden-*` header together with
-  `Authorization`, an unknown, revoked or
-  bearer-key agent, a timestamp more than 60 seconds off, a signature by any
-  other key or over anything else, and a nonce already used; an oversized body
-  is a 413, and a body not received within 10 seconds a 408, before the
-  signature is checked. Nonces are recorded only once the
-  signature verified, kept 10 minutes and swept with expired requests.
-- `GET /v1/info` returns the accepted signing protocols and the broker's
-  audience, a random id created on first start in `WARDEN_AUDIENCE_PATH`
-  (default `/data/audience`, next to the relay host key; never overwritten).
-  It needs neither an agent key nor the owner's Tailscale login.
-- The CLI signs its requests with an SSH key held by an `ssh-agent`:
-  `warden login --server <url> --agent <name> --ssh-key <path to .pub>
-  [--ssh-agent-socket <path>] [--audience <id>]` pins the broker's audience
-  from `/v1/info` (refusing one other than `--audience`, or than the one
-  pinned before for that URL), checks that the agent holds the key, makes
-  one signed call to confirm the enrollment and records the server, agent,
-  public key, socket (default: `$SSH_AUTH_SOCK` at each run) and audience in
-  the configuration; nothing secret is stored and no Keychain is needed, so
-  it also works on Linux. Every call, each long poll and retry included, is
-  signed anew (fresh timestamp and nonce) over the exact method, target and
-  body bytes sent; the private key is never read by the CLI. Only
-  `ssh-ed25519` and `ecdsa-sha2-nistp256` keys are used (security keys, RSA,
-  other curves, certificates and the published test keys are refused), and
-  the server URL must have no path. A refused signed call says when the
-  broker's audience has changed. `docs/agent-usage.md` covers Secretive
-  (Secure Enclave), `ssh-tpm-agent`, YubiKey PIV and key files, and migrating
-  a bearer-key agent with `warden-server agent set-key`. Bearer-key login is
-  unchanged.
+- Signed agent requests (protocol `warden-request-v1`, specified in
+  `docs/agent-protocol.md`): an agent holds no reusable secret and proves
+  itself with an SSH key, ideally one in hardware behind an `ssh-agent`
+  (Secretive on the Secure Enclave, `ssh-tpm-agent`, YubiKey PIV). A captured
+  request cannot be replayed, altered or sent to another broker. Bearer-key
+  agents keep working unchanged.
+  - CLI: `warden login --server <url> --agent <name> --ssh-key <path to .pub>
+    [--ssh-agent-socket <path>] [--audience <id>]` pins the broker's audience
+    from `/v1/info` (refusing one other than `--audience`, or than the one
+    pinned before for that URL), checks that the agent holds the key, makes
+    one signed call to confirm the enrollment and records the server, agent,
+    public key, socket (default: `$SSH_AUTH_SOCK` at each run) and audience in
+    the configuration. Nothing secret is stored and no Keychain is needed, so
+    it also works on Linux. Every call, each long poll and retry included, is
+    signed anew (fresh timestamp and nonce) over the exact method, target and
+    body bytes sent; the private key is never read by the CLI. The server URL
+    must have no path. A refused signed call says when the broker's audience
+    has changed. `docs/agent-usage.md` covers the key setups and migrating a
+    bearer-key agent.
+  - Enrollment: `warden-server agent add <name> --public-key '<line>'`
+    creates a key-signed agent without a bearer key; `warden-server agent
+    set-key <name> '<line>'` switches an existing agent (its bearer key stops
+    working at once); `agent list` shows the kind of authentication and the
+    key's `SHA256:` fingerprint. Each change is audited as `agent_key_set`.
+    Accepted keys are `ssh-ed25519` and `ecdsa-sha2-nistp256`; security keys,
+    RSA, other curves, certificates and the published test keys of the
+    protocol document are refused, by the broker and by the CLI.
+  - Verification: a key-signed agent sends `Warden-Agent`, `Warden-Timestamp`,
+    `Warden-Nonce` and `Warden-Signature` (an SSHSIG, namespace
+    `warden-request-v1`, hash `sha512` or `sha256`) on every call, including
+    long polls and proxied calls. The broker refuses with 401 a missing,
+    repeated or malformed header, an oversized signature, any other
+    (reserved) `Warden-*` header, a `Warden-*` header together with
+    `Authorization`, an unknown, revoked or bearer-key agent, a timestamp more
+    than 60 seconds off, a signature by any other key or over anything else,
+    and a nonce already used. An oversized body is a 413 and a body not
+    received within 10 seconds a 408, both before the signature is checked.
+    Nonces are recorded only once the signature verified, kept 10 minutes and
+    swept with expired requests.
+  - `GET /v1/info` returns the accepted signing protocols and the broker's
+    audience, a random id created on first start in `WARDEN_AUDIENCE_PATH`
+    (default `/data/audience`, next to the relay host key; never
+    overwritten). It needs neither an agent key nor the owner's Tailscale
+    login.
 
 ### Changed
 
-- Security: key-signed agents do not need the owner's
-  `Tailscale-User-Login` (tagged devices have none); the tailnet policy alone
-  decides who may reach the API. Bearer-key agents still need it. See the
-  threat model.
-- Schema migration `0005` rebuilds `agents` (and, below it, `requests` and
-  `grants`, with all rows preserved) for the key columns and adds the nonce
-  table; it runs on first start and is one-way.
+- Security: key-signed agents do not need the owner's `Tailscale-User-Login`
+  (tagged devices have none), a deliberate exemption. For them the signature
+  authenticates the agent, and the tailnet policy (Serve and the gateway
+  capability) alone decides which devices may reach the API, so keep that
+  grant as narrow as the agents that need it. Bearer-key agents and the
+  approval UI still require the owner's login. See the threat model.
+- Upgrade note: schema migration `0005` rebuilds `agents` (and, below it,
+  `requests` and `grants`, with all rows preserved) for the key columns and
+  adds the nonce table; it runs on first start and is one-way. A 0.5.0 broker
+  cannot open a database that 0.6.0 has migrated, so back up `/data`
+  (database and audit log) before upgrading if you may need to go back.
 
 ## [0.5.0] - unreleased
 

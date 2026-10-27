@@ -1,7 +1,7 @@
 # warden — design
 
 This document records the intent and design of warden. It describes the full
-v1 design; the current release (0.5.0) implements the SSH certificate mode
+v1 design; the current release (0.6.0) implements the SSH certificate mode
 (§8.1), the SSH relay mode (§8.2) and the HTTP proxy mode (§8.3). Where the
 implementation deviates from this design, the
 [threat model](threat-model.md) says how and why.
@@ -541,7 +541,8 @@ agent, in one of two ways:
 - `warden-server agent list|revoke <name>`: revoke disables the key
   immediately, cancels its pending requests, ends its grants and kills its
   relay sessions.
-- On macOS, the CLI reads the key from the Keychain (not a config file).
+- For a bearer key on macOS, the CLI reads the key from the Keychain (not a
+  config file); a signing key leaves nothing secret on the machine.
 
 The approval page, the notification (Home Assistant and ntfy) and the
 `request_created` audit summary say whether an API request can modify

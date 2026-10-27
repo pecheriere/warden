@@ -156,6 +156,23 @@ These were recorded during implementation and are accepted for this release.
   key warden holds is zeroized on drop. The mitigation is the
   container hardening described under "Deployment assumptions": an unprivileged
   process, no capabilities and no other container on its network.
+- **Signing protects the key, not the machine.** A key-signed agent's
+  signature stops credential theft (nothing reusable is stored or sent; a
+  key in the Secure Enclave, a TPM or a PIV token cannot be copied off the
+  machine), replay (single-use nonce, 60 s window) and reuse against another
+  broker (the audience) or another endpoint or body (all signed). It does not
+  stop code running as the agent's operating-system user: whatever can reach
+  the agent's `ssh-agent` socket can ask it to sign, for as long as it runs
+  there. That is the same position as a prompt-injected agent, and the
+  defences are the same: every request still needs the owner's passkey
+  approval on the phone, grants are short and scoped, and revoking the agent
+  ends all use of its key, hardware-backed or not. Hardware-backed keys are
+  recommended because they leave the attacker only that access while they
+  are on the machine, with nothing to take away; a plain key file can be
+  copied and used from anywhere that can reach the API. Because key-signed
+  agents are exempt from the owner-login check (above), the tailnet policy
+  and the gateway capability are the only network gate besides the
+  signature.
 - **Bearer agent keys are bearer credentials.** Anyone who obtains a bearer
   agent key can replay it from a host that can reach the API with the
   owner's login (key-signed agents do not have this problem; switch an agent
