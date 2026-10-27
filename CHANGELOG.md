@@ -8,6 +8,9 @@ All notable changes to this project are recorded here. The format follows
 
 ### Fixed
 
+- Redaction drops a response header whose name carries the secret whatever
+  its letter case (names arrive lowercased from the HTTP stack, so a secret
+  with uppercase letters was not matched).
 - The relay's login-time grant lookup is bounded to 1.5 s, like the grant
   checks of live sessions, instead of only by the 10 s login timeout: an
   attempt whose lookup does not answer in time is refused and audited as
@@ -16,7 +19,6 @@ All notable changes to this project are recorded here. The format follows
   recorded with the reason `revoked` (or `expired`) rather than `exited`, as
   long as the revocation reached it before its teardown completed. It still
   gets exactly one `relay_session_ended` entry.
-
 - A passkey's signature counter is never stored lower than it was: it lives in
   its own column (migration `0004`, backfilled from the stored credential) and
   is raised with one conditional update, so two concurrent approvals cannot
@@ -37,7 +39,7 @@ All notable changes to this project are recorded here. The format follows
   request, 409 once it is no longer pending), audited as `request_cancelled`.
   The approval page of a cancelled request says "Cancelled by the agent." and
   cannot be approved, and the history lists it as `cancelled`. Ctrl-C while
-  `warden request` waits cancels the pending request (waiting at most 5 s) and
+  `warden request` waits cancels the pending request (waiting at most about 10 s) and
   exits 130; a request cancelled from another terminal ends the waiting
   command with exit 6. `warden request` now prints the request id, which
   `warden request cancel` takes. Schema migration `0003` widens the status
@@ -68,12 +70,6 @@ All notable changes to this project are recorded here. The format follows
 - An agent may hold several grants for one secret. `warden http` uses the
   covering active grant that stays valid longest, and otherwise exits 5
   with the `warden request api … --methods` command to run.
-
-### Fixed
-
-- Redaction drops a response header whose name carries the secret whatever
-  its letter case (names arrive lowercased from the HTTP stack, so a secret
-  with uppercase letters was not matched).
 
 ### Changed
 
