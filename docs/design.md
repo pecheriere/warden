@@ -533,6 +533,11 @@ agent, in one of two ways:
   A request carrying both a bearer key and `Warden-*` headers is refused. The
   agent is allowed to know its key: it can only request access, never
   approve.
+- **Never through Funnel.** The agent API is for tailnet peers only. Every
+  route of its listener, `/healthz` and `/v1/info` included, refuses with
+  401 a request carrying `Tailscale-Funnel-Request` (set by Serve on
+  requests from the public internet through Tailscale Funnel), before any
+  credential or body is looked at.
 - The agent name is recorded on requests, grants and audit events, and shown
   on the approval page ("requested by `laptop`").
 - Grants are bound to the requesting agent; another agent cannot use them.

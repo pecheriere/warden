@@ -2,7 +2,8 @@
 //! grants, and make HTTP calls with an api grant. Every route except
 //! `/healthz` and `/v1/info` requires an authenticated agent: a signed
 //! request ([`signed::verify`]) or the owner's Tailscale identity with a
-//! bearer key (see [`AuthedAgent`]).
+//! bearer key (see [`AuthedAgent`]). Every route, those two included,
+//! refuses requests that came through Tailscale Funnel ([`refuse_funnel`]).
 
 use std::time::Duration;
 
@@ -22,7 +23,7 @@ use warden_broker_proto::{
 
 use crate::AppState;
 use crate::audit::AuditEvent;
-use crate::identity::AuthedAgent;
+use crate::identity::{AuthedAgent, refuse_funnel};
 use crate::policy::{ApiScope, PolicyError};
 use crate::proxy::{self, Needles};
 use crate::requests::{BACKEND_UNAVAILABLE, RequestError};
@@ -72,6 +73,7 @@ pub fn router(state: AppState) -> Router {
         )
         .fallback(not_found)
         .layer(DefaultBodyLimit::max(BODY_LIMIT))
+        .layer(middleware::from_fn(refuse_funnel))
         .layer(middleware::map_response(no_store))
         .with_state(state)
 }

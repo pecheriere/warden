@@ -2,9 +2,10 @@
 //! authenticated by a signed request or a bearer key.
 
 use axum::Json;
-use axum::extract::FromRequestParts;
+use axum::extract::{FromRequestParts, Request};
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, StatusCode};
+use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use warden_broker_proto::{AgentName, ApiError};
 
@@ -14,6 +15,10 @@ use crate::signed::{self, SignedAgent};
 
 /// Header set by Tailscale Serve with the authenticated user's login.
 const TAILSCALE_LOGIN_HEADER: &str = "Tailscale-User-Login";
+
+/// Header set by Tailscale Serve on a request that came from the public
+/// internet through Tailscale Funnel rather than from a tailnet peer.
+const TAILSCALE_FUNNEL_HEADER: &str = "Tailscale-Funnel-Request";
 
 /// Determines who is calling from the request headers.
 pub trait IdentitySource: Send + Sync + 'static {
@@ -61,6 +66,19 @@ impl IntoResponse for AuthRejection {
         )
             .into_response()
     }
+}
+
+/// Middleware: refuse with 401 `{"error":"unauthorized"}` every request
+/// that arrived through Tailscale Funnel, whatever its credentials. The
+/// agent API is for tailnet peers only; publishing it through Funnel would
+/// put it on the public internet, so such requests never reach a handler
+/// (and a signed one's body is never read).
+pub async fn refuse_funnel(req: Request, next: Next) -> Response {
+    if req.headers().contains_key(TAILSCALE_FUNNEL_HEADER) {
+        tracing::warn!(path = %req.uri().path(), "request through Tailscale Funnel refused");
+        return AuthRejection::Unauthorized.into_response();
+    }
+    next.run(req).await
 }
 
 /// Extractor: the request comes from the configured owner login.

@@ -1036,3 +1036,61 @@ async fn sweep_loop_forgets_expired_nonces() {
     stop.send_replace(true);
     sweeper.await.unwrap();
 }
+
+#[tokio::test]
+async fn funnel_requests_refused_on_every_api_route() {
+    const FUNNEL: &str = "Tailscale-Funnel-Request";
+    let broker = TestBroker::new().await;
+    let key = broker.add_signing_agent("bot", Algorithm::Ed25519).await;
+    let bearer = broker.add_agent("legacy").await;
+
+    // A validly signed request that came in through Funnel: refused before
+    // its body is read or its nonce recorded.
+    for (method, target, body) in [
+        ("GET", "/v1/grants", Vec::new()),
+        ("POST", "/v1/requests", create_body("via funnel")),
+    ] {
+        let mut req = broker.signed_request(&key, "bot", method, target, body);
+        req.headers_mut().insert(FUNNEL, value("?1"));
+        let resp = broker.api_send(req).await;
+        assert_eq!(resp.status, StatusCode::UNAUTHORIZED, "{target}");
+        assert_eq!(resp.body, UNAUTHORIZED, "{target}");
+    }
+    assert_eq!(nonce_rows(&broker).await, 0);
+
+    // A bearer key with the owner's login, through Funnel: refused too.
+    let req = Request::get("/v1/grants")
+        .header("Tailscale-User-Login", TEST_OWNER)
+        .header("Authorization", format!("Bearer {bearer}"))
+        .header(FUNNEL, "?1")
+        .body(Body::empty())
+        .unwrap();
+    let resp = broker.api_send(req).await;
+    assert_eq!(resp.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(resp.body, UNAUTHORIZED);
+
+    // The unauthenticated routes too, whatever the header's value.
+    for path in ["/v1/info", "/healthz", "/nowhere"] {
+        let req = Request::get(path)
+            .header(FUNNEL, "")
+            .body(Body::empty())
+            .unwrap();
+        let resp = broker.api_send(req).await;
+        assert_eq!(resp.status, StatusCode::UNAUTHORIZED, "{path}");
+        assert_eq!(resp.body, UNAUTHORIZED, "{path}");
+    }
+
+    // Without the header, the same calls work.
+    let resp = broker
+        .api_signed(&key, "bot", "GET", "/v1/grants", b"")
+        .await;
+    assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
+    assert_eq!(
+        broker.api_get(&bearer, "/v1/grants").await.status,
+        StatusCode::OK
+    );
+    let resp = broker
+        .api_send(Request::get("/v1/info").body(Body::empty()).unwrap())
+        .await;
+    assert_eq!(resp.status, StatusCode::OK);
+}

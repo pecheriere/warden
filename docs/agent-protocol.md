@@ -70,6 +70,12 @@ Never set the `Tailscale-User-Login` header (or any `Tailscale-*` header)
 yourself. Tailscale Serve sets it, for user devices only, after
 authenticating the machine.
 
+Never expose the API through Tailscale Funnel: it is for tailnet peers only.
+Serve marks requests that came through Funnel with the
+`Tailscale-Funnel-Request` header, and the broker refuses every such request,
+on every path (`/healthz` and `/v1/info` included), with
+`401 {"error":"unauthorized"}`, whatever credentials it carries.
+
 ## 2. Enrollment
 
 ### Key types

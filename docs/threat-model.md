@@ -95,6 +95,15 @@ guarantee because the server is the trusted party:
   audience, which a client reads before it can sign), and signed requests of
   key-signed agents (below). The header is set by Tailscale Serve after it
   authenticates the peer. The CLI never sets it.
+- **No exemption reaches the internet.** Every route of the agent API,
+  `GET /healthz` and `GET /v1/info` included, refuses with
+  `401 {"error":"unauthorized"}` a request carrying the
+  `Tailscale-Funnel-Request` header, which Serve sets on requests that came
+  through Tailscale Funnel, whatever credentials (signature or bearer key)
+  it carries; a signed one's body is not read. The exemptions above assume
+  a tailnet peer: published through Funnel by mistake, the API would let
+  anyone on the internet read the audience and try signed requests. The
+  approval UI needs the owner's login, which Funnel requests never carry.
 - Agent endpoints also require the agent to authenticate, in one of two ways.
   A request with any `Warden-*` header is authenticated by its signature or
   refused; it is never treated as a bearer request.
@@ -123,6 +132,11 @@ guarantee because the server is the trusted party:
     (the route's limit, 16 KiB or 2 MiB for proxied calls; 413) and in time
     (10 s; 408), so a caller naming a known agent cannot hold a connection
     or memory beyond that without a valid signature.
+  - **Agent names are not secret.** An unauthenticated peer that can reach
+    the API can learn whether a name belongs to an enrolled, unrevoked
+    key-signed agent: such a name gets a 413 or 408 for an oversized or slow
+    body, any other name a 401. This is accepted: agent names appear in
+    notifications and logs, and knowing one gives no way to sign.
   - Each refused signed request is logged at warn level with its reason
     (and the agent name once it parsed). A caller can therefore add log
     lines at the rate it can send requests; this is bounded by who the
