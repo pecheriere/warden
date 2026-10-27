@@ -72,7 +72,9 @@ All notable changes to this project are recorded here. The format follows
   login, 4 MiB after, twice the agent's window), so the agent leaving is
   seen even while that library is held up. Input still held for the target
   when the agent leaves is dropped. The session still gets exactly one
-  `relay_session_ended` entry.
+  `relay_session_ended` entry, and a session the relay ends (shutdown,
+  revocation, expiry, grant state unavailable) keeps that reason although
+  the agent's side closes as a result.
 - The relay's login-time grant lookup is bounded to 1.5 s, like the grant
   checks of live sessions, instead of only by the 10 s login timeout: an
   attempt whose lookup does not answer in time is refused and audited as
@@ -87,7 +89,9 @@ All notable changes to this project are recorded here. The format follows
   overwrite each other's newer value. An assertion whose counter does not
   increase (unless the authenticator always reports 0) is refused as a
   possible cloned authenticator with a fixed message, no grant is issued, and
-  it is audited as `passkey_counter_regressed`.
+  it is audited as `passkey_counter_regressed`. Approving a request that was
+  already decided is refused as already decided before the passkey is checked,
+  so a second approval finishing after the first is not taken for a clone.
 - A 1Password vault that was deleted and recreated under the same name is
   picked up without restarting the broker: on a Connect 404 the vault id is
   resolved again (once, shared by concurrent callers) and the request retried
