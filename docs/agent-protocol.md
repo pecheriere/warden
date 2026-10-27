@@ -113,6 +113,10 @@ authentication and its key's fingerprint
 `warden-server agent revoke <name>` disables the agent, cancels its pending
 requests, ends its grants and kills its relay sessions.
 
+A key belongs to one agent: enrolling a key that another agent has is
+refused, and a revoked agent keeps its key, so a revoked agent's key can
+never be enrolled again, under any name. After a revocation, make a new key.
+
 ### Pinning the audience
 
 Every broker has an **audience**: a random identifier of 32 lowercase hex

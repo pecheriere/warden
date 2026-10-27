@@ -34,7 +34,13 @@ All notable changes to this project are recorded here. The format follows
     key's `SHA256:` fingerprint. Each change is audited as `agent_key_set`.
     Accepted keys are `ssh-ed25519` and `ecdsa-sha2-nistp256`; security keys,
     RSA, other curves, certificates and the published test keys of the
-    protocol document are refused, by the broker and by the CLI.
+    protocol document are refused, by the broker and by the CLI, which share
+    one policy (`warden_broker_proto::signing::SigningPublicKey`). A key
+    belongs to one agent, and a revoked agent keeps its key: it can never be
+    enrolled again, so make a new key after a revocation.
+  - Migrating: on macOS, `warden login --ssh-key` over a bearer-key
+    configuration prints the `security delete-generic-password` command that
+    deletes the old key from the Keychain (it deletes nothing itself).
   - Verification: a key-signed agent sends `Warden-Agent`, `Warden-Timestamp`,
     `Warden-Nonce` and `Warden-Signature` (an SSHSIG, namespace
     `warden-request-v1`, hash `sha512` or `sha256`) on every call, including
@@ -44,7 +50,9 @@ All notable changes to this project are recorded here. The format follows
     `Authorization`, an unknown, revoked or bearer-key agent, a timestamp more
     than 60 seconds off, a signature by any other key or over anything else,
     and a nonce already used. An oversized body is a 413 and a body not
-    received within 10 seconds a 408, both before the signature is checked.
+    received in time a 408, both before the signature is checked; the time
+    scales with the route's body limit (the larger of 10 seconds and the limit
+    at 128 KiB/s: 10 s, or 16 s for the 2 MiB of a proxied call).
     Nonces are recorded only once the signature verified, kept 10 minutes and
     swept with expired requests.
   - `GET /v1/info` returns the accepted signing protocols and the broker's
@@ -52,6 +60,9 @@ All notable changes to this project are recorded here. The format follows
     (default `/data/audience`, next to the relay host key; never
     overwritten). It needs neither an agent key nor the owner's Tailscale
     login.
+  - The worked shell client of the protocol document is run by the tests,
+    as published, against a broker with Ed25519 and P-256 keys in an
+    `ssh-agent`.
 
 ### Changed
 
@@ -60,7 +71,13 @@ All notable changes to this project are recorded here. The format follows
   authenticates the agent, and the tailnet policy (Serve and the gateway
   capability) alone decides which devices may reach the API, so keep that
   grant as narrow as the agents that need it. Bearer-key agents and the
-  approval UI still require the owner's login. See the threat model.
+  approval UI still require the owner's login. See the threat model, which
+  also notes that agent names are not secret (a peer can tell an enrolled
+  key-signed agent's name by the 413 or 408 its oversized or slow body gets).
+- Security: the agent API is for tailnet peers only. Every route of its
+  listener, `/healthz` and `/v1/info` included, refuses with 401 a request
+  that came through Tailscale Funnel (`Tailscale-Funnel-Request` header),
+  whatever credentials it carries. Never publish the API through Funnel.
 - Upgrade note: schema migration `0005` rebuilds `agents` (and, below it,
   `requests` and `grants`, with all rows preserved) for the key columns and
   adds the nonce table; it runs on first start and is one-way. A 0.5.0 broker

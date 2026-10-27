@@ -66,6 +66,11 @@ An agent authenticates every call to the broker in one of two ways:
    `warden-server agent list` shows the key's `SHA256:` fingerprint; compare
    it with `ssh-keygen -lf ~/.ssh/warden-laptop.pub`.
 
+   A key is enrolled for one agent only, and stays with it after the agent
+   is revoked: a revoked agent's key can never be enrolled again, for any
+   agent. If the agent is revoked (for example because its machine was
+   compromised), make a new key and have it enrolled under a new name.
+
 3. **Log in** with the public key file (the CLI never reads a private key):
 
    ```sh
