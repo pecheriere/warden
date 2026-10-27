@@ -5,16 +5,19 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::body::Body;
-use axum::http::{Request, StatusCode};
+use axum::http::{HeaderName, Method, Request, StatusCode};
 use serde_json::json;
 use sqlx::Row as _;
 use ssh_key::Certificate;
 use warden_broker::approval::passkeys;
+use warden_broker::policy::{ApiSecretPolicy, ValueFormat};
 use warden_broker::requests::Clock as _;
 use warden_broker::testkit::{
-    PI_HOST, SoftAuthenticator, TEST_ORIGIN, TEST_OWNER, TEST_START, TestBroker,
+    FakeBackend, PI_HOST, SoftAuthenticator, TEST_ORIGIN, TEST_OWNER, TEST_START, TestBroker,
 };
-use warden_broker_proto::{AgentName, CreatedResponse, Id, RequestStatus, Window};
+use warden_broker_proto::{
+    AgentName, ApiGrant, CreatedResponse, GrantAccess, Id, RequestStatus, SecretName, Window,
+};
 use webauthn_authenticator_rs::WebauthnAuthenticator;
 use webauthn_authenticator_rs::softpasskey::SoftPasskey;
 use webauthn_rs::prelude::{Passkey, RequestChallengeResponse};
@@ -299,10 +302,13 @@ async fn approve_applies_window_chosen_at_begin() {
     assert_eq!(now, TEST_START + 42);
     assert_eq!(view.not_before, now);
     assert_eq!(view.not_after, now + 900);
-    assert_eq!(view.ssh.host, PI_HOST);
-    assert_eq!(view.ssh.port, 22);
-    assert_eq!(view.ssh.user.as_str(), "alice");
-    assert_eq!(view.ssh.host_keys.len(), 1);
+    let GrantAccess::Ssh(ssh) = &view.access else {
+        panic!("expected an ssh grant");
+    };
+    assert_eq!(ssh.host, PI_HOST);
+    assert_eq!(ssh.port, 22);
+    assert_eq!(ssh.user.as_str(), "alice");
+    assert_eq!(ssh.host_keys.len(), 1);
     let window: i64 = sqlx::query("SELECT window_secs FROM grants")
         .fetch_one(&broker.state().pool)
         .await
@@ -310,7 +316,7 @@ async fn approve_applies_window_chosen_at_begin() {
         .get(0);
     assert_eq!(window, 900);
 
-    let cert = Certificate::from_openssh(&view.ssh.certificate).unwrap();
+    let cert = Certificate::from_openssh(&ssh.certificate).unwrap();
     assert_eq!(cert.valid_before(), u64::try_from(now + 900).unwrap());
     assert_eq!(cert.valid_principals(), ["warden:pi:alice"]);
     assert_eq!(
@@ -917,4 +923,292 @@ async fn csp_header_present() {
     assert_eq!(js.status, StatusCode::OK);
     assert_eq!(js.header("content-type"), "text/javascript; charset=utf-8");
     assert!(js.body.contains("navigator.credentials"));
+}
+
+// --- api access -------------------------------------------------------------
+
+/// Value of the `github` API secret in these tests.
+const API_CREDENTIAL: &str = "api-credential-0123456789abcdef";
+
+/// A broker with agent `bot`, API secret `github` (see
+/// [`FakeBackend::example_api_secret`]) and one pending 30m request for it.
+async fn api_pending() -> (TestBroker, CreatedResponse, String) {
+    let broker = TestBroker::new().await;
+    broker.add_agent("bot").await;
+    broker
+        .backend
+        .set_api_secret(FakeBackend::example_api_secret(), API_CREDENTIAL);
+    let (created, token) = broker
+        .create_request(
+            "bot",
+            TestBroker::api_request("github", "list the open pull requests", Window::M30),
+        )
+        .await;
+    (broker, created, token)
+}
+
+#[tokio::test]
+async fn api_request_notifies_and_approves() {
+    let (broker, created, token) = api_pending().await;
+    let bells = broker.capture.rung();
+    assert_eq!(bells.len(), 1);
+    assert_eq!(bells[0].title, "warden: bot wants api github");
+    assert_eq!(bells[0].message, "list the open pull requests");
+    broker.clock.advance(7);
+
+    let approved = broker.approve(&token, Window::M15).await;
+    assert_eq!(approved.status, StatusCode::OK, "{}", approved.body);
+    assert_eq!(approved.body, r#"{"message":"Approved for 15m."}"#);
+
+    let RequestStatus::Approved(view) = status(&broker, &created.id).await else {
+        panic!("expected approved");
+    };
+    let now = broker.clock.now();
+    assert_eq!(view.not_before, now);
+    assert_eq!(view.not_after, now + 900);
+    assert_eq!(
+        view.access,
+        GrantAccess::Api(ApiGrant {
+            secret: SecretName::try_from("github".to_owned()).unwrap(),
+            origin: "https://api.example.com".to_owned(),
+            methods: vec!["GET".to_owned()],
+            path_prefix: "/".to_owned(),
+            header: "authorization".to_owned(),
+            digest: FakeBackend::example_api_secret().destination_digest(),
+        })
+    );
+
+    // Approved and audited, with no certificate involved; the secret value
+    // is nowhere: not in the grant, the database or the audit log.
+    let types = broker.audit_types();
+    assert!(types.contains(&"approved".to_owned()), "{types:?}");
+    assert!(!types.contains(&"cert_issued".to_owned()), "{types:?}");
+    let audit = std::fs::read_to_string(broker.audit_path()).unwrap();
+    assert!(!audit.contains(API_CREDENTIAL));
+    let stored: Vec<String> = sqlx::query("SELECT view FROM grants")
+        .fetch_all(&broker.state().pool)
+        .await
+        .unwrap()
+        .iter()
+        .map(|r| r.get(0))
+        .collect();
+    assert_eq!(stored.len(), 1);
+    assert!(!stored[0].contains(API_CREDENTIAL));
+
+    // The grant is listed among the active ones and can be revoked there.
+    let page = broker.get("/grants").await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    assert!(page.body.contains(view.grant_id.as_str()), "{}", page.body);
+    assert!(
+        page.body.contains("https://api.example.com/"),
+        "{}",
+        page.body
+    );
+    let revoke = broker
+        .post_json(
+            &format!("/grants/{}/revoke", view.grant_id.as_str()),
+            &json!({}),
+        )
+        .await;
+    assert_eq!(revoke.status, StatusCode::OK, "{}", revoke.body);
+    assert_eq!(status(&broker, &created.id).await, RequestStatus::Revoked);
+}
+
+#[tokio::test]
+async fn api_approval_rejected_when_policy_changes() {
+    let (broker, created, token) = api_pending().await;
+    let mut auth = broker.enroll_soft_passkey().await;
+    let edits: [fn(&mut ApiSecretPolicy); 5] = [
+        |p| {
+            p.origin = url::Url::parse("https://evil.example.com")
+                .unwrap()
+                .origin();
+        },
+        |p| p.path_prefix = "/admin/".to_owned(),
+        |p| p.methods.push(Method::DELETE),
+        |p| p.header = HeaderName::from_static("x-api-key"),
+        |p| p.ca_pem = Some("-----BEGIN CERTIFICATE-----".to_owned()),
+    ];
+    let original = FakeBackend::example_api_secret();
+    for edit in edits {
+        // Changed between begin and finish.
+        let begin = broker.begin_approval(&token, Window::M15).await;
+        let (ceremony, credential) = TestBroker::sign(&mut auth, &begin);
+        let mut changed = original.clone();
+        edit(&mut changed);
+        broker
+            .backend
+            .set_api_secret(changed.clone(), API_CREDENTIAL);
+        let finish = broker.finish_approval(&token, &ceremony, &credential).await;
+        assert_eq!(finish.status, StatusCode::CONFLICT, "{}", finish.body);
+        assert_eq!(
+            finish.body,
+            r#"{"error":"policy changed; reload and review"}"#
+        );
+        assert_eq!(grant_count(&broker).await, 0);
+        assert_eq!(status(&broker, &created.id).await, RequestStatus::Pending);
+
+        // Changed between page load and begin.
+        broker
+            .backend
+            .set_api_secret(original.clone(), API_CREDENTIAL);
+        let shown = broker.page_target_digest(&token).await;
+        assert_eq!(shown.len(), 64, "page should embed a SHA-256 digest");
+        broker.backend.set_api_secret(changed, API_CREDENTIAL);
+        let begin = broker.begin_approval_for(&token, Window::M15, &shown).await;
+        assert_eq!(begin.status, StatusCode::CONFLICT, "{}", begin.body);
+        broker
+            .backend
+            .set_api_secret(original.clone(), API_CREDENTIAL);
+    }
+
+    // A smaller max window is re-checked at finish too.
+    let begin = broker.begin_approval(&token, Window::H1).await;
+    let (ceremony, credential) = TestBroker::sign(&mut auth, &begin);
+    let mut shrunk = original.clone();
+    shrunk.max_window = Window::M30;
+    broker.backend.set_api_secret(shrunk, API_CREDENTIAL);
+    let finish = broker.finish_approval(&token, &ceremony, &credential).await;
+    assert_eq!(finish.status, StatusCode::CONFLICT, "{}", finish.body);
+    assert!(
+        finish
+            .body
+            .contains("window 1h exceeds max 30m for secret github"),
+        "{}",
+        finish.body
+    );
+    assert_eq!(grant_count(&broker).await, 0);
+
+    // A rotated credential is not a destination change.
+    broker.backend.set_api_secret(original, API_CREDENTIAL);
+    let begin = broker.begin_approval(&token, Window::M15).await;
+    let (ceremony, credential) = TestBroker::sign(&mut auth, &begin);
+    broker.backend.set_api_secret(
+        FakeBackend::example_api_secret(),
+        "rotated-credential-0123456789",
+    );
+    let finish = broker.finish_approval(&token, &ceremony, &credential).await;
+    assert_eq!(finish.status, StatusCode::OK, "{}", finish.body);
+}
+
+#[tokio::test]
+async fn api_page_shows_origin_methods_prefix_header_format_and_ca() {
+    let broker = TestBroker::new().await;
+    broker.add_agent("bot").await;
+    let mut policy = FakeBackend::example_api_secret();
+    policy.origin = url::Url::parse("https://api.example.com:8443")
+        .unwrap()
+        .origin();
+    policy.methods = vec![Method::GET, Method::POST];
+    policy.path_prefix = "/v1/repos/".to_owned();
+    policy.header = HeaderName::from_static("x-api-key");
+    policy.format = ValueFormat::parse("token=<{{secret}}>;").unwrap();
+    broker.backend.set_api_secret(policy, API_CREDENTIAL);
+    let goal = "triage <b>issues</b> & \u{5e9}\u{5dc}\u{5d5}\u{5dd}";
+    let (created, token) = broker
+        .create_request("bot", TestBroker::api_request("github", goal, Window::M30))
+        .await;
+
+    let page = broker.get(&format!("/approve/{token}")).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    let html = &page.body;
+    assert!(html.contains(created.fingerprint.as_str()), "{html}");
+    assert!(html.contains("<bdi>bot</bdi>"), "{html}");
+    assert!(
+        html.contains(
+            "<bdi>triage &lt;b&gt;issues&lt;/b&gt; &amp; \u{5e9}\u{5dc}\u{5d5}\u{5dd}</bdi>"
+        ),
+        "{html}"
+    );
+    assert!(
+        html.contains(
+            "use secret <code><bdi>github</bdi></code> for <code><bdi>GET, POST</bdi></code> \
+             on <code><bdi>https://api.example.com:8443/v1/repos/</bdi></code> \
+             (header <code><bdi>x-api-key</bdi></code>)"
+        ),
+        "{html}"
+    );
+    // How the secret is written, never the secret itself, and whether the
+    // upstream's certificate must chain to a pinned CA.
+    assert!(
+        html.contains("value <code><bdi>token=&lt;…&gt;;</bdi></code>, pinned CA: no"),
+        "{html}"
+    );
+    assert!(!html.contains(API_CREDENTIAL), "{html}");
+    // Window picker capped at the secret's 1h max, requested 30m preselected.
+    assert!(html.contains(r#"<option value="30m" selected>"#), "{html}");
+    assert!(html.contains(r#"<option value="1h">"#), "{html}");
+    assert!(!html.contains(r#"value="4h""#), "{html}");
+    // The page binds the policy digest, and begin enforces the max.
+    broker.enroll_soft_passkey().await;
+    let begin = broker.begin_approval(&token, Window::H4).await;
+    assert_eq!(begin.status, StatusCode::BAD_REQUEST, "{}", begin.body);
+    assert!(
+        begin
+            .body
+            .contains("window 4h exceeds max 1h for secret github"),
+        "{}",
+        begin.body
+    );
+    let begin = broker.begin_approval(&token, Window::H1).await;
+    assert_eq!(begin.status, StatusCode::OK, "{}", begin.body);
+}
+
+#[tokio::test]
+async fn api_page_shows_a_pinned_ca() {
+    let broker = TestBroker::new().await;
+    broker.add_agent("bot").await;
+    let mut policy = FakeBackend::example_api_secret();
+    policy.ca_pem = Some("-----BEGIN CERTIFICATE-----".to_owned());
+    broker.backend.set_api_secret(policy, API_CREDENTIAL);
+    let (_, token) = broker
+        .create_request(
+            "bot",
+            TestBroker::api_request("github", "call", Window::M30),
+        )
+        .await;
+    let page = broker.get(&format!("/approve/{token}")).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    assert!(
+        page.body
+            .contains("value <code><bdi>Bearer …</bdi></code>, pinned CA: yes"),
+        "{}",
+        page.body
+    );
+}
+
+#[tokio::test]
+async fn dedupe_is_per_kind() {
+    let broker = TestBroker::new().await;
+    broker.add_agent("bot").await;
+    let mut pi_secret = FakeBackend::example_api_secret();
+    pi_secret.name = SecretName::try_from("pi".to_owned()).unwrap();
+    broker.backend.set_api_secret(pi_secret, API_CREDENTIAL);
+
+    let (ssh, _) = broker
+        .create_request("bot", TestBroker::pi_request("ssh in", Window::M15))
+        .await;
+    let (api, _) = broker
+        .create_request("bot", TestBroker::api_request("pi", "call", Window::M15))
+        .await;
+    assert_ne!(ssh.id, api.id);
+    assert_eq!(status(&broker, &ssh.id).await, RequestStatus::Pending);
+    assert_eq!(status(&broker, &api.id).await, RequestStatus::Pending);
+
+    // A repeat of either returns its own pending request without ringing.
+    let again = broker
+        .state()
+        .requests
+        .create(&bot(), TestBroker::api_request("pi", "call", Window::M15))
+        .await
+        .unwrap();
+    assert_eq!(again, api);
+    let again = broker
+        .state()
+        .requests
+        .create(&bot(), TestBroker::pi_request("ssh in", Window::M15))
+        .await
+        .unwrap();
+    assert_eq!(again.id, ssh.id);
+    assert_eq!(broker.capture.rung().len(), 2);
 }

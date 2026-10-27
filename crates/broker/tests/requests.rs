@@ -14,12 +14,12 @@ use url::Url;
 use warden_broker::audit::AuditLog;
 use warden_broker::notify::Notifier;
 use warden_broker::policy::OnePasswordConnect;
-use warden_broker::requests::{RequestError, Requests};
+use warden_broker::requests::{Destination, RequestError, Requests};
 use warden_broker::testkit::{CapturingNotifier, FailingNotifier, ManualClock};
 use warden_broker::{agents, audit, store};
 use warden_broker_proto::{
-    Access, AgentName, CreateRequest, CreatedResponse, Goal, GrantView, Id, RequestStatus,
-    SshGrant, TargetName, UnixUser, Window, fingerprint,
+    Access, AgentName, CreateRequest, CreatedResponse, Goal, GrantAccess, GrantView, Id,
+    RequestStatus, SecretName, SshGrant, TargetName, UnixUser, Window, fingerprint,
 };
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -31,6 +31,9 @@ const ITEMS: &str = include_str!("fixtures/items.json");
 const ITEM_PI: &str = include_str!("fixtures/item-pi.json");
 const ITEM_NAS: &str = include_str!("fixtures/item-nas.json");
 const ITEM_NOUSERS: &str = include_str!("fixtures/item-nousers.json");
+const ITEM_API: &str = include_str!("fixtures/item-api.json");
+/// Credential of the `github` API secret item.
+const CREDENTIAL: &str = "test-credential-0123456789abcdef";
 /// Public half of the throwaway ECDSA test key in `fixtures/`.
 const ECDSA_PUBLIC: &str = "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBDOD9dGycs21HGdrl2rZ8guDbG8gRD9X9gkhhcLjxBo8CsX3wW+OGr207Ma9n0Jo4dWyU4vl9mabud9Fqf042qE=";
 const START: i64 = 1_800_000_000;
@@ -80,7 +83,22 @@ fn fill_host_key(template: &str) -> Value {
     serde_json::from_str(&template.replace("{{HOST_KEY}}", &key)).unwrap()
 }
 
+fn api_request(secret: &str, window: Window) -> CreateRequest {
+    CreateRequest {
+        goal: Goal::try_from("list the open pull requests".to_owned()).unwrap(),
+        access: Access::Api {
+            secret: SecretName::try_from(secret.to_owned()).unwrap(),
+        },
+        window,
+    }
+}
+
 async fn healthy_connect() -> MockServer {
+    connect_with_credential(CREDENTIAL).await
+}
+
+/// A Connect whose `github` API secret item holds `credential`.
+async fn connect_with_credential(credential: &str) -> MockServer {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/v1/vaults"))
@@ -103,6 +121,14 @@ async fn healthy_connect() -> MockServer {
             .mount(&server)
             .await;
     }
+    let api: Value = serde_json::from_str(&ITEM_API.replace("{{CREDENTIAL}}", credential)).unwrap();
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/v1/vaults/{VAULT_ID}/items/api00000000000000000000g00"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(api))
+        .mount(&server)
+        .await;
     server
 }
 
@@ -212,13 +238,13 @@ fn grant_for(h: &Harness, window: Window) -> GrantView {
         grant_id: Id::random(),
         not_before: now,
         not_after: now + i64::try_from(window.secs()).unwrap(),
-        ssh: SshGrant {
+        access: GrantAccess::Ssh(SshGrant {
             certificate: "ssh-ed25519-cert-v01@openssh.com AAAA".to_owned(),
             host: "192.0.2.10".to_owned(),
             port: 22,
             user: UnixUser::try_from("alice".to_owned()).unwrap(),
             host_keys: vec![],
-        },
+        }),
     }
 }
 
@@ -236,10 +262,99 @@ fn message(err: &RequestError) -> String {
 // --- create -----------------------------------------------------------------
 
 #[tokio::test]
+async fn api_request_is_stored_and_rings_without_the_secret() {
+    let h = harness().await;
+    let req = api_request("github", Window::M30);
+    let created = h.requests.create(&agent("bot"), req.clone()).await.unwrap();
+    assert_eq!(created.fingerprint, fingerprint(&agent("bot"), &req));
+
+    let bell = h.capture.next().await;
+    assert_eq!(bell.title, "warden: bot wants api github");
+    assert_eq!(bell.message, "list the open pull requests");
+    for text in [&bell.title, &bell.message, &bell.url.to_string()] {
+        assert!(!text.contains(CREDENTIAL), "secret in notification");
+    }
+    let view = h
+        .requests
+        .pending_for_token(&CapturingNotifier::token(&bell))
+        .await
+        .unwrap();
+    assert_eq!(view.request, req);
+    let Destination::Api(policy) = &view.destination else {
+        panic!("expected an api destination, got {:?}", view.destination);
+    };
+    assert_eq!(policy.name.as_str(), "github");
+    assert_eq!(view.destination.digest(), policy.destination_digest());
+    let key: String = sqlx::query("SELECT dedupe_key FROM requests WHERE id = ?")
+        .bind(created.id.as_str())
+        .fetch_one(&h.pool)
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(key, "bot|api|github");
+}
+
+#[tokio::test]
+async fn api_window_over_max_rejected() {
+    let h = harness().await;
+    // The `github` item allows at most 30m.
+    let err = h
+        .requests
+        .create(&agent("bot"), api_request("github", Window::H1))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, RequestError::Rejected(_)), "{err:?}");
+    assert_eq!(message(&err), "window 1h exceeds max 30m for secret github");
+    assert_eq!(row_count(&h.pool, "requests").await, 0);
+    assert!(h.capture.rung().is_empty());
+}
+
+#[tokio::test]
+async fn unknown_secret_not_found_without_notifying() {
+    let h = harness().await;
+    let err = h
+        .requests
+        .create(&agent("bot"), api_request("nope", Window::M15))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, RequestError::UnknownSecret(_)), "{err:?}");
+    assert_eq!(message(&err), "unknown API secret nope");
+    // An SSH target of that name is no API secret either.
+    let err = h
+        .requests
+        .create(&agent("bot"), api_request("pi", Window::M15))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, RequestError::UnknownSecret(_)), "{err:?}");
+    assert_eq!(row_count(&h.pool, "requests").await, 0);
+    assert!(h.capture.rung().is_empty());
+}
+
+#[tokio::test]
+async fn invalid_api_item_is_named_as_a_secret() {
+    let h = harness_with(connect_with_credential("x9q7").await, None).await;
+    let err = h
+        .requests
+        .create(&agent("bot"), api_request("github", Window::M15))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, RequestError::SecretInvalid { .. }), "{err:?}");
+    assert!(
+        message(&err).starts_with("secret github: field credential invalid: "),
+        "{err}"
+    );
+    assert!(!message(&err).contains("x9q7"), "credential echoed: {err}");
+    assert_eq!(row_count(&h.pool, "requests").await, 0);
+    assert!(h.capture.rung().is_empty());
+}
+
+#[tokio::test]
 async fn create_notifies_with_link_and_no_secret() {
     let h = harness().await;
     let req = pi_request();
-    let Access::Ssh { public_key, .. } = &req.access;
+    let Access::Ssh { public_key, .. } = &req.access else {
+        panic!("pi_request is an ssh request");
+    };
     let public_key = public_key.clone();
     let created = h.requests.create(&agent("bot"), req.clone()).await.unwrap();
     assert_eq!(created.fingerprint, fingerprint(&agent("bot"), &req));
@@ -285,7 +400,10 @@ async fn create_notifies_with_link_and_no_secret() {
     assert_eq!(view.id, created.id);
     assert_eq!(view.agent, agent("bot"));
     assert_eq!(view.request, req);
-    assert_eq!(view.target.name.as_str(), "pi");
+    let Destination::Ssh(target) = &view.destination else {
+        panic!("expected an ssh destination, got {:?}", view.destination);
+    };
+    assert_eq!(target.name.as_str(), "pi");
     assert_eq!(view.expires_at, START + 600);
 }
 

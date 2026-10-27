@@ -5,19 +5,27 @@ use std::net::Ipv6Addr;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use http::{HeaderName, Method};
+use rustls_pki_types::CertificateDer;
+use rustls_pki_types::pem::PemObject as _;
 use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use ssh_key::{PrivateKey, PublicKey};
 use tokio::sync::OnceCell;
-use url::Url;
-use warden_broker_proto::{TargetName, UnixUser, Window};
+use url::{Origin, Url};
+use warden_broker_proto::{SecretName, TargetName, UnixUser, Window};
 use zeroize::Zeroizing;
 
-use super::{CaKey, PolicyError, SecretBackend, SshMode, SshTarget};
+use super::{
+    ApiSecretPolicy, CaKey, PolicyError, SecretBackend, SecretValue, SshMode, SshTarget,
+    ValueFormat, is_header_text, is_reserved_header,
+};
 
 const TARGET_TAG: &str = "warden:ssh-target";
 const CA_TAG: &str = "warden:ssh-ca";
+const API_TAG: &str = "warden:api-secret";
+const MIN_CREDENTIAL_CHARS: usize = 12;
 const CA_FIELD_ID: &str = "private_key";
 const TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -52,13 +60,33 @@ struct Field {
 #[derive(Deserialize)]
 struct CaItem {
     #[serde(default)]
-    fields: Vec<CaField>,
+    fields: Vec<SecretField>,
 }
 
+/// An API secret item, decoded so that the credential never lives in a plain
+/// `String`.
 #[derive(Deserialize)]
-struct CaField {
+struct ApiItem {
+    #[serde(default)]
+    urls: Vec<ItemUrl>,
+    #[serde(default)]
+    fields: Vec<SecretField>,
+}
+
+/// An entry of an item's `urls` array (the website fields in 1Password).
+#[derive(Deserialize)]
+struct ItemUrl {
+    #[serde(default)]
+    primary: bool,
+    href: Option<String>,
+}
+
+/// A field whose value may be secret: held in memory wiped on drop.
+#[derive(Deserialize)]
+struct SecretField {
     #[serde(default)]
     id: String,
+    label: Option<String>,
     #[serde(default, deserialize_with = "secret_string")]
     value: Option<Zeroizing<String>>,
 }
@@ -198,6 +226,56 @@ impl OnePasswordConnect {
             .collect())
     }
 
+    /// The one item tagged `tag` and titled `title`; `Ok(None)` if there is
+    /// none, [`PolicyError::Invalid`] if there are several.
+    async fn tagged_titled(
+        &self,
+        tag: &str,
+        title: &str,
+        what: &str,
+    ) -> Result<Option<ItemSummary>, PolicyError> {
+        let mut matches: Vec<ItemSummary> = self
+            .tagged(tag)
+            .await?
+            .into_iter()
+            .filter(|i| i.title == title)
+            .collect();
+        match matches.len() {
+            0 => Ok(None),
+            1 => Ok(Some(matches.remove(0))),
+            _ => Err(invalid(
+                title,
+                "title",
+                &format!("more than one item is tagged as {what} with this title"),
+            )),
+        }
+    }
+
+    /// Fetch and validate the API secret item `name`. The body and the
+    /// credential stay in `Zeroizing` buffers throughout.
+    async fn api_item(
+        &self,
+        name: &SecretName,
+    ) -> Result<(ApiSecretPolicy, SecretValue), PolicyError> {
+        let summary = self
+            .tagged_titled(API_TAG, name.as_str(), "an API secret")
+            .await?
+            .ok_or_else(|| PolicyError::UnknownSecret(name.as_str().to_owned()))?;
+        check_id(&summary.id)?;
+        let vault_id = self.vault_id().await?;
+        let body = self
+            .get_bytes(&["v1", "vaults", vault_id, "items", &summary.id], &[])
+            .await?;
+        // Never interpolate the serde error: it can quote the credential.
+        let item: ApiItem = serde_json::from_slice(&body).map_err(|_| {
+            PolicyError::Unavailable(format!(
+                "1Password Connect sent an unreadable item for API secret \"{name}\""
+            ))
+        })?;
+        drop(body);
+        parse_api_secret(name, &item)
+    }
+
     async fn full_item(&self, id: &str) -> Result<Item, PolicyError> {
         check_id(id)?;
         let vault_id = self.vault_id().await?;
@@ -221,23 +299,10 @@ fn check_id(id: &str) -> Result<(), PolicyError> {
 #[async_trait]
 impl SecretBackend for OnePasswordConnect {
     async fn ssh_target(&self, name: &TargetName) -> Result<SshTarget, PolicyError> {
-        let mut matches: Vec<ItemSummary> = self
-            .tagged(TARGET_TAG)
+        let summary = self
+            .tagged_titled(TARGET_TAG, name.as_str(), "a target")
             .await?
-            .into_iter()
-            .filter(|i| i.title == name.as_str())
-            .collect();
-        let summary = match matches.len() {
-            0 => return Err(PolicyError::NotFound(name.as_str().to_owned())),
-            1 => matches.remove(0),
-            _ => {
-                return Err(invalid(
-                    name.as_str(),
-                    "title",
-                    "more than one item is tagged as a target with this title",
-                ));
-            }
-        };
+            .ok_or_else(|| PolicyError::NotFound(name.as_str().to_owned()))?;
         let item = self.full_item(&summary.id).await?;
         parse_target(name, &item)
     }
@@ -282,6 +347,17 @@ impl SecretBackend for OnePasswordConnect {
             PolicyError::Ca(reason) => ca_error(&reason),
             other => other,
         })
+    }
+
+    async fn api_secret(&self, name: &SecretName) -> Result<ApiSecretPolicy, PolicyError> {
+        self.api_item(name).await.map(|(policy, _value)| policy)
+    }
+
+    async fn api_secret_with_value(
+        &self,
+        name: &SecretName,
+    ) -> Result<(ApiSecretPolicy, SecretValue), PolicyError> {
+        self.api_item(name).await
     }
 }
 
@@ -375,6 +451,197 @@ fn parse_target(name: &TargetName, item: &Item) -> Result<SshTarget, PolicyError
         max_window,
         host_keys,
     })
+}
+
+/// Validate an API secret item. Optional fields that are absent or blank
+/// take their default; the credential, `max_window` and the website never do.
+/// Reasons never quote a field value.
+fn parse_api_secret(
+    name: &SecretName,
+    item: &ApiItem,
+) -> Result<(ApiSecretPolicy, SecretValue), PolicyError> {
+    const LABELS: [&str; 7] = [
+        "credential",
+        "max_window",
+        "header",
+        "format",
+        "methods",
+        "path_prefix",
+        "ca_pem",
+    ];
+    let title = name.as_str();
+    let fail = |field: &str, reason: &str| invalid(title, field, reason);
+    let mut by_label: HashMap<&str, &str> = HashMap::new();
+    for field in &item.fields {
+        let (Some(label), Some(value)) = (field.label.as_deref(), field.value.as_deref()) else {
+            continue;
+        };
+        if LABELS.contains(&label) && by_label.insert(label, value.as_str()).is_some() {
+            return Err(fail(label, "the field appears more than once"));
+        }
+    }
+    // Blank counts as absent.
+    let get = |label: &str| {
+        by_label
+            .get(label)
+            .map(|v| v.trim())
+            .filter(|v| !v.is_empty())
+    };
+    let required = |label: &str| get(label).ok_or_else(|| fail(label, "missing or empty"));
+
+    let credential = required("credential")?;
+    if credential.chars().count() < MIN_CREDENTIAL_CHARS {
+        return Err(fail(
+            "credential",
+            &format!("must be at least {MIN_CREDENTIAL_CHARS} characters"),
+        ));
+    }
+    if !credential.chars().all(is_header_text) {
+        return Err(fail("credential", "must be printable ASCII"));
+    }
+    let value = SecretValue::new(Zeroizing::new(credential.to_owned()));
+
+    let max_window = required("max_window")?
+        .parse::<Window>()
+        .map_err(|e| fail("max_window", &e.to_string()))?;
+
+    let origin = parse_website(item).map_err(|reason| fail("website", reason))?;
+
+    let header = match get("header") {
+        None => http::header::AUTHORIZATION,
+        Some(h) => HeaderName::from_bytes(h.as_bytes())
+            .map_err(|_| fail("header", "not a valid HTTP header name"))?,
+    };
+    if is_reserved_header(&header) {
+        return Err(fail(
+            "header",
+            "is a connection or framing header and cannot carry the secret",
+        ));
+    }
+
+    let format = match get("format") {
+        None => ValueFormat::default(),
+        Some(f) => ValueFormat::parse(f).map_err(|reason| fail("format", reason))?,
+    };
+
+    let methods = match get("methods") {
+        None => vec![Method::GET],
+        Some(m) => parse_methods(m).map_err(|reason| fail("methods", reason))?,
+    };
+
+    let path_prefix = match get("path_prefix") {
+        None => "/".to_owned(),
+        Some(p) => {
+            check_path_prefix(p).map_err(|reason| fail("path_prefix", reason))?;
+            p.to_owned()
+        }
+    };
+
+    let ca_pem = match get("ca_pem") {
+        None => None,
+        Some(pem) => {
+            check_ca_pem(pem).map_err(|reason| fail("ca_pem", reason))?;
+            Some(pem.to_owned())
+        }
+    };
+
+    let policy = ApiSecretPolicy {
+        name: name.clone(),
+        origin,
+        header,
+        format,
+        methods,
+        path_prefix,
+        ca_pem,
+        max_window,
+    };
+    Ok((policy, value))
+}
+
+/// The item's primary website (else its first one) as a bare `https` origin.
+fn parse_website(item: &ApiItem) -> Result<Origin, &'static str> {
+    let href = item
+        .urls
+        .iter()
+        .find(|u| u.primary)
+        .or_else(|| item.urls.first())
+        .and_then(|u| u.href.as_deref())
+        .map(str::trim)
+        .filter(|h| !h.is_empty())
+        .ok_or("missing; set the item's website to https://host[:port]")?;
+    let url = Url::parse(href).map_err(|_| "not a valid URL")?;
+    if url.scheme() != "https" {
+        return Err("must use https");
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err("must not contain a user name or password");
+    }
+    if url.host().is_none() {
+        return Err("must name a host");
+    }
+    if url.path() != "/" || url.query().is_some() || url.fragment().is_some() {
+        return Err("must be only https://host[:port], without path, query or fragment");
+    }
+    match url.origin() {
+        origin @ Origin::Tuple(..) => Ok(origin),
+        Origin::Opaque(_) => Err("must be only https://host[:port]"),
+    }
+}
+
+/// A comma-separated list of uppercase method tokens; duplicates are dropped.
+fn parse_methods(list: &str) -> Result<Vec<Method>, &'static str> {
+    let mut methods: Vec<Method> = Vec::new();
+    for token in list.split(',').map(str::trim) {
+        // Uppercase ASCII letters are always a valid method token.
+        let method = Some(token)
+            .filter(|t| !t.is_empty() && t.bytes().all(|b| b.is_ascii_uppercase()))
+            .and_then(|t| Method::from_bytes(t.as_bytes()).ok())
+            .ok_or("must be a comma-separated list of uppercase method names, such as GET, POST")?;
+        if !methods.contains(&method) {
+            methods.push(method);
+        }
+    }
+    Ok(methods)
+}
+
+/// An absolute path without query, fragment, empty or dot segments, or
+/// characters that need quoting.
+fn check_path_prefix(prefix: &str) -> Result<(), &'static str> {
+    if !prefix.starts_with('/') {
+        return Err("must start with /");
+    }
+    if !prefix
+        .chars()
+        .all(|c| c.is_ascii_graphic() && !matches!(c, '?' | '#' | '\\'))
+    {
+        return Err("must be printable ASCII without spaces, ?, # or \\");
+    }
+    // The leading "/" yields one empty first segment; a trailing "/" one
+    // empty last segment. Any other empty segment is a "//".
+    let segments: Vec<&str> = prefix.split('/').skip(1).collect();
+    let (last, inner) = segments.split_last().unwrap_or((&"", &[]));
+    if inner.iter().any(|s| s.is_empty()) {
+        return Err("must not contain //");
+    }
+    if inner.iter().chain([last]).any(|s| matches!(*s, "." | "..")) {
+        return Err("must not contain . or .. segments");
+    }
+    Ok(())
+}
+
+/// One or more PEM certificates, each usable as a TLS trust anchor.
+fn check_ca_pem(pem: &str) -> Result<(), &'static str> {
+    let certs = CertificateDer::pem_slice_iter(pem.as_bytes())
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| "is not readable PEM")?;
+    if certs.is_empty() {
+        return Err("contains no PEM certificate");
+    }
+    for cert in &certs {
+        webpki::anchor_from_trusted_cert(cert)
+            .map_err(|_| "contains a certificate that is not a valid X.509 CA certificate")?;
+    }
+    Ok(())
 }
 
 /// Split `host`, `host:port` or `[ipv6]:port`; the port defaults to 22.

@@ -67,7 +67,10 @@ pub struct GrantRecord {
 
 /// Create `dir` (and parents) if needed and make sure it is a real
 /// directory owned by us with mode 0700.
-fn private_dir(dir: &Path) -> Result<()> {
+///
+/// # Errors
+/// If it cannot be created, is not a directory, or belongs to someone else.
+pub fn private_dir(dir: &Path) -> Result<()> {
     fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
@@ -88,17 +91,67 @@ fn private_dir(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Write `contents` to a new file `path` with mode 0600.
-fn write_new_private(path: &Path, contents: &[u8]) -> Result<()> {
+/// Write `contents` to a new file `path` with mode 0600, atomically: they
+/// go to a temporary file in the same directory, which is synced and then
+/// renamed to `path` only if nothing is there yet. A reader therefore sees
+/// either no file or the whole file. If `path` already holds exactly
+/// `contents`, there is nothing to do.
+///
+/// # Errors
+/// If `path` holds other contents or the file cannot be written.
+pub fn write_new_private(path: &Path, contents: &[u8]) -> Result<()> {
+    let name = path
+        .file_name()
+        .with_context(|| format!("{} is not a file path", path.display()))?;
+    let dir = path
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let temp = dir.join(format!(".{}.{}.tmp", name.to_string_lossy(), Id::random()));
+    let written = write_temp(&temp, contents).and_then(|()| publish(&temp, path, dir, contents));
+    if written.is_err() {
+        // Best effort: the temporary file may not exist, and the error that
+        // matters is the one being returned.
+        let _ = fs::remove_file(&temp);
+    }
+    written
+}
+
+/// Create `temp` (0600, which must not exist) holding `contents`, synced.
+fn write_temp(temp: &Path, contents: &[u8]) -> Result<()> {
     let mut file = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(0o600)
-        .open(path)
-        .with_context(|| format!("cannot create {}", path.display()))?;
-    file.write_all(contents)?;
-    file.sync_all()?;
-    Ok(())
+        .open(temp)
+        .with_context(|| format!("cannot create {}", temp.display()))?;
+    file.write_all(contents)
+        .and_then(|()| file.sync_all())
+        .with_context(|| format!("cannot write {}", temp.display()))
+}
+
+/// Rename `temp` to `path` unless `path` exists, and sync `dir`, which
+/// holds both. An existing `path` with the same contents counts as written.
+fn publish(temp: &Path, path: &Path, dir: &Path, contents: &[u8]) -> Result<()> {
+    use rustix::fs::{CWD, RenameFlags, renameat_with};
+    match renameat_with(CWD, temp, CWD, path, RenameFlags::NOREPLACE) {
+        Ok(()) => fs::File::open(dir)
+            .and_then(|d| d.sync_all())
+            .with_context(|| format!("cannot sync {}", dir.display())),
+        Err(rustix::io::Errno::EXIST) => {
+            fs::remove_file(temp).with_context(|| format!("cannot remove {}", temp.display()))?;
+            let existing =
+                fs::read(path).with_context(|| format!("cannot read {}", path.display()))?;
+            ensure!(
+                existing == contents,
+                "{} already exists with other contents",
+                path.display()
+            );
+            Ok(())
+        }
+        Err(e) => Err(std::io::Error::from(e))
+            .with_context(|| format!("cannot create {}", path.display())),
+    }
 }
 
 /// The CLI's state directory: `$XDG_STATE_HOME/warden` when set, otherwise
@@ -434,7 +487,7 @@ mod tests {
 
     use super::{
         GrantRecord, cleanup_expired_in, is_safe_host, kill, load_grants, parse_agent_pid, record,
-        socket_dir, socket_path, start_in, write_known_hosts,
+        socket_dir, socket_path, start_in, write_known_hosts, write_new_private,
     };
 
     fn host_key() -> String {
@@ -579,6 +632,51 @@ mod tests {
         cleanup_expired_in(&grants, 10).unwrap();
         assert!(!agent.dir.exists());
         assert!(!agent.socket.exists());
+    }
+
+    /// A reader never sees a written file partially: the final path appears
+    /// only once the whole contents are on disk, with mode 0600, and no
+    /// temporary file is left behind.
+    #[test]
+    fn record_write_is_atomic() {
+        let dir = tempfile::tempdir().unwrap();
+        let contents = vec![b'x'; 8 * 1024 * 1024];
+        for round in 0..8 {
+            let path = dir.path().join(format!("{round}.json"));
+            let reader = {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    loop {
+                        if let Ok(seen) = std::fs::read(&path) {
+                            return seen.len();
+                        }
+                        std::thread::yield_now();
+                    }
+                })
+            };
+            write_new_private(&path, &contents).unwrap();
+            assert_eq!(reader.join().unwrap(), contents.len(), "round {round}");
+            assert_eq!(mode(&path), 0o600);
+        }
+        let names: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .filter(|n| n.starts_with('.'))
+            .collect();
+        assert!(names.is_empty(), "left behind: {names:?}");
+    }
+
+    #[test]
+    fn new_private_file_never_replaces_other_contents() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("f.json");
+        write_new_private(&path, b"one").unwrap();
+        // The same contents again are already there: nothing to do.
+        write_new_private(&path, b"one").unwrap();
+        let err = write_new_private(&path, b"two").unwrap_err();
+        assert!(err.to_string().contains("already exists"), "{err:#}");
+        assert_eq!(std::fs::read(&path).unwrap(), b"one");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 
     #[test]

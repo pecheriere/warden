@@ -15,14 +15,18 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use ssh_key::PublicKey;
-use warden_broker_proto::{Access, ApiError, GrantView, Id, SshGrant, Window};
+use warden_broker_proto::{
+    Access, ApiError, GrantAccess, GrantView, Id, SshGrant, UnixUser, Window,
+};
 use webauthn_rs::prelude::{PublicKeyCredential, RegisterPublicKeyCredential};
 
 use crate::AppState;
 use crate::audit::AuditEvent;
 use crate::identity::Owner;
-use crate::policy::{CaKey, SshMode, SshTarget};
-use crate::requests::{BACKEND_UNAVAILABLE, PendingView, RequestError, sha256_hex, window_label};
+use crate::policy::{ApiSecretPolicy, CaKey, SshMode, SshTarget};
+use crate::requests::{
+    BACKEND_UNAVAILABLE, Destination, PendingView, RequestError, sha256_hex, window_label,
+};
 use crate::ssh_ca::{self, IssueInput};
 
 use self::passkeys::{ApprovalBinding, PasskeyError};
@@ -43,8 +47,8 @@ const BODY_LIMIT: usize = 64 * 1024;
 /// Requests shown on the history page.
 const HISTORY_LIMIT: u32 = 100;
 
-/// The destination (host, port, host keys) differs from what the owner was
-/// shown.
+/// The destination (SSH host, port, host keys; API origin, path prefix,
+/// methods, header, format, CA) differs from what the owner was shown.
 const DESTINATION_CHANGED: &str = "policy changed; reload and review";
 
 /// Recorded as `by` when the owner revokes a grant from the UI.
@@ -216,7 +220,10 @@ fn request_error(e: &RequestError) -> Response {
         }
         RequestError::Rejected(_) => json_error(StatusCode::BAD_REQUEST, e.to_string()),
         RequestError::Unavailable(detail) => backend_unavailable(detail),
-        RequestError::UnknownTarget(_) | RequestError::TargetInvalid { .. } => {
+        RequestError::UnknownTarget(_)
+        | RequestError::UnknownSecret(_)
+        | RequestError::TargetInvalid { .. }
+        | RequestError::SecretInvalid { .. } => {
             json_error(StatusCode::SERVICE_UNAVAILABLE, e.to_string())
         }
         _ => internal("request", e),
@@ -261,7 +268,12 @@ async fn approve_page(State(state): State<AppState>, Path(token): Path<String>) 
             )
                 .into_response()
         }
-        Err(e @ (RequestError::UnknownTarget(_) | RequestError::TargetInvalid { .. })) => (
+        Err(
+            e @ (RequestError::UnknownTarget(_)
+            | RequestError::UnknownSecret(_)
+            | RequestError::TargetInvalid { .. }
+            | RequestError::SecretInvalid { .. }),
+        ) => (
             StatusCode::SERVICE_UNAVAILABLE,
             pages::unavailable(&e.to_string()),
         )
@@ -307,21 +319,22 @@ fn internal_page(context: &str, error: &dyn std::fmt::Display) -> Response {
 
 // --- approval ---------------------------------------------------------------
 
-/// Whether the target as it is now still allows `view`'s request for `window`.
+/// Whether the policy as it is now still allows `view`'s request for
+/// `window`.
 fn check_policy(view: &PendingView, window: Window) -> Result<(), String> {
-    let Access::Ssh { user, .. } = &view.request.access;
-    let target: &SshTarget = &view.target;
+    view.destination.check_window(window)?;
+    match (&view.request.access, &view.destination) {
+        (Access::Ssh { user, .. }, Destination::Ssh(target)) => check_ssh(target, user),
+        (Access::Api { .. }, Destination::Api(_)) => Ok(()),
+        _ => Err("the request does not match its policy kind".to_owned()),
+    }
+}
+
+/// The SSH-specific checks: `user` is allowed and the mode is supported.
+fn check_ssh(target: &SshTarget, user: &UnixUser) -> Result<(), String> {
     if !target.users.contains(user) {
         return Err(format!(
             "user {user} is not allowed on target {}",
-            target.name
-        ));
-    }
-    if window > target.max_window {
-        return Err(format!(
-            "window {} exceeds max {} for target {}",
-            window_label(window),
-            window_label(target.max_window),
             target.name
         ));
     }
@@ -343,8 +356,8 @@ async fn approve_begin(
         Ok(view) => view,
         Err(e) => return request_error(&e),
     };
-    let target_digest = view.target.destination_digest();
-    if body.target != target_digest {
+    let destination_digest = view.destination.digest();
+    if body.target != destination_digest {
         return json_error(StatusCode::CONFLICT, DESTINATION_CHANGED);
     }
     if let Err(message) = check_policy(&view, body.window) {
@@ -354,7 +367,7 @@ async fn approve_begin(
         token_hash: sha256_hex(&token),
         window: body.window,
         fingerprint: view.fingerprint,
-        target_digest,
+        destination_digest,
         request_expires_at: view.expires_at,
     };
     match state.passkeys.begin_approval(binding).await {
@@ -402,12 +415,13 @@ async fn approve_finish(
     if view.fingerprint != binding.fingerprint {
         return json_error(StatusCode::CONFLICT, "the request changed; reload the page");
     }
-    // The grant carries the re-fetched host, port and host keys; they must be
-    // the ones the owner approved.
-    if view.target.destination_digest() != binding.target_digest {
+    // The grant carries the re-fetched destination (SSH host, port and host
+    // keys; API origin, prefix, methods and header); it must be the one the
+    // owner approved.
+    if view.destination.digest() != binding.destination_digest {
         return json_error(StatusCode::CONFLICT, DESTINATION_CHANGED);
     }
-    // The target was fetched fresh by `pending_for_token`; the window is the
+    // The policy was fetched fresh by `pending_for_token`; the window is the
     // one stored when the ceremony began.
     if let Err(message) = check_policy(&view, binding.window) {
         return json_error(
@@ -415,15 +429,22 @@ async fn approve_finish(
             format!("policy changed since this page loaded: {message}"),
         );
     }
-    let ca = match state.backend.ssh_ca().await {
-        Ok(ca) => ca,
-        Err(e) => return backend_unavailable(&e),
+    let (grant, issued) = match &view.destination {
+        Destination::Ssh(target) => {
+            let ca = match state.backend.ssh_ca().await {
+                Ok(ca) => ca,
+                Err(e) => return backend_unavailable(&e),
+            };
+            match ssh_grant(&view, target, &ca, binding.window, now) {
+                Ok((grant, key_id)) => (grant, Some(key_id)),
+                Err((context, cause)) => return internal(context, &cause),
+            }
+        }
+        Destination::Api(policy) => match api_grant(policy, binding.window, now) {
+            Ok(grant) => (grant, None),
+            Err((context, cause)) => return internal(context, &cause),
+        },
     };
-    let (grant, key_id) = match build_grant(&view, &ca, binding.window, now) {
-        Ok(issued) => issued,
-        Err((context, cause)) => return internal(context, &cause),
-    };
-    drop(ca);
     let (grant_id, not_after) = (grant.grant_id.clone(), grant.not_after);
     match state
         .requests
@@ -434,47 +455,63 @@ async fn approve_finish(
         Err(RequestError::NotFound | RequestError::AlreadyDecided) => return undecidable(),
         Err(e) => return request_error(&e),
     }
-    let issued = AuditEvent::CertIssued {
-        grant_id: grant_id.clone(),
-        key_id,
-        not_after,
-    };
-    if let Err(e) = state.audit.append(issued).await {
-        // The approval itself is committed and audited; record loudly that
-        // the issuance entry is missing.
-        tracing::error!(grant = %grant_id, error = %e, "could not audit certificate issuance");
+    if let Some(key_id) = issued {
+        let issued = AuditEvent::CertIssued {
+            grant_id: grant_id.clone(),
+            key_id,
+            not_after,
+        };
+        if let Err(e) = state.audit.append(issued).await {
+            // The approval itself is committed and audited; record loudly
+            // that the issuance entry is missing.
+            tracing::error!(grant = %grant_id, error = %e, "could not audit certificate issuance");
+        }
     }
     tracing::info!(request = %view.id, grant = %grant_id, "request approved");
     done(format!("Approved for {}.", window_label(binding.window)))
 }
 
-/// The grant for approving `view` with `window` at `now`: valid from `now`
-/// for exactly the window, with a certificate signed by `ca`. Also returns
-/// the certificate's key id. Errors name the failed step and its cause.
-fn build_grant(
-    view: &PendingView,
-    ca: &CaKey,
-    window: Window,
-    now: i64,
-) -> Result<(GrantView, String), (&'static str, String)> {
-    let Access::Ssh {
-        target,
-        user,
-        public_key,
-    } = &view.request.access;
-    let public_key =
-        PublicKey::from_openssh(public_key).map_err(|e| ("stored public key", e.to_string()))?;
+/// A failed grant-building step and its cause.
+type GrantFailure = (&'static str, String);
+
+/// Validity of a grant approved at `now` for `window`: `(now, now + window)`.
+fn validity(window: Window, now: i64) -> Result<(i64, i64), GrantFailure> {
     let length = i64::try_from(window.secs()).map_err(|e| ("window length", e.to_string()))?;
     let not_after = now
         .checked_add(length)
         .ok_or(("grant expiry", "time overflow".to_owned()))?;
+    Ok((now, not_after))
+}
+
+/// The grant for approving `view` on SSH `target` with `window` at `now`:
+/// valid from `now` for exactly the window, with a certificate signed by
+/// `ca`. Also returns the certificate's key id. Errors name the failed step
+/// and its cause.
+fn ssh_grant(
+    view: &PendingView,
+    target: &SshTarget,
+    ca: &CaKey,
+    window: Window,
+    now: i64,
+) -> Result<(GrantView, String), GrantFailure> {
+    let Access::Ssh {
+        target: target_name,
+        user,
+        public_key,
+    } = &view.request.access
+    else {
+        return Err(("access kind", "not an ssh request".to_owned()));
+    };
+    let public_key =
+        PublicKey::from_openssh(public_key).map_err(|e| ("stored public key", e.to_string()))?;
+    let (not_before, not_after) = validity(window, now)?;
     let grant_id = Id::random();
     let cert = ssh_ca::issue(
         ca,
         &IssueInput {
             agent: &view.agent,
             grant_id: &grant_id,
-            target,
+            target: target_name,
             user,
             public_key: &public_key,
             now,
@@ -485,8 +522,7 @@ fn build_grant(
     let certificate = cert
         .to_openssh()
         .map_err(|e| ("certificate encoding", e.to_string()))?;
-    let host_keys = view
-        .target
+    let host_keys = target
         .host_keys
         .iter()
         .map(PublicKey::to_openssh)
@@ -494,17 +530,34 @@ fn build_grant(
         .map_err(|e| ("host key encoding", e.to_string()))?;
     let grant = GrantView {
         grant_id,
-        not_before: now,
+        not_before,
         not_after,
-        ssh: SshGrant {
+        access: GrantAccess::Ssh(SshGrant {
             certificate,
-            host: view.target.host.clone(),
-            port: view.target.port,
+            host: target.host.clone(),
+            port: target.port,
             user: user.clone(),
             host_keys,
-        },
+        }),
     };
     Ok((grant, cert.key_id().to_owned()))
+}
+
+/// The grant for approving use of API secret `policy` with `window` at
+/// `now`: valid from `now` for exactly the window. It names where the broker
+/// will send the secret; the secret itself is never part of it.
+fn api_grant(
+    policy: &ApiSecretPolicy,
+    window: Window,
+    now: i64,
+) -> Result<GrantView, GrantFailure> {
+    let (not_before, not_after) = validity(window, now)?;
+    Ok(GrantView {
+        grant_id: Id::random(),
+        not_before,
+        not_after,
+        access: GrantAccess::Api(policy.grant()),
+    })
 }
 
 async fn deny(State(state): State<AppState>, Path(token): Path<String>) -> Response {

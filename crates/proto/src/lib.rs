@@ -115,6 +115,28 @@ impl TryFrom<String> for TargetName {
 }
 string_newtype!(TargetName);
 
+/// Name of an API secret: `^[a-z0-9][a-z0-9-]{0,31}$`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct SecretName(String);
+
+impl TryFrom<String> for SecretName {
+    type Error = ParseError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        let alnum = |b: u8| b.is_ascii_lowercase() || b.is_ascii_digit();
+        if is_name(&value, alnum, |b| alnum(b) || b == b'-') {
+            Ok(Self(value))
+        } else {
+            Err(ParseError::new(
+                "secret name",
+                "must match ^[a-z0-9][a-z0-9-]{0,31}$",
+            ))
+        }
+    }
+}
+string_newtype!(SecretName);
+
 /// Unix account name: `^[a-z_][a-z0-9_-]{0,31}$`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
@@ -235,6 +257,11 @@ pub enum Access {
         /// keep this crate dependency-light; the server must parse it as an
         /// OpenSSH `ssh-ed25519` public key before use.
         public_key: String,
+    },
+    /// Brokered HTTPS calls that use a stored API secret.
+    Api {
+        /// Name of the secret the broker injects on the agent's behalf.
+        secret: SecretName,
     },
 }
 
@@ -359,8 +386,63 @@ pub struct GrantView {
     pub not_before: i64,
     /// End of validity, Unix seconds.
     pub not_after: i64,
-    /// SSH specifics.
-    pub ssh: SshGrant,
+    /// What the grant allows.
+    pub access: GrantAccess,
+}
+
+/// Kind-specific details of an approved grant.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum GrantAccess {
+    /// SSH certificate grant.
+    Ssh(SshGrant),
+    /// Brokered HTTPS API grant.
+    Api(ApiGrant),
+}
+
+/// Brokered API grant details. The secret value is never part of it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApiGrant {
+    /// Secret the broker injects.
+    pub secret: SecretName,
+    /// Only origin the broker will call, `https://host[:port]`.
+    pub origin: String,
+    /// Allowed HTTP methods, uppercase, sorted.
+    pub methods: Vec<String>,
+    /// Allowed path prefix, starting with `/`.
+    pub path_prefix: String,
+    /// Header the broker sets to carry the secret.
+    pub header: String,
+    /// Lowercase hex digest of the approved policy (origin, prefix, header,
+    /// value format, pinned CA, methods): a call is refused once the policy
+    /// no longer matches it.
+    pub digest: String,
+}
+
+/// Body of `POST /v1/grants/{id}/http`: a call for the broker to make.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProxyRequest {
+    /// HTTP method.
+    pub method: String,
+    /// Absolute `https` URL.
+    pub url: String,
+    /// Request headers as name/value pairs.
+    pub headers: Vec<(String, String)>,
+    /// Request body, standard base64.
+    pub body_b64: Option<String>,
+}
+
+/// The upstream response, with the secret redacted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProxyResponse {
+    /// Upstream status code.
+    pub status: u16,
+    /// Response headers as name/value pairs.
+    pub headers: Vec<(String, String)>,
+    /// Response body, standard base64.
+    pub body_b64: String,
+    /// Number of secret occurrences replaced with `[REDACTED]`.
+    pub redactions: u32,
 }
 
 /// SSH certificate grant details.
@@ -549,13 +631,13 @@ mod tests {
             grant_id: Id::random(),
             not_before: 1,
             not_after: 2,
-            ssh: SshGrant {
+            access: GrantAccess::Ssh(SshGrant {
                 certificate: "cert".to_owned(),
                 host: "pi".to_owned(),
                 port: 22,
                 user: UnixUser::try_from("alice".to_owned()).unwrap(),
                 host_keys: vec!["k".to_owned()],
-            },
+            }),
         });
         let json = serde_json::to_string(&approved).unwrap();
         assert!(json.starts_with(r#"{"status":"approved","grant_id":"#));
@@ -563,6 +645,103 @@ mod tests {
             serde_json::from_str::<RequestStatus>(&json).unwrap(),
             approved
         );
+    }
+
+    #[test]
+    fn api_access_serde_shape() {
+        let access = Access::Api {
+            secret: SecretName::try_from("github".to_owned()).unwrap(),
+        };
+        assert_eq!(
+            serde_json::to_string(&access).unwrap(),
+            r#"{"kind":"api","secret":"github"}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<Access>(r#"{"kind":"api","secret":"github"}"#).unwrap(),
+            access
+        );
+        assert!(serde_json::from_str::<Access>(r#"{"kind":"api","secret":"Bad"}"#).is_err());
+    }
+
+    #[test]
+    fn grant_access_serde_tagged() {
+        let api = GrantAccess::Api(ApiGrant {
+            secret: SecretName::try_from("github".to_owned()).unwrap(),
+            origin: "https://api.example.com".to_owned(),
+            methods: vec!["GET".to_owned()],
+            path_prefix: "/v1/".to_owned(),
+            header: "Authorization".to_owned(),
+            digest: "ab".repeat(32),
+        });
+        let json = serde_json::to_string(&api).unwrap();
+        assert!(json.starts_with(r#"{"kind":"api","secret":"github""#));
+        assert_eq!(serde_json::from_str::<GrantAccess>(&json).unwrap(), api);
+
+        let ssh = GrantAccess::Ssh(SshGrant {
+            certificate: "cert".to_owned(),
+            host: "pi".to_owned(),
+            port: 22,
+            user: UnixUser::try_from("alice".to_owned()).unwrap(),
+            host_keys: vec!["k".to_owned()],
+        });
+        let json = serde_json::to_string(&ssh).unwrap();
+        assert!(json.starts_with(r#"{"kind":"ssh","certificate":"cert""#));
+        assert_eq!(serde_json::from_str::<GrantAccess>(&json).unwrap(), ssh);
+
+        let view = GrantView {
+            grant_id: Id::random(),
+            not_before: 1,
+            not_after: 2,
+            access: api,
+        };
+        let json = serde_json::to_string(&view).unwrap();
+        assert!(json.contains(r#""access":{"kind":"api""#));
+        assert_eq!(serde_json::from_str::<GrantView>(&json).unwrap(), view);
+    }
+
+    #[test]
+    fn secret_name_rules() {
+        assert!(SecretName::try_from("github".to_owned()).is_ok());
+        assert!(SecretName::try_from("a".repeat(32)).is_ok());
+        assert!(SecretName::try_from("a".repeat(33)).is_err());
+        assert!(SecretName::try_from("Git".to_owned()).is_err());
+        assert!(SecretName::try_from("-a".to_owned()).is_err());
+        assert!(SecretName::try_from(String::new()).is_err());
+        assert!(serde_json::from_str::<SecretName>("\"A B\"").is_err());
+    }
+
+    #[test]
+    fn ssh_fingerprint_unchanged() {
+        let agent = AgentName::try_from("bot".to_owned()).unwrap();
+        assert_eq!(
+            fingerprint(&agent, &sample_request()).as_str(),
+            "b65b-9812-eb72"
+        );
+        let json = serde_json::to_string(&sample_request().access).unwrap();
+        assert_eq!(
+            json,
+            r#"{"kind":"ssh","target":"pi","user":"alice","public_key":"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample"}"#
+        );
+    }
+
+    #[test]
+    fn proxy_request_roundtrip() {
+        let req = ProxyRequest {
+            method: "POST".to_owned(),
+            url: "https://api.example.com/v1/x".to_owned(),
+            headers: vec![("accept".to_owned(), "application/json".to_owned())],
+            body_b64: Some("aGk=".to_owned()),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert_eq!(serde_json::from_str::<ProxyRequest>(&json).unwrap(), req);
+        let res = ProxyResponse {
+            status: 200,
+            headers: vec![("content-type".to_owned(), "text/plain".to_owned())],
+            body_b64: "aGk=".to_owned(),
+            redactions: 2,
+        };
+        let json = serde_json::to_string(&res).unwrap();
+        assert_eq!(serde_json::from_str::<ProxyResponse>(&json).unwrap(), res);
     }
 
     #[test]

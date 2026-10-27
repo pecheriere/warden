@@ -7,6 +7,13 @@ use std::path::PathBuf;
 use secrecy::SecretString;
 use url::Url;
 
+use crate::proxy::ProxyLimits;
+
+/// Largest value accepted for `WARDEN_PROXY_MAX_RESPONSE_BYTES`: a response
+/// is held in memory whole (and base64-encoded once more for the agent), so
+/// the cap bounds what one call can make the broker allocate.
+const MAX_PROXY_RESPONSE_CAP: usize = 64 * 1024 * 1024;
+
 /// A configuration variable is missing or invalid. The message names it.
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub enum ConfigError {
@@ -116,6 +123,9 @@ pub struct Config {
     pub ntfy_url: Option<Url>,
     /// `WARDEN_NTFY_TOKEN`.
     pub ntfy_token: Option<SecretString>,
+    /// Limits of proxied API calls; `WARDEN_PROXY_MAX_RESPONSE_BYTES` sets
+    /// the response size (default 1 MiB, at most 64 MiB).
+    pub proxy: ProxyLimits,
 }
 
 impl Config {
@@ -173,6 +183,19 @@ impl Config {
             });
         }
 
+        let mut proxy = ProxyLimits::default();
+        if let Some(raw) = get("WARDEN_PROXY_MAX_RESPONSE_BYTES") {
+            proxy.max_response_bytes = raw
+                .trim()
+                .parse::<usize>()
+                .ok()
+                .filter(|n| (1..=MAX_PROXY_RESPONSE_CAP).contains(n))
+                .ok_or(ConfigError::Invalid {
+                    var: "WARDEN_PROXY_MAX_RESPONSE_BYTES",
+                    reason: "must be a whole number of bytes from 1 to 67108864",
+                })?;
+        }
+
         Ok(Self {
             db_path: required("WARDEN_DB_PATH")?.into(),
             audit_path: required("WARDEN_AUDIT_PATH")?.into(),
@@ -186,6 +209,7 @@ impl Config {
             ha_webhook_url,
             ntfy_url,
             ntfy_token,
+            proxy,
         })
     }
 }

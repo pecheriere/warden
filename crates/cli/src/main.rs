@@ -3,6 +3,7 @@
 mod agent;
 mod client;
 mod config;
+mod http;
 mod ssh;
 
 use std::io::{BufRead as _, IsTerminal as _};
@@ -15,8 +16,8 @@ use ssh_key::rand_core::OsRng;
 use ssh_key::{Algorithm, Certificate, PrivateKey};
 use url::Url;
 use warden_broker_proto::{
-    Access, AgentName, CreateRequest, Goal, GrantView, Id, RequestStatus, TargetName, UnixUser,
-    Window, fingerprint,
+    Access, AgentName, CreateRequest, Goal, GrantAccess, GrantView, Id, RequestStatus, SecretName,
+    TargetName, UnixUser, Window, fingerprint,
 };
 use zeroize::Zeroizing;
 
@@ -31,6 +32,9 @@ const EXIT_EXPIRED: u8 = 3;
 const EXIT_REVOKED: u8 = 4;
 /// Exit code: `warden ssh` found no active grant for the target.
 const EXIT_NO_GRANT: u8 = 5;
+/// Exit code: `warden http --fail` got an upstream status of 400 or more
+/// (curl's code for the same condition).
+const EXIT_HTTP_FAIL: u8 = 22;
 /// Exit code: any other failure.
 const EXIT_ERROR: u8 = 1;
 
@@ -80,6 +84,30 @@ enum Cmd {
         #[arg(last = true)]
         command: Vec<String>,
     },
+    /// Call an HTTPS API through the broker, which adds the secret.
+    Http {
+        /// Secret name.
+        secret: SecretName,
+        /// HTTP method.
+        method: String,
+        /// Absolute https URL.
+        url: String,
+        /// Request header, `Name: value`; repeatable.
+        #[arg(short = 'H', long = "header", value_parser = http::parse_header)]
+        headers: Vec<(String, String)>,
+        /// Request body.
+        #[arg(short = 'd', long = "data", conflicts_with = "data_file")]
+        data: Option<String>,
+        /// Read the request body from a file, or from standard input for `-`.
+        #[arg(long)]
+        data_file: Option<String>,
+        /// Print the status line and response headers to stderr.
+        #[arg(short = 'i', long)]
+        include: bool,
+        /// Exit 22 when the status is 400 or more (the body is still written).
+        #[arg(long)]
+        fail: bool,
+    },
     /// Show local grants and the broker's view of this agent's grants.
     Status,
     /// Revoke a grant on the broker and stop its local agent.
@@ -98,6 +126,17 @@ enum RequestKind {
         /// Unix account to log in as.
         #[arg(long)]
         user: UnixUser,
+        /// Window length: 15m, 30m, 1h or 4h.
+        #[arg(long = "for")]
+        window: Window,
+        /// What the access is for, shown to the owner.
+        #[arg(long)]
+        goal: Goal,
+    },
+    /// Brokered HTTPS calls that use a stored API secret.
+    Api {
+        /// Secret name.
+        secret: SecretName,
         /// Window length: 15m, 30m, 1h or 4h.
         #[arg(long = "for")]
         window: Window,
@@ -134,7 +173,11 @@ impl std::error::Error for Exit {}
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
-    if let Err(e) = agent::cleanup_expired(unix_now()) {
+    let now = unix_now();
+    if let Err(e) = agent::cleanup_expired(now) {
+        eprintln!("warden: warning: {e:#}");
+    }
+    if let Err(e) = http::cleanup_expired(now, &mut std::io::stderr().lock()) {
         eprintln!("warden: warning: {e:#}");
     }
     match run(cli.command).await {
@@ -161,6 +204,34 @@ async fn run(cmd: Cmd) -> Result<()> {
                     goal,
                 },
         } => request_ssh(target, user, window, goal).await,
+        Cmd::Request {
+            kind:
+                RequestKind::Api {
+                    secret,
+                    window,
+                    goal,
+                },
+        } => request_api(secret, window, goal).await,
+        Cmd::Http {
+            secret,
+            method,
+            url,
+            headers,
+            data,
+            data_file,
+            include,
+            fail,
+        } => {
+            let call = HttpCall {
+                secret,
+                method,
+                url,
+                headers,
+                data,
+                data_file,
+            };
+            run_http(call, include, fail).await
+        }
         Cmd::Ssh { target, command } => run_ssh(&target, &command),
         Cmd::Status => status().await,
         Cmd::Revoke { grant } => revoke(&grant).await,
@@ -249,12 +320,64 @@ async fn request_ssh(target: TargetName, user: UnixUser, window: Window, goal: G
         },
         window,
     };
-    let created = client.create(&req).await?;
-    if created.fingerprint != fingerprint(&config.agent, &req) {
-        // The broker answered with another pending request for this target,
-        // made with a different key: its grant would be useless here.
+    let grant = request_grant(&config, &client, &req, &format!("for {target}")).await?;
+    install_grant(&target, &user, &key, &grant).await?;
+    announce(&grant);
+    Ok(())
+}
+
+async fn request_api(secret: SecretName, window: Window, goal: Goal) -> Result<()> {
+    let (config, client) = client()?;
+    let req = CreateRequest {
+        goal,
+        access: Access::Api {
+            secret: secret.clone(),
+        },
+        window,
+    };
+    let grant = request_grant(&config, &client, &req, &format!("for api secret {secret}")).await?;
+    let GrantAccess::Api(api) = &grant.access else {
+        bail!("the broker returned a non-api grant for an api request");
+    };
+    ensure!(
+        api.secret == secret,
+        "the grant is for secret {}, not {secret}",
+        api.secret
+    );
+    ensure!(grant.not_after > unix_now(), "the grant has already ended");
+    http::save(&http::ApiRecord::new(
+        grant.grant_id.clone(),
+        api,
+        grant.not_after,
+    ))?;
+    announce(&grant);
+    Ok(())
+}
+
+fn announce(grant: &GrantView) {
+    println!(
+        "approved: grant {} until {}",
+        grant.grant_id,
+        local_time(grant.not_after)
+    );
+}
+
+/// Create `req`, wait for the owner's decision and return the approved
+/// grant. `subject` completes "a request …" in messages. Denied, expired,
+/// revoked and failed requests end the process with their own exit codes.
+async fn request_grant(
+    config: &Config,
+    client: &Client,
+    req: &CreateRequest,
+    subject: &str,
+) -> Result<GrantView> {
+    let created = client.create(req).await?;
+    if created.fingerprint != fingerprint(&config.agent, req) {
+        // The broker answered with another pending request of this agent for
+        // the same target or secret, made with a different goal, window or
+        // (for SSH) key: approving it would not grant what was asked here.
         bail!(
-            "a request for {target} is already pending (fingerprint {}); wait for it to be decided or expire",
+            "a request {subject} is already pending (fingerprint {}); wait for it to be decided or expire",
             created.fingerprint
         );
     }
@@ -276,15 +399,7 @@ async fn request_ssh(target: TargetName, user: UnixUser, window: Window, goal: G
         ),
     };
     match status {
-        RequestStatus::Approved(grant) => {
-            install_grant(&target, &user, &key, &grant).await?;
-            println!(
-                "approved: grant {} until {}",
-                grant.grant_id,
-                local_time(grant.not_after)
-            );
-            Ok(())
-        }
+        RequestStatus::Approved(grant) => Ok(grant),
         RequestStatus::Error { message } => {
             Err(Exit::new(EXIT_ERROR, format!("request failed: {message}")).into())
         }
@@ -352,17 +467,20 @@ async fn install_grant(
     key: &PrivateKey,
     grant: &GrantView,
 ) -> Result<()> {
-    let cert = Certificate::from_openssh(&grant.ssh.certificate)
+    let GrantAccess::Ssh(ssh) = &grant.access else {
+        bail!("the broker returned a non-ssh grant for an ssh request");
+    };
+    let cert = Certificate::from_openssh(&ssh.certificate)
         .context("the grant's certificate is invalid")?;
     ensure!(
-        &grant.ssh.user == user,
+        &ssh.user == user,
         "the grant is for user {}, not {user}",
-        grant.ssh.user
+        ssh.user
     );
     ensure!(
-        agent::is_safe_host(&grant.ssh.host),
+        agent::is_safe_host(&ssh.host),
         "the grant's host {:?} is invalid",
-        grant.ssh.host
+        ssh.host
     );
     let remaining = grant.not_after.saturating_sub(unix_now());
     let lifetime = Duration::from_secs(
@@ -379,8 +497,8 @@ async fn install_grant(
             &agent::GrantRecord {
                 grant_id: grant.grant_id.clone(),
                 target: target.clone(),
-                host: grant.ssh.host.clone(),
-                port: grant.ssh.port,
+                host: ssh.host.clone(),
+                port: ssh.port,
                 user: user.clone(),
                 not_after: grant.not_after,
                 socket: agent.socket.clone(),
@@ -388,12 +506,7 @@ async fn install_grant(
             },
         )?;
         agent::add_cert(&agent, key, &cert, lifetime).await?;
-        agent::write_known_hosts(
-            &agent.dir,
-            &grant.ssh.host,
-            grant.ssh.port,
-            &grant.ssh.host_keys,
-        )?;
+        agent::write_known_hosts(&agent.dir, &ssh.host, ssh.port, &ssh.host_keys)?;
         Ok::<_, anyhow::Error>(())
     };
     if let Err(e) = setup.await {
@@ -418,6 +531,46 @@ fn run_ssh(target: &TargetName, command: &[String]) -> Result<()> {
     Err(ssh::exec(&args)).context("cannot run ssh")
 }
 
+/// Everything `warden http` was asked to send.
+struct HttpCall {
+    secret: SecretName,
+    method: String,
+    url: String,
+    headers: Vec<(String, String)>,
+    data: Option<String>,
+    data_file: Option<String>,
+}
+
+async fn run_http(call: HttpCall, include: bool, fail: bool) -> Result<()> {
+    let Some(grant) = http::active(&call.secret, unix_now())? else {
+        let secret = &call.secret;
+        return Err(Exit::new(
+            EXIT_NO_GRANT,
+            format!("no active api grant for {secret}; run warden request api {secret} --for <window> --goal <text>"),
+        )
+        .into());
+    };
+    let body = http::read_body(call.data.as_deref(), call.data_file.as_deref())?;
+    let proxy = http::proxy_request(&call.method, &call.url, call.headers, body.as_deref())?;
+    let (_, client) = client()?;
+    let resp = client.proxy(&grant.grant_id, &proxy).await?;
+    let reply = http::decode(&resp)?;
+    http::emit(
+        &reply,
+        include,
+        &mut std::io::stdout().lock(),
+        &mut std::io::stderr().lock(),
+    )?;
+    if fail && reply.status >= 400 {
+        return Err(Exit::new(
+            EXIT_HTTP_FAIL,
+            format!("the server answered with status {}", reply.status),
+        )
+        .into());
+    }
+    Ok(())
+}
+
 async fn status() -> Result<()> {
     let grants = agent::grants_dir()?;
     println!("local grants:");
@@ -435,14 +588,28 @@ async fn status() -> Result<()> {
             Err(e) => println!("  {}: {e:#}", dir.display()),
         }
     }
+    println!("local api grants:");
+    for (path, record) in http::load()? {
+        match record {
+            Ok(r) => println!(
+                "  api:{}  {}  grant {}  until {}",
+                r.secret,
+                r.origin,
+                r.grant_id,
+                local_time(r.not_after)
+            ),
+            Err(e) => println!("  {}: {e:#}", path.display()),
+        }
+    }
     let (_, client) = client()?;
     println!("broker grants:");
     for g in client.grants().await? {
+        let subject = match &g.access {
+            GrantAccess::Ssh(ssh) => format!("{}@{}:{}", ssh.user, ssh.host, ssh.port),
+            GrantAccess::Api(api) => format!("api:{}", api.secret),
+        };
         println!(
-            "  {}@{}:{}  grant {}  until {}",
-            g.ssh.user,
-            g.ssh.host,
-            g.ssh.port,
+            "  {subject}  grant {}  until {}",
             g.grant_id,
             local_time(g.not_after)
         );
@@ -453,19 +620,23 @@ async fn status() -> Result<()> {
 async fn revoke(grant: &Id) -> Result<()> {
     // Stop the local agent first: the grant is unusable here whatever the
     // broker answers.
-    let local = agent::discard_grant(grant)?;
+    let local = agent::discard_grant(grant)? | http::discard(grant)?;
     let (_, client) = client()?;
     client.revoke(grant).await?;
     eprintln!(
         "revoked grant {grant}{}",
-        if local { " and stopped its agent" } else { "" }
+        if local {
+            " and removed its local state"
+        } else {
+            ""
+        }
     );
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use warden_broker_proto::{GrantView, Id, RequestStatus, SshGrant};
+    use warden_broker_proto::{GrantAccess, GrantView, Id, RequestStatus, SshGrant};
 
     use std::time::{Duration, Instant};
 
@@ -558,13 +729,13 @@ mod tests {
             grant_id: Id::random(),
             not_before: 0,
             not_after: 1,
-            ssh: SshGrant {
+            access: GrantAccess::Ssh(SshGrant {
                 certificate: String::new(),
                 host: "h".to_owned(),
                 port: 22,
                 user: "u".parse().unwrap(),
                 host_keys: Vec::new(),
-            },
+            }),
         };
         assert_eq!(terminal_exit_code(&RequestStatus::Pending), None);
         assert_eq!(terminal_exit_code(&RequestStatus::Approved(grant)), Some(0));

@@ -20,6 +20,7 @@ pub mod health;
 pub mod identity;
 pub mod notify;
 pub mod policy;
+pub mod proxy;
 pub mod requests;
 pub mod ssh_ca;
 pub mod store;

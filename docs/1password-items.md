@@ -11,7 +11,7 @@ Nothing is cached: every request reads the items afresh, so an edit in
 - The Connect token needs read access to this vault only.
 
 A missing or malformed field makes the request fail with an error naming the
-item and the field. It never falls back to a default.
+item and the field. A required field never falls back to a default.
 
 ## SSH target
 
@@ -36,6 +36,52 @@ users       alice, admin
 max_window  1h
 host_keys   ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... root@pi
 ```
+
+## API secret
+
+Tag: `warden:api-secret`. The item title is the secret name and must match
+`^[a-z0-9][a-z0-9-]{0,31}$`. Two tagged items with the same title are an
+error. Use the 1Password **API Credential** category: its built-in
+`credential` field holds the secret; add the other fields as custom fields.
+
+The secret is only ever sent to **one origin: the item's website**. warden
+uses the item's primary website (or its first one, if none is marked
+primary). It must be exactly `https://host` or `https://host:port`, with no
+path, query, fragment, user name or password. There is no default: an item
+without a website is unusable. Only someone who can edit the item in
+1Password can change where the secret may go.
+
+| Field label   | Required | Value |
+|---------------|----------|-------|
+| `credential`  | yes      | The secret, at least 12 printable ASCII characters. Leading and trailing whitespace is ignored. |
+| `max_window`  | yes      | Longest window that may be granted: `15m`, `30m`, `1h` or `4h`. |
+| `header`      | no       | Header that carries the secret. Default `Authorization`. Connection and framing headers (`Host`, `Content-Length`, `Transfer-Encoding`, `Connection`, `Keep-Alive`, `TE`, `Trailer`, `Upgrade`, `Proxy-*`) are refused. |
+| `format`      | no       | Header value, with `{{secret}}` exactly once where the secret goes. Default `Bearer {{secret}}`. The rest must be printable ASCII. |
+| `methods`     | no       | Comma-separated HTTP methods, uppercase (`GET, POST`). Default `GET`. |
+| `path_prefix` | no       | Only paths under this prefix may be called. Must start with `/`; no `?`, `#`, `\`, spaces, `//`, `.` or `..` segments. Default `/`. |
+| `ca_pem`      | no       | One or more PEM CA certificates (`-----BEGIN CERTIFICATE-----`). When set, the server certificate must chain to one of them and the system roots are not used. |
+
+An optional field that is absent or blank takes its default. A required
+field that is absent, blank or malformed makes the item unusable, with an
+error naming the item and the field; the error never quotes the value.
+
+The secret value is read from 1Password only when a call is made, held in
+memory that is wiped after use, and never logged, returned to the agent or
+written to the audit log.
+
+Example (category API Credential, tag `warden:api-secret`, title `github`):
+
+```
+website      https://api.example.com
+credential   ••••••••••••••••
+max_window   30m
+methods      GET, POST
+path_prefix  /repos/alice/
+```
+
+This lets an approved agent call `GET` and `POST` on
+`https://api.example.com/repos/alice/…`, with the header
+`Authorization: Bearer <credential>` added by warden.
 
 ## SSH CA
 

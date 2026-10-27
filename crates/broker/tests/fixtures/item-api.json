@@ -1,0 +1,28 @@
+{
+  "id": "api00000000000000000000g00",
+  "title": "github",
+  "version": 4,
+  "vault": { "id": "vault0000000000000000000a1" },
+  "category": "API_CREDENTIAL",
+  "tags": ["warden:api-secret"],
+  "urls": [
+    { "label": "website", "primary": true, "href": "https://api.example.com" }
+  ],
+  "sections": [
+    { "id": "add more" },
+    { "id": "warden00000000000000000s01", "label": "warden" }
+  ],
+  "fields": [
+    { "id": "notesPlain", "type": "STRING", "purpose": "NOTES", "label": "notesPlain" },
+    { "id": "username", "type": "STRING", "label": "username" },
+    { "id": "credential", "type": "CONCEALED", "label": "credential", "value": "{{CREDENTIAL}}" },
+    { "id": "type", "type": "MENU", "label": "type" },
+    { "id": "filename", "type": "STRING", "label": "filename" },
+    { "id": "validFrom", "type": "DATE", "label": "valid from" },
+    { "id": "expires", "type": "DATE", "label": "expires" },
+    { "id": "hostname", "type": "STRING", "label": "hostname" },
+    { "id": "f1", "section": { "id": "warden00000000000000000s01", "label": "warden" }, "type": "STRING", "label": "max_window", "value": "30m" }
+  ],
+  "createdAt": "2026-10-01T09:11:00Z",
+  "updatedAt": "2026-10-24T08:00:00Z"
+}

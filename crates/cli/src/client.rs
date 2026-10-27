@@ -10,10 +10,14 @@ use anyhow::{Context as _, Result};
 use reqwest::{Response, StatusCode};
 use serde::de::DeserializeOwned;
 use url::Url;
-use warden_broker_proto::{ApiError, CreateRequest, CreatedResponse, GrantView, Id, RequestStatus};
+use warden_broker_proto::{
+    ApiError, CreateRequest, CreatedResponse, GrantView, Id, ProxyRequest, ProxyResponse,
+    RequestStatus,
+};
 use zeroize::Zeroizing;
 
 use crate::config::check_server_url;
+use crate::http::sanitize;
 
 /// Longest the server may hold a status request (`wait`), in seconds.
 pub const MAX_WAIT_SECS: u64 = 30;
@@ -91,7 +95,12 @@ impl Client {
         url.query_pairs_mut()
             .append_pair("wait", &wait.min(MAX_WAIT_SECS).to_string());
         let resp = self.send(self.http.get(url)).await?;
-        json(resp, StatusCode::OK).await
+        Ok(match json(resp, StatusCode::OK).await? {
+            RequestStatus::Error { message } => RequestStatus::Error {
+                message: sanitize(&message),
+            },
+            other => other,
+        })
     }
 
     /// The agent's live grants.
@@ -100,6 +109,16 @@ impl Client {
     /// If the server is unreachable or refuses.
     pub async fn grants(&self) -> Result<Vec<GrantView>, CallError> {
         let resp = self.send(self.http.get(self.url("v1/grants")?)).await?;
+        json(resp, StatusCode::OK).await
+    }
+
+    /// Have the broker make `call` through api grant `id`.
+    ///
+    /// # Errors
+    /// If the server is unreachable or refuses.
+    pub async fn proxy(&self, id: &Id, call: &ProxyRequest) -> Result<ProxyResponse, CallError> {
+        let url = self.url(&format!("v1/grants/{id}/http"))?;
+        let resp = self.send(self.http.post(url).json(call)).await?;
         json(resp, StatusCode::OK).await
     }
 
@@ -145,7 +164,9 @@ async fn json<T: DeserializeOwned>(resp: Response, expected: StatusCode) -> Resu
     }
     resp.json().await.map_err(|e| {
         if e.is_decode() {
-            CallError::Refused(format!("the broker sent an unexpected response: {e}"))
+            CallError::Refused(sanitize(&format!(
+                "the broker sent an unexpected response: {e}"
+            )))
         } else {
             // The body was cut off, for example by a restart.
             CallError::Unavailable(format!("cannot read the broker's response: {e}"))
@@ -153,7 +174,8 @@ async fn json<T: DeserializeOwned>(resp: Response, expected: StatusCode) -> Resu
     })
 }
 
-/// The server's error for a failed call, classified by its status.
+/// The server's error for a failed call, classified by its status, with
+/// the broker's message made safe to print.
 async fn failure(resp: Response) -> CallError {
     let status = resp.status();
     let what = if status.is_server_error() {
@@ -162,7 +184,7 @@ async fn failure(resp: Response) -> CallError {
         "broker refused"
     };
     let message = match resp.json::<ApiError>().await {
-        Ok(body) => format!("{what} ({status}): {}", body.error),
+        Ok(body) => format!("{what} ({status}): {}", sanitize(&body.error)),
         Err(_) => format!("{what} ({status})"),
     };
     if status.is_server_error() {
@@ -174,7 +196,7 @@ async fn failure(resp: Response) -> CallError {
 
 #[cfg(test)]
 mod tests {
-    use warden_broker_proto::Id;
+    use warden_broker_proto::{Id, RequestStatus};
     use zeroize::Zeroizing;
 
     use super::{CallError, Client};
@@ -256,6 +278,34 @@ mod tests {
             garbage.status(&id, 0).await,
             Err(CallError::Refused(_))
         ));
+    }
+
+    /// The broker's words reach the terminal only with control, format and
+    /// separator characters replaced.
+    #[tokio::test]
+    async fn broker_messages_are_sanitized() {
+        let id = Id::random();
+        let refused =
+            client(&answering(400, r#"{"error":"bad\u001b[2J\u202ething\u2028x\u0085y"}"#).await);
+        assert_eq!(
+            refused.status(&id, 0).await,
+            Err(CallError::Refused(
+                "broker refused (400 Bad Request): bad?[2J?thing?x?y".to_owned()
+            ))
+        );
+        let failed = client(
+            &answering(
+                200,
+                r#"{"status":"error","message":"no\u009bnotifier\u200b\u2029"}"#,
+            )
+            .await,
+        );
+        assert_eq!(
+            failed.status(&id, 0).await,
+            Ok(RequestStatus::Error {
+                message: "no?notifier??".to_owned()
+            })
+        );
     }
 
     #[test]

@@ -22,20 +22,30 @@ use tokio::task::AbortHandle;
 use tower::ServiceExt as _;
 use url::Url;
 use warden_broker_proto::{
-    Access, AgentName, CreateRequest, CreatedResponse, Goal, TargetName, UnixUser, Window,
+    Access, AgentName, CreateRequest, CreatedResponse, Goal, SecretName, TargetName, UnixUser,
+    Window,
 };
 use webauthn_authenticator_rs::WebauthnAuthenticator;
 use webauthn_authenticator_rs::softpasskey::SoftPasskey;
 use webauthn_rs::prelude::{
     CreationChallengeResponse, PublicKeyCredential, RequestChallengeResponse,
 };
+use zeroize::Zeroizing;
+
+pub mod upstream;
+
+pub use upstream::{HttpsUpstream, Received};
 
 use crate::approval::passkeys::Passkeys;
 use crate::audit::AuditLog;
 use crate::config::Config;
 use crate::identity::TailscaleServeIdentity;
 use crate::notify::{Doorbell, Notifier, NotifyError};
-use crate::policy::{CaKey, PolicyError, SecretBackend, SshMode, SshTarget};
+use crate::policy::{
+    ApiSecretPolicy, CaKey, PolicyError, SecretBackend, SecretValue, SshMode, SshTarget,
+    ValueFormat,
+};
+use crate::proxy::ProxyLimits;
 use crate::requests::{Clock, Requests};
 use crate::{AppState, agents, store};
 
@@ -178,11 +188,13 @@ pub const PI_HOST: &str = "192.0.2.10";
 /// A software passkey that claims user verification, as Face ID would.
 pub type SoftAuthenticator = WebauthnAuthenticator<SoftPasskey>;
 
-/// An in-memory [`SecretBackend`]: targets can be changed at any time, the
-/// CA key is generated per backend, and either lookup can be made to fail as
-/// if the backend were down.
+/// An in-memory [`SecretBackend`]: targets and API secrets can be changed at
+/// any time, the CA key is generated per backend, and target or CA lookups
+/// can be made to fail as if the backend were down.
 pub struct FakeBackend {
     targets: Mutex<HashMap<String, SshTarget>>,
+    api_secrets: Mutex<HashMap<String, (ApiSecretPolicy, Zeroizing<String>)>>,
+    api_swap: Mutex<Option<(ApiSecretPolicy, Zeroizing<String>)>>,
     ca: PrivateKey,
     target_outage: Mutex<Option<String>>,
     ca_outage: Mutex<Option<String>>,
@@ -198,6 +210,8 @@ impl FakeBackend {
         let pi = Self::pi_target();
         Self {
             targets: Mutex::new(HashMap::from([(pi.name.as_str().to_owned(), pi)])),
+            api_secrets: Mutex::new(HashMap::new()),
+            api_swap: Mutex::new(None),
             ca: PrivateKey::random(&mut OsRng, Algorithm::Ed25519).expect("CA key generation"),
             target_outage: Mutex::new(None),
             ca_outage: Mutex::new(None),
@@ -252,6 +266,72 @@ impl FakeBackend {
             .get(name)
             .cloned()
             .expect("no such fake target")
+    }
+
+    /// API secret `github`: origin `https://api.example.com`, header
+    /// `Authorization: Bearer {{secret}}`, `GET` only, path prefix `/`, no
+    /// pinned CA, max window 1h. Not added to any backend by itself.
+    ///
+    /// # Panics
+    /// Never: every part is a valid constant.
+    #[must_use]
+    pub fn example_api_secret() -> ApiSecretPolicy {
+        ApiSecretPolicy {
+            name: SecretName::try_from("github".to_owned()).expect("valid secret name"),
+            origin: Url::parse("https://api.example.com")
+                .expect("valid origin")
+                .origin(),
+            header: http::header::AUTHORIZATION,
+            format: ValueFormat::default(),
+            methods: vec![http::Method::GET],
+            path_prefix: "/".to_owned(),
+            ca_pem: None,
+            max_window: Window::H1,
+        }
+    }
+
+    /// Add or replace an API secret and its value.
+    ///
+    /// # Panics
+    /// If the lock is poisoned.
+    pub fn set_api_secret(&self, policy: ApiSecretPolicy, value: &str) {
+        self.api_secrets
+            .lock()
+            .expect("api secrets lock poisoned")
+            .insert(
+                policy.name.as_str().to_owned(),
+                (policy, Zeroizing::new(value.to_owned())),
+            );
+    }
+
+    /// Add or replace an API secret and its value right after the next API
+    /// secret read, as if the item were edited in 1Password between two
+    /// reads.
+    ///
+    /// # Panics
+    /// If the lock is poisoned.
+    pub fn set_api_secret_after_next_read(&self, policy: ApiSecretPolicy, value: &str) {
+        *self.api_swap.lock().expect("api swap lock poisoned") =
+            Some((policy, Zeroizing::new(value.to_owned())));
+    }
+
+    /// Read API secret `name` through `pick`, then apply any change queued
+    /// by [`FakeBackend::set_api_secret_after_next_read`].
+    fn api_entry<T>(
+        &self,
+        name: &SecretName,
+        pick: impl FnOnce(&(ApiSecretPolicy, Zeroizing<String>)) -> T,
+    ) -> Result<T, PolicyError> {
+        let poisoned = || PolicyError::Unavailable("fake backend lock poisoned".to_owned());
+        let mut secrets = self.api_secrets.lock().map_err(|_| poisoned())?;
+        let picked = secrets
+            .get(name.as_str())
+            .map(pick)
+            .ok_or_else(|| PolicyError::UnknownSecret(name.as_str().to_owned()));
+        if let Some((policy, value)) = self.api_swap.lock().map_err(|_| poisoned())?.take() {
+            secrets.insert(policy.name.as_str().to_owned(), (policy, value));
+        }
+        picked
     }
 
     /// The CA's public key.
@@ -311,6 +391,19 @@ impl SecretBackend for FakeBackend {
     async fn ssh_ca(&self) -> Result<CaKey, PolicyError> {
         Self::outage(&self.ca_outage)?;
         CaKey::new(self.ca.clone())
+    }
+
+    async fn api_secret(&self, name: &SecretName) -> Result<ApiSecretPolicy, PolicyError> {
+        self.api_entry(name, |(policy, _)| policy.clone())
+    }
+
+    async fn api_secret_with_value(
+        &self,
+        name: &SecretName,
+    ) -> Result<(ApiSecretPolicy, SecretValue), PolicyError> {
+        self.api_entry(name, |(policy, value)| {
+            (policy.clone(), SecretValue::new(value.clone()))
+        })
     }
 }
 
@@ -380,6 +473,7 @@ pub struct TestBroker {
     default_passkey: tokio::sync::Mutex<Option<SoftAuthenticator>>,
     servers: Mutex<Vec<AbortHandle>>,
     dir: Option<TempDir>,
+    proxy: ProxyLimits,
 }
 
 impl Drop for TestBroker {
@@ -398,6 +492,15 @@ impl TestBroker {
     /// # Panics
     /// If any part of the setup fails.
     pub async fn new() -> Self {
+        Self::with_proxy_limits(ProxyLimits::default()).await
+    }
+
+    /// Like [`TestBroker::new`], with proxied calls held to `proxy` (for
+    /// example a short timeout).
+    ///
+    /// # Panics
+    /// If any part of the setup fails.
+    pub async fn with_proxy_limits(proxy: ProxyLimits) -> Self {
         let dir = tempfile::tempdir().expect("temp dir");
         let db_path = dir.path().join("warden.db");
         let audit_path = dir.path().join("audit.jsonl");
@@ -407,6 +510,7 @@ impl TestBroker {
             audit_path,
             Arc::new(ManualClock::new(TEST_START)),
             Arc::new(FakeBackend::new()),
+            proxy,
         )
         .await
     }
@@ -427,6 +531,7 @@ impl TestBroker {
             self.audit_path.clone(),
             self.clock.clone(),
             self.backend.clone(),
+            self.proxy,
         )
         .await;
         *next.default_passkey.lock().await = passkey;
@@ -439,10 +544,13 @@ impl TestBroker {
         audit_path: PathBuf,
         clock: Arc<ManualClock>,
         backend: Arc<FakeBackend>,
+        proxy: ProxyLimits,
     ) -> Self {
         let pool = store::open(&db_path).await.expect("open database");
         let audit = Arc::new(AuditLog::open(&audit_path).await.expect("open audit log"));
-        let config = Arc::new(Config::from_lookup(test_env).expect("test configuration"));
+        let mut config = Config::from_lookup(test_env).expect("test configuration");
+        config.proxy = proxy;
+        let config = Arc::new(config);
         let capture = Arc::new(CapturingNotifier::new());
         let requests = Requests::new(
             pool.clone(),
@@ -482,6 +590,7 @@ impl TestBroker {
             default_passkey: tokio::sync::Mutex::new(None),
             servers: Mutex::new(Vec::new()),
             dir,
+            proxy,
         }
     }
 
@@ -615,6 +724,21 @@ impl TestBroker {
                 target: TargetName::try_from("pi".to_owned()).expect("valid target"),
                 user: UnixUser::try_from("alice".to_owned()).expect("valid user"),
                 public_key: key,
+            },
+            window,
+        }
+    }
+
+    /// A request to use API secret `secret`.
+    ///
+    /// # Panics
+    /// If `secret` or `goal` is not valid.
+    #[must_use]
+    pub fn api_request(secret: &str, goal: &str, window: Window) -> CreateRequest {
+        CreateRequest {
+            goal: Goal::try_from(goal.to_owned()).expect("valid goal"),
+            access: Access::Api {
+                secret: SecretName::try_from(secret.to_owned()).expect("valid secret name"),
             },
             window,
         }
