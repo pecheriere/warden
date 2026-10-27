@@ -333,6 +333,8 @@ async fn request_api(secret: SecretName, window: Window, goal: Goal) -> Result<(
         goal,
         access: Access::Api {
             secret: secret.clone(),
+            methods: None,
+            path_prefix: None,
         },
         window,
     };

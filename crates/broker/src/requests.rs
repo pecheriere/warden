@@ -508,7 +508,11 @@ impl Requests {
                 }
                 format!("{agent}|ssh|{target}")
             }
-            Access::Api { secret } => {
+            Access::Api {
+                secret,
+                methods,
+                path_prefix,
+            } => {
                 let policy = self
                     .backend
                     .api_secret(secret)
@@ -516,7 +520,15 @@ impl Requests {
                     .map_err(RequestError::from_secret_lookup)?;
                 check_window(req.window, policy.max_window, &format!("secret {secret}"))
                     .map_err(RequestError::Rejected)?;
-                format!("{agent}|api|{secret}")
+                let scope = policy
+                    .scope(methods.as_deref(), path_prefix.as_deref())
+                    .map_err(RequestError::Rejected)?;
+                let methods: Vec<&str> = scope.methods.iter().map(http::Method::as_str).collect();
+                format!(
+                    "{agent}|api|{secret}|{}|{}",
+                    methods.join(","),
+                    scope.path_prefix
+                )
             }
         };
         for _ in 0..INSERT_ATTEMPTS {
@@ -591,7 +603,7 @@ impl Requests {
         }
         let subject = match &req.access {
             Access::Ssh { target, user, .. } => format!("ssh {user}@{target}"),
-            Access::Api { secret } => format!("api {secret}"),
+            Access::Api { secret, .. } => format!("api {secret}"),
         };
         let created = AuditEvent::RequestCreated {
             id: id.clone(),
@@ -770,7 +782,7 @@ impl Requests {
         let request: CreateRequest = serde_json::from_str(&body)?;
         let destination = match &request.access {
             Access::Ssh { target, .. } => Destination::Ssh(self.backend.ssh_target(target).await?),
-            Access::Api { secret } => Destination::Api(
+            Access::Api { secret, .. } => Destination::Api(
                 self.backend
                     .api_secret(secret)
                     .await

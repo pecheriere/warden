@@ -8,8 +8,12 @@ use http::{HeaderName, Method};
 use sha2::{Digest as _, Sha256};
 use ssh_key::{Algorithm, HashAlg, PrivateKey, PublicKey};
 use url::Origin;
-use warden_broker_proto::{ApiGrant, SecretName, TargetName, UnixUser, Window};
+use warden_broker_proto::{
+    ApiGrant, READ_ONLY_METHODS, SecretName, TargetName, UnixUser, Window, under_prefix,
+};
 use zeroize::Zeroizing;
+
+use crate::proxy::rules::is_plain_path;
 
 pub mod onepassword;
 
@@ -88,6 +92,42 @@ fn digest_parts<'a>(parts: impl IntoIterator<Item = &'a str>) -> String {
         hasher.update(part.as_bytes());
     }
     hex::encode(hasher.finalize())
+}
+
+/// Most methods one request may name.
+const MAX_REQUESTED_METHODS: usize = 8;
+
+/// One uppercase method token (`GET`, `PATCH`, ...).
+pub(crate) fn parse_method(token: &str) -> Option<Method> {
+    // Uppercase ASCII letters are always a valid method token.
+    Some(token)
+        .filter(|t| !t.is_empty() && t.bytes().all(|b| b.is_ascii_uppercase()))
+        .and_then(|t| Method::from_bytes(t.as_bytes()).ok())
+}
+
+/// An absolute path without query, fragment, empty or dot segments, or
+/// characters that need quoting.
+pub(crate) fn check_path_prefix(prefix: &str) -> Result<(), &'static str> {
+    if !prefix.starts_with('/') {
+        return Err("must start with /");
+    }
+    if !prefix
+        .chars()
+        .all(|c| c.is_ascii_graphic() && !matches!(c, '?' | '#' | '\\'))
+    {
+        return Err("must be printable ASCII without spaces, ?, # or \\");
+    }
+    // The leading "/" yields one empty first segment; a trailing "/" one
+    // empty last segment. Any other empty segment is a "//".
+    let segments: Vec<&str> = prefix.split('/').skip(1).collect();
+    let (last, inner) = segments.split_last().unwrap_or((&"", &[]));
+    if inner.iter().any(|s| s.is_empty()) {
+        return Err("must not contain //");
+    }
+    if inner.iter().chain([last]).any(|s| matches!(*s, "." | "..")) {
+        return Err("must not contain . or .. segments");
+    }
+    Ok(())
 }
 
 /// How the secret is written into the header: a fixed prefix and suffix
@@ -240,24 +280,146 @@ impl ApiSecretPolicy {
         )
     }
 
-    /// The grant details an approval of this policy hands to the agent:
-    /// methods in sorted order (the order [`Self::destination_digest`]
-    /// uses) and the destination digest, so two grants are equal exactly
-    /// when they were made from the same destination.
+    /// The scope an API request asks for, resolved against this policy.
+    ///
+    /// Without `methods` it is the policy's read-only methods; with them,
+    /// exactly those, each of which the policy must allow. Without
+    /// `path_prefix` it is the policy's prefix; with one, it must be under
+    /// the policy's. `CONNECT` and `TRACE` are never in a scope.
+    ///
+    /// # Errors
+    /// A message for the agent when the request names nothing valid inside
+    /// the policy. It never holds the secret value.
+    pub fn scope(
+        &self,
+        methods: Option<&[String]>,
+        path_prefix: Option<&str>,
+    ) -> Result<ApiScope, String> {
+        let name = &self.name;
+        let mut chosen: Vec<Method> = match methods {
+            None => self
+                .methods
+                .iter()
+                .filter(|m| READ_ONLY_METHODS.contains(&m.as_str()))
+                .cloned()
+                .collect(),
+            Some(list) => self.requested_methods(list)?,
+        };
+        chosen.sort_unstable_by(|a, b| a.as_str().cmp(b.as_str()));
+        chosen.dedup();
+        if chosen.is_empty() {
+            return Err(format!(
+                "secret {name} allows no read-only method; ask for methods explicitly"
+            ));
+        }
+        let path_prefix = match path_prefix {
+            None => self.path_prefix.clone(),
+            Some(wanted) => {
+                check_path_prefix(wanted)
+                    .map_err(|reason| format!("secret {name}: path prefix {reason}"))?;
+                if !is_plain_path(wanted) {
+                    return Err(format!(
+                        "secret {name}: path prefix must not contain encoded separators or ;"
+                    ));
+                }
+                if !under_prefix(wanted, &self.path_prefix) {
+                    return Err(format!(
+                        "secret {name}: path prefix must be under {}",
+                        self.path_prefix
+                    ));
+                }
+                wanted.to_owned()
+            }
+        };
+        Ok(ApiScope {
+            methods: chosen,
+            path_prefix,
+        })
+    }
+
+    /// Parse and check an explicit method list against this policy.
+    fn requested_methods(&self, list: &[String]) -> Result<Vec<Method>, String> {
+        let name = &self.name;
+        if list.is_empty() || list.len() > MAX_REQUESTED_METHODS {
+            return Err(format!(
+                "secret {name}: methods must list 1 to {MAX_REQUESTED_METHODS} methods"
+            ));
+        }
+        let mut parsed: Vec<Method> = Vec::with_capacity(list.len());
+        for token in list {
+            let method = parse_method(token).ok_or_else(|| {
+                format!("secret {name}: methods must be uppercase method names, such as GET")
+            })?;
+            if parsed.contains(&method) {
+                return Err(format!("secret {name}: methods must not repeat {method}"));
+            }
+            parsed.push(method);
+        }
+        for method in &parsed {
+            if method == Method::CONNECT
+                || method == Method::TRACE
+                || !self.methods.contains(method)
+            {
+                return Err(format!("secret {name} does not allow {method}"));
+            }
+        }
+        Ok(parsed)
+    }
+
+    /// This policy narrowed to `scope`: same destination, fewer methods and a
+    /// deeper path prefix. Checking a call against it enforces the scope with
+    /// every rule the policy already has.
     #[must_use]
-    pub fn grant(&self) -> ApiGrant {
-        let mut methods: Vec<String> = self.methods.iter().map(|m| m.as_str().to_owned()).collect();
+    pub fn narrowed(&self, scope: &ApiScope) -> Self {
+        Self {
+            methods: scope.methods.clone(),
+            path_prefix: scope.path_prefix.clone(),
+            ..self.clone()
+        }
+    }
+
+    /// The grant details an approval at `scope` hands to the agent: the
+    /// scope's methods in sorted order (the order
+    /// [`Self::destination_digest`] uses) and prefix, plus this policy's own
+    /// destination digest (not the narrowed one), so a later edit of the item
+    /// is still detected.
+    #[must_use]
+    pub fn grant_for(&self, scope: &ApiScope) -> ApiGrant {
+        let mut methods: Vec<String> = scope
+            .methods
+            .iter()
+            .map(|m| m.as_str().to_owned())
+            .collect();
         methods.sort_unstable();
         methods.dedup();
         ApiGrant {
             secret: self.name.clone(),
             origin: self.origin.ascii_serialization(),
             methods,
-            path_prefix: self.path_prefix.clone(),
+            path_prefix: scope.path_prefix.clone(),
             header: self.header.as_str().to_owned(),
             digest: self.destination_digest(),
         }
     }
+
+    /// The grant details of the whole policy, with no narrowing.
+    #[must_use]
+    pub fn grant(&self) -> ApiGrant {
+        self.grant_for(&ApiScope {
+            methods: self.methods.clone(),
+            path_prefix: self.path_prefix.clone(),
+        })
+    }
+}
+
+/// What an API request asks for, resolved inside its policy: see
+/// [`ApiSecretPolicy::scope`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApiScope {
+    /// Methods the grant allows, sorted, without duplicates.
+    pub methods: Vec<Method>,
+    /// Path prefix the grant is limited to, starting with `/`.
+    pub path_prefix: String,
 }
 
 /// An API secret value, wiped on drop and never printed.
@@ -459,7 +621,7 @@ mod tests {
     use warden_broker_proto::SecretName;
     use zeroize::Zeroizing;
 
-    use super::{ApiSecretPolicy, SecretValue, SshMode, SshTarget, ValueFormat};
+    use super::{ApiScope, ApiSecretPolicy, SecretValue, SshMode, SshTarget, ValueFormat};
 
     fn key() -> PublicKey {
         PrivateKey::random(&mut OsRng, Algorithm::Ed25519)
@@ -616,6 +778,142 @@ mod tests {
         let mut pinned = post_get;
         pinned.ca_pem = Some("-----BEGIN CERTIFICATE-----".to_owned());
         assert_ne!(pinned.grant(), grant);
+    }
+
+    fn strings(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    fn item(prefix: &str, methods: &[Method]) -> ApiSecretPolicy {
+        api("https://api.example.com", prefix, methods, "authorization")
+    }
+
+    fn names(scope: &ApiScope) -> Vec<&str> {
+        scope.methods.iter().map(Method::as_str).collect()
+    }
+
+    #[test]
+    fn default_scope_is_read_only_subset() {
+        let both = item(
+            "/v1/",
+            &[Method::POST, Method::HEAD, Method::GET, Method::DELETE],
+        );
+        let scope = both.scope(None, None).unwrap();
+        assert_eq!(names(&scope), ["GET", "HEAD"]);
+        assert_eq!(scope.path_prefix, "/v1/");
+
+        let get = item("/", &[Method::GET, Method::POST]);
+        assert_eq!(names(&get.scope(None, None).unwrap()), ["GET"]);
+    }
+
+    #[test]
+    fn no_read_only_method_rejected() {
+        let writes = item("/", &[Method::POST, Method::PUT]);
+        assert_eq!(
+            writes.scope(None, None).unwrap_err(),
+            "secret github allows no read-only method; ask for methods explicitly"
+        );
+        // Asking explicitly works.
+        let scope = writes.scope(Some(&strings(&["PUT"])), None).unwrap();
+        assert_eq!(names(&scope), ["PUT"]);
+    }
+
+    #[test]
+    fn explicit_methods_must_be_in_item() {
+        let p = item("/", &[Method::GET, Method::POST]);
+        let scope = p.scope(Some(&strings(&["POST", "GET"])), None).unwrap();
+        assert_eq!(names(&scope), ["GET", "POST"]);
+        assert_eq!(
+            p.scope(Some(&strings(&["GET", "DELETE"])), None)
+                .unwrap_err(),
+            "secret github does not allow DELETE"
+        );
+        for bad in [
+            strings(&[]),
+            strings(&["GET", "GET"]),
+            strings(&["get"]),
+            strings(&["GET,POST"]),
+            strings(&[""]),
+            strings(&["A", "B", "C", "D", "E", "F", "G", "H", "I"]),
+        ] {
+            let err = p.scope(Some(&bad), None).unwrap_err();
+            assert!(err.starts_with("secret github: methods "), "{bad:?}: {err}");
+        }
+    }
+
+    #[test]
+    fn connect_trace_never_requestable() {
+        let p = item("/", &[Method::GET, Method::CONNECT, Method::TRACE]);
+        for denied in ["CONNECT", "TRACE"] {
+            assert_eq!(
+                p.scope(Some(&strings(&["GET", denied])), None).unwrap_err(),
+                format!("secret github does not allow {denied}")
+            );
+        }
+        // The default scope never picks them either.
+        assert_eq!(names(&p.scope(None, None).unwrap()), ["GET"]);
+    }
+
+    #[test]
+    fn requested_prefix_must_be_under_item_prefix() {
+        let under = |item_prefix: &str, wanted: &str| {
+            item(item_prefix, &[Method::GET]).scope(None, Some(wanted))
+        };
+        assert_eq!(under("/api", "/api/x").unwrap().path_prefix, "/api/x");
+        assert_eq!(under("/api", "/api").unwrap().path_prefix, "/api");
+        assert_eq!(under("/", "/anything/").unwrap().path_prefix, "/anything/");
+        assert_eq!(
+            item("/api/", &[Method::GET])
+                .scope(None, None)
+                .unwrap()
+                .path_prefix,
+            "/api/"
+        );
+        assert_eq!(
+            under("/api", "/apiary").unwrap_err(),
+            "secret github: path prefix must be under /api"
+        );
+        assert_eq!(
+            under("/api/", "/api").unwrap_err(),
+            "secret github: path prefix must be under /api/"
+        );
+        for bad in [
+            "/api/../x",
+            "/api/./x",
+            "/api//x",
+            "/api/%2e%2e/x",
+            "/api/%2E/x",
+            "/api/%2f",
+            "/api/x;y",
+            "/api/x?y",
+            "api/x",
+            "",
+        ] {
+            let err = under("/api/", bad).unwrap_err();
+            assert!(
+                err.starts_with("secret github: path prefix "),
+                "{bad}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn narrowed_and_grant_for_use_scope_and_item_digest() {
+        let p = item("/v1/", &[Method::GET, Method::POST, Method::HEAD]);
+        let scope = p.scope(None, Some("/v1/repos")).unwrap();
+        let narrowed = p.narrowed(&scope);
+        assert_eq!(narrowed.methods, scope.methods);
+        assert_eq!(narrowed.path_prefix, "/v1/repos");
+        assert_eq!(narrowed.origin, p.origin);
+        assert_eq!(narrowed.header, p.header);
+        assert_eq!(narrowed.name, p.name);
+
+        let grant = p.grant_for(&scope);
+        assert_eq!(grant.methods, ["GET", "HEAD"]);
+        assert_eq!(grant.path_prefix, "/v1/repos");
+        // The digest is the item's, not the narrowed policy's.
+        assert_eq!(grant.digest, p.destination_digest());
+        assert_ne!(grant.digest, narrowed.destination_digest());
     }
 
     #[test]

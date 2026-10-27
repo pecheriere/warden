@@ -6,7 +6,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use http::{HeaderMap, HeaderName, HeaderValue, Method};
 use url::Url;
-use warden_broker_proto::ProxyRequest;
+use warden_broker_proto::{ProxyRequest, under_prefix};
 
 use crate::policy::{ApiSecretPolicy, is_reserved_header};
 
@@ -162,7 +162,7 @@ fn check_url(policy: &ApiSecretPolicy, raw: &str) -> Result<Url, Refusal> {
 
 /// No `.`/`..` segments, empty segments (`//`), `;` parameters or encoded
 /// separators.
-fn is_plain_path(path: &str) -> bool {
+pub(crate) fn is_plain_path(path: &str) -> bool {
     let lower = path.to_ascii_lowercase();
     if ENCODED_SEPARATORS.iter().any(|enc| lower.contains(enc))
         || path.contains("//")
@@ -173,16 +173,6 @@ fn is_plain_path(path: &str) -> bool {
     !path
         .split('/')
         .any(|segment| segment == "." || segment == "..")
-}
-
-/// `path` is `prefix` or below it, on a segment boundary: `/api` covers
-/// `/api` and `/api/x` but not `/apiary`; `/api/` covers `/api/` and
-/// `/api/x` but not `/api`.
-fn under_prefix(path: &str, prefix: &str) -> bool {
-    match path.strip_prefix(prefix) {
-        Some(rest) => prefix.ends_with('/') || rest.is_empty() || rest.starts_with('/'),
-        None => false,
-    }
 }
 
 /// The method, if the policy lists it. `CONNECT` and `TRACE` are never

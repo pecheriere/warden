@@ -11,14 +11,14 @@ use sqlx::Row as _;
 use ssh_key::{Certificate, PublicKey};
 use warden_broker::approval::passkeys;
 use warden_broker::policy::{ApiSecretPolicy, RelayCredential, ValueFormat};
-use warden_broker::requests::Clock as _;
+use warden_broker::requests::{Clock as _, RequestError};
 use warden_broker::testkit::{
     FakeBackend, NAS_HOST, PI_HOST, RELAY_PUBLIC_HOST, RELAY_PUBLIC_PORT, SoftAuthenticator,
     TEST_ORIGIN, TEST_OWNER, TEST_START, TestBroker,
 };
 use warden_broker_proto::{
-    Access, AgentName, ApiGrant, CreatedResponse, GrantAccess, Id, RequestStatus, SecretName,
-    TargetName, Window,
+    Access, AgentName, ApiGrant, CreateRequest, CreatedResponse, Goal, GrantAccess, Id,
+    RequestStatus, SecretName, TargetName, Window,
 };
 use webauthn_authenticator_rs::WebauthnAuthenticator;
 use webauthn_authenticator_rs::softpasskey::SoftPasskey;
@@ -948,6 +948,108 @@ async fn api_pending() -> (TestBroker, CreatedResponse, String) {
         )
         .await;
     (broker, created, token)
+}
+
+/// A broker with agent `bot` and API secret `github` allowing GET, HEAD and
+/// POST under `/v1/`.
+async fn scoped_broker() -> TestBroker {
+    let broker = TestBroker::new().await;
+    broker.add_agent("bot").await;
+    let mut policy = FakeBackend::example_api_secret();
+    policy.methods = vec![Method::POST, Method::GET, Method::HEAD];
+    "/v1/".clone_into(&mut policy.path_prefix);
+    broker.backend.set_api_secret(policy, API_CREDENTIAL);
+    broker
+}
+
+fn scoped_request(methods: Option<&[&str]>, path_prefix: Option<&str>) -> CreateRequest {
+    CreateRequest {
+        goal: Goal::try_from("list the open pull requests".to_owned()).unwrap(),
+        access: Access::Api {
+            secret: SecretName::try_from("github".to_owned()).unwrap(),
+            methods: methods.map(|m| m.iter().map(|s| (*s).to_owned()).collect()),
+            path_prefix: path_prefix.map(str::to_owned),
+        },
+        window: Window::M15,
+    }
+}
+
+async fn create_scoped(
+    broker: &TestBroker,
+    req: CreateRequest,
+) -> Result<CreatedResponse, RequestError> {
+    broker.state().requests.create(&bot(), req).await
+}
+
+async fn dedupe_keys(broker: &TestBroker) -> Vec<String> {
+    sqlx::query("SELECT dedupe_key FROM requests ORDER BY created_at, rowid")
+        .fetch_all(&broker.state().pool)
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| row.get(0))
+        .collect()
+}
+
+#[tokio::test]
+async fn scope_violations_are_rejected_without_notifying() {
+    let broker = scoped_broker().await;
+    let cases = [
+        (
+            scoped_request(Some(&["DELETE"]), None),
+            "secret github does not allow DELETE",
+        ),
+        (
+            scoped_request(None, Some("/v1")),
+            "secret github: path prefix must be under /v1/",
+        ),
+        (
+            scoped_request(Some(&["GET"]), Some("/v1/../admin")),
+            "secret github: path prefix must not contain . or .. segments",
+        ),
+    ];
+    for (req, expected) in cases {
+        let err = create_scoped(&broker, req).await.unwrap_err();
+        let RequestError::Rejected(message) = err else {
+            panic!("expected Rejected, got {err:?}");
+        };
+        assert_eq!(message, expected);
+    }
+    assert!(broker.capture.rung().is_empty());
+    assert!(dedupe_keys(&broker).await.is_empty());
+    assert!(!broker.audit_types().contains(&"request_created".to_owned()));
+}
+
+#[tokio::test]
+async fn read_and_write_requests_do_not_dedupe() {
+    let broker = scoped_broker().await;
+    let read = create_scoped(&broker, scoped_request(None, None))
+        .await
+        .unwrap();
+    let write = create_scoped(&broker, scoped_request(Some(&["GET", "POST"]), None))
+        .await
+        .unwrap();
+    let narrower = create_scoped(&broker, scoped_request(None, Some("/v1/repos")))
+        .await
+        .unwrap();
+    assert_ne!(read.id, write.id);
+    assert_ne!(read.id, narrower.id);
+    // The same request again is the dedupe path, as before.
+    let again = create_scoped(
+        &broker,
+        scoped_request(Some(&["HEAD", "GET"]), Some("/v1/")),
+    )
+    .await
+    .unwrap();
+    assert_eq!(again.id, read.id);
+    assert_eq!(
+        dedupe_keys(&broker).await,
+        [
+            "bot|api|github|GET,HEAD|/v1/",
+            "bot|api|github|GET,POST|/v1/",
+            "bot|api|github|GET,HEAD|/v1/repos",
+        ]
+    );
 }
 
 #[tokio::test]

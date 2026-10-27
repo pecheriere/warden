@@ -995,6 +995,8 @@ impl TestBroker {
             goal: Goal::try_from(goal.to_owned()).expect("valid goal"),
             access: Access::Api {
                 secret: SecretName::try_from(secret.to_owned()).expect("valid secret name"),
+                methods: None,
+                path_prefix: None,
             },
             window,
         }

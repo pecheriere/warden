@@ -56,7 +56,7 @@ fn access_line(request: &CreateRequest, host: &str, port: u16) -> String {
             format!("ssh {user}@{target} ([{host}]:{port})")
         }
         Access::Ssh { target, user, .. } => format!("ssh {user}@{target} ({host}:{port})"),
-        Access::Api { secret } => format!("api {secret}"),
+        Access::Api { secret, .. } => format!("api {secret}"),
     }
 }
 
@@ -243,7 +243,7 @@ pub fn history(entries: &[HistoryEntry]) -> Markup {
                     @for entry in entries {
                         @let subject = match &entry.request.access {
                             Access::Ssh { target, user, .. } => format!("{user}@{target}"),
-                            Access::Api { secret } => format!("api:{secret}"),
+                            Access::Api { secret, .. } => format!("api:{secret}"),
                         };
                         tr {
                             td { (utc(entry.created_at)) }
