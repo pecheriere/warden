@@ -1,0 +1,36 @@
+{
+  "protocol": "warden-request-v1",
+  "about": "Test vectors for warden-request-v1 signed agent requests, embedded in docs/agent-protocol.md. The key is a throwaway generated only for these vectors: it protects nothing and is not a secret. Never enroll it.",
+  "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFtEYSaZPFM5lYU6qb0mU18GImVC77EbHBHD9eXvkSjX warden throwaway test vector key, not a secret",
+  "private_key_file": "crates/proto/tests/fixtures/throwaway-test-only-signing-ed25519.key",
+  "vectors": [
+    {
+      "name": "create a request (POST with a body)",
+      "audience": "40ad20029e94984d193159667b296d8a",
+      "agent": "build-bot",
+      "method": "POST",
+      "target": "/v1/requests",
+      "timestamp": "1793091600",
+      "nonce": "ee517b64804ef8916b8386eeaa436de0",
+      "body": "{\"goal\":\"list open pull requests to triage issue 42\",\"access\":{\"kind\":\"api\",\"secret\":\"github\"},\"window\":\"15m\"}",
+      "body_sha256": "7b4d5ced01700c9d1f327ea0468eb7f7415f721be9174d9b1787fac19f97e3bc",
+      "message": "warden-request-v1\naudience:40ad20029e94984d193159667b296d8a\nagent:build-bot\nmethod:POST\ntarget:/v1/requests\ntimestamp:1793091600\nnonce:ee517b64804ef8916b8386eeaa436de0\nbody-sha256:7b4d5ced01700c9d1f327ea0468eb7f7415f721be9174d9b1787fac19f97e3bc\n",
+      "message_sha256": "4ae35bb0a07a66df1cb95810a28ef919bdba8c7eefe55f8ec8080a8576944620",
+      "signature": "U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAgW0RhJpk8UzmVhTqpvSZTXwYiZULvsRscEcP15e+RKNcAAAARd2FyZGVuLXJlcXVlc3QtdjEAAAAAAAAABnNoYTUxMgAAAFMAAAALc3NoLWVkMjU1MTkAAABAlPvk/zRidR1rxdes/qGezl9WbfbZEwmU+4JPvdcjBCat/6nB0FMHMxOYHx6pi/cl/inmt+L63OYj+2lDb5wGDg=="
+    },
+    {
+      "name": "long-poll a request (GET with a query, no body)",
+      "audience": "40ad20029e94984d193159667b296d8a",
+      "agent": "build-bot",
+      "method": "GET",
+      "target": "/v1/requests/0b8f4c1e9d2a47f3a5c6e7d8f9a0b1c2?wait=30",
+      "timestamp": "1793091600",
+      "nonce": "4a445d4dbb87ff887c7ee560e015dadb",
+      "body": "",
+      "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "message": "warden-request-v1\naudience:40ad20029e94984d193159667b296d8a\nagent:build-bot\nmethod:GET\ntarget:/v1/requests/0b8f4c1e9d2a47f3a5c6e7d8f9a0b1c2?wait=30\ntimestamp:1793091600\nnonce:4a445d4dbb87ff887c7ee560e015dadb\nbody-sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n",
+      "message_sha256": "2303c5f701c4085cc29ed3c7e0978bc5a4b20c71152bdd69eecb1151c50a2568",
+      "signature": "U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAgW0RhJpk8UzmVhTqpvSZTXwYiZULvsRscEcP15e+RKNcAAAARd2FyZGVuLXJlcXVlc3QtdjEAAAAAAAAABnNoYTUxMgAAAFMAAAALc3NoLWVkMjU1MTkAAABA9sQPlnSUAsLdic8E6k3x17XCbv3vxLsAG+ogblqBwrMwBZElIqCAqPO2vVopQyofr2hakmLDYOGHFNMbg9mzCw=="
+    }
+  ]
+}

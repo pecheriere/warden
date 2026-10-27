@@ -4893,6 +4893,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.1",
+ "ssh-key 0.6.7",
  "thiserror 2.0.21",
  "unicode-properties",
 ]

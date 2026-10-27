@@ -18,3 +18,8 @@ serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 unicode-properties.workspace = true
+
+[dev-dependencies]
+# Checks the signing test vectors against an independent SSHSIG
+# implementation; test-only, so the wire crate stays dependency-light.
+ssh-key.workspace = true
