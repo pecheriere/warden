@@ -287,9 +287,11 @@ except an oversized body (413) and a body too slow to arrive (408):
    and no `Authorization` header is present.
 2. The agent exists, is not revoked and has a registered signing key.
 3. The timestamp is within 60 seconds of the broker's clock.
-4. The body is read, within the endpoint's size limit and within 10
-   seconds. A larger body is refused with 413, and a body still incomplete
-   after 10 seconds with 408, at this step, before the signature is checked.
+4. The body is read, within the endpoint's size limit and within the time
+   allowed for that limit ([section 5](#5-api-conventions): 10 seconds, or
+   16 for `POST /v1/grants/{id}/http`). A larger body is refused with 413,
+   and a body still incomplete when the time is up with 408, at this step,
+   before the signature is checked.
 5. The signature verifies: namespace `warden-request-v1`, hash `sha512` or
    `sha256`, made by exactly the agent's registered key, over the canonical
    message rebuilt from the request as received.
@@ -464,8 +466,11 @@ that it is the expected key, as `-Y verify` with an allowed-signers file does
   `POST /v1/grants/{id}/http` which accepts 2 MiB. Over the limit is 413
   `{"error":"request body rejected"}`. This is checked before the signature,
   so an oversized signed request gets a 413, not a 401.
-- **Time limit.** The body of a signed request must arrive within 10
-  seconds of the headers; one still incomplete then is
+- **Time limit.** The body of a signed request must arrive within a time
+  that scales with the endpoint's size limit: the larger of 10 seconds and
+  the limit at 128 KiB per second, counted from when the broker starts
+  reading it. That is 10 seconds for the 16 KiB endpoints and 16 seconds for
+  `POST /v1/grants/{id}/http` (2 MiB). A body still incomplete then is
   `408 {"error":"request body timed out"}`, also before the signature is
   checked. Send the body at once: sign it buffered, not streamed slowly.
 - **Identifiers.** Request and grant ids are 32 lowercase hex characters.

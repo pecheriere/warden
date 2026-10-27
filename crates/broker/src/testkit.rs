@@ -58,6 +58,7 @@ use crate::policy::{
 use crate::proxy::{CallSlots, ProxyLimits};
 use crate::relay::{RelayEndpoint, RelayLimits, RelayServer, host_key};
 use crate::requests::{Clock, Requests};
+use crate::signed::BodyReadTimeout;
 use crate::{AppState, agents, store};
 
 /// A clock that only moves when told to.
@@ -583,6 +584,14 @@ pub struct BaseUrls {
     pub approval: Url,
 }
 
+/// The limits a test may change from the broker's defaults; kept across
+/// [`TestBroker::restart`].
+#[derive(Debug, Clone, Copy, Default)]
+struct Limits {
+    proxy: ProxyLimits,
+    body_read_timeout: BodyReadTimeout,
+}
+
 /// A broker running in-process: real state, real routes driven with
 /// `tower::ServiceExt::oneshot` (or on loopback ports after
 /// [`TestBroker::spawn`]), a fake backend, a capturing notifier and a manual
@@ -608,7 +617,7 @@ pub struct TestBroker {
         )>,
     >,
     dir: Option<TempDir>,
-    proxy: ProxyLimits,
+    limits: Limits,
     /// `WARDEN_RELAY_PUBLIC_ADDR`, if the relay is configured.
     relay: Option<String>,
 }
@@ -645,7 +654,7 @@ impl TestBroker {
     /// # Panics
     /// If any part of the setup fails.
     pub async fn without_relay() -> Self {
-        Self::fresh(ProxyLimits::default(), None).await
+        Self::fresh(Limits::default(), None).await
     }
 
     /// Like [`TestBroker::new`], with the relay already running on an
@@ -660,7 +669,7 @@ impl TestBroker {
             .await
             .expect("bind relay listener");
         let addr = listener.local_addr().expect("relay listener address");
-        let broker = Self::fresh(ProxyLimits::default(), Some(addr.to_string())).await;
+        let broker = Self::fresh(Limits::default(), Some(addr.to_string())).await;
         broker.serve_relay(listener, RelayLimits::default()).await;
         (broker, addr)
     }
@@ -672,13 +681,33 @@ impl TestBroker {
     /// If any part of the setup fails.
     pub async fn with_proxy_limits(proxy: ProxyLimits) -> Self {
         Self::fresh(
-            proxy,
+            Limits {
+                proxy,
+                ..Limits::default()
+            },
             Some(format!("{RELAY_PUBLIC_HOST}:{RELAY_PUBLIC_PORT}")),
         )
         .await
     }
 
-    async fn fresh(proxy: ProxyLimits, relay: Option<String>) -> Self {
+    /// Like [`TestBroker::new`], with the body of a signed request given
+    /// `timeout` to arrive instead of the broker's fixed default (to test
+    /// it without waiting seconds).
+    ///
+    /// # Panics
+    /// If any part of the setup fails.
+    pub async fn with_body_read_timeout(timeout: BodyReadTimeout) -> Self {
+        Self::fresh(
+            Limits {
+                body_read_timeout: timeout,
+                ..Limits::default()
+            },
+            Some(format!("{RELAY_PUBLIC_HOST}:{RELAY_PUBLIC_PORT}")),
+        )
+        .await
+    }
+
+    async fn fresh(limits: Limits, relay: Option<String>) -> Self {
         let dir = tempfile::tempdir().expect("temp dir");
         let db_path = dir.path().join("warden.db");
         let audit_path = dir.path().join("audit.jsonl");
@@ -688,7 +717,7 @@ impl TestBroker {
             audit_path,
             Arc::new(ManualClock::new(TEST_START)),
             Arc::new(FakeBackend::new()),
-            proxy,
+            limits,
             relay,
         )
         .await
@@ -724,7 +753,7 @@ impl TestBroker {
             self.audit_path.clone(),
             self.clock.clone(),
             self.backend.clone(),
-            self.proxy,
+            self.limits,
             relay,
         )
         .await;
@@ -738,7 +767,7 @@ impl TestBroker {
         audit_path: PathBuf,
         clock: Arc<ManualClock>,
         backend: Arc<FakeBackend>,
-        proxy: ProxyLimits,
+        limits: Limits,
         relay: Option<String>,
     ) -> Self {
         let pool = store::open(&db_path).await.expect("open database");
@@ -752,7 +781,8 @@ impl TestBroker {
             other => test_env(other),
         })
         .expect("test configuration");
-        config.proxy = proxy;
+        config.proxy = limits.proxy;
+        config.body_read_timeout = limits.body_read_timeout;
         let config = Arc::new(config);
         let relay_endpoint = match &config.relay.public_addr {
             Some(addr) => {
@@ -809,7 +839,7 @@ impl TestBroker {
             servers: Mutex::new(Vec::new()),
             relays: Mutex::new(Vec::new()),
             dir,
-            proxy,
+            limits,
             relay,
         }
     }

@@ -51,25 +51,33 @@ const MAX_WAIT_SECS: u64 = 30;
 
 /// Routes of the agent API listener, with `state` applied.
 pub fn router(state: AppState) -> Router {
-    // Signature checks sit inside each route's body limit, which they apply
-    // when they read the body.
-    let agent = |route: MethodRouter<AppState>| {
-        route.layer(middleware::from_fn_with_state(
-            state.clone(),
+    // An agent route with bodies of at most `limit` bytes. The signature
+    // check sits inside the body limit, which it applies when it reads the
+    // body, and times the body by the same limit.
+    let agent = |route: MethodRouter<AppState>, limit: usize| {
+        let verified: MethodRouter<AppState> = route.layer(middleware::from_fn_with_state(
+            signed::SignedRoute::new(state.clone(), limit),
             signed::verify,
-        ))
+        ));
+        verified.layer(DefaultBodyLimit::max(limit))
     };
     Router::new()
         .route("/healthz", get(healthz))
         .route("/v1/info", get(info))
-        .route("/v1/requests", agent(post(create_request)))
-        .route("/v1/requests/{id}", agent(get(request_status)))
-        .route("/v1/requests/{id}/cancel", agent(post(cancel_request)))
-        .route("/v1/grants", agent(get(list_grants)))
-        .route("/v1/grants/{id}/revoke", agent(post(revoke_grant)))
+        .route("/v1/requests", agent(post(create_request), BODY_LIMIT))
+        .route("/v1/requests/{id}", agent(get(request_status), BODY_LIMIT))
+        .route(
+            "/v1/requests/{id}/cancel",
+            agent(post(cancel_request), BODY_LIMIT),
+        )
+        .route("/v1/grants", agent(get(list_grants), BODY_LIMIT))
+        .route(
+            "/v1/grants/{id}/revoke",
+            agent(post(revoke_grant), BODY_LIMIT),
+        )
         .route(
             "/v1/grants/{id}/http",
-            agent(post(proxy_call)).layer(DefaultBodyLimit::max(PROXY_BODY_LIMIT)),
+            agent(post(proxy_call), PROXY_BODY_LIMIT),
         )
         .fallback(not_found)
         .layer(DefaultBodyLimit::max(BODY_LIMIT))

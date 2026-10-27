@@ -10,6 +10,7 @@ use url::Url;
 use crate::notify::{ChannelKind, ChannelList, parse_channels};
 use crate::policy::onepassword::parse_host_port;
 use crate::proxy::ProxyLimits;
+use crate::signed::BodyReadTimeout;
 
 /// Largest value accepted for `WARDEN_RELAY_MAX_SESSIONS`: each session
 /// holds two SSH connections and their buffers.
@@ -216,6 +217,10 @@ pub struct Config {
     pub proxy: ProxyLimits,
     /// The SSH relay.
     pub relay: RelayConfig,
+    /// How long the body of a signed request may take to arrive. Not set
+    /// from the environment: always [`BodyReadTimeout::default`]; tests
+    /// shorten it.
+    pub body_read_timeout: BodyReadTimeout,
 }
 
 /// The proxy's limits from the environment, defaults where unset.
@@ -341,6 +346,7 @@ impl Config {
             notify,
             proxy,
             relay,
+            body_read_timeout: BodyReadTimeout::default(),
         })
     }
 }

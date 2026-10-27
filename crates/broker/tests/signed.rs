@@ -3,6 +3,7 @@
 //! forged request is refused.
 
 use std::convert::Infallible;
+use std::num::NonZeroU64;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -19,7 +20,7 @@ use ssh_encoding::{Decode as _, Encode as _};
 use ssh_key::{Algorithm, EcdsaCurve, HashAlg, PrivateKey, SshSig};
 use warden_broker::agents::{self, AgentPublicKey};
 use warden_broker::requests::{self, Clock as _};
-use warden_broker::signed::{BODY_READ_TIMEOUT, NONCE_RETENTION_SECS};
+use warden_broker::signed::{BodyReadTimeout, NONCE_RETENTION_SECS};
 use warden_broker::testkit::{HttpsUpstream, TEST_OWNER, TestBroker, request_signature};
 use warden_broker_proto::signing::{
     AGENT_HEADER, Audience, NAMESPACE, NONCE_HEADER, Nonce, SIGNATURE_HEADER, SignedRequestParts,
@@ -952,30 +953,50 @@ async fn openssh_ssh_keygen_signature_accepted() {
     agent.kill().await.unwrap();
 }
 
-#[tokio::test]
-async fn stalled_body_times_out_before_verification() {
-    let broker = TestBroker::new().await;
-    let key = broker.add_signing_agent("bot", Algorithm::Ed25519).await;
-    let parts = head(broker.signed_request(&key, "bot", "POST", "/v1/requests", Vec::new()));
+/// Send a validly signed `method target` whose body never arrives; the
+/// response and how long it took.
+async fn send_stalled(
+    broker: &TestBroker,
+    key: &PrivateKey,
+    target: &str,
+) -> (StatusCode, String, Duration) {
+    let parts = head(broker.signed_request(key, "bot", "POST", target, Vec::new()));
     // A body whose sender stays open and never sends anything.
     let (sender, stalled) = Channel::<Bytes, Infallible>::new(1);
-    let mut req = Request::post("/v1/requests")
-        .body(Body::new(stalled))
-        .unwrap();
+    let mut req = Request::post(target).body(Body::new(stalled)).unwrap();
     *req.headers_mut() = parts.headers.clone();
-
     let started = Instant::now();
     let resp = broker.api_send(req).await;
     let waited = started.elapsed();
-    assert_eq!(resp.status, StatusCode::REQUEST_TIMEOUT, "{}", resp.body);
-    assert_eq!(resp.body, r#"{"error":"request body timed out"}"#);
-    assert!(waited >= BODY_READ_TIMEOUT, "{waited:?}");
-    assert!(
-        waited < BODY_READ_TIMEOUT + Duration::from_secs(5),
-        "{waited:?}"
-    );
-    assert_eq!(nonce_rows(&broker).await, 0);
     drop(sender);
+    (resp.status, resp.body, waited)
+}
+
+#[tokio::test]
+async fn stalled_body_times_out_before_verification() {
+    // At 4 MiB/s, a 16 KiB limit takes 4 ms (so the 100 ms floor applies)
+    // and the 2 MiB limit of a proxied call 500 ms.
+    let timeout = BodyReadTimeout {
+        floor: Duration::from_millis(100),
+        bytes_per_sec: NonZeroU64::new(4 * 1024 * 1024).unwrap(),
+    };
+    let broker = TestBroker::with_body_read_timeout(timeout).await;
+    let key = broker.add_signing_agent("bot", Algorithm::Ed25519).await;
+
+    for (target, expected) in [
+        ("/v1/requests", Duration::from_millis(100)),
+        (
+            "/v1/grants/0b8f4c1e9d2a47f3a5c6e7d8f9a0b1c2/http",
+            Duration::from_millis(500),
+        ),
+    ] {
+        let (status, body, waited) = send_stalled(&broker, &key, target).await;
+        assert_eq!(status, StatusCode::REQUEST_TIMEOUT, "{target}: {body}");
+        assert_eq!(body, r#"{"error":"request body timed out"}"#);
+        assert!(waited >= expected, "{target}: {waited:?}");
+        assert!(waited < expected * 3, "{target}: {waited:?}");
+    }
+    assert_eq!(nonce_rows(&broker).await, 0);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

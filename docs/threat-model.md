@@ -130,8 +130,9 @@ guarantee because the server is the trusted party:
     and refused.
   - Before a signed request is verified, its body is read capped in size
     (the route's limit, 16 KiB or 2 MiB for proxied calls; 413) and in time
-    (10 s; 408), so a caller naming a known agent cannot hold a connection
-    or memory beyond that without a valid signature.
+    (the larger of 10 s and the limit at 128 KiB/s: 10 s, or 16 s for
+    proxied calls; 408), so a caller naming a known agent cannot hold a
+    connection or memory beyond that without a valid signature.
   - **Agent names are not secret.** An unauthenticated peer that can reach
     the API can learn whether a name belongs to an enrolled, unrevoked
     key-signed agent: such a name gets a 413 or 408 for an oversized or slow

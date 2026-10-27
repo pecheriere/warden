@@ -519,7 +519,9 @@ agent, in one of two ways:
   timestamp, a single-use nonce and the body's SHA-256. The broker checks the
   headers (any other `Warden-*` name is reserved and refused), the agent, the
   clock (±60 s), the body (within the route's size limit, 413, and within
-  `BODY_READ_TIMEOUT`, 10 s, 408), the signature and then the nonce, in that
+  a time that scales with that limit, the larger of 10 s and the limit at
+  128 KiB/s: 10 s for 16 KiB, 16 s for the 2 MiB of a proxied call; 408),
+  the signature and then the nonce, in that
   order; it records a nonce only once the signature
   verified, keeps it 10 minutes and sweeps it with the request sweeper. No
   reusable secret is stored on the agent's machine and a captured request

@@ -12,7 +12,8 @@
 //! 2. the agent exists, is not revoked and has a registered signing key;
 //! 3. the timestamp is within [`MAX_CLOCK_SKEW_SECS`] of the broker's clock;
 //! 4. the body is read within the route's body limit (413 beyond it) and
-//!    within [`BODY_READ_TIMEOUT`] (408 beyond it);
+//!    within the time [`BodyReadTimeout`] allows for that limit (408
+//!    beyond it);
 //! 5. the SSHSIG verifies: namespace [`NAMESPACE`], hash `sha512` or
 //!    `sha256`, made by exactly the registered key, over the canonical
 //!    message rebuilt from the request as received;
@@ -24,6 +25,7 @@
 //! signature bytes. A request that passes carries a [`SignedAgent`]
 //! extension and its body, already read, for the handler.
 
+use std::num::NonZeroU64;
 use std::time::Duration;
 
 use axum::body::{Body, Bytes};
@@ -57,9 +59,60 @@ pub const MAX_SIGNATURE_LEN: usize = 4096;
 pub const NONCE_RETENTION_SECS: i64 = 600;
 
 /// How long reading the body of a signed request may take before it is
-/// verified. A caller naming a known agent cannot hold a connection open
-/// with a trickled body longer than this; it gets a 408.
-pub const BODY_READ_TIMEOUT: Duration = Duration::from_secs(10);
+/// verified: the larger of [`BodyReadTimeout::floor`] and the route's body
+/// limit at [`BodyReadTimeout::bytes_per_sec`]. A caller naming a known
+/// agent cannot hold a connection open with a trickled body longer than
+/// this; it gets a 408.
+///
+/// The broker always uses [`BodyReadTimeout::default`] (at least 10 s, at
+/// 128 KiB/s: 10 s for 16 KiB, 16 s for 2 MiB); tests shorten it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BodyReadTimeout {
+    /// The shortest time allowed, whatever the limit.
+    pub floor: Duration,
+    /// The slowest rate a full-size body must arrive at.
+    pub bytes_per_sec: NonZeroU64,
+}
+
+impl Default for BodyReadTimeout {
+    fn default() -> Self {
+        Self {
+            floor: Duration::from_secs(10),
+            // 128 KiB/s; checked non-zero at compile time.
+            bytes_per_sec: const { NonZeroU64::new(128 * 1024).unwrap() },
+        }
+    }
+}
+
+impl BodyReadTimeout {
+    /// The time allowed for a body of at most `limit` bytes, to the
+    /// millisecond (rounded up).
+    #[must_use]
+    pub fn for_limit(self, limit: usize) -> Duration {
+        let millis = u64::try_from(limit)
+            .unwrap_or(u64::MAX)
+            .saturating_mul(1000)
+            .div_ceil(self.bytes_per_sec.get());
+        Duration::from_millis(millis).max(self.floor)
+    }
+}
+
+/// The state of [`verify`] on one route: the broker's, and the route's body
+/// limit, which [`verify`] needs to time the body.
+#[derive(Clone)]
+pub struct SignedRoute {
+    state: AppState,
+    body_limit: usize,
+}
+
+impl SignedRoute {
+    /// [`verify`] for a route whose bodies are at most `body_limit` bytes
+    /// (the limit of its [`axum::extract::DefaultBodyLimit`]).
+    #[must_use]
+    pub const fn new(state: AppState, body_limit: usize) -> Self {
+        Self { state, body_limit }
+    }
+}
 
 /// The protocol's headers; any other `Warden-*` name is reserved and refused.
 const SIGNING_HEADERS: [&str; 4] = [
@@ -104,7 +157,7 @@ enum Refusal {
     Unauthorized(&'static str),
     /// The body could not be read within the route's limit (or at all).
     Body(StatusCode),
-    /// The body did not arrive within [`BODY_READ_TIMEOUT`].
+    /// The body did not arrive within the route's [`BodyReadTimeout`].
     BodyTimeout,
     /// The database failed.
     Internal,
@@ -243,8 +296,9 @@ fn check_signature(key: &PublicKey, signature: &SshSig, message: &[u8]) -> Resul
 /// documentation) or pass an unsigned one on unchanged.
 ///
 /// Must sit inside the route's [`axum::extract::DefaultBodyLimit`], whose
-/// limit it applies when it reads the body.
-pub async fn verify(State(state): State<AppState>, req: Request, next: Next) -> Response {
+/// limit it applies when it reads the body, and be given the same limit in
+/// its [`SignedRoute`].
+pub async fn verify(State(route): State<SignedRoute>, req: Request, next: Next) -> Response {
     if !has_signing_headers(req.headers()) {
         return next.run(req).await;
     }
@@ -253,7 +307,12 @@ pub async fn verify(State(state): State<AppState>, req: Request, next: Next) -> 
         Err(refusal) => return refusal.into_response(None),
     };
     let agent = headers.agent.clone();
-    match authenticate(&state, headers, req).await {
+    let timeout = route
+        .state
+        .config
+        .body_read_timeout
+        .for_limit(route.body_limit);
+    match authenticate(&route.state, headers, timeout, req).await {
         Ok(req) => next.run(req).await,
         Err(refusal) => refusal.into_response(Some(&agent)),
     }
@@ -264,6 +323,7 @@ pub async fn verify(State(state): State<AppState>, req: Request, next: Next) -> 
 async fn authenticate(
     state: &AppState,
     headers: SignatureHeaders,
+    body_timeout: Duration,
     req: Request,
 ) -> Result<Request, Refusal> {
     let SignatureHeaders {
@@ -293,13 +353,14 @@ async fn authenticate(
         ));
     }
 
-    // 4. The body, within the limit the route's DefaultBodyLimit set. The
+    // 4. The body, within the limit the route's DefaultBodyLimit set and the
+    // time allowed for it. The
     // body is read through a request carrying the same extensions, so the
     // limit applies exactly as it would to the handler's extractor.
     let (mut parts, body) = req.into_parts();
     let mut body_req = Request::new(body);
     body_req.extensions_mut().clone_from(&parts.extensions);
-    let bytes = tokio::time::timeout(BODY_READ_TIMEOUT, Bytes::from_request(body_req, &()))
+    let bytes = tokio::time::timeout(body_timeout, Bytes::from_request(body_req, &()))
         .await
         .map_err(|_| Refusal::BodyTimeout)?
         .map_err(|rejection| Refusal::Body(rejection.status()))?;
@@ -378,9 +439,11 @@ mod tests {
     use ssh_key::rand_core::OsRng;
     use ssh_key::{Algorithm, EcdsaCurve, PrivateKey};
 
+    use std::time::Duration;
+
     use super::{
-        HeaderMap, MAX_SIGNATURE_LEN, NAMESPACE, Refusal, check_signature, decode_signature,
-        has_signing_headers,
+        BodyReadTimeout, HeaderMap, MAX_SIGNATURE_LEN, NAMESPACE, Refusal, check_signature,
+        decode_signature, has_signing_headers,
     };
     use ssh_key::HashAlg;
 
@@ -389,6 +452,23 @@ mod tests {
             Err(Refusal::Unauthorized(reason)) => reason,
             other => panic!("expected a 401, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn body_read_timeout_scales_with_the_body_limit() {
+        let default = BodyReadTimeout::default();
+        assert_eq!(default.floor, Duration::from_secs(10));
+        assert_eq!(default.bytes_per_sec.get(), 128 * 1024);
+        // The ordinary routes' 16 KiB: the floor.
+        assert_eq!(default.for_limit(16 * 1024), Duration::from_secs(10));
+        // The 2 MiB of a proxied call: 16 s.
+        assert_eq!(default.for_limit(2 * 1024 * 1024), Duration::from_secs(16));
+        assert_eq!(
+            default.for_limit(2 * 1024 * 1024 + 1),
+            Duration::from_millis(16_001)
+        );
+        assert_eq!(default.for_limit(0), Duration::from_secs(10));
+        assert!(default.for_limit(usize::MAX) > Duration::from_secs(10));
     }
 
     #[test]
