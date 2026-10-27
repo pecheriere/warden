@@ -260,9 +260,16 @@ held data for 60 s without delivering any of it (its receiver does not read).
 Both measure only while data is held, so an idle session is not affected. The
 session ends with the audited reason `flow control: both directions held up`
 (wedge), or `flow control: output to the agent not drained` or `flow control:
-input to the target not drained` (stall). Residual: when the
-target stops reading its input, an agent that disconnects is noticed only
-after up to 60 s, so its slot is held that long.
+input to the target not drained` (stall). The relay reads each agent's
+connection ahead of the SSH library, up to 4 MiB (twice the 2 MiB window
+the agent is granted, so more than an agent can send once the library stops
+granting window): while the target does not read its input, the library is
+held up, but an agent that disconnects is still seen. Once its input has
+then been held for 2 s with nothing delivered, the session ends with the
+reason `client closed`, its slot freed, a few seconds after the agent left
+rather than at the stall watchdog. An agent that sends past its window (no
+client does) only fills the read-ahead and is ended by the stall watchdog,
+as before.
 
 **Teardown.** A running session ends when its grant or agent is revoked, when
 the grant's window ends, after 15 minutes with no bytes in either direction,

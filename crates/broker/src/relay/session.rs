@@ -12,7 +12,11 @@ use std::time::Duration;
 use russh::client;
 use russh::server;
 use russh::{Channel, ChannelId, ChannelMsg, ChannelReadHalf, ChannelWriteHalf, Disconnect, Pty};
+use tokio::io::{AsyncWriteExt as _, Join, ReadHalf, SimplexStream};
+use tokio::net::TcpStream;
+use tokio::net::tcp::OwnedWriteHalf;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, watch};
+use tokio::task::JoinHandle;
 use warden_broker_proto::{AgentName, Id};
 
 use crate::requests::RelayGrantRecord;
@@ -491,8 +495,7 @@ pub(crate) struct Watch {
     /// less is the only way to hold either side back. With both connections
     /// held back each can wait for the other's window forever: an agent
     /// that feeds input to an echoing command and never reads the output
-    /// gets there in seconds. While held back, the agent's connection does
-    /// not notice the agent leaving either; this ends such a session.
+    /// gets there in seconds.
     pub wedge: Duration,
     /// No bytes read from either side for this long.
     pub idle: Duration,
@@ -509,6 +512,10 @@ const CLOSE_WAIT: Duration = Duration::from_secs(2);
 /// gracefully before both connections are cut.
 const FORCED_CLOSE_WAIT: Duration = Duration::from_secs(1);
 
+/// How long a session whose agent left goes on while the agent's input is
+/// held up with nothing delivered to the target (see [`agent_left`]).
+const LEFT_AND_HELD: Duration = Duration::from_secs(2);
+
 /// Cuts a connection off: shuts its socket down under the SSH library,
 /// whose reads then end, whatever state its event loop is in.
 #[derive(Debug)]
@@ -522,12 +529,76 @@ impl Cutoff {
 }
 
 /// `socket`, and a cutoff for it.
-pub(crate) fn with_cutoff(
-    socket: tokio::net::TcpStream,
-) -> std::io::Result<(tokio::net::TcpStream, Cutoff)> {
+pub(crate) fn with_cutoff(socket: TcpStream) -> std::io::Result<(TcpStream, Cutoff)> {
     let socket = socket.into_std()?;
     let cutoff = Cutoff(socket.try_clone()?);
-    Ok((tokio::net::TcpStream::from_std(socket)?, cutoff))
+    Ok((TcpStream::from_std(socket)?, cutoff))
+}
+
+/// The SSH window the relay grants an agent's session channel (russh's
+/// default, stated here because [`READ_AHEAD_BYTES`] depends on it).
+pub(crate) const AGENT_WINDOW_BYTES: u32 = 2 * 1024 * 1024;
+
+/// Bytes of an agent's connection read ahead of the SSH library. The
+/// library grants the agent window only as it handles the agent's data,
+/// so once it stops (its event loop held up) the agent can send at most
+/// one window of channel data, plus framing, before the close that ends
+/// its connection. Twice the window holds that, so the close is seen.
+const READ_AHEAD_BYTES: u32 = 2 * AGENT_WINDOW_BYTES;
+
+/// An agent's connection as the SSH library uses it: its socket read
+/// ahead into a bounded buffer, its writes going straight out.
+pub(crate) type AgentStream = Join<ReadHalf<SimplexStream>, OwnedWriteHalf>;
+
+/// Reads an agent's socket ahead of the SSH library; stops when dropped.
+#[derive(Debug)]
+pub(crate) struct ReadAhead(JoinHandle<()>);
+
+impl Drop for ReadAhead {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// Resolves once the agent has closed its connection (or it failed), as
+/// the read-ahead saw it, whatever state the SSH library is in.
+#[derive(Debug, Clone)]
+pub(crate) struct AgentGone(watch::Receiver<bool>);
+
+impl AgentGone {
+    async fn wait(&mut self) {
+        // The sender is dropped only once the close is recorded, or with
+        // the connection: nothing to wait for then.
+        if self.0.wait_for(|gone| *gone).await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    }
+}
+
+/// Read `socket` ahead of the SSH library, up to [`READ_AHEAD_BYTES`],
+/// so that the agent closing its connection is seen even while the
+/// library's event loop is held up (see [`agent_left`]). The library still
+/// gets every byte, in order, then the end of the stream. Only what the
+/// agent sends past its window (which no client needs) can fill the
+/// buffer; then the socket is no longer read until the library catches up,
+/// as without the read-ahead.
+pub(crate) fn read_ahead(socket: TcpStream) -> (AgentStream, AgentGone, ReadAhead) {
+    let (mut from_agent, to_agent) = socket.into_split();
+    let (buffered, mut ahead) =
+        tokio::io::simplex(usize::try_from(READ_AHEAD_BYTES).unwrap_or(usize::MAX));
+    let (gone, gone_rx) = watch::channel(false);
+    let task = tokio::spawn(async move {
+        // Ends when the agent closes the connection, it fails or is cut,
+        // or the SSH library is gone; each is the end of the agent here.
+        let _ = tokio::io::copy(&mut from_agent, &mut ahead).await;
+        gone.send_replace(true);
+        let _ = ahead.shutdown().await;
+    });
+    (
+        tokio::io::join(buffered, to_agent),
+        AgentGone(gone_rx),
+        ReadAhead(task),
+    )
 }
 
 /// Both ends of a started session.
@@ -540,6 +611,8 @@ pub(crate) struct Ends {
     pub newline: &'static str,
     /// Cuts the agent's connection.
     pub agent_cut: Arc<Cutoff>,
+    /// Whether the agent closed its connection.
+    pub agent_gone: AgentGone,
     /// The target's session channel, its command started.
     pub target: Channel<client::Msg>,
     /// Cuts the target's connection.
@@ -657,7 +730,8 @@ impl Queued {
     }
 }
 
-/// Carry the session until either side closes it, it stops making
+/// Carry the session until either side closes it (the agent also when it
+/// leaves with its input held up, see [`agent_left`]), it stops making
 /// progress or sits idle, the relay must end it (`live`: revoked or
 /// expired), or `stop` fires; then close both channels, cutting a
 /// connection that does not take its close in time. A session ended by
@@ -679,6 +753,7 @@ pub(crate) async fn relay(
         agent_handle,
         newline,
         agent_cut,
+        agent_gone,
         target,
         target_cut,
         early,
@@ -690,12 +765,17 @@ pub(crate) async fn relay(
         (Arc::new(Progress::default()), Arc::new(Progress::default()));
     let mut up = Delivered::default();
     let mut down = Delivered::default();
+    let mut left = false;
     let ended = tokio::select! {
         ended = upstream(&mut from_agent, &to_target, Arc::clone(&up_progress), &mut up) => ended,
         ended = downstream(&mut from_target, early, &to_agent, &agent_handle, agent_id, Arc::clone(&down_progress), &mut down) => ended,
         ended = watchdog(&up_progress, &down_progress, limits) => ended,
         ended = live.ended() => ended,
         () = super::server::stopping(&mut stop) => reason::SHUTDOWN,
+        () = agent_left(agent_gone, &up_progress) => {
+            left = true;
+            reason::CLIENT_CLOSED
+        }
     };
     if reason::forced(ended) {
         // Within the grace, a notice and a close for each side, a goodbye
@@ -732,6 +812,17 @@ pub(crate) async fn relay(
         .await;
         agent_cut.now();
         target_cut.now();
+    } else if left {
+        // Nobody is left to take a close on the agent's side, whose event
+        // loop is held up anyway: its connection is cut, the target's
+        // closed.
+        agent_cut.now();
+        if tokio::time::timeout(CLOSE_WAIT, to_target.close())
+            .await
+            .is_err()
+        {
+            target_cut.now();
+        }
     } else {
         let (agent_closed, target_closed) = tokio::join!(
             tokio::time::timeout(CLOSE_WAIT, to_agent.close()),
@@ -754,6 +845,34 @@ pub(crate) async fn relay(
         bytes_to_target: up.bytes,
         bytes_from_target: down.bytes,
         exit_status: down.exit_status,
+    }
+}
+
+/// Resolves once the agent's connection is closed and the agent's input
+/// has been held up, nothing of it delivered to the target, for
+/// [`LEFT_AND_HELD`].
+///
+/// While the relay reads the agent's channel, the SSH library sees the
+/// agent leave itself, after what the agent sent before leaving, which is
+/// still delivered. But while the relay waits for room in the input's
+/// queue (the target not reading), the library's whole event loop is held
+/// up and sees nothing; the read-ahead (see [`read_ahead`]) still does.
+/// Only it and the session's counters are looked at: nothing here waits
+/// on either connection.
+async fn agent_left(mut gone: AgentGone, up: &Progress) {
+    gone.wait().await;
+    let mut delivered = up.delivered.load(Ordering::Acquire);
+    let mut held_since = tokio::time::Instant::now();
+    loop {
+        tokio::time::sleep(WATCH_EVERY).await;
+        let now = tokio::time::Instant::now();
+        let count = up.delivered.load(Ordering::Acquire);
+        if count != delivered || !up.waiting.load(Ordering::Acquire) {
+            delivered = count;
+            held_since = now;
+        } else if now.duration_since(held_since) >= LEFT_AND_HELD {
+            return;
+        }
     }
 }
 
@@ -1010,8 +1129,8 @@ mod tests {
     use crate::requests::RelayGrantRecord;
 
     use super::{
-        LiveSessions, Outcome, PreAuthLimiter, Program, Progress, Queue, Registration,
-        SessionSlots, SlotRefusal, Watch, env_allowed, reason, watchdog,
+        AgentGone, LiveSessions, Outcome, PreAuthLimiter, Program, Progress, Queue, Registration,
+        SessionSlots, SlotRefusal, Watch, agent_left, env_allowed, read_ahead, reason, watchdog,
     };
 
     fn data(len: usize) -> russh::ChannelMsg {
@@ -1043,6 +1162,69 @@ mod tests {
         assert!(queue.push(data(5000)).await);
         drop(rx);
         assert!(!queue.push(data(1)).await, "the other end is gone");
+    }
+
+    #[tokio::test]
+    async fn read_ahead_sees_the_agent_leave_while_nothing_is_read() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut agent = tokio::net::TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        let (socket, _) = listener.accept().await.unwrap();
+        let (mut stream, mut gone, _reading) = read_ahead(socket);
+        // A window's worth of input, then the agent leaves; nothing reads
+        // the stream meanwhile (the SSH library held up).
+        let sent: Vec<u8> = (0..2 * 1024 * 1024_u32)
+            .map(|i| u8::try_from(i % 251).unwrap())
+            .collect();
+        agent.write_all(&sent).await.unwrap();
+        drop(agent);
+        tokio::time::timeout(Duration::from_secs(5), gone.wait())
+            .await
+            .expect("the close was seen");
+        // The library still gets every byte, in order, then the end.
+        let mut got = Vec::new();
+        stream.read_to_end(&mut got).await.unwrap();
+        assert!(got == sent, "{} bytes of {}", got.len(), sent.len());
+        // Writes still go out.
+        stream.write_all(b"bye").await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn agent_left_ends_once_input_is_held_without_delivery() {
+        let (told, rx) = tokio::sync::watch::channel(false);
+        let up = Progress::default();
+        up.waiting.store(true, Ordering::Release);
+        up.queued.store(10, Ordering::Release);
+        let left = agent_left(AgentGone(rx), &up);
+        tokio::pin!(left);
+        // Held up, but the agent is still there: nothing ends.
+        tokio::select! {
+            () = &mut left => panic!("ended with the agent there"),
+            () = tokio::time::sleep(Duration::from_secs(120)) => {}
+        }
+        told.send_replace(true);
+        // Gone, while the target still takes input: the input is delivered.
+        let moving = async {
+            for _ in 0..20 {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                up.delivered.fetch_add(1, Ordering::AcqRel);
+            }
+        };
+        tokio::select! {
+            () = &mut left => panic!("ended while input was delivered"),
+            () = moving => {}
+        }
+        // Then held up with nothing delivered: ended after 2 s, not before.
+        let held = tokio::time::Instant::now();
+        (&mut left).await;
+        let after = held.elapsed();
+        assert!(
+            after >= Duration::from_secs(2) && after < Duration::from_millis(2600),
+            "{after:?}"
+        );
     }
 
     fn limits(stall_secs: u64) -> Watch {

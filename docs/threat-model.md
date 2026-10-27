@@ -240,9 +240,11 @@ These were recorded during implementation and are accepted for this release.
   `flow control: input to the target not drained`), or 2 s when both
   directions are held up at once (`flow control: both directions held up`).
   A target that stops reading its input is a target
-  failure, and the session ends. Residual: when that happens, an agent that
-  disconnects is noticed only after up to 60 s, and its session slot stays
-  taken that long.
+  failure, and the session ends. An agent that disconnects meanwhile is
+  still seen, through a bounded read-ahead (4 MiB) on its connection, and
+  its session ends about 2 s later (`client closed`). An agent that keeps
+  its connection open and sends past its window (no client does) fills
+  only the read-ahead; its session ends by the 60 s stall rule.
 - **The per-address pre-login limit is global behind Tailscale Serve.** The
   relay allows 5 connections per source address and 10 overall that have not
   logged in. Serve forwards the TCP stream from `127.0.0.1`, so every peer has
