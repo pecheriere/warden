@@ -302,13 +302,19 @@ impl Passkeys {
                 return Err(PasskeyError::AlreadyEnrolled);
             }
         }
-        sqlx::query("INSERT INTO passkeys (id, label, credential, created_at) VALUES (?, ?, ?, ?)")
-            .bind(&id)
-            .bind(&label)
-            .bind(serde_json::to_string(&passkey)?)
-            .bind(self.clock.now())
-            .execute(&mut *tx)
-            .await?;
+        let credential = serde_json::to_string(&passkey)?;
+        // The counter column mirrors the one inside the credential from the
+        // start (normally 0 at registration).
+        sqlx::query(
+            "INSERT INTO passkeys (id, label, credential, created_at, counter) \
+             VALUES (?1, ?2, ?3, ?4, COALESCE(json_extract(?3, '$.cred.counter'), 0))",
+        )
+        .bind(&id)
+        .bind(&label)
+        .bind(credential)
+        .bind(self.clock.now())
+        .execute(&mut *tx)
+        .await?;
         let enrolled = AuditEvent::PasskeyEnrolled {
             passkey_id: id.clone(),
         };

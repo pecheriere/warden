@@ -119,6 +119,15 @@ async fn enroll_with_code_then_code_is_spent() {
     assert_eq!(listed[0].id, passkey_id);
     assert_eq!(listed[0].label, "phone");
     assert_eq!(listed[0].created_at, TEST_START);
+    // The counter column mirrors the one inside the credential from the start.
+    let mirrored: i64 = sqlx::query(
+        "SELECT COUNT(*) FROM passkeys WHERE counter = json_extract(credential, '$.cred.counter')",
+    )
+    .fetch_one(&broker.state().pool)
+    .await
+    .unwrap()
+    .get(0);
+    assert_eq!(mirrored, 1);
     assert!(
         broker
             .audit_types()
