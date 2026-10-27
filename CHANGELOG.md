@@ -8,6 +8,9 @@ All notable changes to this project are recorded here. The format follows
 
 ### Fixed
 
+- `warden http` exits 4 (revoked) with a message telling to request access
+  again when the broker says the grant was revoked, and removes the stale
+  local record, instead of exiting 1 with the broker's raw refusal.
 - Redaction drops a response header whose name carries the secret whatever
   its letter case (names arrive lowercased from the HTTP stack, so a secret
   with uppercase letters was not matched).

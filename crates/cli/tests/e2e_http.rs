@@ -241,6 +241,45 @@ async fn e2e_http_without_grant_exits_5() {
     assert!(s.upstream.received().is_empty());
 }
 
+/// A grant still recorded on this machine but revoked on the broker (by
+/// the owner, from another machine) ends `warden http` with the revoked exit
+/// code and says so; nothing is sent upstream.
+#[tokio::test(flavor = "multi_thread")]
+async fn e2e_http_grant_revoked_on_the_broker_exits_4() {
+    let s = setup().await;
+    let req = request_and_approve(&s).await;
+    assert_eq!(req.status.code(), Some(0), "stderr: {}", text(&req.stderr));
+    let granted = text(&req.stdout);
+    let Some((grant, _)) = granted
+        .strip_prefix("approved: grant ")
+        .and_then(|r| r.split_once(" until "))
+    else {
+        panic!("unexpected stdout: {granted}");
+    };
+    s.broker
+        .state()
+        .requests
+        .revoke_grant(&grant.parse().unwrap(), "owner")
+        .await
+        .unwrap();
+
+    // The local record is still there.
+    assert!(!s.cli.files_containing(grant).is_empty());
+    let out = s
+        .cli
+        .run(&["http", SECRET_NAME, "GET", &s.upstream.url("/hello")]);
+    assert_eq!(out.status.code(), Some(4), "{}", text(&out.stderr));
+    assert!(out.stdout.is_empty());
+    let stderr = text(&out.stderr);
+    assert!(
+        stderr.contains("revoked")
+            && stderr.contains(grant)
+            && stderr.contains("warden request api"),
+        "{stderr}"
+    );
+    assert!(s.upstream.received().is_empty());
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn e2e_http_fail_flag_exit_22() {
     let s = setup().await;

@@ -541,6 +541,102 @@ async fn slow_upstream_times_out() {
     assert_eq!(calls[0]["outcome"], "upstream timed out");
 }
 
+/// An item deleted in 1Password after approval is refused as a changed
+/// policy, whatever the backend said, and the upstream is never contacted.
+#[tokio::test]
+async fn item_deleted_after_approval_is_refused() {
+    let s = setup().await;
+    s.broker.backend.remove_api_secret("svc");
+    let resp = get(&s, "/v1/hello").await;
+    assert_eq!(resp.status, StatusCode::CONFLICT, "{}", resp.body);
+    assert_eq!(resp.body, POLICY_CHANGED);
+    assert!(s.upstream.received().is_empty());
+    let calls = proxy_calls(&s.broker);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0]["status"], Value::Null);
+    assert_eq!(calls[0]["outcome"], "policy changed; request access again");
+    assert!(audit_events(&s.broker, &["proxy_call_started"]).is_empty());
+    audit::verify(s.broker.audit_path()).unwrap();
+
+    // Nothing is left half done: with the item back, the grant works.
+    s.broker
+        .backend
+        .set_api_secret(s.upstream.policy("svc"), SECRET);
+    let (proxied, _) = proxied(&get(&s, "/v1/hello").await);
+    assert_eq!(proxied.status, 200);
+}
+
+/// A secret backend that is down at call time gives a fixed 503 that does
+/// not carry the backend's own words; the call is audited and never sent.
+#[tokio::test]
+async fn backend_unavailable_at_call_time_is_a_fixed_503() {
+    const DETAIL: &str = "connect to http://10.9.8.7:8080 refused for item \"svc\"";
+    let s = setup().await;
+    s.broker.backend.set_api_outage(Some(DETAIL));
+    let resp = get(&s, "/v1/hello").await;
+    assert_eq!(
+        resp.status,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "{}",
+        resp.body
+    );
+    assert_eq!(resp.body, r#"{"error":"secret backend unavailable"}"#);
+    assert!(!resp.body.contains("10.9.8.7"));
+    assert!(s.upstream.received().is_empty());
+    let calls = proxy_calls(&s.broker);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0]["outcome"], "secret backend unavailable");
+    let log = std::fs::read_to_string(s.broker.audit_path()).unwrap();
+    assert!(!log.contains("10.9.8.7"));
+    assert!(audit_events(&s.broker, &["proxy_call_started"]).is_empty());
+    audit::verify(s.broker.audit_path()).unwrap();
+
+    // The outage leaves no state behind: the next call succeeds.
+    s.broker.backend.set_api_outage(None);
+    let (proxied, _) = proxied(&get(&s, "/v1/hello").await);
+    assert_eq!(proxied.status, 200);
+}
+
+/// An origin that accepts the TCP connection but never answers the TLS
+/// handshake hits the connect timeout (which covers TCP and TLS), well
+/// before the call's overall limit.
+#[tokio::test]
+async fn upstream_connect_timeout_is_a_fixed_504() {
+    let silent = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = silent.local_addr().unwrap().port();
+    let held = tokio::spawn(async move {
+        let mut open = Vec::new();
+        while let Ok((stream, _)) = silent.accept().await {
+            open.push(stream);
+        }
+    });
+    let limits = ProxyLimits {
+        connect_timeout: Duration::from_millis(500),
+        timeout: Duration::from_secs(60),
+        ..ProxyLimits::default()
+    };
+    let s = setup_with(limits, |p| {
+        p.origin = url::Url::parse(&format!("https://127.0.0.1:{port}"))
+            .unwrap()
+            .origin();
+    })
+    .await;
+    let url = format!("https://127.0.0.1:{port}/v1/hello");
+    let started = Instant::now();
+    let resp = call_as(&s.broker, &s.key, &s.grant, "GET", &url, None).await;
+    assert!(started.elapsed() < Duration::from_secs(10));
+    held.abort();
+    assert_eq!(resp.status, StatusCode::GATEWAY_TIMEOUT, "{}", resp.body);
+    assert_eq!(resp.body, r#"{"error":"upstream timed out"}"#);
+    let calls = proxy_calls(&s.broker);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0]["status"], Value::Null);
+    assert_eq!(calls[0]["outcome"], "upstream timed out");
+    assert_eq!(audit_events(&s.broker, &["proxy_call_started"]).len(), 1);
+    audit::verify(s.broker.audit_path()).unwrap();
+    assert_clean(&resp.body, SECRET, "timeout response");
+}
+
 #[tokio::test]
 async fn revoked_or_expired_grant_refused() {
     let s = setup().await;

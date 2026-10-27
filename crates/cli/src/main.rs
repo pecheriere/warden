@@ -646,7 +646,7 @@ where
         match poll().await {
             Ok(status) if terminal_exit_code(&status).is_some() => return Ok(status),
             Ok(_) => delay = first_delay,
-            Err(CallError::Refused(message)) => return Err(message),
+            Err(CallError::Refused(message) | CallError::Revoked(message)) => return Err(message),
             Err(CallError::Unavailable(message)) => {
                 let pause = delay.min(left);
                 eprintln!("warden: {message}; retrying in {} ms", pause.as_millis());
@@ -831,7 +831,22 @@ async fn run_http(call: HttpCall, include: bool, fail: bool) -> Result<()> {
         .into());
     };
     let (_, client) = client()?;
-    let resp = client.proxy(&grant.grant_id, &proxy).await?;
+    let resp = match client.proxy(&grant.grant_id, &proxy).await {
+        Ok(resp) => resp,
+        Err(CallError::Revoked(message)) => {
+            // The owner ended it elsewhere: the local record is dead weight.
+            http::discard(&grant.grant_id)?;
+            return Err(Exit::new(
+                EXIT_REVOKED,
+                format!(
+                    "grant {} for {secret} was revoked on the broker ({message}); request access again with warden request api {secret} --for <window> --goal <text>",
+                    grant.grant_id
+                ),
+            )
+            .into());
+        }
+        Err(e) => return Err(e.into()),
+    };
     let reply = http::decode(&resp)?;
     http::emit(
         &reply,
