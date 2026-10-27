@@ -7,8 +7,9 @@
 //!
 //! The registry is an enum rather than a map of boxed constructors: adding a
 //! channel is a new variant, and the compiler then points at every `match`
-//! that must handle it (name, variables, parsing, building), so a channel
-//! cannot be half-registered.
+//! that must handle it (name, variables, parsing, building). The one thing it
+//! cannot point at is [`ChannelKind::ALL`], so a unit test matches every
+//! variant exhaustively and checks it is listed there.
 
 use std::sync::Arc;
 
@@ -21,7 +22,9 @@ use crate::config::{ConfigError, SecretUrl};
 /// The variable that lists the enabled channels.
 const LIST_VAR: &str = "WARDEN_NOTIFY";
 
-/// Longest unknown channel name echoed back in an error.
+/// Longest unknown channel name echoed back in an error, and the only
+/// characters it may contain (`[a-z0-9_-]`): anything else, such as a pasted
+/// URL, is not echoed.
 const NAME_ECHO_LIMIT: usize = 32;
 
 /// Variables of the removed fixed Home Assistant / ntfy wiring and what
@@ -62,6 +65,12 @@ impl ChannelKind {
             Self::HomeAssistant => "homeassistant",
             Self::Ntfy => "ntfy",
         }
+    }
+
+    /// The names of all built-in channels, comma separated, for messages.
+    #[must_use]
+    pub fn known() -> String {
+        Self::ALL.map(Self::name).join(", ")
     }
 
     /// The channel called `name` in `WARDEN_NOTIFY`, if there is one.
@@ -143,6 +152,15 @@ fn parse_url(var: &'static str, value: &str) -> Result<Url, ConfigError> {
     })
 }
 
+/// `name` when it is safe to show back to the operator.
+fn echoable(name: &str) -> Option<String> {
+    let plain = (1..=NAME_ECHO_LIMIT).contains(&name.len())
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-');
+    plain.then(|| name.to_owned())
+}
+
 /// Read the enabled channels, in priority order, from `WARDEN_NOTIFY` and the
 /// per-channel variables.
 ///
@@ -152,10 +170,13 @@ fn parse_url(var: &'static str, value: &str) -> Result<Url, ConfigError> {
 /// unknown or repeated channel, a listed channel lacks a setting, or a
 /// setting of an unlisted channel is present.
 pub fn parse_channels(
-    get: &impl Fn(&'static str) -> Option<String>,
+    lookup: &impl Fn(&str) -> Option<String>,
 ) -> Result<Vec<ChannelSettings>, ConfigError> {
+    let get = |var: &'static str| lookup(var).filter(|v| !v.trim().is_empty());
     for (var, replacement) in REMOVED {
-        if get(var).is_some() {
+        // Set, even to nothing: a leftover empty variable is still a stale
+        // deployment file worth flagging.
+        if lookup(var).is_some() {
             return Err(ConfigError::Removed { var, replacement });
         }
     }
@@ -169,7 +190,7 @@ pub fn parse_channels(
             });
         }
         let kind = ChannelKind::parse(entry).ok_or_else(|| ConfigError::UnknownChannel {
-            name: entry.chars().take(NAME_ECHO_LIMIT).collect(),
+            name: echoable(entry),
         })?;
         if kinds.contains(&kind) {
             return Err(ConfigError::DuplicateChannel(kind.name()));
@@ -188,6 +209,28 @@ pub fn parse_channels(
     }
     kinds
         .into_iter()
-        .map(|kind| ChannelSettings::parse(kind, get))
+        .map(|kind| ChannelSettings::parse(kind, &get))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Fails to compile when a variant is added without being handled here,
+    /// and fails to pass when it is missing from [`ChannelKind::ALL`].
+    #[test]
+    fn all_lists_every_variant() {
+        for kind in ChannelKind::ALL {
+            match kind {
+                ChannelKind::HomeAssistant | ChannelKind::Ntfy => {}
+            }
+        }
+        let variants = [ChannelKind::HomeAssistant, ChannelKind::Ntfy];
+        for variant in variants {
+            assert!(ChannelKind::ALL.contains(&variant), "{variant:?}");
+            assert_eq!(ChannelKind::parse(variant.name()), Some(variant));
+        }
+        assert_eq!(ChannelKind::ALL.len(), variants.len());
+    }
 }

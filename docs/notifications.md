@@ -5,7 +5,8 @@ approval page. The channels to use are chosen at startup with `WARDEN_NOTIFY`,
 a comma-separated list in priority order. Warden tries the first channel; if it
 errors, answers non-2xx, or does not answer within 5 seconds, it tries the next
 one, and so on. The first channel that accepts wins. If every channel fails, the
-request ends in `error`.
+request ends in `error`. The worst-case delay before the owner is notified (or
+the request fails) is 5 s times the number of channels.
 
 A notification contains the agent, the target and user, the goal (truncated to
 200 characters, with `…` appended when cut) and the approval link. It never
@@ -112,8 +113,9 @@ channel is one module plus its registration, in `crates/broker/src/notify/`:
    value). Wrap anything secret in a redacting type (`SecretUrl`,
    `SecretString`) so `Debug` cannot leak it.
 3. Register it in `channels.rs`: add a `ChannelKind` variant (name, variables)
-   and a `ChannelSettings` variant (parse, build). The compiler lists every
-   `match` that needs the new arm.
+   and a `ChannelSettings` variant (parse, build), and add the kind to
+   `ChannelKind::ALL` (a unit test fails if you forget). The compiler lists
+   every `match` that needs the new arm.
 4. Keep secrets out of the payload: the doorbell carries the title, the
    truncated goal and the approval link only.
 5. Use the shared HTTP client (`http_client()`): fixed connect and request

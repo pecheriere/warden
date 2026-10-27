@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use secrecy::SecretString;
 use url::Url;
 
-use crate::notify::{ChannelSettings, parse_channels};
+use crate::notify::{ChannelKind, ChannelSettings, parse_channels};
 use crate::policy::onepassword::parse_host_port;
 use crate::proxy::ProxyLimits;
 
@@ -43,15 +43,22 @@ pub enum ConfigError {
     },
     /// `WARDEN_NOTIFY` is unset or empty.
     #[error(
-        "WARDEN_NOTIFY must list at least one notification channel in priority order \
-         (homeassistant, ntfy), for example WARDEN_NOTIFY=homeassistant,ntfy"
+        "WARDEN_NOTIFY must list at least one notification channel in priority order ({}), \
+         for example WARDEN_NOTIFY={}",
+        ChannelKind::known(),
+        ChannelKind::known().replace(", ", ",")
     )]
     NoChannels,
     /// `WARDEN_NOTIFY` names a channel that does not exist.
-    #[error("WARDEN_NOTIFY names unknown channel {name:?} (known: homeassistant, ntfy)")]
+    #[error(
+        "WARDEN_NOTIFY names {} (known: {})",
+        .name.as_ref().map_or_else(|| "an unknown channel name".to_owned(), |n| format!("unknown channel {n:?}")),
+        ChannelKind::known()
+    )]
     UnknownChannel {
-        /// The name, cut to a short prefix.
-        name: String,
+        /// The name, only when it looks like a plain channel name (a pasted
+        /// URL or token is never echoed).
+        name: Option<String>,
     },
     /// `WARDEN_NOTIFY` names a channel twice.
     #[error("WARDEN_NOTIFY lists channel {0} twice")]
@@ -286,7 +293,7 @@ impl Config {
 
         let public_url = parse_public_url(&required("WARDEN_PUBLIC_URL")?)?;
         let connect_url = url("WARDEN_OP_CONNECT_URL", &required("WARDEN_OP_CONNECT_URL")?)?;
-        let notify = parse_channels(&get)?;
+        let notify = parse_channels(&lookup)?;
 
         let proxy = proxy_limits(&get)?;
 

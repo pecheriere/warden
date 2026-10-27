@@ -158,8 +158,9 @@ channels you choose (Home Assistant, ntfy) in the order you choose; see
    `WARDEN_OP_CONNECT_URL`, `WARDEN_OP_CONNECT_TOKEN`, `WARDEN_OP_VAULT`
    (default `Warden`), `WARDEN_NOTIFY` (channels in priority
    order, required), `WARDEN_NOTIFY_HOMEASSISTANT_WEBHOOK_URL`,
-   `WARDEN_NOTIFY_NTFY_URL`, `WARDEN_NOTIFY_NTFY_TOKEN`, `WARDEN_PROXY_MAX_RESPONSE_BYTES` (largest response
-   a proxied API call may return, default `1048576`, at most `67108864`),
+   `WARDEN_NOTIFY_NTFY_URL`, `WARDEN_NOTIFY_NTFY_TOKEN`,
+   `WARDEN_PROXY_MAX_RESPONSE_BYTES` (largest response a proxied API call may
+   return, default `1048576`, at most `67108864`),
    `WARDEN_PROXY_MAX_CALLS_PER_AGENT` (proxied calls in flight per agent,
    default `4`, 1 to 64), `WARDEN_PROXY_MAX_CALLS` (in flight overall,
    default `16`, 1 to 256, at least the per-agent limit),

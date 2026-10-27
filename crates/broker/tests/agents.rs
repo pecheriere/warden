@@ -215,9 +215,13 @@ fn notify_single_channel_works_alone() {
 
 #[test]
 fn notify_refuses_bad_channel_lists_with_clear_messages() {
-    let cases: [(&[(&str, &str)], &str); 8] = [
+    let cases: [(&[(&str, &str)], &str); 9] = [
         (&[("WARDEN_NOTIFY", "")], "WARDEN_NOTIFY"),
         (&[("WARDEN_NOTIFY", "pagerduty")], "pagerduty"),
+        (
+            &[("WARDEN_NOTIFY", "https://ha.example.com/hook/abc")],
+            "an unknown channel name",
+        ),
         (&[("WARDEN_NOTIFY", "ntfy,ntfy")], "twice"),
         (&[("WARDEN_NOTIFY", "homeassistant,,ntfy")], "empty"),
         (&[("WARDEN_NOTIFY", "homeassistant"), (HA_URL, "")], HA_URL),
@@ -236,6 +240,7 @@ fn notify_refuses_bad_channel_lists_with_clear_messages() {
         let shown = err.to_string();
         assert!(shown.contains(needle), "{overrides:?}: {shown}");
         assert!(!shown.contains("tk_ntfy-secret"), "{shown}");
+        assert!(!shown.contains("ha.example.com"), "{shown}");
     }
 }
 
