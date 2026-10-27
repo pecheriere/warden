@@ -89,14 +89,51 @@ guarantee because the server is the trusted party:
 ## Authentication of callers
 
 - Every endpoint on both listeners requires the `Tailscale-User-Login` header
-  to equal `WARDEN_OWNER_LOGIN`, except `GET /healthz` on the agent API, which
-  is unauthenticated for the container health check and returns a static body
-  revealing nothing. The header is set by Tailscale Serve after it
+  to equal `WARDEN_OWNER_LOGIN`, with these exceptions on the agent API:
+  `GET /healthz` (unauthenticated for the container health check, a static
+  body revealing nothing), `GET /v1/info` (the public signing protocols and
+  audience, which a client reads before it can sign), and signed requests of
+  key-signed agents (below). The header is set by Tailscale Serve after it
   authenticates the peer. The CLI never sets it.
-- Agent endpoints also require an agent key. Keys are `wdn_` followed by 256
-  random bits, shown once and stored only as a SHA-256 hash. Grants are bound
-  to the agent that requested them. Revoking an agent disables its key at
-  once, ends its pending requests and grants, and wakes its waiting CLI calls.
+- Agent endpoints also require the agent to authenticate, in one of two ways.
+  A request with any `Warden-*` header is authenticated by its signature or
+  refused; it is never treated as a bearer request.
+  - **Signed requests** (`warden-request-v1`, see
+    [agent-protocol.md](agent-protocol.md)). The broker checks, in order and
+    stopping at the first failure: the four `Warden-*` headers are present
+    once each and well formed, `Warden-Signature` is at most 4096
+    characters (refused before decoding), and no `Authorization` header
+    comes with them; the agent exists, is not revoked and has a registered
+    key; the timestamp is within 60 s of the broker's clock; the body fits
+    the route's limit (413 otherwise, before any signature work); the
+    SSHSIG verifies in namespace `warden-request-v1`, with hash `sha512` or
+    `sha256`, by exactly the registered key (the key embedded in the
+    signature must equal it), over the canonical message rebuilt from the
+    request as received (audience, agent, method, path and query, timestamp,
+    nonce, body SHA-256); and the `(agent, nonce)` pair is new. Every failure
+    is a 401 with a fixed body; the reason is logged without key material or
+    signature bytes. A captured request cannot be replayed (the nonce is
+    single use and remembered for 10 minutes, longer than the ±60 s window),
+    sent to another broker (the audience), or altered (method, target and
+    body are signed). The nonce is recorded only after the signature
+    verified, so callers who cannot sign cannot fill the nonce table, and
+    expired nonces are swept.
+  - **Bearer keys** (legacy): `wdn_` followed by 256 random bits, shown once
+    and stored only as a SHA-256 hash, accepted only with the owner's
+    `Tailscale-User-Login`.
+- **Key-signed agents need no owner login (deliberate).** A key-signed agent
+  may run on a tagged device (an agent host), which has no Tailscale user
+  login, so the broker does not require `Tailscale-User-Login` for signed
+  requests and ignores whatever login Serve reports for them. The signature
+  is the authentication; who may reach the API port at all is decided by the
+  tailnet policy (Serve and the gateway app capability). The consequence:
+  any tailnet device the policy lets reach the API can send signed requests,
+  and only possession of an enrolled signing key separates it from an
+  agent. Keep the API port's grant as narrow as the agents that need it.
+  Bearer-key agents keep requiring the owner's login.
+- Grants are bound to the agent that requested them. Revoking an agent
+  disables its key at once, ends its pending requests and grants, and wakes
+  its waiting CLI calls.
 - The approval endpoints are meant to be reachable from the owner's phone and
   not from the workstation the agent runs on (see "Deployment assumptions").
 
@@ -110,8 +147,10 @@ These were recorded during implementation and are accepted for this release.
   key warden holds is zeroized on drop. The mitigation is the
   container hardening described under "Deployment assumptions": an unprivileged
   process, no capabilities and no other container on its network.
-- **Agent keys are bearer credentials.** Anyone who obtains an agent key can
-  replay it from a host that can reach the API. The impact is bounded: a key
+- **Bearer agent keys are bearer credentials.** Anyone who obtains a bearer
+  agent key can replay it from a host that can reach the API with the
+  owner's login (key-signed agents do not have this problem; switch an agent
+  with `warden-server agent set-key`). The impact is bounded: a key
   can only create requests, and every request still needs a passkey approval
   that shows the agent name and goal. A leaked key is revoked with
   `warden-server agent revoke`.
@@ -286,7 +325,9 @@ warden's guarantees depend on its environment being set up as follows.
   forward (granted to the workstation only). No other container can reach
   warden, so none can forge `Tailscale-User-Login`. Binding a listener to
   `0.0.0.0` or running warden on a shared bridge network breaks this: anything
-  that can reach the listener directly can forge the header. The WebAuthn
+  that can reach the listener directly can forge the header. (Signed agent
+  requests do not rely on the header, but the approval UI and bearer-key
+  agents do.) The WebAuthn
   relying party is the node's name, so it is not shared with other services.
   Nothing is published on the LAN.
 - **Phone-only approval port.** The tailnet policy grants the approval UI port

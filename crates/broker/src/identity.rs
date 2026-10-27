@@ -1,4 +1,5 @@
-//! Caller identity: the Tailscale-authenticated owner and bearer-authenticated agents.
+//! Caller identity: the Tailscale-authenticated owner, and agents
+//! authenticated by a signed request or a bearer key.
 
 use axum::Json;
 use axum::extract::FromRequestParts;
@@ -9,6 +10,7 @@ use warden_broker_proto::{AgentName, ApiError};
 
 use crate::AppState;
 use crate::agents::{self, AgentError};
+use crate::signed::{self, SignedAgent};
 
 /// Header set by Tailscale Serve with the authenticated user's login.
 const TAILSCALE_LOGIN_HEADER: &str = "Tailscale-User-Login";
@@ -79,7 +81,18 @@ impl FromRequestParts<AppState> for Owner {
     }
 }
 
-/// Extractor: the owner, presenting a valid `Authorization: Bearer wdn_…` agent key.
+/// Extractor: an authenticated agent, either
+///
+/// - one whose signed request [`signed::verify`] checked (it left a
+///   [`SignedAgent`]). Such agents need no owner login: they may run on
+///   tagged devices, which have none, and who may reach the API at all is
+///   decided by the tailnet policy in front of it; or
+/// - the owner (by `Tailscale-User-Login`), presenting a valid
+///   `Authorization: Bearer wdn_…` agent key.
+///
+/// A request with any `Warden-*` header that [`signed::verify`] did not
+/// accept is refused here as well, so a route without that middleware fails
+/// closed.
 #[derive(Debug, Clone)]
 pub struct AuthedAgent(pub AgentName);
 
@@ -90,6 +103,12 @@ impl FromRequestParts<AppState> for AuthedAgent {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
+        if let Some(signed) = parts.extensions.get::<SignedAgent>() {
+            return Ok(Self(signed.agent().clone()));
+        }
+        if signed::has_signing_headers(&parts.headers) {
+            return Err(AuthRejection::Unauthorized);
+        }
         Owner::from_request_parts(parts, state).await?;
         let key = parts
             .headers

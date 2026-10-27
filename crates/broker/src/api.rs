@@ -1,7 +1,8 @@
 //! The agent API: create requests, long-poll their status, list and revoke
 //! grants, and make HTTP calls with an api grant. Every route except
-//! `/healthz` and `/v1/info` requires the owner's Tailscale identity and an
-//! agent key (see [`AuthedAgent`]).
+//! `/healthz` and `/v1/info` requires an authenticated agent: a signed
+//! request ([`signed::verify`]) or the owner's Tailscale identity with a
+//! bearer key (see [`AuthedAgent`]).
 
 use std::time::Duration;
 
@@ -9,7 +10,7 @@ use axum::extract::rejection::{JsonRejection, QueryRejection};
 use axum::extract::{DefaultBodyLimit, FromRequest, Path, Query, Request, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{MethodRouter, get, post};
 use axum::{Json, Router, middleware};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -25,6 +26,7 @@ use crate::identity::AuthedAgent;
 use crate::policy::{ApiScope, PolicyError};
 use crate::proxy::{self, Needles};
 use crate::requests::{BACKEND_UNAVAILABLE, RequestError};
+use crate::signed;
 
 /// Largest accepted request body, in bytes.
 const BODY_LIMIT: usize = 16 * 1024;
@@ -48,17 +50,25 @@ const MAX_WAIT_SECS: u64 = 30;
 
 /// Routes of the agent API listener, with `state` applied.
 pub fn router(state: AppState) -> Router {
+    // Signature checks sit inside each route's body limit, which they apply
+    // when they read the body.
+    let agent = |route: MethodRouter<AppState>| {
+        route.layer(middleware::from_fn_with_state(
+            state.clone(),
+            signed::verify,
+        ))
+    };
     Router::new()
         .route("/healthz", get(healthz))
         .route("/v1/info", get(info))
-        .route("/v1/requests", post(create_request))
-        .route("/v1/requests/{id}", get(request_status))
-        .route("/v1/requests/{id}/cancel", post(cancel_request))
-        .route("/v1/grants", get(list_grants))
-        .route("/v1/grants/{id}/revoke", post(revoke_grant))
+        .route("/v1/requests", agent(post(create_request)))
+        .route("/v1/requests/{id}", agent(get(request_status)))
+        .route("/v1/requests/{id}/cancel", agent(post(cancel_request)))
+        .route("/v1/grants", agent(get(list_grants)))
+        .route("/v1/grants/{id}/revoke", agent(post(revoke_grant)))
         .route(
             "/v1/grants/{id}/http",
-            post(proxy_call).layer(DefaultBodyLimit::max(PROXY_BODY_LIMIT)),
+            agent(post(proxy_call)).layer(DefaultBodyLimit::max(PROXY_BODY_LIMIT)),
         )
         .fallback(not_found)
         .layer(DefaultBodyLimit::max(BODY_LIMIT))

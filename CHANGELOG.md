@@ -15,8 +15,18 @@ All notable changes to this project are recorded here. The format follows
   creates a key-signed agent without a bearer key, `warden-server agent set-key
   <name> '<line>'` switches an existing agent (its bearer key stops working at
   once), and `agent list` shows the kind of authentication and the key's
-  `SHA256:` fingerprint. Each change is audited as `agent_key_set`. Verifying
-  signed requests follows in a later change.
+  `SHA256:` fingerprint. Each change is audited as `agent_key_set`.
+- The broker accepts signed agent requests (protocol `warden-request-v1`,
+  described in `docs/agent-protocol.md`): a key-signed agent sends
+  `Warden-Agent`, `Warden-Timestamp`, `Warden-Nonce` and `Warden-Signature`
+  (an SSHSIG, namespace `warden-request-v1`, hash `sha512` or `sha256`) on
+  every call, including long polls and proxied calls. The broker refuses with
+  401 a missing, repeated or malformed header, an oversized signature, a
+  `Warden-*` header together with `Authorization`, an unknown, revoked or
+  bearer-key agent, a timestamp more than 60 seconds off, a signature by any
+  other key or over anything else, and a nonce already used; an oversized body
+  is a 413 before the signature is checked. Nonces are recorded only once the
+  signature verified, kept 10 minutes and swept with expired requests.
 - `GET /v1/info` returns the accepted signing protocols and the broker's
   audience, a random id created on first start in `WARDEN_AUDIENCE_PATH`
   (default `/data/audience`, next to the relay host key; never overwritten).
@@ -24,6 +34,10 @@ All notable changes to this project are recorded here. The format follows
 
 ### Changed
 
+- Security: key-signed agents do not need the owner's
+  `Tailscale-User-Login` (tagged devices have none); the tailnet policy alone
+  decides who may reach the API. Bearer-key agents still need it. See the
+  threat model.
 - Schema migration `0005` rebuilds `agents` (and, below it, `requests` and
   `grants`, with all rows preserved) for the key columns and adds the nonce
   table; it runs on first start and is one-way.

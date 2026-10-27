@@ -507,17 +507,33 @@ it out of the log.
   with the request.
 
 Request submission and proxy/relay use are restricted by the tailnet policy to
-the workstation the agent runs on and authenticated by the Serve identity
-header **and an agent key**:
+the devices the agents run on, and every API call is authenticated as an
+agent, in one of two ways:
 
-- **Agent keys**: one per agent (e.g. `laptop`), created with
-  `warden-server agent add <name>`, 256-bit random, shown once, stored
-  server-side only as a hash. Sent by the CLI on every API call. The agent is
-  allowed to know its key: it can only request access, never approve.
+- **Signed requests** (protocol `warden-request-v1`, the full client side in
+  [agent-protocol.md](agent-protocol.md)): the agent signs each call with an
+  SSH key (Ed25519 or ECDSA P-256, which hardware such as the Secure Enclave
+  or a TPM can hold behind an `ssh-agent`) whose public half the owner
+  enrolled with `warden-server agent add <name> --public-key '<line>'`. The
+  SSHSIG covers the broker's audience, the agent, method, request target,
+  timestamp, a single-use nonce and the body's SHA-256. The broker checks the
+  headers, the agent, the clock (±60 s), the body size, the signature and
+  then the nonce, in that order; it records a nonce only once the signature
+  verified, keeps it 10 minutes and sweeps it with the request sweeper. No
+  reusable secret is stored on the agent's machine and a captured request
+  cannot be replayed. **Key-signed agents do not need the owner's
+  `Tailscale-User-Login`** (tagged devices have none): who may reach the API
+  is decided by the tailnet policy (see the threat model).
+- **Agent keys** (bearer, legacy): one per agent (e.g. `laptop`), created
+  with `warden-server agent add <name>`, 256-bit random, shown once, stored
+  server-side only as a hash, sent as `Authorization: Bearer` on every API
+  call, and accepted only together with the owner's Serve identity header.
+  A request carrying both a bearer key and `Warden-*` headers is refused. The
+  agent is allowed to know its key: it can only request access, never
+  approve.
 - The agent name is recorded on requests, grants and audit events, and shown
   on the approval page ("requested by `laptop`").
-- Grants are bound to the requesting agent key; another agent's key cannot use
-  them. A relay grant is bound to the agent that requested it, and the relay
+- Grants are bound to the requesting agent; another agent cannot use them. A relay grant is bound to the agent that requested it, and the relay
   logs the grant id with every session.
 - `warden-server agent list|revoke <name>`: revoke disables the key
   immediately, cancels its pending requests, ends its grants and kills its

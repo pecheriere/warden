@@ -27,6 +27,7 @@ pub mod policy;
 pub mod proxy;
 pub mod relay;
 pub mod requests;
+pub mod signed;
 pub mod ssh_ca;
 pub mod store;
 #[cfg(feature = "testkit")]

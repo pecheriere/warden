@@ -13,15 +13,23 @@ use async_trait::async_trait;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{HeaderMap, Request, StatusCode};
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
 use http_body_util::BodyExt as _;
 use serde_json::{Value, json};
+use sha2::{Digest as _, Sha256};
+use ssh_encoding::Encode as _;
 use ssh_key::rand_core::OsRng;
-use ssh_key::{Algorithm, PrivateKey, PublicKey};
+use ssh_key::{Algorithm, HashAlg, PrivateKey, PublicKey};
 use tempfile::TempDir;
 use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
 use tower::ServiceExt as _;
 use url::Url;
+use warden_broker_proto::signing::{
+    AGENT_HEADER, NAMESPACE, NONCE_HEADER, Nonce, SIGNATURE_HEADER, SignedRequestParts,
+    TIMESTAMP_HEADER, canonical_message,
+};
 use warden_broker_proto::{
     Access, AgentName, CreateRequest, CreatedResponse, Goal, SecretName, TargetName, UnixUser,
     Window,
@@ -993,6 +1001,81 @@ impl TestBroker {
             .to_owned()
     }
 
+    /// Add a key-signed agent with a fresh signing key of `algorithm`
+    /// (Ed25519 or ECDSA P-256) and return the key.
+    ///
+    /// # Panics
+    /// If the key cannot be generated or the agent cannot be added.
+    pub async fn add_signing_agent(&self, name: &str, algorithm: Algorithm) -> PrivateKey {
+        let key = PrivateKey::random(&mut OsRng, algorithm).expect("signing key generation");
+        let line = key.public_key().to_openssh().expect("encode public key");
+        let public = agents::AgentPublicKey::parse(&line).expect("acceptable signing key");
+        let name = AgentName::try_from(name.to_owned()).expect("valid agent name");
+        agents::add_key_audited(&self.state.pool, &self.state.audit, &name, &public)
+            .await
+            .expect("add key-signed agent");
+        key
+    }
+
+    /// A request to the agent API signed by `key` as `agent`, with a fresh
+    /// nonce, the broker clock's current time and this broker's audience,
+    /// and no `Tailscale-User-Login`. A non-empty body is sent as JSON.
+    ///
+    /// # Panics
+    /// If the request cannot be signed or built.
+    #[must_use]
+    pub fn signed_request(
+        &self,
+        key: &PrivateKey,
+        agent: &str,
+        method: &str,
+        target: &str,
+        body: Vec<u8>,
+    ) -> Request<Body> {
+        let agent_name = AgentName::try_from(agent.to_owned()).expect("valid agent name");
+        let nonce = Nonce::random();
+        let timestamp = self.clock.now();
+        let signature = request_signature(
+            key,
+            &SignedRequestParts {
+                audience: &self.state.audience,
+                agent: &agent_name,
+                method,
+                target,
+                timestamp,
+                nonce: &nonce,
+                body_sha256: Sha256::digest(&body).into(),
+            },
+        );
+        let mut builder = Request::builder()
+            .method(method)
+            .uri(target)
+            .header(AGENT_HEADER, agent)
+            .header(TIMESTAMP_HEADER, timestamp.to_string())
+            .header(NONCE_HEADER, nonce.as_str())
+            .header(SIGNATURE_HEADER, signature);
+        if !body.is_empty() {
+            builder = builder.header("Content-Type", "application/json");
+        }
+        builder.body(Body::from(body)).expect("request")
+    }
+
+    /// Send [`TestBroker::signed_request`] to the agent API.
+    ///
+    /// # Panics
+    /// If the request cannot be signed or the router fails.
+    pub async fn api_signed(
+        &self,
+        key: &PrivateKey,
+        agent: &str,
+        method: &str,
+        target: &str,
+        body: &[u8],
+    ) -> TestResponse {
+        self.api_send(self.signed_request(key, agent, method, target, body.to_vec()))
+            .await
+    }
+
     /// An SSH request for `alice@pi` with a fresh Ed25519 key.
     ///
     /// # Panics
@@ -1305,6 +1388,23 @@ impl TestBroker {
         self.post_json(&format!("/approve/{token}/deny"), &json!({}))
             .await
     }
+}
+
+/// The `Warden-Signature` value for `parts`: an SSHSIG by `key` (namespace
+/// `warden-request-v1`, hash `sha512`) over their canonical message, as
+/// standard base64 of the binary blob.
+///
+/// # Panics
+/// If `parts` cannot be signed.
+#[must_use]
+pub fn request_signature(key: &PrivateKey, parts: &SignedRequestParts<'_>) -> String {
+    let message = canonical_message(parts).expect("signable request");
+    let signature = key
+        .sign(NAMESPACE, HashAlg::Sha512, message.as_bytes())
+        .expect("sign request");
+    let mut blob = Vec::new();
+    signature.encode(&mut blob).expect("encode signature");
+    STANDARD.encode(blob)
 }
 
 async fn read(resp: axum::response::Response) -> TestResponse {

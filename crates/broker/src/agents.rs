@@ -486,6 +486,34 @@ pub async fn authenticate(pool: &SqlitePool, presented: &str) -> Result<AgentNam
     AgentName::try_from(name).map_err(|e| AgentError::Db(sqlx::Error::Decode(Box::new(e))))
 }
 
+/// The signing key registered for agent `name`, or `None` if it
+/// authenticates with a bearer key.
+///
+/// # Errors
+///
+/// [`AgentError::Unknown`] if no such agent exists, [`AgentError::Revoked`]
+/// if it is revoked; [`AgentError::Db`] on database failure or a stored key
+/// that does not parse.
+pub async fn signing_key(
+    pool: &SqlitePool,
+    name: &AgentName,
+) -> Result<Option<PublicKey>, AgentError> {
+    let row = sqlx::query("SELECT revoked_at, public_key FROM agents WHERE name = ?")
+        .bind(name.as_str())
+        .fetch_optional(pool)
+        .await?
+        .ok_or(AgentError::Unknown)?;
+    let revoked_at: Option<i64> = row.try_get("revoked_at")?;
+    if revoked_at.is_some() {
+        return Err(AgentError::Revoked);
+    }
+    let key: Option<String> = row.try_get("public_key")?;
+    key.map(|line| {
+        PublicKey::from_openssh(&line).map_err(|e| AgentError::Db(sqlx::Error::Decode(Box::new(e))))
+    })
+    .transpose()
+}
+
 /// List all agents, oldest first.
 ///
 /// # Errors

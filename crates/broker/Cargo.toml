@@ -51,7 +51,10 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 sqlx.workspace = true
-ssh-key.workspace = true
+# `p256`: agents may sign requests with ECDSA P-256 keys (Secure Enclave,
+# TPM, PIV); the broker only verifies with them.
+ssh-key = { workspace = true, features = ["p256"] }
+ssh-encoding.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
