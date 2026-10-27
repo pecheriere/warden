@@ -410,15 +410,6 @@ impl ApiSecretPolicy {
             digest: self.destination_digest(),
         }
     }
-
-    /// The grant details of the whole policy, with no narrowing.
-    #[must_use]
-    pub fn grant(&self) -> ApiGrant {
-        self.grant_for(&ApiScope {
-            methods: self.methods.clone(),
-            path_prefix: self.path_prefix.clone(),
-        })
-    }
 }
 
 /// What an API request asks for, resolved inside its policy: see
@@ -429,6 +420,29 @@ pub struct ApiScope {
     pub methods: Vec<Method>,
     /// Path prefix the grant is limited to, starting with `/`.
     pub path_prefix: String,
+}
+
+impl TryFrom<&ApiGrant> for ApiScope {
+    type Error = String;
+
+    /// The scope a stored grant limits calls to.
+    ///
+    /// # Errors
+    /// A message when a method in the grant is not a valid method name; the
+    /// broker only stores valid ones, so this means the record is damaged.
+    fn try_from(grant: &ApiGrant) -> Result<Self, Self::Error> {
+        let mut methods = grant
+            .methods
+            .iter()
+            .map(|m| parse_method(m).ok_or_else(|| format!("grant method {m:?} is not valid")))
+            .collect::<Result<Vec<_>, _>>()?;
+        methods.sort_unstable_by(|a, b| a.as_str().cmp(b.as_str()));
+        methods.dedup();
+        Ok(Self {
+            methods,
+            path_prefix: grant.path_prefix.clone(),
+        })
+    }
 }
 
 /// An API secret value, wiped on drop and never printed.
@@ -627,6 +641,7 @@ mod tests {
 
     use http::{HeaderName, Method};
     use url::Url;
+    use warden_broker_proto::ApiGrant;
     use warden_broker_proto::SecretName;
     use zeroize::Zeroizing;
 
@@ -772,7 +787,7 @@ mod tests {
             &[Method::POST, Method::GET],
             "authorization",
         );
-        let grant = post_get.grant();
+        let grant = full_grant(&post_get);
         assert_eq!(grant.methods, ["GET", "POST"]);
         assert_eq!(grant.digest, post_get.destination_digest());
 
@@ -780,13 +795,13 @@ mod tests {
         // the other grant fields do not show (format, CA) still differs.
         let mut get_post = post_get.clone();
         get_post.methods.reverse();
-        assert_eq!(get_post.grant(), grant);
+        assert_eq!(full_grant(&get_post), grant);
         let mut formatted = post_get.clone();
         formatted.format = ValueFormat::parse("token {{secret}}").unwrap();
-        assert_ne!(formatted.grant(), grant);
+        assert_ne!(full_grant(&formatted), grant);
         let mut pinned = post_get;
         pinned.ca_pem = Some("-----BEGIN CERTIFICATE-----".to_owned());
-        assert_ne!(pinned.grant(), grant);
+        assert_ne!(full_grant(&pinned), grant);
     }
 
     fn strings(list: &[&str]) -> Vec<String> {
@@ -795,6 +810,13 @@ mod tests {
 
     fn item(prefix: &str, methods: &[Method]) -> ApiSecretPolicy {
         api("https://api.example.com", prefix, methods, "authorization")
+    }
+
+    fn full_grant(policy: &ApiSecretPolicy) -> ApiGrant {
+        policy.grant_for(&ApiScope {
+            methods: policy.methods.clone(),
+            path_prefix: policy.path_prefix.clone(),
+        })
     }
 
     fn names(scope: &ApiScope) -> Vec<&str> {

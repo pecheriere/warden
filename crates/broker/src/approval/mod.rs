@@ -16,14 +16,15 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use ssh_key::PublicKey;
 use warden_broker_proto::{
-    Access, ApiError, GrantAccess, GrantView, Id, RelayGrant, SshGrant, UnixUser, Window,
+    Access, ApiError, CreateRequest, GrantAccess, GrantView, Id, RelayGrant, SshGrant, UnixUser,
+    Window,
 };
 use webauthn_rs::prelude::{PublicKeyCredential, RegisterPublicKeyCredential};
 
 use crate::AppState;
 use crate::audit::AuditEvent;
 use crate::identity::Owner;
-use crate::policy::{ApiSecretPolicy, CaKey, SshMode, SshTarget};
+use crate::policy::{ApiScope, ApiSecretPolicy, CaKey, SshMode, SshTarget};
 use crate::relay::RelayEndpoint;
 use crate::requests::{
     BACKEND_UNAVAILABLE, Destination, PendingView, RELAY_NOT_CONFIGURED, RequestError, sha256_hex,
@@ -331,8 +332,30 @@ fn check_policy(
     view.destination.check_window(window)?;
     match (&view.request.access, &view.destination) {
         (Access::Ssh { user, .. }, Destination::Ssh(target)) => check_ssh(target, user, relay),
-        (Access::Api { .. }, Destination::Api(_)) => Ok(()),
+        (Access::Api { .. }, Destination::Api(policy)) => {
+            api_scope(&view.request, policy).map(drop)
+        }
         _ => Err("the request does not match its policy kind".to_owned()),
+    }
+}
+
+/// The scope API request `request` asks for, resolved against the current
+/// `policy`.
+///
+/// # Errors
+/// A message when the request is not an API request or asks for more than
+/// `policy` allows now.
+pub(crate) fn api_scope(
+    request: &CreateRequest,
+    policy: &ApiSecretPolicy,
+) -> Result<ApiScope, String> {
+    match &request.access {
+        Access::Api {
+            methods,
+            path_prefix,
+            ..
+        } => policy.scope(methods.as_deref(), path_prefix.as_deref()),
+        Access::Ssh { .. } => Err("the request does not match its policy kind".to_owned()),
     }
 }
 
@@ -459,7 +482,7 @@ async fn approve_finish(
                 Err((context, cause)) => return internal(context, &cause),
             }
         }
-        Destination::Api(policy) => match api_grant(policy, binding.window, now) {
+        Destination::Api(policy) => match api_grant(&view.request, policy, binding.window, now) {
             Ok(grant) => (grant, None),
             Err((context, cause)) => return internal(context, &cause),
         },
@@ -593,20 +616,23 @@ fn relay_grant(
     })
 }
 
-/// The grant for approving use of API secret `policy` with `window` at
-/// `now`: valid from `now` for exactly the window. It names where the broker
-/// will send the secret; the secret itself is never part of it.
+/// The grant for approving `request` for API secret `policy` with `window`
+/// at `now`: valid from `now` for exactly the window, limited to the scope
+/// the request asked for. It names where the broker will send the secret;
+/// the secret itself is never part of it.
 fn api_grant(
+    request: &CreateRequest,
     policy: &ApiSecretPolicy,
     window: Window,
     now: i64,
 ) -> Result<GrantView, GrantFailure> {
+    let scope = api_scope(request, policy).map_err(|e| ("API scope", e))?;
     let (not_before, not_after) = validity(window, now)?;
     Ok(GrantView {
         grant_id: Id::random(),
         not_before,
         not_after,
-        access: GrantAccess::Api(policy.grant()),
+        access: GrantAccess::Api(policy.grant_for(&scope)),
     })
 }
 

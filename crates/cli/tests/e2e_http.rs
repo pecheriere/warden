@@ -169,12 +169,13 @@ async fn e2e_request_api_approve_and_call() {
         format!("Bearer {SECRET}")
     );
 
-    // A POST with a body and a header, and an echo that would carry the
+    // A GET with a body and a header (a plain request is read-only, so a
+    // write would be refused), and an echo that would carry the
     // secret back if the broker did not redact it.
     let post = s.cli.run(&[
         "http",
         SECRET_NAME,
-        "POST",
+        "GET",
         &s.upstream.url("/echo"),
         "-H",
         "X-Trace: abc:def",
@@ -285,7 +286,7 @@ async fn e2e_http_body_from_stdin_and_local_limits() {
     let mut child = s
         .cli
         .command()
-        .args(["http", SECRET_NAME, "POST", &url, "--data-file", "-"])
+        .args(["http", SECRET_NAME, "GET", &url, "--data-file", "-"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

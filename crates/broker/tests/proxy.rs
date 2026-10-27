@@ -14,13 +14,15 @@ use warden_broker::policy::{ApiSecretPolicy, ValueFormat};
 use warden_broker::proxy::ProxyLimits;
 use warden_broker::testkit::upstream::{HUGE_BYTES, SLOW_PREFIX};
 use warden_broker::testkit::{HttpsUpstream, TestBroker, TestResponse};
-use warden_broker_proto::{AgentName, Id, ProxyResponse, RequestStatus, Window};
+use warden_broker_proto::{Access, AgentName, Id, ProxyResponse, RequestStatus, Window};
 
 /// Has `/`, `+`, `=`, `&` and `~`, which every encoding spells differently.
 const SECRET: &str = "pr0xy-Cred/+=en&tial~42";
 
 /// The credential after rotation in 1Password.
 const ROTATED: &str = "r0tated-Cred/+=second~99";
+
+const METHOD_REFUSED: &str = r#"{"error":"method is not allowed for this secret"}"#;
 
 const POLICY_CHANGED: &str = r#"{"error":"policy changed; request access again"}"#;
 
@@ -59,6 +61,28 @@ async fn setup_with(limits: ProxyLimits, edit: impl FnOnce(&mut ApiSecretPolicy)
 /// Have `agent` request api access to `secret` and approve it.
 async fn approve_api(broker: &TestBroker, agent: &str, secret: &str) -> Id {
     let req = TestBroker::api_request(secret, "call the test api", Window::M30);
+    approve(broker, agent, req).await
+}
+
+/// Have `agent` request `methods` (and `path_prefix`) of `secret` and
+/// approve it.
+async fn approve_scoped(
+    broker: &TestBroker,
+    agent: &str,
+    secret: &str,
+    methods: &[&str],
+    path_prefix: Option<&str>,
+) -> Id {
+    let mut req = TestBroker::api_request(secret, "call the test api", Window::M30);
+    if let Access::Api {
+        methods: wanted,
+        path_prefix: prefix,
+        ..
+    } = &mut req.access
+    {
+        *wanted = Some(methods.iter().map(|m| (*m).to_owned()).collect());
+        *prefix = path_prefix.map(str::to_owned);
+    }
     approve(broker, agent, req).await
 }
 
@@ -217,7 +241,8 @@ async fn proxied_get_injects_header_and_returns_body() {
 
 #[tokio::test]
 async fn request_body_up_to_the_limit_is_forwarded() {
-    let s = setup().await;
+    let mut s = setup().await;
+    s.grant = approve_scoped(&s.broker, "bot", "svc", &["POST"], None).await;
     // 1 MiB decoded is about 1.4 MB of base64 JSON: above the API's
     // ordinary body limit, within this route's.
     let payload = vec![b'p'; 1024 * 1024];
@@ -746,4 +771,104 @@ async fn expired_during_call_withholds_response() {
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0]["outcome"], "grant expired during the call");
     assert_eq!(calls[0]["status"], 200);
+}
+
+/// A request that names no methods is approved read-only: `GET` and `HEAD`
+/// work, a write the item would allow is refused.
+#[tokio::test]
+async fn read_only_grant_by_default() {
+    let s = setup_with(ProxyLimits::default(), |p| {
+        p.methods.push(http::Method::HEAD);
+    })
+    .await;
+    let resp = get(&s, "/v1/hello").await;
+    assert_eq!(proxied(&resp).0.status, 200);
+    let url = s.upstream.url("/v1/items");
+    let head = call_as(&s.broker, &s.key, &s.grant, "HEAD", &url, None).await;
+    assert_eq!(proxied(&head).0.status, 200);
+    let post = call_as(&s.broker, &s.key, &s.grant, "POST", &url, Some(b"x")).await;
+    assert_eq!(post.status, StatusCode::BAD_REQUEST, "{}", post.body);
+    assert_eq!(post.body, METHOD_REFUSED);
+    assert_eq!(s.upstream.received().len(), 2);
+}
+
+/// Methods the request named are what the grant allows, no more.
+#[tokio::test]
+async fn write_grant_allows_requested_methods() {
+    let s = setup().await;
+    let grant = approve_scoped(&s.broker, "bot", "svc", &["POST"], None).await;
+    let url = s.upstream.url("/v1/items");
+    let post = call_as(&s.broker, &s.key, &grant, "POST", &url, Some(b"x")).await;
+    assert_eq!(proxied(&post).0.status, 200);
+    let get = call_as(&s.broker, &s.key, &grant, "GET", &url, None).await;
+    assert_eq!(get.status, StatusCode::BAD_REQUEST, "{}", get.body);
+    assert_eq!(get.body, METHOD_REFUSED);
+    let both = approve_scoped(&s.broker, "bot", "svc", &["POST", "GET"], None).await;
+    let get = call_as(&s.broker, &s.key, &both, "GET", &url, None).await;
+    assert_eq!(proxied(&get).0.status, 200);
+    let delete = call_as(&s.broker, &s.key, &both, "DELETE", &url, None).await;
+    assert_eq!(delete.status, StatusCode::BAD_REQUEST, "{}", delete.body);
+    assert_eq!(s.upstream.received().len(), 2);
+}
+
+/// A call the item would allow but the grant does not (a method or a path
+/// outside what was approved) is refused like an item violation, audited,
+/// and never reaches the upstream.
+#[tokio::test]
+async fn call_outside_narrowed_scope_refused() {
+    let s = setup().await;
+    let grant = approve_scoped(&s.broker, "bot", "svc", &["GET"], Some("/v1/")).await;
+    let post = call_as(
+        &s.broker,
+        &s.key,
+        &grant,
+        "POST",
+        &s.upstream.url("/v1/items"),
+        Some(b"x"),
+    )
+    .await;
+    assert_eq!(post.status, StatusCode::BAD_REQUEST, "{}", post.body);
+    assert_eq!(post.body, METHOD_REFUSED);
+    let outside = call_as(
+        &s.broker,
+        &s.key,
+        &grant,
+        "GET",
+        &s.upstream.url("/v2/items"),
+        None,
+    )
+    .await;
+    assert_eq!(outside.status, StatusCode::BAD_REQUEST, "{}", outside.body);
+    assert!(
+        outside.body.contains("URL path is not allowed"),
+        "{}",
+        outside.body
+    );
+    assert!(s.upstream.received().is_empty());
+
+    let calls = proxy_calls(&s.broker);
+    assert_eq!(calls.len(), 2, "{calls:?}");
+    assert_eq!(calls[0]["method"], "POST");
+    assert_eq!(calls[0]["status"], Value::Null);
+    assert_eq!(calls[0]["outcome"], "method is not allowed for this secret");
+    assert_eq!(calls[1]["method"], "GET");
+    assert_eq!(calls[1]["status"], Value::Null);
+    assert!(
+        calls[1]["outcome"]
+            .as_str()
+            .unwrap()
+            .starts_with("URL path is not allowed"),
+        "{calls:?}"
+    );
+
+    let inside = call_as(
+        &s.broker,
+        &s.key,
+        &grant,
+        "GET",
+        &s.upstream.url("/v1/items"),
+        None,
+    )
+    .await;
+    assert_eq!(proxied(&inside).0.status, 200);
 }

@@ -1227,7 +1227,7 @@ async fn api_page_shows_origin_methods_prefix_header_format_and_ca() {
     );
     assert!(
         html.contains(
-            "use secret <code><bdi>github</bdi></code> for <code><bdi>GET, POST</bdi></code> \
+            "use secret <code><bdi>github</bdi></code> for <code><bdi>GET</bdi></code> \
              on <code><bdi>https://api.example.com:8443/v1/repos/</bdi></code> \
              (header <code><bdi>x-api-key</bdi></code>)"
         ),
@@ -1567,4 +1567,25 @@ async fn bound_key_reuse_is_409_on_the_api() {
         second.json(),
         json!({"error": "this public key is already bound to another request or grant"})
     );
+}
+
+/// An item edited to drop a requested method after the page loaded cannot
+/// be approved, and no grant is issued.
+#[tokio::test]
+async fn approval_refused_when_item_drops_requested_method() {
+    let broker = scoped_broker().await;
+    let (created, token) = broker
+        .create_request("bot", scoped_request(Some(&["POST"]), None))
+        .await;
+    let mut auth = broker.enroll_soft_passkey().await;
+    let begin = broker.begin_approval(&token, Window::M15).await;
+    let (ceremony, credential) = TestBroker::sign(&mut auth, &begin);
+    let mut narrowed = FakeBackend::example_api_secret();
+    narrowed.methods = vec![Method::GET, Method::HEAD];
+    "/v1/".clone_into(&mut narrowed.path_prefix);
+    broker.backend.set_api_secret(narrowed, API_CREDENTIAL);
+    let finish = broker.finish_approval(&token, &ceremony, &credential).await;
+    assert_eq!(finish.status, StatusCode::CONFLICT, "{}", finish.body);
+    assert_eq!(grant_count(&broker).await, 0);
+    assert_eq!(status(&broker, &created.id).await, RequestStatus::Pending);
 }

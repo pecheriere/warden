@@ -22,7 +22,7 @@ use warden_broker_proto::{
 use crate::AppState;
 use crate::audit::AuditEvent;
 use crate::identity::AuthedAgent;
-use crate::policy::PolicyError;
+use crate::policy::{ApiScope, PolicyError};
 use crate::proxy::{self, Needles};
 use crate::requests::{BACKEND_UNAVAILABLE, RequestError};
 
@@ -427,9 +427,16 @@ async fn call(
         .api_secret_with_value(&grant.secret)
         .await
         .map_err(policy_failure)?;
-    if policy.grant() != *grant {
+    if policy.destination_digest() != grant.digest {
         return Err(policy_changed());
     }
+    // The grant's scope comes from the broker's own record; every rule of
+    // the item then applies to the narrowed policy.
+    let scope = ApiScope::try_from(grant).map_err(|e| {
+        tracing::error!(grant = %grant_id, error = %e, "stored API grant is unusable");
+        Failure::Request(RequestError::Internal("stored grant is unusable"))
+    })?;
+    let policy = policy.narrowed(&scope);
     let limits = state.config.proxy;
     let prepared = proxy::check(&policy, req, limits.max_request_bytes)
         .map_err(|refusal| Failure::Client(StatusCode::BAD_REQUEST, refusal.to_string()))?;

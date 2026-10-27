@@ -82,7 +82,10 @@ fn destination_access(request: &CreateRequest, destination: &Destination) -> Mar
             @if target.mode == SshMode::Relay { " via the warden relay" }
         },
         Destination::Api(policy) => html! {
-            (api_access(&policy.grant()))
+            @match super::api_scope(request, policy) {
+                Ok(scope) => (api_access(&policy.grant_for(&scope))),
+                Err(message) => bdi { (message) },
+            }
             br;
             "value " code { bdi { (policy.format.prefix()) "…" (policy.format.suffix()) } }
             ", pinned CA: " (if policy.ca_pem.is_some() { "yes" } else { "no" })
