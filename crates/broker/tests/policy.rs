@@ -517,6 +517,17 @@ const THROWAWAY_CA_PEM: &str = include_str!("fixtures/throwaway-test-only-ca.pem
 const API_ID: &str = "api00000000000000000000g00";
 const CREDENTIAL: &str = "test-credential-0123456789abcdef";
 
+/// The grant for the whole policy, with no narrowing.
+fn full_grant(policy: &ApiSecretPolicy) -> warden_broker_proto::ApiGrant {
+    let methods: Vec<String> = policy
+        .methods
+        .iter()
+        .map(|m| m.as_str().to_owned())
+        .collect();
+    let scope = policy.scope(Some(&methods), None).unwrap();
+    policy.grant_for(&scope)
+}
+
 fn secret(name: &str) -> SecretName {
     SecretName::try_from(name.to_owned()).unwrap()
 }
@@ -586,7 +597,7 @@ async fn parses_api_secret_with_defaults() {
     assert_eq!(p.ca_pem, None);
     assert_eq!(p.max_window, Window::M30);
 
-    let g = p.grant();
+    let g = full_grant(&p);
     assert_eq!(g.secret, secret("github"));
     assert_eq!(g.origin, "https://api.example.com");
     assert_eq!(g.methods, vec!["GET".to_owned()]);
@@ -622,7 +633,7 @@ async fn parses_api_secret_with_defaults() {
     let policy = b.api_secret(&secret("github")).await.unwrap();
     let (with_value, value) = b.api_secret_with_value(&secret("github")).await.unwrap();
     assert_eq!(value.expose(), CREDENTIAL);
-    assert_eq!(with_value.grant(), policy.grant());
+    assert_eq!(full_grant(&with_value), full_grant(&policy));
 }
 
 #[tokio::test]
@@ -739,7 +750,7 @@ async fn methods_parsed_and_uppercase_only() {
     let p = api_with(&item).await.unwrap();
     assert_eq!(p.methods, vec![http::Method::POST, http::Method::GET]);
     // The grant lists them sorted, the order the destination digest uses.
-    assert_eq!(p.grant().methods, vec!["GET", "POST"]);
+    assert_eq!(full_grant(&p).methods, vec!["GET", "POST"]);
 
     for bad in [
         "get",
@@ -773,6 +784,10 @@ async fn path_prefix_must_start_with_slash() {
         "/v1//x",
         "/v 1",
         "/v1\\x",
+        "/v1/%2f",
+        "/v1/%2E%2e/x",
+        "/v1/%5c",
+        "/v1;x",
     ] {
         let mut item = api_item();
         set_field(&mut item, "path_prefix", Some(bad));
@@ -905,7 +920,7 @@ async fn api_secret_debug_redacted() {
     let b = backend(&server);
     let (policy, value) = b.api_secret_with_value(&secret("github")).await.unwrap();
     assert_eq!(format!("{value:?}"), "SecretValue(<redacted>)");
-    let shown = format!("{policy:?} {:?}", policy.grant());
+    let shown = format!("{policy:?} {:?}", full_grant(&policy));
     assert!(!shown.contains(CREDENTIAL), "{shown}");
     assert!(!shown.contains("test-credential"), "{shown}");
 }
@@ -966,9 +981,9 @@ async fn fake_backend_serves_api_secrets() {
     fake.set_api_secret(policy.clone(), CREDENTIAL);
     let got = fake.api_secret(&secret("github")).await.unwrap();
     assert_eq!(got.destination_digest(), policy.destination_digest());
-    assert_eq!(got.grant(), policy.grant());
+    assert_eq!(full_grant(&got), full_grant(&policy));
     let (with_value, value) = fake.api_secret_with_value(&secret("github")).await.unwrap();
-    assert_eq!(with_value.grant(), policy.grant());
+    assert_eq!(full_grant(&with_value), full_grant(&policy));
     assert_eq!(value.expose(), CREDENTIAL);
 
     // Rotation replaces the value.

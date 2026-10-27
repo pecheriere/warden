@@ -59,8 +59,27 @@ warden request api github --for 15m \
 
 The same rules apply: a precise goal, the shortest window, and no request
 until you need it. The owner sees the secret's name, and the approval page
-shows the one origin, path prefix and methods the secret may be used for,
-the header and value format it is sent in, and whether a CA is pinned.
+shows the one origin, path prefix and methods the grant allows, the header
+and value format it is sent in, and whether a CA is pinned.
+
+A request without `--methods` is **read-only**: `GET` and `HEAD`. Ask for
+write access only when the task needs it, and name just the methods you will
+use, optionally under a narrower path:
+
+```sh
+warden request api github --methods POST --path /repos/alice/widgets/ --for 15m \
+  --goal "open an issue about the stale fork on alice/widgets"
+```
+
+The owner sees **Can modify: POST** for that request, so the goal must say
+what you will change. You can only narrow what the secret's item allows; a
+method or path outside it is refused at once, and `CONNECT` and `TRACE` never
+are. Keep write windows short. A good pattern is a long read-only grant for
+looking around and a short write grant for the one change; you may hold both
+for the same secret. A 0.3 broker or CLI knows nothing of this: against 0.4,
+a request from a 0.3 CLI is read-only. Upgrade the broker before the CLIs: a
+0.4 CLI refuses (and does not record) a grant from an older broker that is wider
+than it asked for, and says so.
 
 Some targets are reached through the broker's SSH relay instead of with a
 certificate. You do not need to know which: `warden request ssh` and
@@ -105,9 +124,9 @@ warden ssh pi                       # interactive shell
 warden ssh pi -- systemctl status x # run one command
 ```
 
-`warden ssh` uses the newest active grant for the target. It runs OpenSSH
-with your `~/.ssh/config` ignored, with only the grant's agent, and with only
-the host keys the broker pinned (`StrictHostKeyChecking=yes`). Passwords and
+`warden ssh` uses the active grant for the target that stays valid longest.
+It runs OpenSSH with your `~/.ssh/config` ignored, with only the grant's agent,
+and with only the host keys the broker pinned (`StrictHostKeyChecking=yes`). Passwords and
 keyboard-interactive login are disabled. Put everything after `--`. It is
 the remote command, never ssh options.
 
@@ -121,18 +140,20 @@ warden http github PUT https://api.github.com/repos/alice/widgets/x \
   --data-file body.json -i --fail
 ```
 
-`warden http <secret> <METHOD> <url>` uses the newest active `api` grant for
-the secret. The response body goes to stdout, unchanged. With `-i`, the status
-line and response headers go to stderr. `-H 'Name: value'` adds a request
-header (repeatable). `-d` gives the body inline, and `--data-file <path>`
-reads it from a file (`-` for standard input). A body is at most 1 MiB.
+`warden http <secret> <METHOD> <url>` uses the `api` grant for the secret whose
+methods and path prefix cover the call; if several do, the one that stays valid
+longest. The response body goes to stdout, unchanged. With `-i`, the status
+line and response headers go to stderr. `-H 'Name: value'` adds a request header (repeatable). `-d` gives the
+body inline, and `--data-file <path>` reads it from a file (`-` for standard
+input). A body is at most 1 MiB.
 
 The broker refuses, with a message that names the rule (exit 1):
 
 - a URL that is not on the secret's origin, not `https`, or whose path is
   outside the allowed prefix or has dot segments, `//`, `;`, `\` or encoded
   separators;
-- a method the policy does not allow (`CONNECT` and `TRACE` never are);
+- a method or path the policy, narrowed to the grant, does not allow
+  (`CONNECT` and `TRACE` never are);
 - headers you may not set: `Host`, `Content-Length`, `Connection` and other
   hop-by-hop headers, the secret's own header, `Accept-Encoding`, `Range`,
   `If-Range`, method or URL override headers, and forwarding or host-override
@@ -182,7 +203,7 @@ also cleans up expired grants and stops their agents.
 | 2 | The request was denied. Do not retry the same request. Ask the owner what to change. |
 | 3 | The request expired without a decision. The owner may be away. Retry later, not in a loop. |
 | 4 | The grant was revoked. |
-| 5 | `warden ssh` or `warden http` found no active grant. Run `warden request ssh …` or `warden request api …` first. |
+| 5 | `warden ssh` or `warden http` found no active grant. Run `warden request ssh …` or `warden request api …` first. For `warden http`, also when no active grant covers the method and path; the message gives the `warden request api <secret> --methods <METHOD> …` command to run. |
 | 22 | `warden http --fail` got an upstream status of 400 or more. The body is still written to stdout. |
 
 `warden http` exits 0 for any upstream status unless `--fail` is given. A

@@ -21,7 +21,8 @@ use zeroize::Zeroizing;
 
 use super::{
     ApiSecretPolicy, CaKey, PolicyError, RelayCredential, SecretBackend, SecretValue, SshMode,
-    SshTarget, ValueFormat, is_header_text, is_reserved_header, not_a_relay_target,
+    SshTarget, ValueFormat, check_path_prefix, is_header_text, is_reserved_header,
+    not_a_relay_target, parse_method,
 };
 
 const TARGET_TAG: &str = "warden:ssh-target";
@@ -737,41 +738,13 @@ fn parse_website(item: &ApiItem) -> Result<Origin, &'static str> {
 fn parse_methods(list: &str) -> Result<Vec<Method>, &'static str> {
     let mut methods: Vec<Method> = Vec::new();
     for token in list.split(',').map(str::trim) {
-        // Uppercase ASCII letters are always a valid method token.
-        let method = Some(token)
-            .filter(|t| !t.is_empty() && t.bytes().all(|b| b.is_ascii_uppercase()))
-            .and_then(|t| Method::from_bytes(t.as_bytes()).ok())
+        let method = parse_method(token)
             .ok_or("must be a comma-separated list of uppercase method names, such as GET, POST")?;
         if !methods.contains(&method) {
             methods.push(method);
         }
     }
     Ok(methods)
-}
-
-/// An absolute path without query, fragment, empty or dot segments, or
-/// characters that need quoting.
-fn check_path_prefix(prefix: &str) -> Result<(), &'static str> {
-    if !prefix.starts_with('/') {
-        return Err("must start with /");
-    }
-    if !prefix
-        .chars()
-        .all(|c| c.is_ascii_graphic() && !matches!(c, '?' | '#' | '\\'))
-    {
-        return Err("must be printable ASCII without spaces, ?, # or \\");
-    }
-    // The leading "/" yields one empty first segment; a trailing "/" one
-    // empty last segment. Any other empty segment is a "//".
-    let segments: Vec<&str> = prefix.split('/').skip(1).collect();
-    let (last, inner) = segments.split_last().unwrap_or((&"", &[]));
-    if inner.iter().any(|s| s.is_empty()) {
-        return Err("must not contain //");
-    }
-    if inner.iter().chain([last]).any(|s| matches!(*s, "." | "..")) {
-        return Err("must not contain . or .. segments");
-    }
-    Ok(())
 }
 
 /// One or more PEM certificates, each usable as a TLS trust anchor.

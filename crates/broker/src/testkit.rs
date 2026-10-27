@@ -935,6 +935,21 @@ impl TestBroker {
             .collect()
     }
 
+    /// The `summary` of every `request_created` audit entry, oldest first.
+    ///
+    /// # Panics
+    /// If the log cannot be read.
+    #[must_use]
+    pub fn audit_summaries(&self) -> Vec<String> {
+        std::fs::read_to_string(&self.audit_path)
+            .expect("read audit log")
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).expect("audit line is JSON"))
+            .filter(|v| v["event"]["type"] == "request_created")
+            .map(|v| v["event"]["summary"].as_str().expect("summary").to_owned())
+            .collect()
+    }
+
     /// Add an agent and return its key.
     ///
     /// # Panics
@@ -995,6 +1010,8 @@ impl TestBroker {
             goal: Goal::try_from(goal.to_owned()).expect("valid goal"),
             access: Access::Api {
                 secret: SecretName::try_from(secret.to_owned()).expect("valid secret name"),
+                methods: None,
+                path_prefix: None,
             },
             window,
         }

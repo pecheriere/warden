@@ -11,14 +11,14 @@ use sqlx::Row as _;
 use ssh_key::{Certificate, PublicKey};
 use warden_broker::approval::passkeys;
 use warden_broker::policy::{ApiSecretPolicy, RelayCredential, ValueFormat};
-use warden_broker::requests::Clock as _;
+use warden_broker::requests::{Clock as _, RequestError};
 use warden_broker::testkit::{
-    FakeBackend, NAS_HOST, PI_HOST, RELAY_PUBLIC_HOST, RELAY_PUBLIC_PORT, SoftAuthenticator,
-    TEST_ORIGIN, TEST_OWNER, TEST_START, TestBroker,
+    CapturingNotifier, FakeBackend, NAS_HOST, PI_HOST, RELAY_PUBLIC_HOST, RELAY_PUBLIC_PORT,
+    SoftAuthenticator, TEST_ORIGIN, TEST_OWNER, TEST_START, TestBroker,
 };
 use warden_broker_proto::{
-    Access, AgentName, ApiGrant, CreatedResponse, GrantAccess, Id, RequestStatus, SecretName,
-    TargetName, Window,
+    Access, AgentName, ApiGrant, CreateRequest, CreatedResponse, Goal, GrantAccess, Id,
+    RequestStatus, SecretName, TargetName, Window,
 };
 use webauthn_authenticator_rs::WebauthnAuthenticator;
 use webauthn_authenticator_rs::softpasskey::SoftPasskey;
@@ -950,12 +950,114 @@ async fn api_pending() -> (TestBroker, CreatedResponse, String) {
     (broker, created, token)
 }
 
+/// A broker with agent `bot` and API secret `github` allowing GET, HEAD and
+/// POST under `/v1/`.
+async fn scoped_broker() -> TestBroker {
+    let broker = TestBroker::new().await;
+    broker.add_agent("bot").await;
+    let mut policy = FakeBackend::example_api_secret();
+    policy.methods = vec![Method::POST, Method::GET, Method::HEAD];
+    "/v1/".clone_into(&mut policy.path_prefix);
+    broker.backend.set_api_secret(policy, API_CREDENTIAL);
+    broker
+}
+
+fn scoped_request(methods: Option<&[&str]>, path_prefix: Option<&str>) -> CreateRequest {
+    CreateRequest {
+        goal: Goal::try_from("list the open pull requests".to_owned()).unwrap(),
+        access: Access::Api {
+            secret: SecretName::try_from("github".to_owned()).unwrap(),
+            methods: methods.map(|m| m.iter().map(|s| (*s).to_owned()).collect()),
+            path_prefix: path_prefix.map(str::to_owned),
+        },
+        window: Window::M15,
+    }
+}
+
+async fn create_scoped(
+    broker: &TestBroker,
+    req: CreateRequest,
+) -> Result<CreatedResponse, RequestError> {
+    broker.state().requests.create(&bot(), req).await
+}
+
+async fn dedupe_keys(broker: &TestBroker) -> Vec<String> {
+    sqlx::query("SELECT dedupe_key FROM requests ORDER BY created_at, rowid")
+        .fetch_all(&broker.state().pool)
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| row.get(0))
+        .collect()
+}
+
+#[tokio::test]
+async fn scope_violations_are_rejected_without_notifying() {
+    let broker = scoped_broker().await;
+    let cases = [
+        (
+            scoped_request(Some(&["DELETE"]), None),
+            "secret github does not allow DELETE",
+        ),
+        (
+            scoped_request(None, Some("/v1")),
+            "secret github: path prefix must be under /v1/",
+        ),
+        (
+            scoped_request(Some(&["GET"]), Some("/v1/../admin")),
+            "secret github: path prefix must not contain . or .. segments",
+        ),
+    ];
+    for (req, expected) in cases {
+        let err = create_scoped(&broker, req).await.unwrap_err();
+        let RequestError::Rejected(message) = err else {
+            panic!("expected Rejected, got {err:?}");
+        };
+        assert_eq!(message, expected);
+    }
+    assert!(broker.capture.rung().is_empty());
+    assert!(dedupe_keys(&broker).await.is_empty());
+    assert!(!broker.audit_types().contains(&"request_created".to_owned()));
+}
+
+#[tokio::test]
+async fn read_and_write_requests_do_not_dedupe() {
+    let broker = scoped_broker().await;
+    let read = create_scoped(&broker, scoped_request(None, None))
+        .await
+        .unwrap();
+    let write = create_scoped(&broker, scoped_request(Some(&["GET", "POST"]), None))
+        .await
+        .unwrap();
+    let narrower = create_scoped(&broker, scoped_request(None, Some("/v1/repos")))
+        .await
+        .unwrap();
+    assert_ne!(read.id, write.id);
+    assert_ne!(read.id, narrower.id);
+    // The same request again is the dedupe path, as before.
+    let again = create_scoped(
+        &broker,
+        scoped_request(Some(&["HEAD", "GET"]), Some("/v1/")),
+    )
+    .await
+    .unwrap();
+    assert_eq!(again.id, read.id);
+    assert_eq!(
+        dedupe_keys(&broker).await,
+        [
+            "bot|api|github|GET,HEAD|/v1/",
+            "bot|api|github|GET,POST|/v1/",
+            "bot|api|github|GET,HEAD|/v1/repos",
+        ]
+    );
+}
+
 #[tokio::test]
 async fn api_request_notifies_and_approves() {
     let (broker, created, token) = api_pending().await;
     let bells = broker.capture.rung();
     assert_eq!(bells.len(), 1);
-    assert_eq!(bells[0].title, "warden: bot wants api github");
+    assert_eq!(bells[0].title, "warden: bot wants api github (read-only)");
     assert_eq!(bells[0].message, "list the open pull requests");
     broker.clock.advance(7);
 
@@ -1125,7 +1227,7 @@ async fn api_page_shows_origin_methods_prefix_header_format_and_ca() {
     );
     assert!(
         html.contains(
-            "use secret <code><bdi>github</bdi></code> for <code><bdi>GET, POST</bdi></code> \
+            "use secret <code><bdi>github</bdi></code> for <code><bdi>GET</bdi></code> \
              on <code><bdi>https://api.example.com:8443/v1/repos/</bdi></code> \
              (header <code><bdi>x-api-key</bdi></code>)"
         ),
@@ -1464,5 +1566,135 @@ async fn bound_key_reuse_is_409_on_the_api() {
     assert_eq!(
         second.json(),
         json!({"error": "this public key is already bound to another request or grant"})
+    );
+}
+
+/// An item edited to drop a requested method after the page loaded cannot
+/// be approved, and no grant is issued.
+#[tokio::test]
+async fn approval_refused_when_item_drops_requested_method() {
+    let broker = scoped_broker().await;
+    let (created, token) = broker
+        .create_request("bot", scoped_request(Some(&["POST"]), None))
+        .await;
+    let mut auth = broker.enroll_soft_passkey().await;
+    let begin = broker.begin_approval(&token, Window::M15).await;
+    let (ceremony, credential) = TestBroker::sign(&mut auth, &begin);
+    let mut narrowed = FakeBackend::example_api_secret();
+    narrowed.methods = vec![Method::GET, Method::HEAD];
+    "/v1/".clone_into(&mut narrowed.path_prefix);
+    broker.backend.set_api_secret(narrowed, API_CREDENTIAL);
+    let finish = broker.finish_approval(&token, &ceremony, &credential).await;
+    // The destination digest changed with the methods, so that guard fires;
+    // the scope re-check in `check_policy` is a second line of defence.
+    assert_eq!(finish.status, StatusCode::CONFLICT, "{}", finish.body);
+    assert_eq!(
+        finish.json(),
+        json!({"error": "policy changed; reload and review"})
+    );
+    assert_eq!(grant_count(&broker).await, 0);
+    assert_eq!(status(&broker, &created.id).await, RequestStatus::Pending);
+}
+
+#[tokio::test]
+async fn grants_page_labels_api_grants() {
+    let (broker, _created, token) = api_pending().await;
+    let approved = broker.approve(&token, Window::M30).await;
+    assert_eq!(approved.status, StatusCode::OK, "{}", approved.body);
+    let page = broker.get("/grants").await;
+    assert!(
+        page.body
+            .contains(r#"<strong class="readonly">Read-only</strong>"#),
+        "{}",
+        page.body
+    );
+
+    let broker = scoped_broker().await;
+    let (_, token) = broker
+        .create_request("bot", scoped_request(Some(&["POST", "GET"]), None))
+        .await;
+    let approved = broker.approve(&token, Window::M15).await;
+    assert_eq!(approved.status, StatusCode::OK, "{}", approved.body);
+    let page = broker.get("/grants").await;
+    assert!(
+        page.body
+            .contains(r#"<strong class="warning">Can modify: POST</strong>"#),
+        "{}",
+        page.body
+    );
+    assert!(!page.body.contains("Read-only"), "{}", page.body);
+}
+
+#[tokio::test]
+async fn page_marks_read_only() {
+    let (broker, _created, token) = api_pending().await;
+    let page = broker.get(&format!("/approve/{token}")).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    assert!(
+        page.body
+            .contains(r#"<strong class="readonly">Read-only</strong>"#),
+        "{}",
+        page.body
+    );
+    assert!(!page.body.contains("Can modify"), "{}", page.body);
+}
+
+#[tokio::test]
+async fn page_warns_can_modify() {
+    let broker = scoped_broker().await;
+    let mut policy = FakeBackend::example_api_secret();
+    policy.methods = vec![Method::GET, Method::POST, Method::PUT];
+    "/v1/".clone_into(&mut policy.path_prefix);
+    broker.backend.set_api_secret(policy, API_CREDENTIAL);
+    create_scoped(&broker, scoped_request(Some(&["PUT", "GET", "POST"]), None))
+        .await
+        .unwrap();
+    let bell = broker.capture.rung().pop().unwrap();
+    let token = CapturingNotifier::token(&bell);
+    let page = broker.get(&format!("/approve/{token}")).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    assert!(
+        page.body
+            .contains(r#"<strong class="warning">Can modify: POST, PUT</strong>"#),
+        "{}",
+        page.body
+    );
+    assert!(!page.body.contains("Read-only"), "{}", page.body);
+}
+
+#[tokio::test]
+async fn notification_says_can_modify() {
+    let broker = scoped_broker().await;
+    create_scoped(&broker, scoped_request(Some(&["POST", "GET"]), None))
+        .await
+        .unwrap();
+    create_scoped(&broker, scoped_request(None, Some("/v1/repos")))
+        .await
+        .unwrap();
+    let titles: Vec<String> = broker.capture.rung().into_iter().map(|b| b.title).collect();
+    assert_eq!(
+        titles,
+        [
+            "warden: bot wants api github (CAN MODIFY: POST)",
+            "warden: bot wants api github (read-only)",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn audit_summary_includes_scope() {
+    let broker = scoped_broker().await;
+    create_scoped(&broker, scoped_request(Some(&["POST", "GET"]), None))
+        .await
+        .unwrap();
+    create_scoped(&broker, scoped_request(None, None))
+        .await
+        .unwrap();
+    assert_eq!(
+        broker.audit_summaries(),
+        [
+            "api github (CAN MODIFY: POST) for 15m: list the open pull requests",
+            "api github (read-only) for 15m: list the open pull requests",
+        ]
     );
 }

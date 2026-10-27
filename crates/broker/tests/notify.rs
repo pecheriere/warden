@@ -188,13 +188,13 @@ fn doorbell_truncates_goal_at_200_chars() {
     let url = Url::parse("https://warden.example/approve/abc").unwrap();
 
     let exact = "é".repeat(200);
-    let d = doorbell(&agent, &request(&exact), url.clone());
+    let d = doorbell(&agent, "ssh root@pi", &request(&exact), url.clone());
     assert_eq!(d.message, exact);
     assert_eq!(d.title, "warden: bot wants ssh root@pi");
     assert_eq!(d.url, url);
 
     let long = "é".repeat(201);
-    let d = doorbell(&agent, &request(&long), url);
+    let d = doorbell(&agent, "ssh root@pi", &request(&long), url);
     assert_eq!(d.message, format!("{}…", "é".repeat(200)));
 }
 

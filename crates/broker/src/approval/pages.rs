@@ -7,7 +7,7 @@
 use maud::{DOCTYPE, Markup, html};
 use warden_broker_proto::{Access, ApiGrant, CreateRequest, GrantAccess, Window};
 
-use crate::policy::SshMode;
+use crate::policy::{ApiScope, SshMode};
 use crate::requests::{ActiveGrant, Destination, HistoryEntry, PendingView, window_label};
 
 const STYLE: &str = "\
@@ -19,7 +19,9 @@ code{word-break:break-all}\
 button{font-size:1.1rem;padding:.6rem 1.2rem;margin:.4rem .4rem .4rem 0}\
 select,input{font-size:1.1rem;padding:.3rem}\
 table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid #ccc;padding:.3rem;text-align:left;vertical-align:top}\
-#result{font-weight:600}";
+#result{font-weight:600}\
+.readonly{color:#0d4f20;background:#dff5e5;border:2px solid #1a6b2f;border-radius:.3rem;padding:.1rem .5rem}\
+.warning{color:#5c2200;background:#fff1d6;border:2px solid #c25100;border-radius:.3rem;padding:.1rem .5rem}";
 
 /// Every window, shortest first.
 const WINDOWS: [Window; 4] = [Window::M15, Window::M30, Window::H1, Window::H4];
@@ -56,7 +58,7 @@ fn access_line(request: &CreateRequest, host: &str, port: u16) -> String {
             format!("ssh {user}@{target} ([{host}]:{port})")
         }
         Access::Ssh { target, user, .. } => format!("ssh {user}@{target} ({host}:{port})"),
-        Access::Api { secret } => format!("api {secret}"),
+        Access::Api { secret, .. } => format!("api {secret}"),
     }
 }
 
@@ -71,6 +73,19 @@ fn api_access(grant: &ApiGrant) -> Markup {
     }
 }
 
+/// Whether `scope` can change anything upstream: a **Read-only** badge, or a
+/// warning naming every method that can modify.
+fn modify_line(scope: &ApiScope) -> Markup {
+    let modifying = scope.modifying_methods();
+    html! {
+        @if modifying.is_empty() {
+            strong.readonly { "Read-only" }
+        } @else {
+            strong.warning { "Can modify: " (modifying.join(", ")) }
+        }
+    }
+}
+
 /// What approving `request` gives access to under `destination`: for a
 /// relay target also that the session goes through the warden relay; for an
 /// API secret also how its value is written (the secret shown as `…`) and
@@ -82,7 +97,14 @@ fn destination_access(request: &CreateRequest, destination: &Destination) -> Mar
             @if target.mode == SshMode::Relay { " via the warden relay" }
         },
         Destination::Api(policy) => html! {
-            (api_access(&policy.grant()))
+            @match super::api_scope(request, policy) {
+                Ok(scope) => {
+                    (api_access(&policy.grant_for(&scope)))
+                    br;
+                    (modify_line(&scope))
+                }
+                Err(message) => bdi { (message) },
+            }
             br;
             "value " code { bdi { (policy.format.prefix()) "…" (policy.format.suffix()) } }
             ", pinned CA: " (if policy.ca_pem.is_some() { "yes" } else { "no" })
@@ -96,7 +118,15 @@ fn grant_access(grant: &ActiveGrant) -> Markup {
         GrantAccess::Ssh(ssh) => {
             html! { code { (access_line(&grant.request, &ssh.host, ssh.port)) } }
         }
-        GrantAccess::Api(api) => api_access(api),
+        GrantAccess::Api(api) => html! {
+            (api_access(api))
+            br;
+            @match ApiScope::try_from(api) {
+                Ok(scope) => (modify_line(&scope)),
+                // A damaged record: the label must not claim read-only.
+                Err(_) => strong.warning { "Can modify: unverified scope" },
+            }
+        },
         GrantAccess::Relay(relay) => html! {
             code { "ssh " bdi { (relay.user) "@" (relay.target) } }
             " via the warden relay"
@@ -243,7 +273,7 @@ pub fn history(entries: &[HistoryEntry]) -> Markup {
                     @for entry in entries {
                         @let subject = match &entry.request.access {
                             Access::Ssh { target, user, .. } => format!("{user}@{target}"),
-                            Access::Api { secret } => format!("api:{secret}"),
+                            Access::Api { secret, .. } => format!("api:{secret}"),
                         };
                         tr {
                             td { (utc(entry.created_at)) }

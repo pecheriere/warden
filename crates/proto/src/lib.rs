@@ -262,7 +262,55 @@ pub enum Access {
     Api {
         /// Name of the secret the broker injects on the agent's behalf.
         secret: SecretName,
+        /// Methods the grant should allow: uppercase tokens, a subset of the
+        /// item's. Absent means the read-only methods the item allows.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        methods: Option<Vec<String>>,
+        /// Path prefix the grant should be limited to, under the item's.
+        /// Absent means the item's prefix.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path_prefix: Option<String>,
     },
+}
+
+/// The methods that cannot modify anything on the server.
+pub const READ_ONLY_METHODS: [&str; 2] = ["GET", "HEAD"];
+
+/// Whether `methods` is non-empty and every method in it is one of
+/// [`READ_ONLY_METHODS`]. An empty list is not read-only: fail closed.
+#[must_use]
+pub fn is_read_only(methods: &[String]) -> bool {
+    !methods.is_empty()
+        && methods
+            .iter()
+            .all(|m| READ_ONLY_METHODS.contains(&m.as_str()))
+}
+
+/// What a grant of `methods` is warned to be able to do: the methods other
+/// than `GET` and `HEAD`, in order, or `unverified scope` for an empty list.
+/// Empty exactly when `methods` is [`is_read_only`].
+#[must_use]
+pub fn modifying_methods(methods: &[String]) -> Vec<&str> {
+    if methods.is_empty() {
+        vec!["unverified scope"]
+    } else {
+        methods
+            .iter()
+            .map(String::as_str)
+            .filter(|m| !READ_ONLY_METHODS.contains(m))
+            .collect()
+    }
+}
+
+/// `path` is `prefix` or below it, on a segment boundary: `/api` covers
+/// `/api` and `/api/x` but not `/apiary`; `/api/` covers `/api/` and
+/// `/api/x` but not `/api`.
+#[must_use]
+pub fn under_prefix(path: &str, prefix: &str) -> bool {
+    match path.strip_prefix(prefix) {
+        Some(rest) => prefix.ends_with('/') || rest.is_empty() || rest.starts_with('/'),
+        None => false,
+    }
 }
 
 /// Body of `POST` to create a request.
@@ -674,6 +722,8 @@ mod tests {
     fn api_access_serde_shape() {
         let access = Access::Api {
             secret: SecretName::try_from("github".to_owned()).unwrap(),
+            methods: None,
+            path_prefix: None,
         };
         assert_eq!(
             serde_json::to_string(&access).unwrap(),
@@ -684,6 +734,72 @@ mod tests {
             access
         );
         assert!(serde_json::from_str::<Access>(r#"{"kind":"api","secret":"Bad"}"#).is_err());
+    }
+
+    #[test]
+    fn api_request_serde_roundtrip_with_scope() {
+        let access = Access::Api {
+            secret: SecretName::try_from("github".to_owned()).unwrap(),
+            methods: Some(vec!["GET".to_owned(), "POST".to_owned()]),
+            path_prefix: Some("/v1/repos".to_owned()),
+        };
+        let json = serde_json::to_string(&access).unwrap();
+        assert_eq!(
+            json,
+            r#"{"kind":"api","secret":"github","methods":["GET","POST"],"path_prefix":"/v1/repos"}"#
+        );
+        assert_eq!(serde_json::from_str::<Access>(&json).unwrap(), access);
+    }
+
+    #[test]
+    fn scope_fields_absent_keep_fingerprint() {
+        // The request a 0.3 CLI sends (hash of its JSON checked by hand): the
+        // new fields are absent from the encoding, so the fingerprint is the
+        // one 0.3 computed.
+        let agent = AgentName::try_from("bot".to_owned()).unwrap();
+        let req = CreateRequest {
+            goal: Goal::try_from("read the repos".to_owned()).unwrap(),
+            access: serde_json::from_str(r#"{"kind":"api","secret":"github"}"#).unwrap(),
+            window: Window::M15,
+        };
+        assert_eq!(
+            serde_json::to_string(&req.access).unwrap(),
+            r#"{"kind":"api","secret":"github"}"#
+        );
+        assert_eq!(fingerprint(&agent, &req).as_str(), "ae38-25c4-2428");
+    }
+
+    #[test]
+    fn read_only_methods() {
+        let m = |list: &[&str]| list.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        assert!(is_read_only(&m(&["GET"])));
+        assert!(is_read_only(&m(&["HEAD", "GET"])));
+        assert!(!is_read_only(&m(&["GET", "POST"])));
+        assert!(!is_read_only(&m(&["OPTIONS"])));
+        assert!(!is_read_only(&m(&[])));
+    }
+
+    #[test]
+    fn modifying_methods_names_what_is_not_read_only() {
+        let m = |list: &[&str]| list.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        assert!(modifying_methods(&m(&["GET", "HEAD"])).is_empty());
+        assert_eq!(
+            modifying_methods(&m(&["GET", "POST", "PUT"])),
+            ["POST", "PUT"]
+        );
+        assert_eq!(modifying_methods(&m(&["OPTIONS"])), ["OPTIONS"]);
+        assert_eq!(modifying_methods(&m(&[])), ["unverified scope"]);
+    }
+
+    #[test]
+    fn under_prefix_is_segment_aware() {
+        assert!(under_prefix("/api", "/api"));
+        assert!(under_prefix("/api/x", "/api"));
+        assert!(!under_prefix("/apiary", "/api"));
+        assert!(under_prefix("/api/", "/api/"));
+        assert!(under_prefix("/api/x", "/api/"));
+        assert!(!under_prefix("/api", "/api/"));
+        assert!(under_prefix("/anything", "/"));
     }
 
     #[test]

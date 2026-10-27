@@ -89,6 +89,8 @@ fn api_request(secret: &str, window: Window) -> CreateRequest {
         goal: Goal::try_from("list the open pull requests".to_owned()).unwrap(),
         access: Access::Api {
             secret: SecretName::try_from(secret.to_owned()).unwrap(),
+            methods: None,
+            path_prefix: None,
         },
         window,
     }
@@ -288,7 +290,7 @@ async fn api_request_is_stored_and_rings_without_the_secret() {
     assert_eq!(created.fingerprint, fingerprint(&agent("bot"), &req));
 
     let bell = h.capture.next().await;
-    assert_eq!(bell.title, "warden: bot wants api github");
+    assert_eq!(bell.title, "warden: bot wants api github (read-only)");
     assert_eq!(bell.message, "list the open pull requests");
     for text in [&bell.title, &bell.message, &bell.url.to_string()] {
         assert!(!text.contains(CREDENTIAL), "secret in notification");
@@ -310,7 +312,7 @@ async fn api_request_is_stored_and_rings_without_the_secret() {
         .await
         .unwrap()
         .get(0);
-    assert_eq!(key, "bot|api|github");
+    assert_eq!(key, "bot|api|github|GET|/");
 }
 
 #[tokio::test]

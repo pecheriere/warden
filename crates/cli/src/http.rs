@@ -15,7 +15,7 @@ use base64::engine::general_purpose::STANDARD;
 use serde::{Deserialize, Serialize};
 use unicode_properties::{GeneralCategory, UnicodeGeneralCategory as _};
 use url::Url;
-use warden_broker_proto::{ApiGrant, Id, ProxyRequest, ProxyResponse, SecretName};
+use warden_broker_proto::{ApiGrant, Id, ProxyRequest, ProxyResponse, SecretName, under_prefix};
 
 use crate::agent::{private_dir, state_dir, write_new_private};
 
@@ -33,6 +33,22 @@ pub struct ApiRecord {
     pub origin: String,
     /// End of validity, Unix seconds.
     pub not_after: i64,
+    /// Methods the grant allows, uppercase. A record written before grants
+    /// were scoped reads as `GET` only: the CLI never widens it.
+    #[serde(default = "default_methods")]
+    pub methods: Vec<String>,
+    /// Path prefix the grant is limited to; `/` for a record written before
+    /// grants were scoped.
+    #[serde(default = "default_path_prefix")]
+    pub path_prefix: String,
+}
+
+fn default_methods() -> Vec<String> {
+    vec!["GET".to_owned()]
+}
+
+fn default_path_prefix() -> String {
+    "/".to_owned()
 }
 
 impl ApiRecord {
@@ -44,7 +60,15 @@ impl ApiRecord {
             secret: api.secret.clone(),
             origin: api.origin.clone(),
             not_after,
+            methods: api.methods.clone(),
+            path_prefix: api.path_prefix.clone(),
         }
+    }
+
+    /// Whether the grant covers `method` (any case) on `path`.
+    fn covers(&self, method: &str, path: &str) -> bool {
+        self.methods.iter().any(|m| m.eq_ignore_ascii_case(method))
+            && under_prefix(path, &self.path_prefix)
     }
 }
 
@@ -102,8 +126,7 @@ fn load_in(dir: &Path) -> Vec<(PathBuf, Result<ApiRecord>)> {
         .collect()
 }
 
-/// The recorded api grants, newest last by end of validity, and the errors
-/// for unreadable files.
+/// The recorded api grants, and the errors for unreadable files.
 ///
 /// # Errors
 /// If the state directory is unusable.
@@ -111,22 +134,39 @@ pub fn load() -> Result<Vec<(PathBuf, Result<ApiRecord>)>> {
     Ok(load_in(&api_grants_dir()?))
 }
 
-/// The newest grant for `secret` still valid at `now`.
+/// The grants for `secret` still valid at `now`, the one that stays valid longest first.
 #[must_use]
-pub fn active_in(dir: &Path, secret: &SecretName, now: i64) -> Option<ApiRecord> {
-    load_in(dir)
+pub fn active_in(dir: &Path, secret: &SecretName, now: i64) -> Vec<ApiRecord> {
+    let mut records: Vec<ApiRecord> = load_in(dir)
         .into_iter()
         .filter_map(|(_, r)| r.ok())
         .filter(|r| &r.secret == secret && r.not_after > now)
-        .max_by_key(|r| r.not_after)
+        .collect();
+    records.sort_by_key(|r| std::cmp::Reverse(r.not_after));
+    records
 }
 
-/// The newest active grant for `secret`.
+/// The active grants for `secret`, the one that stays valid longest first.
 ///
 /// # Errors
 /// If the state directory is unusable.
-pub fn active(secret: &SecretName, now: i64) -> Result<Option<ApiRecord>> {
+pub fn active(secret: &SecretName, now: i64) -> Result<Vec<ApiRecord>> {
     Ok(active_in(&api_grants_dir()?, secret, now))
+}
+
+/// The first of `active` (longest-lived first) that allows `method` on `path`.
+#[must_use]
+pub fn covering<'a>(active: &'a [ApiRecord], method: &str, path: &str) -> Option<&'a ApiRecord> {
+    active.iter().find(|r| r.covers(method, path))
+}
+
+/// The error for a call no active grant of `secret` covers.
+#[must_use]
+pub fn no_covering_message(secret: &SecretName, method: &str, path: &str) -> String {
+    let method = method.to_ascii_uppercase();
+    format!(
+        "no active grant for {secret} allows {method} {path}; run: warden request api {secret} --methods {method} --for <window> --goal <text>"
+    )
 }
 
 /// Delete the record of `grant_id`, if this machine holds it.
@@ -349,17 +389,67 @@ mod tests {
     use warden_broker_proto::{Id, ProxyResponse, SecretName};
 
     use super::{
-        ApiRecord, MAX_BODY_BYTES, active_in, cleanup_expired_in, decode, emit, parse_header,
-        proxy_request, read_body, read_limited, sanitize, save_in,
+        ApiRecord, MAX_BODY_BYTES, active_in, cleanup_expired_in, covering, decode, emit,
+        parse_header, proxy_request, read_body, read_limited, sanitize, save_in,
     };
 
-    fn record(secret: &str, not_after: i64) -> ApiRecord {
+    fn scoped(secret: &str, not_after: i64, methods: &[&str], prefix: &str) -> ApiRecord {
         ApiRecord {
             grant_id: Id::random(),
             secret: SecretName::try_from(secret.to_owned()).unwrap(),
             origin: "https://api.example.com".to_owned(),
             not_after,
+            methods: methods.iter().map(|m| (*m).to_owned()).collect(),
+            path_prefix: prefix.to_owned(),
         }
+    }
+
+    fn record(secret: &str, not_after: i64) -> ApiRecord {
+        scoped(secret, not_after, &["GET"], "/")
+    }
+
+    #[test]
+    fn old_record_reads_as_read_only() {
+        let old = format!(
+            r#"{{"grant_id":"{}","secret":"svc","origin":"https://api.example.com","not_after":9}}"#,
+            Id::random()
+        );
+        let rec: ApiRecord = serde_json::from_str(&old).unwrap();
+        assert_eq!(rec.methods, ["GET"]);
+        assert_eq!(rec.path_prefix, "/");
+    }
+
+    #[test]
+    fn http_picks_covering_grant() {
+        let dir = tempfile::tempdir().unwrap();
+        let name = SecretName::try_from("svc".to_owned()).unwrap();
+        let read = scoped("svc", 900, &["GET", "HEAD"], "/");
+        let write = scoped("svc", 500, &["GET", "POST"], "/v1/items");
+        let narrow = scoped("svc", 800, &["GET"], "/v1/other");
+        for r in [&read, &write, &narrow] {
+            save_in(dir.path(), r).unwrap();
+        }
+        let active = active_in(dir.path(), &name, 100);
+        // GET: the longer-lived of either grant that covers the path.
+        assert_eq!(covering(&active, "get", "/v1/items/3"), Some(&read));
+        assert_eq!(covering(&active, "GET", "/v1/other/x"), Some(&read));
+        // POST: only the write grant, and only under its prefix.
+        assert_eq!(covering(&active, "POST", "/v1/items"), Some(&write));
+        assert_eq!(covering(&active, "POST", "/v1/items/3"), Some(&write));
+        assert_eq!(covering(&active, "POST", "/v1/itemsx"), None);
+        assert_eq!(covering(&active, "POST", "/v1/other"), None);
+        assert_eq!(covering(&active, "DELETE", "/v1/items"), None);
+    }
+
+    #[test]
+    fn http_no_covering_grant_suggests_request() {
+        let active = [record("svc", 500)];
+        assert_eq!(covering(&active, "POST", "/x"), None);
+        let secret = SecretName::try_from("svc".to_owned()).unwrap();
+        assert_eq!(
+            super::no_covering_message(&secret, "POST", "/x"),
+            "no active grant for svc allows POST /x; run: warden request api svc --methods POST --for <window> --goal <text>"
+        );
     }
 
     #[test]
@@ -484,7 +574,7 @@ mod tests {
     }
 
     #[test]
-    fn newest_active_grant_for_the_secret_wins() {
+    fn longest_valid_grant_for_the_secret_wins() {
         let dir = tempfile::tempdir().unwrap();
         let name = SecretName::try_from("svc".to_owned()).unwrap();
         let (old, new, other, ended) = (
@@ -496,8 +586,8 @@ mod tests {
         for r in [&old, &new, &other, &ended] {
             save_in(dir.path(), r).unwrap();
         }
-        assert_eq!(active_in(dir.path(), &name, 100), Some(new));
-        assert_eq!(active_in(dir.path(), &name, 300), None);
+        assert_eq!(active_in(dir.path(), &name, 100), [new.clone(), old]);
+        assert_eq!(active_in(dir.path(), &name, 300), []);
     }
 
     fn names_in(dir: &std::path::Path) -> Vec<String> {
@@ -560,6 +650,6 @@ mod tests {
         };
         assert!(save_in(dir.path(), &changed).is_err());
         let secret = SecretName::try_from("svc".to_owned()).unwrap();
-        assert_eq!(active_in(dir.path(), &secret, 100), Some(rec));
+        assert_eq!(active_in(dir.path(), &secret, 100), [rec]);
     }
 }
