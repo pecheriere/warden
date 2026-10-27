@@ -16,6 +16,10 @@ All notable changes to this project are recorded here. The format follows
 - Schema migrations `0003` (widens the status check of `requests`, rebuilding
   it and `grants` with all rows preserved) and `0004` (the passkey counter
   column) run on first start.
+- Upgrade note: the migrations are one-way. A 0.4.0 broker cannot open a
+  database that 0.5.0 has migrated (it does not know migrations `0003` and
+  `0004`), so back up `/data` (database and audit log) before upgrading if
+  you may need to go back.
 
 ### Added
 
