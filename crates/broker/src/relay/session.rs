@@ -698,17 +698,18 @@ pub(crate) async fn relay(
         (Arc::new(Progress::default()), Arc::new(Progress::default()));
     let mut up = Delivered::default();
     let mut down = Delivered::default();
-    let mut left = false;
-    let ended = tokio::select! {
-        ended = upstream(&mut from_agent, &to_target, Arc::clone(&up_progress), &mut up) => ended,
-        ended = downstream(&mut from_target, early, &to_agent, &agent_handle, agent_id, Arc::clone(&down_progress), &mut down) => ended,
-        ended = watchdog(&up_progress, &down_progress, limits) => ended,
-        ended = live.ended() => ended,
-        () = super::server::stopping(&mut stop) => reason::SHUTDOWN,
-        () = agent_left(agent_gone, &up_progress) => {
-            left = true;
-            reason::CLIENT_CLOSED
-        }
+    let (ended, left) = {
+        let own = async {
+            tokio::select! {
+                ended = upstream(&mut from_agent, &to_target, Arc::clone(&up_progress), &mut up) => (ended, false),
+                ended = downstream(&mut from_target, early, &to_agent, &agent_handle, agent_id, Arc::clone(&down_progress), &mut down) => (ended, false),
+                ended = watchdog(&up_progress, &down_progress, limits) => (ended, false),
+                () = agent_left(agent_gone, &up_progress) => (reason::CLIENT_CLOSED, true),
+            }
+        };
+        // Pinned here, not moved into `first_end`, which would hold it twice.
+        tokio::pin!(own);
+        first_end(live, &mut stop, own).await
     };
     if reason::forced(ended) {
         // Within the grace, a notice and a close for each side, a goodbye
@@ -778,6 +779,29 @@ pub(crate) async fn relay(
         bytes_to_target: up.bytes,
         bytes_from_target: down.bytes,
         exit_status: down.exit_status,
+    }
+}
+
+/// How a session ended: `(reason, whether the agent left)`. Why the relay
+/// told it to end (it is stopping, or `live` was revoked, expired or failed
+/// closed) when it was told; otherwise `own`, how it ended by itself.
+///
+/// The told cause is looked at first on every poll. Ending a session cuts
+/// its connections (the relay hanging up on the agent when it stops, the
+/// session itself otherwise), and whatever follows from that cut (the
+/// agent's side closing, see [`agent_left`]) comes after the cause was told,
+/// so it is never taken for why the session ended. An agent that leaves by
+/// itself before anything is told still ends the session as it did.
+async fn first_end(
+    live: &mut Registration,
+    stop: &mut watch::Receiver<bool>,
+    own: impl Future<Output = (&'static str, bool)>,
+) -> (&'static str, bool) {
+    tokio::select! {
+        biased;
+        () = super::server::stopping(stop) => (reason::SHUTDOWN, false),
+        ended = live.ended() => (ended, false),
+        own = own => own,
     }
 }
 
@@ -1065,7 +1089,7 @@ mod tests {
 
     use super::{
         LiveSessions, Outcome, PreAuthLimiter, Program, Progress, Queue, Registration,
-        SessionSlots, SlotRefusal, Watch, agent_left, env_allowed, reason, watchdog,
+        SessionSlots, SlotRefusal, Watch, agent_left, env_allowed, first_end, reason, watchdog,
     };
 
     fn data(len: usize) -> russh::ChannelMsg {
@@ -1185,6 +1209,42 @@ mod tests {
         tokio::time::timeout(Duration::from_millis(10), live.ended())
             .await
             .ok()
+    }
+
+    #[tokio::test]
+    async fn told_end_wins_over_the_session_ending_by_itself() {
+        // The session also ended by itself (the agent's side closed, as it
+        // does once the relay cuts it): the cause the relay told wins.
+        let left = || std::future::ready((reason::CLIENT_CLOSED, true));
+        let sessions = LiveSessions::new();
+        let (stopping, mut stop) = tokio::sync::watch::channel(false);
+        let mut live = sessions.register(&grant("a", 100));
+        stopping.send_replace(true);
+        assert_eq!(
+            first_end(&mut live, &mut stop, left()).await,
+            (reason::SHUTDOWN, false)
+        );
+        let (_running, mut stop) = tokio::sync::watch::channel(false);
+        for why in [
+            reason::REVOKED,
+            reason::EXPIRED,
+            reason::GRANT_STATE_UNAVAILABLE,
+        ] {
+            let g = grant("b", 100);
+            let mut live = sessions.register(&g);
+            match why {
+                reason::REVOKED => sessions.revoke_agent(&g.agent),
+                reason::EXPIRED => sessions.expire_grant(&g.grant_id),
+                _ => sessions.fail_closed(),
+            }
+            assert_eq!(first_end(&mut live, &mut stop, left()).await, (why, false));
+        }
+        // Nothing told: as the session ended.
+        let mut live = sessions.register(&grant("c", 100));
+        assert_eq!(
+            first_end(&mut live, &mut stop, left()).await,
+            (reason::CLIENT_CLOSED, true)
+        );
     }
 
     #[tokio::test]
