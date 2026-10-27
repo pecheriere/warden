@@ -38,7 +38,9 @@ All notable changes to this project are recorded here. The format follows
   login, 4 MiB after, twice the agent's window), so the agent leaving is
   seen even while that library is held up. Input still held for the target
   when the agent leaves is dropped. The session still gets exactly one
-  `relay_session_ended` entry.
+  `relay_session_ended` entry, and a session the relay ends (shutdown,
+  revocation, expiry, grant state unavailable) keeps that reason although
+  the agent's side closes as a result.
 
 ### Added
 
