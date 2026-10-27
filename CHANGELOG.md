@@ -4,6 +4,36 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] - unreleased
+
+### Added
+
+- Narrowed API requests. `warden request api <secret> [--methods GET,POST]
+  [--path /prefix] --goal … --for …` asks for a scope inside the 1Password
+  item's policy. The item is the ceiling: requested methods and path prefix
+  can only narrow it, `CONNECT` and `TRACE` are never allowed, and anything
+  outside the item is refused when the request is made.
+- The broker stores the approved scope in the grant and enforces it on every
+  call, in addition to the item's policy.
+- The approval page, the notification (Home Assistant and ntfy) and the
+  `request_created` audit summary say **Read-only**, or **Can modify:** with
+  the non-read-only methods.
+- An agent may hold several grants for one secret. `warden http` uses the
+  newest active grant that covers the method and path, and otherwise exits 5
+  with the `warden request api … --methods` command to run.
+
+### Changed
+
+- Behaviour change: a request without `--methods` is now read-only (the
+  item's methods that are `GET` or `HEAD`; refused if there are none).
+  Previously it received every method of the item. This also applies to
+  0.3 CLIs, which send no scope: against a 0.4 broker they receive read-only
+  grants and must be upgraded to ask for write access.
+- Wire format: `Access::Api` has optional `methods` and `path_prefix`, and
+  the API grant carries the approved methods and prefix. Requests without them
+  keep their fingerprint. The CLI's local API grant record stores them;
+  records from 0.3 read as `GET` and `/`.
+
 ## [0.3.0] - unreleased
 
 ### Added

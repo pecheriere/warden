@@ -99,8 +99,8 @@ without a website is unusable. Only someone who can edit the item in
 | `max_window`  | yes      | Longest window that may be granted: `15m`, `30m`, `1h` or `4h`. |
 | `header`      | no       | Header that carries the secret. Default `Authorization`. Connection and framing headers (`Host`, `Content-Length`, `Transfer-Encoding`, `Connection`, `Keep-Alive`, `TE`, `Trailer`, `Upgrade`, `Proxy-*`) are refused. |
 | `format`      | no       | Header value, with `{{secret}}` exactly once where the secret goes. Default `Bearer {{secret}}`. The rest must be printable ASCII. |
-| `methods`     | no       | Comma-separated HTTP methods, uppercase (`GET, POST`). Default `GET`. |
-| `path_prefix` | no       | Only paths under this prefix may be called. Must start with `/`; no `?`, `#`, `\`, spaces, `//`, `.` or `..` segments. Default `/`. |
+| `methods`     | no       | Comma-separated HTTP methods, uppercase (`GET, POST`). Default `GET`. The most any request can be granted. |
+| `path_prefix` | no       | Only paths under this prefix may be called. The widest any request can be granted. Must start with `/`; no `?`, `#`, `\`, spaces, `//`, `.` or `..` segments. Default `/`. |
 | `ca_pem`      | no       | One or more PEM CA certificates (`-----BEGIN CERTIFICATE-----`). When set, the server certificate must chain to one of them and the system roots are not used. |
 
 An optional field that is absent or blank takes its default. A required
@@ -124,6 +124,14 @@ path_prefix  /repos/alice/
 This lets an approved agent call `GET` and `POST` on
 `https://api.example.com/repos/alice/…`, with the header
 `Authorization: Bearer <credential>` added by warden.
+
+The item is the **ceiling**: an agent's request can only narrow it. A request
+without `--methods` gets the item's methods that are `GET` or `HEAD` (here
+`GET`, so read-only), and is refused if there are none. To write, the agent
+names the methods (`--methods POST`), which must be in the item's list, and
+may name a narrower `--path` under the item's prefix. List a method in the
+item only if some task needs it; the owner still sees on the approval page
+whether each request can modify.
 
 ## SSH CA
 

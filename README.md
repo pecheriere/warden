@@ -208,9 +208,20 @@ Assistant first and fall back to ntfy; see
    warden http github GET https://api.github.com/user
    ```
 
+   Without `--methods` the grant is read-only (`GET` and `HEAD`). To change
+   something, ask for it by name, and optionally under a narrower path:
+
+   ```sh
+   warden request api github --methods POST --path /repos/alice/ --for 15m \
+     --goal "open an issue on alice/widgets about the stale fork"
+   ```
+
+   The approval page and the notification say **Read-only** or **Can modify:
+   POST**. A request can only narrow what the item allows.
+
    The secret is added by the broker and never reaches the workstation. It
-   goes only to the item's origin, under its path prefix, with its allowed
-   methods. `warden http` writes the response body to stdout; `-i` shows the
+   goes only to the item's origin, under its path prefix, with the methods
+   the owner approved. `warden http` writes the response body to stdout; `-i` shows the
    status and headers on stderr and `--fail` exits 22 on a status of 400 or
    more.
 
