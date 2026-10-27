@@ -423,16 +423,30 @@ pub struct ApiScope {
 }
 
 impl ApiScope {
-    /// The methods of the scope that can change state at the upstream, that
-    /// is every one but `GET` and `HEAD`, in the scope's order. Empty exactly
-    /// when the scope is read-only.
+    /// Whether the scope is non-empty and holds only `GET` and `HEAD`. An
+    /// empty scope is not read-only: the label fails closed.
+    #[must_use]
+    pub fn is_read_only(&self) -> bool {
+        let methods: Vec<String> = self.methods.iter().map(|m| m.as_str().to_owned()).collect();
+        warden_broker_proto::is_read_only(&methods)
+    }
+
+    /// What the owner is warned the scope can do: the methods other than
+    /// `GET` and `HEAD`, in the scope's order, or `unverified scope` for an
+    /// empty scope. Empty exactly when the scope is read-only.
     #[must_use]
     pub fn modifying_methods(&self) -> Vec<&str> {
-        self.methods
-            .iter()
-            .map(Method::as_str)
-            .filter(|m| !READ_ONLY_METHODS.contains(m))
-            .collect()
+        if self.is_read_only() {
+            Vec::new()
+        } else if self.methods.is_empty() {
+            vec!["unverified scope"]
+        } else {
+            self.methods
+                .iter()
+                .map(Method::as_str)
+                .filter(|m| !READ_ONLY_METHODS.contains(m))
+                .collect()
+        }
     }
 
     /// How the owner is told what an API request is for: `api <secret>
@@ -440,11 +454,13 @@ impl ApiScope {
     /// notification, the audit summary and the approval page share it.
     #[must_use]
     pub fn subject(&self, secret: impl fmt::Display) -> String {
-        let modifying = self.modifying_methods();
-        if modifying.is_empty() {
+        if self.is_read_only() {
             format!("api {secret} (read-only)")
         } else {
-            format!("api {secret} (CAN MODIFY: {})", modifying.join(", "))
+            format!(
+                "api {secret} (CAN MODIFY: {})",
+                self.modifying_methods().join(", ")
+            )
         }
     }
 }
@@ -861,6 +877,25 @@ mod tests {
 
     fn names(scope: &ApiScope) -> Vec<&str> {
         scope.methods.iter().map(Method::as_str).collect()
+    }
+
+    #[test]
+    fn empty_scope_is_never_labelled_read_only() {
+        let empty = ApiScope {
+            methods: Vec::new(),
+            path_prefix: "/".to_owned(),
+        };
+        assert!(!empty.is_read_only());
+        assert_eq!(
+            empty.subject("github"),
+            "api github (CAN MODIFY: unverified scope)"
+        );
+        let get = ApiScope {
+            methods: vec![Method::GET],
+            path_prefix: "/".to_owned(),
+        };
+        assert!(get.is_read_only());
+        assert_eq!(get.subject("github"), "api github (read-only)");
     }
 
     #[test]
