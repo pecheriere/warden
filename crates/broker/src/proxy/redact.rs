@@ -36,6 +36,9 @@ const MAX_ENTITY_DIGITS: usize = 7;
 /// Wiped on drop; never printed.
 pub struct Needles {
     list: Vec<Zeroizing<Vec<u8>>>,
+    /// `list` with ASCII letters lowercased, for header names (see
+    /// [`redact_name`]).
+    folded: Vec<Zeroizing<Vec<u8>>>,
 }
 
 impl Needles {
@@ -69,17 +72,23 @@ impl Needles {
         // `dedup`.
         list.sort_unstable_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
         list.dedup();
-        Self { list }
-    }
-
-    /// The length of the longest occurrence of any needle at the start of
-    /// `data`.
-    fn longest_at(&self, data: &[u8], scratch: &mut Scratch) -> Option<usize> {
-        self.list
+        let mut folded: Vec<_> = list
             .iter()
-            .filter_map(|needle| match_len(needle, data, scratch))
-            .max()
+            .map(|needle| Zeroizing::new(needle.to_ascii_lowercase()))
+            .collect();
+        folded.sort_unstable_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
+        folded.dedup();
+        Self { list, folded }
     }
+}
+
+/// The length of the longest occurrence of any of `needles` at the start of
+/// `data`.
+fn longest_at(needles: &[Zeroizing<Vec<u8>>], data: &[u8], scratch: &mut Scratch) -> Option<usize> {
+    needles
+        .iter()
+        .filter_map(|needle| match_len(needle, data, scratch))
+        .max()
 }
 
 fn encode(engine: &GeneralPurpose, bytes: &[u8]) -> Zeroizing<Vec<u8>> {
@@ -260,6 +269,19 @@ fn match_len(needle: &[u8], data: &[u8], scratch: &mut Scratch) -> Option<usize>
 /// cheap steps at worst.
 #[must_use]
 pub fn redact(data: &[u8], needles: &Needles) -> (Vec<u8>, u32) {
+    redact_with(data, &needles.list)
+}
+
+/// [`redact`] for a header name. The HTTP stack lowercases names, so an
+/// uppercase letter of the secret reaches us lowercased: the needles are
+/// matched ASCII-case-insensitively (a lowercased name against lowercased
+/// needles). Everything else, escapes included, is as for [`redact`].
+#[must_use]
+pub fn redact_name(name: &[u8], needles: &Needles) -> (Vec<u8>, u32) {
+    redact_with(&name.to_ascii_lowercase(), &needles.folded)
+}
+
+fn redact_with(data: &[u8], needles: &[Zeroizing<Vec<u8>>]) -> (Vec<u8>, u32) {
     let mut out = Vec::with_capacity(data.len());
     let mut count = 0u32;
     let mut copied = 0;
@@ -272,7 +294,7 @@ pub fn redact(data: &[u8], needles: &Needles) -> (Vec<u8>, u32) {
         count = count.saturating_add(1);
     };
     for at in 0..data.len() {
-        let Some(len) = needles.longest_at(&data[at..], &mut scratch) else {
+        let Some(len) = longest_at(needles, &data[at..], &mut scratch) else {
             continue;
         };
         let end = at + len;

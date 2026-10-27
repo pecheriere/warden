@@ -142,7 +142,9 @@ These were recorded during implementation and are accepted for this release.
 - **Redaction is defence in depth, not a guarantee.** It removes the secret
   and the injected header value from responses in the raw, base64,
   percent-encoded, JSON and HTML forms listed in the design, so a service that
-  echoes its input does not hand the secret to the agent. It cannot catch
+  echoes its input does not hand the secret to the agent. A response header
+  whose name carries the secret is dropped, matched regardless of letter case.
+  It cannot catch
   every transformation (encryption, hashing, other encodings, a secret split
   across calls) and, inside a larger base64 blob, at most 4 bits of the secret
   per side can remain at the boundary. Compressed responses are refused

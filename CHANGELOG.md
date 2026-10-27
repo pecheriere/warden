@@ -23,6 +23,12 @@ All notable changes to this project are recorded here. The format follows
   covering active grant that stays valid longest, and otherwise exits 5
   with the `warden request api … --methods` command to run.
 
+### Fixed
+
+- Redaction drops a response header whose name carries the secret whatever
+  its letter case (names arrive lowercased from the HTTP stack, so a secret
+  with uppercase letters was not matched).
+
 ### Changed
 
 - Behaviour change: a request without `--methods` is now read-only (the
