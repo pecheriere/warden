@@ -3,10 +3,11 @@
 //! The secret lives only in the broker's backend: the CLI must never see it.
 
 use std::fs;
+use std::io::BufReader;
 use std::io::Write as _;
 use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Child, ChildStderr, Command, Output, Stdio};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
@@ -458,15 +459,29 @@ async fn only_request_id(s: &Setup) -> String {
 }
 
 /// Read the CLI's stderr until the line announcing the request appears.
-fn wait_for_waiting_line(child: &mut Child) -> std::io::BufReader<std::process::ChildStderr> {
-    use std::io::BufRead as _;
-    let mut stderr = std::io::BufReader::new(child.stderr.take().unwrap());
-    let mut line = String::new();
-    while !line.contains("waiting for approval") {
-        line.clear();
-        assert_ne!(stderr.read_line(&mut line).unwrap(), 0, "CLI exited early");
-    }
-    stderr
+async fn wait_for_waiting_line(child: &mut Child) -> BufReader<ChildStderr> {
+    let stderr = BufReader::new(child.stderr.take().unwrap());
+    wait_for_line(stderr, "waiting for approval").await
+}
+
+/// Read `stderr` until a line containing `needle` appears and hand it back
+/// for the rest. The reads block, so they run off the async runtime, which
+/// keeps serving the in-process broker meanwhile.
+async fn wait_for_line(
+    mut stderr: BufReader<ChildStderr>,
+    needle: &'static str,
+) -> BufReader<ChildStderr> {
+    tokio::task::spawn_blocking(move || {
+        use std::io::BufRead as _;
+        let mut line = String::new();
+        while !line.contains(needle) {
+            line.clear();
+            assert_ne!(stderr.read_line(&mut line).unwrap(), 0, "CLI exited early");
+        }
+        stderr
+    })
+    .await
+    .unwrap()
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -478,7 +493,7 @@ async fn e2e_request_cancel() {
     // `warden request cancel <id>` from another terminal ends the waiting one.
     let mut child = spawn_request(&s.cli, &[]);
     let token = CapturingNotifier::token(&s.broker.capture.next().await);
-    let mut stderr = wait_for_waiting_line(&mut child);
+    let mut stderr = wait_for_waiting_line(&mut child).await;
     let id = only_request_id(&s).await;
     let cancel = s.cli.run(&["request", "cancel", &id]);
     assert_eq!(cancel.status.code(), Some(0), "{}", text(&cancel.stderr));
@@ -505,7 +520,7 @@ async fn e2e_request_cancel() {
     // Ctrl-C while waiting cancels the pending request and exits 130.
     let mut child = spawn_request(&s.cli, &["--path", "/echo"]);
     let token = CapturingNotifier::token(&s.broker.capture.next().await);
-    let mut stderr = wait_for_waiting_line(&mut child);
+    let mut stderr = wait_for_waiting_line(&mut child).await;
     rustix::process::kill_process(
         rustix::process::Pid::from_child(&child),
         rustix::process::Signal::INT,

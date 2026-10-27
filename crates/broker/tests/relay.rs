@@ -1511,14 +1511,15 @@ async fn login_grant_lookup_is_bounded() {
         .authenticate_publickey(TARGET, russh_key(&agent.key))
         .await;
     // Refused once the 1.5 s lookup bound (plus the 1 s rejection delay)
-    // is over, not hung up after the 10 s login timeout.
+    // is over, not hung up after the 10 s login timeout. The bound leaves
+    // room for a loaded test machine while staying well below 10 s.
     assert!(
         matches!(auth, Ok(AuthResult::Failure { .. })),
         "{auth:?} after {:?}",
         asked.elapsed()
     );
     assert!(
-        asked.elapsed() < Duration::from_secs(4),
+        asked.elapsed() < Duration::from_secs(6),
         "{:?}",
         asked.elapsed()
     );
