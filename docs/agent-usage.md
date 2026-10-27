@@ -111,9 +111,9 @@ If you no longer need access, withdraw the request so the owner's
 notification stops being actionable:
 
 - Press Ctrl-C while `warden request` waits. It cancels the pending request
-  (waiting at most 5 s for the broker), says so on stderr and exits 130. If
-  the broker cannot be reached in time, it says that too; the request then
-  expires on its own.
+  (waiting at most about 10 s for the broker), says so on stderr and exits
+  130. If the broker cannot be reached in time, it says that too; check
+  `warden status` and revoke any grant it shows.
 - Or run `warden request cancel <id>` with the id printed on the
   `request …` line, for example from another terminal. The waiting
   `warden request` then exits 6.

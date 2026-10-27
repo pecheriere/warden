@@ -553,7 +553,7 @@ async fn withdraw_after_interrupt(client: &Client, id: &Id) -> Exit {
         .await
         .unwrap_or_else(|_| {
             format!(
-                "interrupted; cancelling request {id} timed out; it expires unanswered on the broker"
+                "interrupted; withdrawing request {id} timed out; its outcome is unknown: check `warden status` and revoke any grant"
             )
         });
     Exit::new(EXIT_INTERRUPTED, message)
