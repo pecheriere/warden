@@ -42,9 +42,10 @@ const _: () = assert!(PRE_LOGIN_BYTES < LOGGED_IN_BYTES);
 /// Most bytes taken from the socket in one read.
 const READ_BYTES: usize = 16 * 1024;
 
-/// What each chunk counts for at least, so that many small reads cannot
-/// hold more memory (in chunk bookkeeping) than the budget says.
-const CHUNK_MIN_BYTES: usize = 64;
+/// What each chunk counts for at least, so that its bookkeeping (its queue
+/// slot and allocation) is counted too and many small reads keep heap use
+/// within a small factor of the budget.
+const CHUNK_MIN_BYTES: usize = 128;
 
 /// An agent's connection as the SSH library uses it: its socket read
 /// ahead, its writes going straight out.
@@ -285,15 +286,36 @@ mod tests {
     }
 
     /// Take chunks off `stream` (without reading them, so they keep their
-    /// room) until the read-ahead stops: it is then out of room.
-    async fn take_until_held(stream: &mut super::AgentStream, chunks: &mut Vec<Chunk>) {
-        while let Ok(chunk) = tokio::time::timeout(
-            Duration::from_millis(500),
-            stream.reader_mut().chunks.recv(),
-        )
-        .await
-        {
-            chunks.push(chunk.unwrap());
+    /// room) until the read-ahead is out of room: the chunks taken and the
+    /// room still free account for the whole `budget` (the pump holds none
+    /// for a read), and less than a chunk's minimum is free, so the pump
+    /// waits for room. The agent always has more to send.
+    async fn take_until_held(
+        stream: &mut super::AgentStream,
+        chunks: &mut Vec<Chunk>,
+        budget: usize,
+    ) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            while let Ok(chunk) = stream.reader_mut().chunks.try_recv() {
+                chunks.push(chunk);
+            }
+            if let Some(first) = chunks.first() {
+                let free = first.room.semaphore().available_permits();
+                let held: usize = chunks.iter().map(|c| c.room.num_permits()).sum();
+                assert!(
+                    held + free <= budget,
+                    "{held} held, {free} free of {budget}"
+                );
+                if held + free == budget && free < CHUNK_MIN_BYTES {
+                    return;
+                }
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the read-ahead did not fill its budget"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
     }
 
@@ -324,12 +346,12 @@ mod tests {
             })
         };
         let mut chunks = Vec::new();
-        take_until_held(&mut stream, &mut chunks).await;
+        take_until_held(&mut stream, &mut chunks, PRE_LOGIN_BYTES).await;
         assert_full(&chunks, PRE_LOGIN_BYTES);
         logged_in.raise();
         // Only once.
         logged_in.raise();
-        take_until_held(&mut stream, &mut chunks).await;
+        take_until_held(&mut stream, &mut chunks, LOGGED_IN_BYTES).await;
         assert_full(&chunks, LOGGED_IN_BYTES);
         // Once given back, the room is used again, and every byte arrives
         // in order.

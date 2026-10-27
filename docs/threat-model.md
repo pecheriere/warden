@@ -243,11 +243,14 @@ These were recorded during implementation and are accepted for this release.
   failure, and the session ends. An agent that disconnects meanwhile is
   still seen, through a read-ahead on its connection, and its session ends
   about 2 s later (`client closed`); its input still held is dropped. The
-  read-ahead holds at most 64 KiB before login (so 10 unauthenticated
-  connections hold at most 640 KiB) and 4 MiB after (64 MiB at 16
-  sessions), plus a 16 KiB read buffer per connection. An agent that keeps
-  its connection open and sends past its window (no client does) fills
-  only the read-ahead; its session ends by the 60 s stall rule.
+  read-ahead is bounded: the bytes it counts are capped at 64 KiB before
+  login (640 KiB across 10 unauthenticated connections) and 4 MiB after
+  (64 MiB at 16 sessions); heap use stays within a small constant factor
+  of that (each chunk counts for at least 128 bytes), plus a 16 KiB read
+  buffer and at most one partly read 16 KiB chunk per connection. An agent
+  that keeps its connection open and sends past its window, or in many tiny
+  packets (no client does), only fills the read-ahead; its session ends by
+  the 60 s stall rule.
 - **The per-address pre-login limit is global behind Tailscale Serve.** The
   relay allows 5 connections per source address and 10 overall that have not
   logged in. Serve forwards the TCP stream from `127.0.0.1`, so every peer has

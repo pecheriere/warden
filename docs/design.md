@@ -264,13 +264,18 @@ input to the target not drained` (stall).
 
 The relay reads each agent's connection ahead of the SSH library, so that
 an agent that disconnects is seen even while the library is held up by a
-target that does not read its input. What is read ahead is capped exactly:
-at most 64 KiB before the agent has logged in and 4 MiB after (each chunk
-counts for at least 64 bytes, so small reads cannot hold more), plus one
-16 KiB read buffer per connection; memory is freed as the library reads it.
-4 MiB is twice the 2 MiB window the agent is granted, so more than the
-channel data an agent can send once the library stops granting window, and
-its close is always reached. Once an agent has left and its input has been
+target that does not read its input. What is read ahead is bounded: the
+bytes it counts are capped at 64 KiB before the agent has logged in and
+4 MiB after (each chunk counts for at least 128 bytes, covering its
+bookkeeping), so its heap use stays within a small constant factor of that,
+plus a 16 KiB read buffer and at most one partly read 16 KiB chunk per
+connection; memory is freed as the library reads it. 4 MiB is twice the
+2 MiB window the agent is granted, so it holds the channel data an agent can
+send once the library stops granting window, in normally sized packets, and
+the agent's close is reached. An agent that sends many tiny packets while
+the session is held up can fill the budget before its window; then, as
+without the read-ahead, the 60 s stall watchdog ends the session (nothing
+deadlocks). Once an agent has left and its input has been
 held for 2 s with nothing delivered, the session ends with the reason
 `client closed`, its slot freed; the input still held is dropped, as nobody
 is left to see its effect. Messages outside the channel have no window: an
