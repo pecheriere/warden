@@ -1,7 +1,7 @@
 //! The agent API: create requests, long-poll their status, list and revoke
 //! grants, and make HTTP calls with an api grant. Every route except
-//! `/healthz` and `/v1/info` requires the owner's Tailscale identity and an agent key (see
-//! [`AuthedAgent`]).
+//! `/healthz` and `/v1/info` requires the owner's Tailscale identity and an
+//! agent key (see [`AuthedAgent`]).
 
 use std::time::Duration;
 

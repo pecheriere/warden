@@ -60,9 +60,10 @@ pub enum PublicKeyError {
         "certificates are refused: enroll the plain public key (ssh-ed25519 or ecdsa-sha2-nistp256)"
     )]
     Certificate,
-    /// Any other key type, including RSA and other ECDSA curves.
-    #[error("unsupported key type: only ssh-ed25519 and ecdsa-sha2-nistp256 keys are accepted")]
-    Unsupported,
+    /// Any other key type, including RSA and other ECDSA curves; carries the
+    /// algorithm name as written.
+    #[error("unsupported key type {0}; use ssh-ed25519 or ecdsa-sha2-nistp256")]
+    Unsupported(String),
     /// The key is the published test key of the protocol document.
     #[error("this is the published test key from the protocol document; generate your own")]
     PublishedTestKey,
@@ -96,13 +97,24 @@ impl AgentPublicKey {
         if algorithm.ends_with("-cert-v01@openssh.com") {
             return Err(PublicKeyError::Certificate);
         }
+        if matches!(algorithm, "ssh-ed25519" | "ecdsa-sha2-nistp256") {
+            // Parsed below.
+        } else if algorithm.starts_with("ssh-") || algorithm.starts_with("ecdsa-") {
+            let safe = algorithm.len() <= 64
+                && algorithm
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'@' | b'.' | b'_'));
+            return Err(PublicKeyError::Unsupported(
+                if safe { algorithm } else { "(unprintable)" }.to_owned(),
+            ));
+        }
         let parsed = PublicKey::from_openssh(line).map_err(|_| PublicKeyError::Malformed)?;
         match parsed.algorithm() {
             Algorithm::Ed25519
             | Algorithm::Ecdsa {
                 curve: EcdsaCurve::NistP256,
             } => {}
-            _ => return Err(PublicKeyError::Unsupported),
+            other => return Err(PublicKeyError::Unsupported(other.to_string())),
         }
         // `PublicKey::new` with an empty comment drops the comment.
         let normalised = PublicKey::new(parsed.key_data().clone(), "");
@@ -177,8 +189,8 @@ pub enum AgentError {
     #[error("{0}")]
     PublicKey(#[from] PublicKeyError),
     /// Another agent has registered this public key.
-    #[error("this public key is already registered to another agent")]
-    KeyInUse,
+    #[error("this key is already registered to agent {0} (revoked agents keep their key)")]
+    KeyInUse(AgentName),
     /// Recording the key change failed, so the change was not made.
     #[error("the key change could not be audited, so it was not made: {0}")]
     Audit(#[from] AuditError),
@@ -321,17 +333,32 @@ pub async fn add_audited(
     Ok(key)
 }
 
-fn key_conflict(error: sqlx::Error) -> AgentError {
-    match error {
-        sqlx::Error::Database(e) if e.is_unique_violation() => {
-            if e.message().contains("key_fingerprint") {
-                AgentError::KeyInUse
-            } else {
-                AgentError::AlreadyExists
-            }
-        }
-        other => other.into(),
-    }
+/// Start a write transaction at once (`BEGIN IMMEDIATE`), so a read followed
+/// by a write cannot fail with `SQLITE_BUSY` when the lock upgrade is refused.
+async fn begin_immediate(
+    pool: &SqlitePool,
+) -> Result<sqlx::Transaction<'_, sqlx::Sqlite>, sqlx::Error> {
+    pool.begin_with("BEGIN IMMEDIATE").await
+}
+
+/// The agent other than `name` that has registered `key`, if any. Revoked
+/// agents keep their key, so they count.
+async fn other_key_owner(
+    tx: &mut sqlx::SqliteConnection,
+    name: &AgentName,
+    key: &AgentPublicKey,
+) -> Result<Option<AgentName>, AgentError> {
+    let owner: Option<String> =
+        sqlx::query_scalar("SELECT name FROM agents WHERE key_fingerprint = ? AND name <> ?")
+            .bind(key.fingerprint())
+            .bind(name.as_str())
+            .fetch_optional(tx)
+            .await?;
+    owner
+        .map(|owner| {
+            AgentName::try_from(owner).map_err(|e| AgentError::Db(sqlx::Error::Decode(Box::new(e))))
+        })
+        .transpose()
 }
 
 /// Create a key-signed agent registered with `key`, recording
@@ -341,7 +368,7 @@ fn key_conflict(error: sqlx::Error) -> AgentError {
 /// # Errors
 ///
 /// [`AgentError::AlreadyExists`] if the name is taken, even by a revoked
-/// agent; [`AgentError::KeyInUse`] if another agent has this key;
+/// agent; [`AgentError::KeyInUse`] if another agent, revoked or not, has this key;
 /// [`AgentError::Audit`] if the audit log could not be written (nothing is
 /// created); [`AgentError::Db`] on database failure.
 pub async fn add_key_audited(
@@ -350,8 +377,11 @@ pub async fn add_key_audited(
     name: &AgentName,
     key: &AgentPublicKey,
 ) -> Result<(), AgentError> {
-    let mut tx = pool.begin().await?;
-    sqlx::query(
+    let mut tx = begin_immediate(pool).await?;
+    if let Some(owner) = other_key_owner(&mut tx, name, key).await? {
+        return Err(AgentError::KeyInUse(owner));
+    }
+    let inserted = sqlx::query(
         "INSERT INTO agents (name, auth_kind, public_key, key_fingerprint, created_at) \
          VALUES (?, 'ssh-key', ?, ?, ?)",
     )
@@ -360,8 +390,14 @@ pub async fn add_key_audited(
     .bind(key.fingerprint())
     .bind(unix_now())
     .execute(&mut *tx)
-    .await
-    .map_err(key_conflict)?;
+    .await;
+    match inserted {
+        Ok(_) => {}
+        Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {
+            return Err(AgentError::AlreadyExists);
+        }
+        Err(e) => return Err(e.into()),
+    }
     audit
         .append(AuditEvent::AgentAdded {
             agent: name.clone(),
@@ -385,7 +421,7 @@ pub async fn add_key_audited(
 /// # Errors
 ///
 /// [`AgentError::Unknown`] if no such agent exists; [`AgentError::Revoked`]
-/// if it is revoked; [`AgentError::KeyInUse`] if another agent has this key;
+/// if it is revoked; [`AgentError::KeyInUse`] if another agent, revoked or not, has this key;
 /// [`AgentError::Audit`] if the audit log could not be written (nothing is
 /// changed); [`AgentError::Db`] on database failure.
 pub async fn set_key_audited(
@@ -394,7 +430,7 @@ pub async fn set_key_audited(
     name: &AgentName,
     key: &AgentPublicKey,
 ) -> Result<(), AgentError> {
-    let mut tx = pool.begin().await?;
+    let mut tx = begin_immediate(pool).await?;
     let revoked_at: Option<Option<i64>> =
         sqlx::query_scalar("SELECT revoked_at FROM agents WHERE name = ?")
             .bind(name.as_str())
@@ -405,6 +441,9 @@ pub async fn set_key_audited(
         Some(Some(_)) => return Err(AgentError::Revoked),
         Some(None) => {}
     }
+    if let Some(owner) = other_key_owner(&mut tx, name, key).await? {
+        return Err(AgentError::KeyInUse(owner));
+    }
     sqlx::query(
         "UPDATE agents SET auth_kind = 'ssh-key', key_hash = NULL, public_key = ?, \
          key_fingerprint = ? WHERE name = ?",
@@ -413,8 +452,7 @@ pub async fn set_key_audited(
     .bind(key.fingerprint())
     .bind(name.as_str())
     .execute(&mut *tx)
-    .await
-    .map_err(key_conflict)?;
+    .await?;
     audit
         .append(AuditEvent::AgentKeySet {
             agent: name.clone(),

@@ -543,9 +543,19 @@ fn add_key_agent_refuses_disallowed_types() {
         (SK_ECDSA, PublicKeyError::SecurityKey),
         (ED25519_CERT, PublicKeyError::Certificate),
         (P256_CERT, PublicKeyError::Certificate),
-        (RSA, PublicKeyError::Unsupported),
-        (P384, PublicKeyError::Unsupported),
-        (P521, PublicKeyError::Unsupported),
+        (RSA, PublicKeyError::Unsupported("ssh-rsa".into())),
+        (
+            P384,
+            PublicKeyError::Unsupported("ecdsa-sha2-nistp384".into()),
+        ),
+        (
+            P521,
+            PublicKeyError::Unsupported("ecdsa-sha2-nistp521".into()),
+        ),
+        (
+            "ssh-dss AAAAB3NzaC1kc3M= bot@host",
+            PublicKeyError::Unsupported("ssh-dss".into()),
+        ),
         ("", PublicKeyError::Malformed),
         ("not a key", PublicKeyError::Malformed),
         ("ssh-ed25519 AAAA", PublicKeyError::Malformed),
@@ -644,7 +654,7 @@ async fn add_key_agent_refuses_a_taken_name_or_key() {
     ));
     assert!(matches!(
         agents::add_key_audited(&pool, &audit, &name("other"), &key).await,
-        Err(AgentError::KeyInUse)
+        Err(AgentError::KeyInUse(_))
     ));
     assert!(matches!(
         agents::set_key_audited(&pool, &audit, &name("bot"), &key).await,
@@ -653,7 +663,7 @@ async fn add_key_agent_refuses_a_taken_name_or_key() {
     agents::add(&pool, &name("bearer")).await.unwrap();
     assert!(matches!(
         agents::set_key_audited(&pool, &audit, &name("bearer"), &key).await,
-        Err(AgentError::KeyInUse)
+        Err(AgentError::KeyInUse(_))
     ));
     // Nothing was added or changed by the refusals.
     let listed = agents::list(&pool).await.unwrap();
@@ -740,4 +750,35 @@ async fn set_key_is_not_made_when_the_audit_fails() {
         name("bot")
     );
     assert_eq!(agents::list(&pool).await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_reused_key_names_its_owner_even_when_revoked() {
+    let dir = tempfile::tempdir().unwrap();
+    let pool = pool(&dir).await;
+    let audit = AuditLog::open(&dir.path().join("audit.jsonl"))
+        .await
+        .unwrap();
+    let key = parse(ED25519).unwrap();
+    agents::add_key_audited(&pool, &audit, &name("old"), &key)
+        .await
+        .unwrap();
+    agents::revoke(&pool, &name("old"), 5).await.unwrap();
+    let err = agents::add_key_audited(&pool, &audit, &name("new"), &key)
+        .await
+        .unwrap_err();
+    assert!(matches!(&err, AgentError::KeyInUse(owner) if *owner == name("old")));
+    assert_eq!(
+        err.to_string(),
+        "this key is already registered to agent old (revoked agents keep their key)"
+    );
+}
+
+#[test]
+fn unsupported_type_message_names_the_algorithm() {
+    let err = parse("ssh-dss AAAAB3NzaC1kc3M= x").unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "unsupported key type ssh-dss; use ssh-ed25519 or ecdsa-sha2-nistp256"
+    );
 }
