@@ -943,7 +943,7 @@ async fn session_audited_start_before_bytes_and_end() {
 
     // A shell session is audited without a command, and a long command is
     // cut to 200 characters.
-    let out = ssh.run_as(TARGET, &["-tt"], &[], b"exit\n").await;
+    let out = ssh.run_as(TARGET, &["-tt"], &[], b"exit 0\n").await;
     assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
     let long = format!("true {}", "x".repeat(300));
     let out = ssh.run(&[&long]).await;
