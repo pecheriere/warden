@@ -63,8 +63,8 @@ phone --- HTTPS (tailnet) ------------> approval page (WebAuthn passkey)
 - `warden-broker-proto`: the wire types shared by both.
 
 Policy lives in a 1Password vault read through 1Password Connect. See
-[docs/1password-items.md](docs/1password-items.md). Notifications go to Home
-Assistant first and fall back to ntfy; see
+[docs/1password-items.md](docs/1password-items.md). Notifications go to the
+channels you choose (Home Assistant, ntfy) in the order you choose; see
 [docs/notifications.md](docs/notifications.md).
 
 ## Quickstart
@@ -116,8 +116,9 @@ Assistant first and fall back to ntfy; see
      -e WARDEN_OWNER_LOGIN=you@example.com \
      -e WARDEN_OP_CONNECT_URL=http://connect-api:8080 \
      -e WARDEN_OP_CONNECT_TOKEN \
-     -e WARDEN_HA_WEBHOOK_URL \
-     -e WARDEN_NTFY_URL \
+     -e WARDEN_NOTIFY=homeassistant,ntfy \
+     -e WARDEN_NOTIFY_HOMEASSISTANT_WEBHOOK_URL \
+     -e WARDEN_NOTIFY_NTFY_URL \
      warden:dev
    ```
 
@@ -155,15 +156,16 @@ Assistant first and fall back to ntfy; see
    (default `127.0.0.1:8080`), `WARDEN_APPROVAL_LISTEN` (default
    `127.0.0.1:8081`), `WARDEN_PUBLIC_URL` (https), `WARDEN_OWNER_LOGIN`,
    `WARDEN_OP_CONNECT_URL`, `WARDEN_OP_CONNECT_TOKEN`, `WARDEN_OP_VAULT`
-   (default `Warden`), `WARDEN_HA_WEBHOOK_URL`, `WARDEN_NTFY_URL`,
-   `WARDEN_NTFY_TOKEN`, `WARDEN_PROXY_MAX_RESPONSE_BYTES` (largest response
+   (default `Warden`), `WARDEN_NOTIFY` (channels in priority
+   order, required), `WARDEN_NOTIFY_HOMEASSISTANT_WEBHOOK_URL`,
+   `WARDEN_NOTIFY_NTFY_URL`, `WARDEN_NOTIFY_NTFY_TOKEN`, `WARDEN_PROXY_MAX_RESPONSE_BYTES` (largest response
    a proxied API call may return, default `1048576`, at most `67108864`),
    `WARDEN_PROXY_MAX_CALLS_PER_AGENT` (proxied calls in flight per agent,
    default `4`, 1 to 64), `WARDEN_PROXY_MAX_CALLS` (in flight overall,
    default `16`, 1 to 256, at least the per-agent limit),
    `WARDEN_RELAY_LISTEN`, `WARDEN_RELAY_PUBLIC_ADDR`,
-   `WARDEN_RELAY_HOST_KEY_PATH` and `WARDEN_RELAY_MAX_SESSIONS`. At least one
-   notifier is required.
+   `WARDEN_RELAY_HOST_KEY_PATH` and `WARDEN_RELAY_MAX_SESSIONS`. See
+   [docs/notifications.md](docs/notifications.md) for the channel settings.
 
 3. **Enroll your phone's passkey.**
 

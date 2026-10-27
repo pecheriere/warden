@@ -1,8 +1,9 @@
 //! Out-of-band notifications that tell the owner a request needs approval.
 //!
 //! Notifications carry the agent, target, a truncated goal and the approval
-//! link, never secrets. [`Fallback`] tries the primary notifier first and the
-//! secondary one when the primary fails or times out.
+//! link, never secrets. [`Fallback`] tries the configured channels in order
+//! and stops at the first that accepts; the channels are chosen by
+//! [`ChannelSettings`].
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -11,9 +12,11 @@ use async_trait::async_trait;
 use url::Url;
 use warden_broker_proto::{AgentName, CreateRequest};
 
+mod channels;
 mod ha;
 mod ntfy;
 
+pub use channels::{ChannelKind, ChannelSettings, parse_channels};
 pub use ha::HaWebhook;
 pub use ntfy::Ntfy;
 
@@ -65,14 +68,17 @@ pub enum NotifyError {
         /// The limit that was exceeded.
         after: Duration,
     },
-    /// Both the primary and the secondary notifier failed.
-    #[error("all notifiers failed: {primary}; {secondary}")]
-    Both {
-        /// Primary failure.
-        primary: Box<NotifyError>,
-        /// Secondary failure.
-        secondary: Box<NotifyError>,
-    },
+    /// Every configured notifier failed, in priority order.
+    #[error("all notifiers failed: {}", join(.0))]
+    AllFailed(Vec<NotifyError>),
+}
+
+fn join(failures: &[NotifyError]) -> String {
+    failures
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 impl NotifyError {
@@ -97,20 +103,22 @@ pub trait Notifier: Send + Sync + 'static {
     async fn ring(&self, d: &Doorbell) -> Result<(), NotifyError>;
 }
 
-/// Tries `primary`, then `secondary` if the primary fails or times out.
+/// Tries its notifiers in priority order and stops at the first that
+/// accepts; each gets 5 s.
 pub struct Fallback {
-    primary: Arc<dyn Notifier>,
-    secondary: Option<Arc<dyn Notifier>>,
+    channels: Vec<Arc<dyn Notifier>>,
     timeout: Duration,
 }
 
 impl Fallback {
-    /// Build a fallback chain with the standard 5 s per-notifier timeout.
+    /// Build a chain that tries `primary`, then each of `fallbacks` in order,
+    /// with the standard 5 s per-notifier timeout.
     #[must_use]
-    pub fn new(primary: Arc<dyn Notifier>, secondary: Option<Arc<dyn Notifier>>) -> Self {
+    pub fn new(primary: Arc<dyn Notifier>, fallbacks: Vec<Arc<dyn Notifier>>) -> Self {
+        let mut channels = vec![primary];
+        channels.extend(fallbacks);
         Self {
-            primary,
-            secondary,
+            channels,
             timeout: NOTIFY_TIMEOUT,
         }
     }
@@ -132,24 +140,26 @@ impl Notifier for Fallback {
     }
 
     async fn ring(&self, d: &Doorbell) -> Result<(), NotifyError> {
-        let primary = match self.ring_one(&self.primary, d).await {
-            Ok(()) => return Ok(()),
-            Err(e) => e,
-        };
-        let Some(secondary) = &self.secondary else {
-            return Err(primary);
-        };
-        tracing::warn!(
-            notifier = self.primary.name(),
-            error = %primary,
-            "primary notifier failed, trying secondary"
-        );
-        match self.ring_one(secondary, d).await {
-            Ok(()) => Ok(()),
-            Err(e) => Err(NotifyError::Both {
-                primary: Box::new(primary),
-                secondary: Box::new(e),
-            }),
+        let mut failures = Vec::new();
+        for (i, n) in self.channels.iter().enumerate() {
+            match self.ring_one(n, d).await {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    if let Some(next) = self.channels.get(i + 1) {
+                        tracing::warn!(
+                            notifier = n.name(),
+                            next = next.name(),
+                            error = %e,
+                            "notifier failed, trying the next one"
+                        );
+                    }
+                    failures.push(e);
+                }
+            }
+        }
+        match <[NotifyError; 1]>::try_from(failures) {
+            Ok([only]) => Err(only),
+            Err(failures) => Err(NotifyError::AllFailed(failures)),
         }
     }
 }

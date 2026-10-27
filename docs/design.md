@@ -51,9 +51,9 @@ and secure by construction.
 - Revocation of already-issued certificates on target hosts (KRL
   distribution). Short windows are the mitigation; revoke stops new issuance
   and kills relay sessions.
-- Secret managers other than 1Password, and notifiers other than Home
-  Assistant Companion and ntfy. The interfaces must make adding them easy;
-  implementations are not in v1.
+- Secret managers other than 1Password, and notifiers other than the built-in
+  Home Assistant Companion and ntfy channels. The interfaces must make adding
+  them easy; implementations are not in v1.
 - A generic MCP server. v1 ships a CLI; an MCP front-end can come later.
 - Replacing the owner's existing break-glass access. Whatever local path the
   owner already uses at their workstation keeps working and remains the
@@ -112,7 +112,9 @@ Components, all in one Rust workspace:
 - Shared crates for the protocol types and policy model.
 
 Backends/notifiers are traits (`SecretBackend`, `Notifier`) with the v1
-implementations `OnePasswordConnect`, `HomeAssistantNotifier`, `NtfyNotifier`.
+implementations `OnePasswordConnect`, `HaWebhook`, `Ntfy`. Notifier
+channels form a compile-time registry (`ChannelKind`); the operator lists the
+enabled ones in priority order in `WARDEN_NOTIFY`.
 
 ## 7. Request lifecycle
 
@@ -123,9 +125,10 @@ implementations `OnePasswordConnect`, `HomeAssistantNotifier`, `NtfyNotifier`.
 2. **Pending.** Stored with a random request id and a single-use approval
    token. One pending request per (agent, target, kind) at a time; duplicates
    return the existing pending id. Pending requests expire after **10 min**.
-3. **Notify.** Doorbell via Home Assistant Companion; if Home Assistant does
-   not accept the push within a short timeout (≈5 s) or errors, the same
-   doorbell goes through ntfy. Content: goal (truncated), target summary, link
+3. **Notify.** Doorbell via the first configured channel (for example Home
+   Assistant Companion); if it does not accept within a short timeout (≈5 s)
+   or errors, the same doorbell goes through the next channel in the
+   `WARDEN_NOTIFY` order (for example ntfy). Content: goal (truncated), target summary, link
    to `/approve/<token>`. Never secret values.
 4. **Review.** The approval page (HTTPS on the tailnet name) shows goal, kind,
    target, user/secret, destination rules, requested duration, and a duration

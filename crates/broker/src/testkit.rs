@@ -1360,7 +1360,8 @@ fn test_env(var: &str) -> Option<String> {
         "WARDEN_OWNER_LOGIN" => TEST_OWNER,
         "WARDEN_OP_CONNECT_URL" => "http://connect.invalid:8080",
         "WARDEN_OP_CONNECT_TOKEN" => "unused-test-token",
-        "WARDEN_NTFY_URL" => "https://ntfy.invalid/warden",
+        "WARDEN_NOTIFY" => "ntfy",
+        "WARDEN_NOTIFY_NTFY_URL" => "https://ntfy.invalid/warden",
         _ => return None,
     };
     Some(value.to_owned())
