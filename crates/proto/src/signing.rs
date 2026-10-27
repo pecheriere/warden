@@ -248,7 +248,16 @@ mod tests {
     struct Fixture {
         protocol: String,
         public_key: String,
+        ecdsa_p256: EcdsaVector,
         vectors: Vec<Vector>,
+    }
+
+    /// A verify-only signature by a P-256 key over one of the vectors.
+    #[derive(Deserialize)]
+    struct EcdsaVector {
+        public_key: String,
+        vector: usize,
+        signature: String,
     }
 
     #[derive(Deserialize)]
@@ -379,10 +388,39 @@ mod tests {
     }
 
     #[test]
+    fn ecdsa_p256_vector_verifies() {
+        let fixture = fixture();
+        let p256 = &fixture.ecdsa_p256;
+        let public = PublicKey::from_openssh(&p256.public_key).unwrap();
+        assert_eq!(public.algorithm().as_str(), "ecdsa-sha2-nistp256");
+        let message = &fixture.vectors[p256.vector].message;
+        let signature = SshSig::from_pem(armor(&p256.signature)).unwrap();
+        assert_eq!(signature.hash_alg(), HashAlg::Sha512);
+        public
+            .verify(PROTOCOL, message.as_bytes(), &signature)
+            .unwrap();
+        // Bound to the message and to the key.
+        let other = &fixture.vectors[1 - p256.vector].message;
+        assert!(
+            public
+                .verify(PROTOCOL, other.as_bytes(), &signature)
+                .is_err()
+        );
+        let ed25519 = PublicKey::from_openssh(&fixture.public_key).unwrap();
+        assert!(
+            ed25519
+                .verify(PROTOCOL, message.as_bytes(), &signature)
+                .is_err()
+        );
+    }
+
+    #[test]
     fn doc_embeds_the_fixture_vectors() {
         let fixture = fixture();
         assert!(DOC.contains("Protocol version warden-request-v1"));
         assert!(DOC.contains(&fixture.public_key));
+        assert!(DOC.contains(&fixture.ecdsa_p256.public_key));
+        assert!(DOC.contains(&fixture.ecdsa_p256.signature));
         for v in &fixture.vectors {
             for value in [
                 &v.message,

@@ -3,6 +3,12 @@
   "about": "Test vectors for warden-request-v1 signed agent requests, embedded in docs/agent-protocol.md. The key is a throwaway generated only for these vectors: it protects nothing and is not a secret. Never enroll it.",
   "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFtEYSaZPFM5lYU6qb0mU18GImVC77EbHBHD9eXvkSjX warden throwaway test vector key, not a secret",
   "private_key_file": "crates/proto/tests/fixtures/throwaway-test-only-signing-ed25519.key",
+  "ecdsa_p256": {
+    "about": "Verify-only: ECDSA signatures are randomised, so this one cannot be reproduced, only verified. Its private key was discarded.",
+    "public_key": "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBC+QqOP9eVCRD+mZKR9M9swQ1UATTw3+lcxT1Yj8H0huXEBHMc58PIqZfCWeiPzLR8jnMD8GKW77zKgpJ5a91W0= warden throwaway P-256 test vector key, not a secret",
+    "vector": 0,
+    "signature": "U1NIU0lHAAAAAQAAAGgAAAATZWNkc2Etc2hhMi1uaXN0cDI1NgAAAAhuaXN0cDI1NgAAAEEEL5Co4/15UJEP6ZkpH0z2zBDVQBNPDf6VzFPViPwfSG5cQEcxznw8ipl8JZ6I/MtHyOcwPwYpbvvMqCknlr3VbQAAABF3YXJkZW4tcmVxdWVzdC12MQAAAAAAAAAGc2hhNTEyAAAAYwAAABNlY2RzYS1zaGEyLW5pc3RwMjU2AAAASAAAACBwZSOEMIbCLLtADjA5B/WhOpW48NiXwO6oh9ebjlOQUgAAACBRM0a5nkMa/v6ei0rMK6xbkRVE96JqAYC5i/XAXhwj9Q=="
+  },
   "vectors": [
     {
       "name": "create a request (POST with a body)",

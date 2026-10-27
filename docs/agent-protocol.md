@@ -139,8 +139,8 @@ Every call to the API except `GET /healthz` and `GET /v1/info` is signed.
 | `Warden-Nonce` | 16 fresh random bytes as 32 lowercase hex characters, from a cryptographic random source. New for every request. |
 | `Warden-Signature` | The SSHSIG signature of the canonical message (below), as standard base64 (with `=` padding) of the binary signature blob, on one line. This is the armored output of `ssh-keygen -Y sign` without the `-----BEGIN SSH SIGNATURE-----` and `-----END SSH SIGNATURE-----` lines, its lines joined with no separator. |
 
-Do not send an `Authorization` header with them: a request that carries both
-`Authorization` and `Warden-Signature` is refused.
+Send each of the four headers exactly once, with one value. Do not send an
+`Authorization` header with them. See [Rules](#rules) for what is refused.
 
 ### The canonical message
 
@@ -168,8 +168,14 @@ body-sha256:<lowercase hex SHA-256 of the exact body bytes; of the empty string 
   what you put after the host in the URL, for example `/v1/grants` or
   `/v1/requests/0b8f4c1e9d2a47f3a5c6e7d8f9a0b1c2?wait=30`. It starts with `/`,
   is visible ASCII (no spaces, no non-ASCII: percent-encode them), has no
-  `#` fragment and is at most 8192 bytes. Do not let the HTTP library
-  normalise the path or re-encode the query after you signed it.
+  `#` fragment and is at most 8192 bytes. The broker rebuilds the message
+  from the request-target it receives, so sign exactly what you send, and
+  do not let the HTTP library normalise the path or re-encode the query after
+  you signed it. Send targets in a form no intermediary has a reason to
+  change: no empty query (a bare trailing `?`), no percent-encoding of
+  characters that need none (`%41` for `A`, `%2D` for `-`), and uppercase hex
+  digits in the percent-encodings you do need (`%2F`, not `%2f`). An
+  intermediary that normalises the target would make the signature fail.
 - `body-sha256` is the SHA-256 of the bytes of the request body exactly as
   sent (after any encoding, before any transfer framing). A request without a
   body (every `GET`, and the bodiless `POST`s) uses the hash of the empty
@@ -194,9 +200,53 @@ ssh-keygen -Y sign -n warden-request-v1 -f signing-key.pub < message > message.s
 
 Given the public key file with `-f`, `ssh-keygen` asks the agent at
 `SSH_AUTH_SOCK` to sign; given the private key file, it signs itself.
+If the agent does not hold the key, `ssh-keygen` silently falls back to a
+private key file of the same name without `.pub` next to it, if one exists.
+For a key that must never be on disk, keep no private key file beside the
+`.pub`, and check that `ssh-add -L` lists the key before relying on the agent.
 With no file argument it reads the message from standard input and writes
 the armored signature to standard output. Turn the armored signature into
 the header value with `sed '1d;$d' message.sig | tr -d '\n'`.
+
+### The SSHSIG format
+
+For a client that implements SSHSIG itself, or talks to an `ssh-agent`
+socket directly, here is the layout from `PROTOCOL.sshsig`. `string` is a
+`uint32` big-endian length followed by that many bytes, as everywhere in the
+SSH protocol ([RFC 4251](https://www.rfc-editor.org/rfc/rfc4251#section-5)).
+
+The key signs this preimage, not the message itself:
+
+```text
+byte[6]   "SSHSIG"
+string    namespace          "warden-request-v1"
+string    reserved           empty
+string    hash_algorithm     "sha512" (or "sha256")
+string    H(message)         the raw 64-byte SHA-512 (or 32-byte SHA-256)
+                             digest of the canonical message, not hex
+```
+
+The signature blob, which `Warden-Signature` carries in base64, is:
+
+```text
+byte[6]   "SSHSIG"
+uint32    version            1
+string    publickey          the signing key in SSH wire format (the
+                             base64 field of the .pub line, decoded)
+string    namespace          "warden-request-v1"
+string    reserved           empty
+string    hash_algorithm     "sha512" (or "sha256")
+string    signature          the SSH signature of the preimage: string
+                             algorithm name, then string signature data
+                             (Ed25519: the 64-byte signature; ECDSA P-256:
+                             mpint r and mpint s, signed over SHA-256 of the
+                             preimage as ecdsa-sha2-nistp256 specifies)
+```
+
+Through an `ssh-agent`, send `SSH_AGENTC_SIGN_REQUEST` (message 13) with the
+key blob, the preimage as the data and flags 0; the
+`SSH_AGENT_SIGN_RESPONSE` (message 14) carries the `signature` field above,
+ready to put in the blob.
 
 ### Rules
 
@@ -206,21 +256,31 @@ the header value with `sed '1d;$d' message.sig | tr -d '\n'`.
   refuses a nonce it has already seen.
 - **Clock skew.** The broker refuses a timestamp more than 60 seconds away
   from its own clock, in either direction.
-- **Errors.** Every authentication failure is
-  `401 {"error":"unauthorized"}`, whatever the reason; the reason is in the
-  broker's log only. Check your clock, your audience and the bytes you
-  signed against what you sent.
+- **Header form.** Each `Warden-*` header appears once, with one value.
+  A request is refused with 401 if:
+  - any `Warden-*` header comes together with an `Authorization` header;
+  - a `Warden-*` header is repeated or carries several values;
+  - `Warden-Signature` is longer than 4096 characters (it is refused before
+    it is decoded; real signatures are under 400).
+- **Errors.** An authentication failure is a 401. Branch on the status
+  only. The body is `{"error":"unauthorized"}` for a signature failure,
+  but it may say something else for other failures (for example
+  `{"error":"agent revoked"}`). The precise reason is in the broker's log.
+  Check your clock, your audience and the bytes you signed against what you
+  sent.
 
 ### What the broker checks
 
-In this order, stopping at the first failure (all failures are the same
-401):
+In this order, stopping at the first failure. Every failure is a 401,
+except an oversized body, which is a 413:
 
-1. The four `Warden-*` headers are present and well formed, and no
-   `Authorization` header is present.
+1. The four `Warden-*` headers are present, each once, and well formed;
+   `Warden-Signature` is at most 4096 characters; no `Authorization` header
+   is present.
 2. The agent exists, is not revoked and has a registered signing key.
 3. The timestamp is within 60 seconds of the broker's clock.
-4. The body is read, within the endpoint's size limit.
+4. The body is read, within the endpoint's size limit. A larger body is
+   refused with 413 at this step, before the signature is checked.
 5. The signature verifies: namespace `warden-request-v1`, hash `sha512` or
    `sha256`, made by exactly the agent's registered key, over the canonical
    message rebuilt from the request as received.
@@ -257,8 +317,9 @@ The same values are in
 and warden's tests check that this document, that file and the code agree.
 Ed25519 signatures are deterministic, so signing a vector's message with
 that key (namespace `warden-request-v1`, hash `sha512`) must reproduce its
-signature exactly. ECDSA signatures are randomised: for ECDSA, check that
-yours verify instead.
+signature exactly. ECDSA signatures are randomised, so the
+[P-256 vector](#vector-3-ecdsa-p-256-verify-only) can only be verified, and
+for ECDSA you check that your signatures verify.
 
 ### Vector 1: create a request (`POST` with a body)
 
@@ -342,6 +403,26 @@ SHA-256 of the canonical message:
 U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAgW0RhJpk8UzmVhTqpvSZTXwYiZULvsRscEcP15e+RKNcAAAARd2FyZGVuLXJlcXVlc3QtdjEAAAAAAAAABnNoYTUxMgAAAFMAAAALc3NoLWVkMjU1MTkAAABA9sQPlnSUAsLdic8E6k3x17XCbv3vxLsAG+ogblqBwrMwBZElIqCAqPO2vVopQyofr2hakmLDYOGHFNMbg9mzCw==
 ```
 
+### Vector 3: ECDSA P-256 (verify only)
+
+A signature over the canonical message of vector 1, made with a throwaway
+P-256 key (namespace `warden-request-v1`, hash `sha512`). The private key was
+discarded: this vector checks that a verifier handles
+`ecdsa-sha2-nistp256` signatures, as Secure Enclave, TPM and PIV keys
+produce.
+
+Public key:
+
+```text
+ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBC+QqOP9eVCRD+mZKR9M9swQ1UATTw3+lcxT1Yj8H0huXEBHMc58PIqZfCWeiPzLR8jnMD8GKW77zKgpJ5a91W0= warden throwaway P-256 test vector key, not a secret
+```
+
+`Warden-Signature`:
+
+```text
+U1NIU0lHAAAAAQAAAGgAAAATZWNkc2Etc2hhMi1uaXN0cDI1NgAAAAhuaXN0cDI1NgAAAEEEL5Co4/15UJEP6ZkpH0z2zBDVQBNPDf6VzFPViPwfSG5cQEcxznw8ipl8JZ6I/MtHyOcwPwYpbvvMqCknlr3VbQAAABF3YXJkZW4tcmVxdWVzdC12MQAAAAAAAAAGc2hhNTEyAAAAYwAAABNlY2RzYS1zaGEyLW5pc3RwMjU2AAAASAAAACBwZSOEMIbCLLtADjA5B/WhOpW48NiXwO6oh9ebjlOQUgAAACBRM0a5nkMa/v6ei0rMK6xbkRVE96JqAYC5i/XAXhwj9Q==
+```
+
 ### Checking an implementation with OpenSSH
 
 ```sh
@@ -354,6 +435,9 @@ openssl dgst -sha256 -r message      # 2303c5f7…50a2568 *message
 echo 'build-bot ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFtEYSaZPFM5lYU6qb0mU18GImVC77EbHBHD9eXvkSjX' > allowed_signers
 ssh-keygen -Y verify -f allowed_signers -I build-bot -n warden-request-v1 -s message.sig < message
 ```
+
+For vector 3, write vector 1's message to `message` the same way and put
+the P-256 public key in `allowed_signers`.
 
 An SSHSIG blob carries the signer's public key, so a verifier must check
 that it is the expected key, as `-Y verify` with an allowed-signers file does
@@ -369,7 +453,8 @@ that it is the expected key, as `-Y verify` with an allowed-signers file does
   broker answers 415. Unknown fields in a request body are ignored.
 - **Size limits.** A request body is at most 16 KiB, except
   `POST /v1/grants/{id}/http` which accepts 2 MiB. Over the limit is 413
-  `{"error":"request body rejected"}`.
+  `{"error":"request body rejected"}`. This is checked before the signature,
+  so an oversized signed request gets a 413, not a 401.
 - **Identifiers.** Request and grant ids are 32 lowercase hex characters.
   A malformed id in a path is `400 {"error":"invalid id"}`.
 - **Times** are Unix seconds (integers).
@@ -377,9 +462,9 @@ that it is the expected key, as `-Y verify` with an allowed-signers file does
   and for logs; branch on the status code, except where a message is given
   below as fixed. Treat a message as untrusted text: strip control
   characters before printing it.
-- **Common statuses** for every signed endpoint: 401
-  `{"error":"unauthorized"}` (authentication failed, or the agent is
-  revoked), 500 `{"error":"internal error"}`, 503 (the broker's secret
+- **Common statuses** for every signed endpoint: 401 (authentication
+  failed, or the agent is revoked; branch on the status, as the body varies,
+  see [Rules](#rules)), 413 (body over the limit), 500 `{"error":"internal error"}`, 503 (the broker's secret
   backend is unavailable: `{"error":"secret backend unavailable"}`; or a
   short contention, `{"error":"request slot contended; retry"}`). An unknown
   path is `404 {"error":"not found"}`.

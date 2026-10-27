@@ -21,5 +21,6 @@ unicode-properties.workspace = true
 
 [dev-dependencies]
 # Checks the signing test vectors against an independent SSHSIG
-# implementation; test-only, so the wire crate stays dependency-light.
-ssh-key.workspace = true
+# implementation (Ed25519 and P-256); test-only, so the wire crate stays
+# dependency-light.
+ssh-key = { workspace = true, features = ["p256"] }
