@@ -20,7 +20,7 @@ All notable changes to this project are recorded here. The format follows
   ntfy) and the `request_created` audit summary read `api <secret>
   (read-only)` or `api <secret> (CAN MODIFY: POST, PUT)`.
 - An agent may hold several grants for one secret. `warden http` uses the
-  newest active grant that covers the method and path, and otherwise exits 5
+  covering active grant that stays valid longest, and otherwise exits 5
   with the `warden request api … --methods` command to run.
 
 ### Changed
@@ -34,6 +34,15 @@ All notable changes to this project are recorded here. The format follows
   the API grant carries the approved methods and prefix. Requests without them
   keep their fingerprint. The CLI's local API grant record stores them;
   records from 0.3 read as `GET` and `/`, so they are never widened.
+- Upgrade the broker before the CLIs. A 0.4 CLI refuses, and does not record,
+  a grant from an older broker that is wider than it asked for (methods
+  beyond `--methods`, or beyond `GET` and `HEAD` without it, or a path outside
+  `--path`); the message says to upgrade the broker.
+- Requests still pending when the broker is upgraded are approved read-only
+  (they carry no scope), and may not be deduplicated with a new identical
+  request, which is then a second pending request.
+- A requested path prefix may be at most 512 bytes.
+- The active-grants page shows **Read-only** or **Can modify:** for API grants.
 
 ## [0.3.0] - unreleased
 

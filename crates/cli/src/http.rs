@@ -126,7 +126,7 @@ fn load_in(dir: &Path) -> Vec<(PathBuf, Result<ApiRecord>)> {
         .collect()
 }
 
-/// The recorded api grants, newest last by end of validity, and the errors
+/// The recorded api grants and the errors
 /// for unreadable files.
 ///
 /// # Errors
@@ -135,7 +135,7 @@ pub fn load() -> Result<Vec<(PathBuf, Result<ApiRecord>)>> {
     Ok(load_in(&api_grants_dir()?))
 }
 
-/// The grants for `secret` still valid at `now`, newest first.
+/// The grants for `secret` still valid at `now`, the one that stays valid longest first.
 #[must_use]
 pub fn active_in(dir: &Path, secret: &SecretName, now: i64) -> Vec<ApiRecord> {
     let mut records: Vec<ApiRecord> = load_in(dir)
@@ -147,7 +147,7 @@ pub fn active_in(dir: &Path, secret: &SecretName, now: i64) -> Vec<ApiRecord> {
     records
 }
 
-/// The active grants for `secret`, newest first.
+/// The active grants for `secret`, the one that stays valid longest first.
 ///
 /// # Errors
 /// If the state directory is unusable.
@@ -155,7 +155,7 @@ pub fn active(secret: &SecretName, now: i64) -> Result<Vec<ApiRecord>> {
     Ok(active_in(&api_grants_dir()?, secret, now))
 }
 
-/// The first of `active` (newest first) that allows `method` on `path`.
+/// The first of `active` (longest-lived first) that allows `method` on `path`.
 #[must_use]
 pub fn covering<'a>(active: &'a [ApiRecord], method: &str, path: &str) -> Option<&'a ApiRecord> {
     active.iter().find(|r| r.covers(method, path))
@@ -431,7 +431,7 @@ mod tests {
             save_in(dir.path(), r).unwrap();
         }
         let active = active_in(dir.path(), &name, 100);
-        // GET: the newest of either grant that covers the path.
+        // GET: the longer-lived of either grant that covers the path.
         assert_eq!(covering(&active, "get", "/v1/items/3"), Some(&read));
         assert_eq!(covering(&active, "GET", "/v1/other/x"), Some(&read));
         // POST: only the write grant, and only under its prefix.
@@ -575,7 +575,7 @@ mod tests {
     }
 
     #[test]
-    fn newest_active_grant_for_the_secret_wins() {
+    fn longest_valid_grant_for_the_secret_wins() {
         let dir = tempfile::tempdir().unwrap();
         let name = SecretName::try_from("svc".to_owned()).unwrap();
         let (old, new, other, ended) = (

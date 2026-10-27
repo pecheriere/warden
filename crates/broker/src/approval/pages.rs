@@ -118,7 +118,15 @@ fn grant_access(grant: &ActiveGrant) -> Markup {
         GrantAccess::Ssh(ssh) => {
             html! { code { (access_line(&grant.request, &ssh.host, ssh.port)) } }
         }
-        GrantAccess::Api(api) => api_access(api),
+        GrantAccess::Api(api) => html! {
+            (api_access(api))
+            br;
+            @match ApiScope::try_from(api) {
+                Ok(scope) => (modify_line(&scope)),
+                // A damaged record: the label must not claim read-only.
+                Err(_) => strong.warning { "Can modify: unverified scope" },
+            }
+        },
         GrantAccess::Relay(relay) => html! {
             code { "ssh " bdi { (relay.user) "@" (relay.target) } }
             " via the warden relay"

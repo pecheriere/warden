@@ -286,6 +286,22 @@ pub fn is_read_only(methods: &[String]) -> bool {
             .all(|m| READ_ONLY_METHODS.contains(&m.as_str()))
 }
 
+/// What a grant of `methods` is warned to be able to do: the methods other
+/// than `GET` and `HEAD`, in order, or `unverified scope` for an empty list.
+/// Empty exactly when `methods` is [`is_read_only`].
+#[must_use]
+pub fn modifying_methods(methods: &[String]) -> Vec<&str> {
+    if methods.is_empty() {
+        vec!["unverified scope"]
+    } else {
+        methods
+            .iter()
+            .map(String::as_str)
+            .filter(|m| !READ_ONLY_METHODS.contains(m))
+            .collect()
+    }
+}
+
 /// `path` is `prefix` or below it, on a segment boundary: `/api` covers
 /// `/api` and `/api/x` but not `/apiary`; `/api/` covers `/api/` and
 /// `/api/x` but not `/api`.
@@ -761,6 +777,18 @@ mod tests {
         assert!(!is_read_only(&m(&["GET", "POST"])));
         assert!(!is_read_only(&m(&["OPTIONS"])));
         assert!(!is_read_only(&m(&[])));
+    }
+
+    #[test]
+    fn modifying_methods_names_what_is_not_read_only() {
+        let m = |list: &[&str]| list.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        assert!(modifying_methods(&m(&["GET", "HEAD"])).is_empty());
+        assert_eq!(
+            modifying_methods(&m(&["GET", "POST", "PUT"])),
+            ["POST", "PUT"]
+        );
+        assert_eq!(modifying_methods(&m(&["OPTIONS"])), ["OPTIONS"]);
+        assert_eq!(modifying_methods(&m(&[])), ["unverified scope"]);
     }
 
     #[test]

@@ -6,8 +6,8 @@ use ssh_key::rand_core::OsRng;
 use ssh_key::{Algorithm, LineEnding, PrivateKey};
 use url::Url;
 use warden_broker::policy::{
-    ApiScope, ApiSecretPolicy, OnePasswordConnect, PolicyError, RelayCredential, SecretBackend,
-    SshMode, SshTarget, ValueFormat,
+    ApiSecretPolicy, OnePasswordConnect, PolicyError, RelayCredential, SecretBackend, SshMode,
+    SshTarget, ValueFormat,
 };
 use warden_broker_proto::{SecretName, TargetName, UnixUser, Window};
 use wiremock::matchers::{header, method, path, query_param};
@@ -519,10 +519,13 @@ const CREDENTIAL: &str = "test-credential-0123456789abcdef";
 
 /// The grant for the whole policy, with no narrowing.
 fn full_grant(policy: &ApiSecretPolicy) -> warden_broker_proto::ApiGrant {
-    policy.grant_for(&ApiScope {
-        methods: policy.methods.clone(),
-        path_prefix: policy.path_prefix.clone(),
-    })
+    let methods: Vec<String> = policy
+        .methods
+        .iter()
+        .map(|m| m.as_str().to_owned())
+        .collect();
+    let scope = policy.scope(Some(&methods), None).unwrap();
+    policy.grant_for(&scope)
 }
 
 fn secret(name: &str) -> SecretName {

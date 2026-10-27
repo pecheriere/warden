@@ -526,12 +526,12 @@ impl Requests {
                 let scope = policy
                     .scope(methods.as_deref(), path_prefix.as_deref())
                     .map_err(RequestError::Rejected)?;
-                let methods: Vec<&str> = scope.methods.iter().map(http::Method::as_str).collect();
+                let methods: Vec<&str> = scope.methods().iter().map(http::Method::as_str).collect();
                 (
                     format!(
                         "{agent}|api|{secret}|{}|{}",
                         methods.join(","),
-                        scope.path_prefix
+                        scope.path_prefix()
                     ),
                     scope.subject(secret),
                 )

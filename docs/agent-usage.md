@@ -77,7 +77,9 @@ method or path outside it is refused at once, and `CONNECT` and `TRACE` never
 are. Keep write windows short. A good pattern is a long read-only grant for
 looking around and a short write grant for the one change; you may hold both
 for the same secret. A 0.3 broker or CLI knows nothing of this: against 0.4,
-a request from a 0.3 CLI is read-only.
+a request from a 0.3 CLI is read-only. Upgrade the broker before the CLIs: a
+0.4 CLI refuses (and does not record) a grant from an older broker that is wider
+than it asked for, and says so.
 
 Some targets are reached through the broker's SSH relay instead of with a
 certificate. You do not need to know which: `warden request ssh` and
@@ -138,9 +140,9 @@ warden http github PUT https://api.github.com/repos/alice/widgets/x \
   --data-file body.json -i --fail
 ```
 
-`warden http <secret> <METHOD> <url>` uses the newest active `api` grant for
-the secret whose methods and path prefix cover the call. The response body goes
-to stdout, unchanged. With `-i`, the status line and response headers go to
+`warden http <secret> <METHOD> <url>` uses the `api` grant for the secret whose
+methods and path prefix cover the call; if several do, the one that stays valid
+longest. The response body goes to stdout, unchanged. With `-i`, the status line and response headers go to
 stderr. `-H 'Name: value'` adds a request header (repeatable). `-d` gives the
 body inline, and `--data-file <path>` reads it from a file (`-` for standard
 input). A body is at most 1 MiB.

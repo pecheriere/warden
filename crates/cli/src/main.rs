@@ -16,9 +16,9 @@ use ssh_key::rand_core::OsRng;
 use ssh_key::{Algorithm, Certificate, PrivateKey};
 use url::Url;
 use warden_broker_proto::{
-    Access, AgentName, ApiGrant, CreateRequest, Goal, GrantAccess, GrantView, Id,
-    READ_ONLY_METHODS, RequestStatus, SecretName, TargetName, UnixUser, Window, fingerprint,
-    is_read_only,
+    Access, AgentName, ApiGrant, CreateRequest, Goal, GrantAccess, GrantView, Id, RequestStatus,
+    SecretName, TargetName, UnixUser, Window, fingerprint, is_read_only, modifying_methods,
+    under_prefix,
 };
 use zeroize::Zeroizing;
 
@@ -345,16 +345,17 @@ async fn request_api(
     goal: Goal,
 ) -> Result<()> {
     let (config, client) = client()?;
+    let methods: Option<Vec<String>> = methods.map(|m| {
+        m.iter()
+            .map(|method| method.trim().to_ascii_uppercase())
+            .collect()
+    });
     let req = CreateRequest {
         goal,
         access: Access::Api {
             secret: secret.clone(),
-            methods: methods.map(|m| {
-                m.iter()
-                    .map(|method| method.trim().to_ascii_uppercase())
-                    .collect()
-            }),
-            path_prefix: path,
+            methods: methods.clone(),
+            path_prefix: path.clone(),
         },
         window,
     };
@@ -368,6 +369,14 @@ async fn request_api(
         api.secret
     );
     ensure!(grant.not_after > unix_now(), "the grant has already ended");
+    if let Err(problem) = check_scope_not_wider(api, methods.as_deref(), path.as_deref()) {
+        bail!(
+            "the broker granted a wider scope than requested ({problem}); upgrade the broker \
+             to 0.4 or later. Grant {} was not recorded here; revoke it with `warden revoke {}`",
+            grant.grant_id,
+            grant.grant_id
+        );
+    }
     http::save(&http::ApiRecord::new(
         grant.grant_id.clone(),
         api,
@@ -378,19 +387,47 @@ async fn request_api(
     Ok(())
 }
 
+/// Whether `api` is inside what was asked for. A broker older than 0.4
+/// ignores `--methods` and `--path` and grants the whole item, so the CLI
+/// must not record such a grant as if it were narrow. Without `methods` the
+/// request means read-only; without `path` any prefix the broker picks is
+/// its own to choose.
+///
+/// # Errors
+/// What is wider, for the message.
+fn check_scope_not_wider(
+    api: &ApiGrant,
+    methods: Option<&[String]>,
+    path: Option<&str>,
+) -> Result<(), String> {
+    let extra: Vec<&str> = match methods {
+        Some(requested) => api
+            .methods
+            .iter()
+            .map(String::as_str)
+            .filter(|m| !requested.iter().any(|r| r == m))
+            .collect(),
+        None if is_read_only(&api.methods) => Vec::new(),
+        None => modifying_methods(&api.methods),
+    };
+    if !extra.is_empty() {
+        return Err(format!("methods {}", extra.join(", ")));
+    }
+    if let Some(wanted) = path
+        && !under_prefix(&api.path_prefix, wanted)
+    {
+        return Err(format!("path {} is not under {wanted}", api.path_prefix));
+    }
+    Ok(())
+}
+
 /// The scope of `api` for the owner-facing line after approval: whether it
 /// can modify anything, the methods and where it applies.
 fn api_scope(api: &ApiGrant) -> String {
     let access = if is_read_only(&api.methods) {
         "read-only".to_owned()
     } else {
-        let modifying: Vec<&str> = api
-            .methods
-            .iter()
-            .map(String::as_str)
-            .filter(|m| !READ_ONLY_METHODS.contains(m))
-            .collect();
-        format!("can modify: {}", modifying.join(", "))
+        format!("can modify: {}", modifying_methods(&api.methods).join(", "))
     };
     format!(
         "scope: {access}; methods {}; {}{}",
@@ -767,14 +804,16 @@ async fn revoke(grant: &Id) -> Result<()> {
 mod tests {
     use ssh_key::rand_core::OsRng;
     use ssh_key::{Algorithm, PrivateKey, certificate};
-    use warden_broker_proto::{GrantAccess, GrantView, Id, RelayGrant, RequestStatus, SshGrant};
+    use warden_broker_proto::{
+        ApiGrant, GrantAccess, GrantView, Id, RelayGrant, RequestStatus, SshGrant,
+    };
 
     use std::path::PathBuf;
     use std::time::{Duration, Instant};
 
     use super::{
-        CallError, local_subject, next_retry_delay, ssh_setup, terminal_exit_code,
-        wait_for_decision,
+        CallError, check_scope_not_wider, local_subject, next_retry_delay, ssh_setup,
+        terminal_exit_code, wait_for_decision,
     };
     use crate::agent::{GrantRecord, Route};
 
@@ -985,6 +1024,55 @@ mod tests {
         assert!(got.is_err());
         // The pause before a retry never runs past the deadline.
         assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    fn api_grant(methods: &[&str], prefix: &str) -> ApiGrant {
+        ApiGrant {
+            secret: "github".parse().unwrap(),
+            origin: "https://api.example.com".to_owned(),
+            methods: methods.iter().map(|m| (*m).to_owned()).collect(),
+            path_prefix: prefix.to_owned(),
+            header: "authorization".to_owned(),
+            digest: String::new(),
+        }
+    }
+
+    fn strings(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn narrow_grants_pass_the_scope_check() {
+        let get = api_grant(&["GET", "HEAD"], "/v1/");
+        assert!(check_scope_not_wider(&get, None, None).is_ok());
+        let post = api_grant(&["POST"], "/v1/repos");
+        let asked = strings(&["POST", "GET"]);
+        assert!(check_scope_not_wider(&post, Some(&asked), Some("/v1/")).is_ok());
+    }
+
+    #[test]
+    fn older_broker_grant_wider_than_requested_is_refused() {
+        // Default request, broker ignored the missing scope and granted write.
+        let full = api_grant(&["GET", "POST", "DELETE"], "/");
+        assert_eq!(
+            check_scope_not_wider(&full, None, None).unwrap_err(),
+            "methods POST, DELETE"
+        );
+        // An empty method list is not read-only either.
+        assert!(check_scope_not_wider(&api_grant(&[], "/"), None, None).is_err());
+        // Requested GET only, got more.
+        let asked = strings(&["GET"]);
+        assert_eq!(
+            check_scope_not_wider(&full, Some(&asked), None).unwrap_err(),
+            "methods POST, DELETE"
+        );
+        // Requested a path, got a wider one.
+        let wide = api_grant(&["GET"], "/");
+        assert_eq!(
+            check_scope_not_wider(&wide, None, Some("/v1/")).unwrap_err(),
+            "path / is not under /v1/"
+        );
+        assert!(check_scope_not_wider(&api_grant(&["GET"], "/v1x"), None, Some("/v1")).is_err());
     }
 
     #[test]

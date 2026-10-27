@@ -1585,9 +1585,44 @@ async fn approval_refused_when_item_drops_requested_method() {
     "/v1/".clone_into(&mut narrowed.path_prefix);
     broker.backend.set_api_secret(narrowed, API_CREDENTIAL);
     let finish = broker.finish_approval(&token, &ceremony, &credential).await;
+    // The destination digest changed with the methods, so that guard fires;
+    // the scope re-check in `check_policy` is a second line of defence.
     assert_eq!(finish.status, StatusCode::CONFLICT, "{}", finish.body);
+    assert_eq!(
+        finish.json(),
+        json!({"error": "policy changed; reload and review"})
+    );
     assert_eq!(grant_count(&broker).await, 0);
     assert_eq!(status(&broker, &created.id).await, RequestStatus::Pending);
+}
+
+#[tokio::test]
+async fn grants_page_labels_api_grants() {
+    let (broker, _created, token) = api_pending().await;
+    let approved = broker.approve(&token, Window::M30).await;
+    assert_eq!(approved.status, StatusCode::OK, "{}", approved.body);
+    let page = broker.get("/grants").await;
+    assert!(
+        page.body
+            .contains(r#"<strong class="readonly">Read-only</strong>"#),
+        "{}",
+        page.body
+    );
+
+    let broker = scoped_broker().await;
+    let (_, token) = broker
+        .create_request("bot", scoped_request(Some(&["POST", "GET"]), None))
+        .await;
+    let approved = broker.approve(&token, Window::M15).await;
+    assert_eq!(approved.status, StatusCode::OK, "{}", approved.body);
+    let page = broker.get("/grants").await;
+    assert!(
+        page.body
+            .contains(r#"<strong class="warning">Can modify: POST</strong>"#),
+        "{}",
+        page.body
+    );
+    assert!(!page.body.contains("Read-only"), "{}", page.body);
 }
 
 #[tokio::test]

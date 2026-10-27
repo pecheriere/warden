@@ -95,6 +95,9 @@ fn digest_parts<'a>(parts: impl IntoIterator<Item = &'a str>) -> String {
 /// Most methods one request may name.
 const MAX_REQUESTED_METHODS: usize = 8;
 
+/// Longest path prefix one request may ask for, in bytes.
+const MAX_REQUESTED_PATH_PREFIX: usize = 512;
+
 /// One uppercase method token (`GET`, `PATCH`, ...).
 pub(crate) fn parse_method(token: &str) -> Option<Method> {
     // Uppercase ASCII letters are always a valid method token.
@@ -329,6 +332,11 @@ impl ApiSecretPolicy {
         let path_prefix = match path_prefix {
             None => self.path_prefix.clone(),
             Some(wanted) => {
+                if wanted.len() > MAX_REQUESTED_PATH_PREFIX {
+                    return Err(format!(
+                        "secret {name}: path prefix is too long (at most {MAX_REQUESTED_PATH_PREFIX} bytes)"
+                    ));
+                }
                 check_path_prefix(wanted)
                     .map_err(|reason| format!("secret {name}: path prefix {reason}"))?;
                 if !under_prefix(wanted, &self.path_prefix) {
@@ -413,40 +421,49 @@ impl ApiSecretPolicy {
 }
 
 /// What an API request asks for, resolved inside its policy: see
-/// [`ApiSecretPolicy::scope`].
+/// [`ApiSecretPolicy::scope`]. Only that and `TryFrom<&ApiGrant>` build one,
+/// so a scope that came from a request is always inside its item's policy.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApiScope {
     /// Methods the grant allows, sorted, without duplicates.
-    pub methods: Vec<Method>,
+    methods: Vec<Method>,
     /// Path prefix the grant is limited to, starting with `/`.
-    pub path_prefix: String,
+    path_prefix: String,
 }
 
 impl ApiScope {
+    /// Methods the grant allows, sorted, without duplicates.
+    #[must_use]
+    pub fn methods(&self) -> &[Method] {
+        &self.methods
+    }
+
+    /// Path prefix the grant is limited to, starting with `/`.
+    #[must_use]
+    pub fn path_prefix(&self) -> &str {
+        &self.path_prefix
+    }
+
+    fn method_names(&self) -> Vec<String> {
+        self.methods.iter().map(|m| m.as_str().to_owned()).collect()
+    }
+
     /// Whether the scope is non-empty and holds only `GET` and `HEAD`. An
     /// empty scope is not read-only: the label fails closed.
     #[must_use]
     pub fn is_read_only(&self) -> bool {
-        let methods: Vec<String> = self.methods.iter().map(|m| m.as_str().to_owned()).collect();
-        warden_broker_proto::is_read_only(&methods)
+        warden_broker_proto::is_read_only(&self.method_names())
     }
 
     /// What the owner is warned the scope can do: the methods other than
     /// `GET` and `HEAD`, in the scope's order, or `unverified scope` for an
     /// empty scope. Empty exactly when the scope is read-only.
     #[must_use]
-    pub fn modifying_methods(&self) -> Vec<&str> {
-        if self.is_read_only() {
-            Vec::new()
-        } else if self.methods.is_empty() {
-            vec!["unverified scope"]
-        } else {
-            self.methods
-                .iter()
-                .map(Method::as_str)
-                .filter(|m| !READ_ONLY_METHODS.contains(m))
-                .collect()
-        }
+    pub fn modifying_methods(&self) -> Vec<String> {
+        warden_broker_proto::modifying_methods(&self.method_names())
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
     }
 
     /// How the owner is told what an API request is for: `api <secret>
@@ -868,7 +885,7 @@ mod tests {
         let grant = full_grant(&item);
         let scope = ApiScope::try_from(&grant).unwrap();
         assert_eq!(names(&scope), ["GET", "POST"]);
-        assert_eq!(scope.path_prefix, "/v1/");
+        assert_eq!(scope.path_prefix(), "/v1/");
 
         let mut damaged = grant;
         damaged.methods.push("get it".to_owned());
@@ -906,7 +923,7 @@ mod tests {
         );
         let scope = both.scope(None, None).unwrap();
         assert_eq!(names(&scope), ["GET", "HEAD"]);
-        assert_eq!(scope.path_prefix, "/v1/");
+        assert_eq!(scope.path_prefix(), "/v1/");
 
         let get = item("/", &[Method::GET, Method::POST]);
         assert_eq!(names(&get.scope(None, None).unwrap()), ["GET"]);
@@ -963,6 +980,18 @@ mod tests {
         assert_eq!(
             p.scope(Some(&strings(&nine)), None).unwrap_err(),
             "secret github: methods must list 1 to 8 methods"
+        );
+    }
+
+    #[test]
+    fn requested_prefix_is_capped_at_512_bytes() {
+        let p = item("/", &[Method::GET]);
+        let at_cap = format!("/{}", "a".repeat(511));
+        let over = format!("/{}", "a".repeat(512));
+        assert_eq!(p.scope(None, Some(&at_cap)).unwrap().path_prefix(), at_cap);
+        assert_eq!(
+            p.scope(None, Some(&over)).unwrap_err(),
+            "secret github: path prefix is too long (at most 512 bytes)"
         );
     }
 
