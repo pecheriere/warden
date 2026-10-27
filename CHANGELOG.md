@@ -8,6 +8,15 @@ All notable changes to this project are recorded here. The format follows
 
 ### Fixed
 
+- The relay's login-time grant lookup is bounded to 1.5 s, like the grant
+  checks of live sessions, instead of only by the 10 s login timeout: an
+  attempt whose lookup does not answer in time is refused and audited as
+  `relay_login_refused`, like any other refused login.
+- A relay session revoked (or expired) while it was also ending normally is
+  recorded with the reason `revoked` (or `expired`) rather than `exited`, as
+  long as the revocation reached it before its teardown completed. It still
+  gets exactly one `relay_session_ended` entry.
+
 - A passkey's signature counter is never stored lower than it was: it lives in
   its own column (migration `0004`, backfilled from the stored credential) and
   is raised with one conditional update, so two concurrent approvals cannot

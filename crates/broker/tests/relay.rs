@@ -1490,6 +1490,65 @@ async fn revoke_during_slow_grant_lookup_refuses() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn login_grant_lookup_is_bounded() {
+    let s = key_target().await;
+    let agent = approved_agent(&s.broker, "bot").await;
+    let mut c = connect(&s.broker, s.relay).await;
+
+    // Every connection of the pool taken: the login's grant lookup waits
+    // for one (sqlx's 30 s acquire timeout), as on a hung disk.
+    let mut held = Vec::new();
+    while let Ok(Ok(conn)) =
+        tokio::time::timeout(Duration::from_millis(500), s.broker.state().pool.acquire()).await
+    {
+        held.push(conn);
+    }
+
+    let asked = Instant::now();
+    let auth = c
+        .handle
+        .authenticate_publickey(TARGET, russh_key(&agent.key))
+        .await;
+    // Refused once the 1.5 s lookup bound (plus the 1 s rejection delay)
+    // is over, not hung up after the 10 s login timeout.
+    assert!(
+        matches!(auth, Ok(AuthResult::Failure { .. })),
+        "{auth:?} after {:?}",
+        asked.elapsed()
+    );
+    assert!(
+        asked.elapsed() < Duration::from_secs(4),
+        "{:?}",
+        asked.elapsed()
+    );
+    c.handle
+        .disconnect(Disconnect::ByApplication, "", "en")
+        .await
+        .unwrap();
+
+    // Audited like any refused login, without key material.
+    let refused = await_events(&s.broker, "relay_login_refused", 1).await;
+    assert_eq!(refused[0]["user"], TARGET, "{refused:?}");
+    assert_eq!(refused[0]["attempts"], 1, "{refused:?}");
+    let log = std::fs::read_to_string(s.broker.audit_path()).unwrap();
+    let public = agent.key.public_key().to_openssh().unwrap();
+    assert!(!log.contains(public.split(' ').nth(1).unwrap()));
+    assert!(
+        !log.contains(
+            &agent
+                .key
+                .public_key()
+                .fingerprint(ssh_key::HashAlg::Sha256)
+                .to_string()
+        )
+    );
+
+    // Once the database answers again, the same key logs in.
+    drop(held);
+    login(&s.broker, s.relay, TARGET, &agent.key).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn slow_target_read_is_refused_after_its_bound() {
     let s = key_target().await;
     let agent = approved_agent(&s.broker, "bot").await;

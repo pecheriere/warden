@@ -199,7 +199,11 @@ target is the one that was approved. Only public-key login exists (no
 password, no keyboard-interactive), with 3 attempts and 10 s to log in. A
 login is accepted iff an active grant (not revoked, before its end) exists for
 that target whose bound key equals the offered key; an unknown target, an
-unapproved key and an inactive grant are refused identically. A public key can
+unapproved key and an inactive grant are refused identically. The lookup of
+that grant is bounded to 1.5 s, like every grant query (below), not only by
+the 10 s login: an attempt whose lookup does not answer in time is refused
+the same way, and audited with the connection's other refused attempts
+(`relay_login_refused`). A public key can
 be bound to one live request or grant at a time, across all agents (a second
 request with it is a 409), so another agent cannot use a key it merely
 learned, and every relay session is attributed to the agent that was
@@ -271,7 +275,11 @@ by the check of live grants every second, each query bounded to 1.5 s: with a
 healthy database the session ends within about 5 to 6 s in the worst case.
 When the database cannot be read, the relay fails closed (below), which ends
 the session within about 10 to 11 s. Each started session records exactly one
-`relay_session_ended` event.
+`relay_session_ended` event. Its reason is `revoked` (or `expired`) whenever
+the revocation (or the end of the window) reached the session before its
+teardown completed, even if the session also ended otherwise at the same
+time (the command exited, say); the bytes moved and the exit status are
+recorded as they were.
 
 **Fail closed.** The grant check is a database query bounded to 1.5 s. If no
 query has succeeded for 10 s, every relayed session ends (reason `grant state
