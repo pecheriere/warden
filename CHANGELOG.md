@@ -39,6 +39,13 @@ All notable changes to this project are recorded here. The format follows
   seen even while that library is held up. Input still held for the target
   when the agent leaves is dropped. The session still gets exactly one
   `relay_session_ended` entry.
+- The CLI's cleanup on every run also removes leftover grant-record temporary
+  files (`.<name>.<id>.tmp`, from a run that crashed mid-write) once they are
+  over ten minutes old, in the grants and api-grants directories; fresher ones
+  and live grants are never touched. Its failures are reported in a single
+  warning. A per-grant `ssh-agent` still lingers until the next `warden` run
+  after its grant ends (the agent's lifetime limit covers its keys, not the
+  process), but that run stops it.
 
 ### Added
 

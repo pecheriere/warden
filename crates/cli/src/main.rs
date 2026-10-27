@@ -198,12 +198,7 @@ impl std::error::Error for Exit {}
 async fn main() -> ExitCode {
     let cli = Cli::parse();
     let now = unix_now();
-    if let Err(e) = agent::cleanup_expired(now) {
-        eprintln!("warden: warning: {e:#}");
-    }
-    if let Err(e) = http::cleanup_expired(now, &mut std::io::stderr().lock()) {
-        eprintln!("warden: warning: {e:#}");
-    }
+    cleanup_state(now);
     match run(cli.command).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
@@ -213,6 +208,23 @@ async fn main() -> ExitCode {
             eprintln!("warden: {e:#}");
             ExitCode::from(code)
         }
+    }
+}
+
+/// Best-effort housekeeping before every command: stop the agents of ended
+/// grants, delete their records and abandoned temporary files. Failures
+/// never stop the command; they are reported in one warning.
+fn cleanup_state(now: i64) {
+    let failures: Vec<String> = [
+        agent::cleanup_expired(now),
+        http::cleanup_expired(now, &mut std::io::stderr().lock()),
+    ]
+    .into_iter()
+    .filter_map(Result::err)
+    .map(|e| format!("{e:#}"))
+    .collect();
+    if !failures.is_empty() {
+        eprintln!("warden: warning: {}", failures.join("; "));
     }
 }
 

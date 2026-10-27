@@ -216,7 +216,11 @@ This revokes the grant on the broker, stops its local `ssh-agent` and removes
 the local record of an `api` grant.
 Certificates that were already issued are not revoked on the target. Short
 windows limit that risk, so revoke as soon as you finish. Every `warden` run
-also cleans up expired grants and stops their agents.
+also cleans up expired grants and stops their agents (an agent is signalled
+only while it still answers on its recorded socket) and removes temporary
+files abandoned for over ten minutes by an interrupted write; live grants and
+recent files are left alone. A problem during cleanup is reported once on
+stderr and never stops the command.
 
 ## Exit codes
 
