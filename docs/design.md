@@ -555,8 +555,8 @@ in-flight requests and enrolled passkeys (re-enroll).
 - `warden http <secret> <METHOD> <url> [-H 'Name: value']… [-d <body> |
   --data-file <path|->] [-i] [--fail]` calls an API through the `api` grant for
   the secret that covers the method and the path (the one that stays valid
-  longest, if several do). The response body goes to stdout unchanged, and with `-i` the status line and headers go
-  to stderr. The CLI records an `api` grant locally (secret name, origin, grant
+  longest, if several do). The response body goes to stdout unchanged, and
+  with `-i` the status line and headers go to stderr. The CLI records an `api` grant locally (secret name, origin, grant
   id, end time, methods and path prefix; never a secret; records from 0.3 read
   as `GET` and `/`) and exits 5 when no active grant covers the call, with a
   hint naming `warden request api --methods`. `--fail` exits 22 on an upstream

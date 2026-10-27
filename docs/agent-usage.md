@@ -142,8 +142,8 @@ warden http github PUT https://api.github.com/repos/alice/widgets/x \
 
 `warden http <secret> <METHOD> <url>` uses the `api` grant for the secret whose
 methods and path prefix cover the call; if several do, the one that stays valid
-longest. The response body goes to stdout, unchanged. With `-i`, the status line and response headers go to
-stderr. `-H 'Name: value'` adds a request header (repeatable). `-d` gives the
+longest. The response body goes to stdout, unchanged. With `-i`, the status
+line and response headers go to stderr. `-H 'Name: value'` adds a request header (repeatable). `-d` gives the
 body inline, and `--data-file <path>` reads it from a file (`-` for standard
 input). A body is at most 1 MiB.
 

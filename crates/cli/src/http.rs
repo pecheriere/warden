@@ -126,8 +126,7 @@ fn load_in(dir: &Path) -> Vec<(PathBuf, Result<ApiRecord>)> {
         .collect()
 }
 
-/// The recorded api grants and the errors
-/// for unreadable files.
+/// The recorded api grants, and the errors for unreadable files.
 ///
 /// # Errors
 /// If the state directory is unusable.
