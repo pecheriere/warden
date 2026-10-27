@@ -5,21 +5,23 @@ use std::net::Ipv6Addr;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
 use http::{HeaderName, Method};
 use rustls_pki_types::CertificateDer;
 use rustls_pki_types::pem::PemObject as _;
 use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
-use ssh_key::{PrivateKey, PublicKey};
+use ssh_key::{Algorithm, LineEnding, PrivateKey, PublicKey};
 use tokio::sync::OnceCell;
 use url::{Origin, Url};
 use warden_broker_proto::{SecretName, TargetName, UnixUser, Window};
 use zeroize::Zeroizing;
 
 use super::{
-    ApiSecretPolicy, CaKey, PolicyError, SecretBackend, SecretValue, SshMode, SshTarget,
-    ValueFormat, is_header_text, is_reserved_header,
+    ApiSecretPolicy, CaKey, PolicyError, RelayCredential, SecretBackend, SecretValue, SshMode,
+    SshTarget, ValueFormat, is_header_text, is_reserved_header, not_a_relay_target,
 };
 
 const TARGET_TAG: &str = "warden:ssh-target";
@@ -43,17 +45,13 @@ struct ItemSummary {
     tags: Vec<String>,
 }
 
+/// An SSH target item, decoded so that a relay target's credential never
+/// lives in a plain `String`.
 #[derive(Deserialize)]
-struct Item {
+struct TargetItem {
     title: String,
     #[serde(default)]
-    fields: Vec<Field>,
-}
-
-#[derive(Deserialize)]
-struct Field {
-    label: Option<String>,
-    value: Option<String>,
+    fields: Vec<SecretField>,
 }
 
 /// The CA item, decoded so that no private-key text lives in a plain `String`.
@@ -276,11 +274,29 @@ impl OnePasswordConnect {
         parse_api_secret(name, &item)
     }
 
-    async fn full_item(&self, id: &str) -> Result<Item, PolicyError> {
-        check_id(id)?;
+    /// Fetch and validate the SSH target item `name`. The body and any
+    /// relay credential stay in `Zeroizing` buffers throughout.
+    async fn target_item(
+        &self,
+        name: &TargetName,
+    ) -> Result<(SshTarget, Option<RelayCredential>), PolicyError> {
+        let summary = self
+            .tagged_titled(TARGET_TAG, name.as_str(), "a target")
+            .await?
+            .ok_or_else(|| PolicyError::NotFound(name.as_str().to_owned()))?;
+        check_id(&summary.id)?;
         let vault_id = self.vault_id().await?;
-        self.get(&["v1", "vaults", vault_id, "items", id], &[])
-            .await
+        let body = self
+            .get_bytes(&["v1", "vaults", vault_id, "items", &summary.id], &[])
+            .await?;
+        // Never interpolate the serde error: it can quote the credential.
+        let item: TargetItem = serde_json::from_slice(&body).map_err(|_| {
+            PolicyError::Unavailable(format!(
+                "1Password Connect sent an unreadable item for target \"{name}\""
+            ))
+        })?;
+        drop(body);
+        parse_target(name, &item)
     }
 }
 
@@ -299,12 +315,19 @@ fn check_id(id: &str) -> Result<(), PolicyError> {
 #[async_trait]
 impl SecretBackend for OnePasswordConnect {
     async fn ssh_target(&self, name: &TargetName) -> Result<SshTarget, PolicyError> {
-        let summary = self
-            .tagged_titled(TARGET_TAG, name.as_str(), "a target")
-            .await?
-            .ok_or_else(|| PolicyError::NotFound(name.as_str().to_owned()))?;
-        let item = self.full_item(&summary.id).await?;
-        parse_target(name, &item)
+        self.target_item(name)
+            .await
+            .map(|(target, _credential)| target)
+    }
+
+    async fn relay_target_with_credential(
+        &self,
+        name: &TargetName,
+    ) -> Result<(SshTarget, RelayCredential), PolicyError> {
+        match self.target_item(name).await? {
+            (target, Some(credential)) => Ok((target, credential)),
+            (_, None) => Err(not_a_relay_target(name.as_str())),
+        }
     }
 
     async fn ssh_ca(&self) -> Result<CaKey, PolicyError> {
@@ -386,14 +409,19 @@ fn invalid(item: &str, field: &str, reason: &str) -> PolicyError {
     }
 }
 
-fn parse_target(name: &TargetName, item: &Item) -> Result<SshTarget, PolicyError> {
+/// Validate an SSH target item. Returns the onward credential exactly when
+/// the target is in relay mode. Reasons never quote a field value.
+fn parse_target(
+    name: &TargetName,
+    item: &TargetItem,
+) -> Result<(SshTarget, Option<RelayCredential>), PolicyError> {
     let title = item.title.as_str();
     let mut by_label: HashMap<&str, &str> = HashMap::new();
     for field in &item.fields {
         let (Some(label), Some(value)) = (field.label.as_deref(), field.value.as_deref()) else {
             continue;
         };
-        if by_label.insert(label, value).is_some() {
+        if by_label.insert(label, value.as_str()).is_some() {
             return Err(invalid(title, label, "the field appears more than once"));
         }
     }
@@ -442,7 +470,9 @@ fn parse_target(name: &TargetName, item: &Item) -> Result<SshTarget, PolicyError
         return Err(invalid(title, "host_keys", "no keys listed"));
     }
 
-    Ok(SshTarget {
+    let credential = parse_credential(title, mode, &by_label)?;
+
+    let target = SshTarget {
         name: name.clone(),
         host,
         port,
@@ -450,7 +480,122 @@ fn parse_target(name: &TargetName, item: &Item) -> Result<SshTarget, PolicyError
         users,
         max_window,
         host_keys,
-    })
+    };
+    Ok((target, credential))
+}
+
+/// The onward credential: exactly one of `private_key` and `password` for a
+/// relay target, neither for a cert target. A blank field counts as absent.
+/// The password is taken verbatim; the key is trimmed, checked (Ed25519
+/// only) and normalised to OpenSSH format.
+fn parse_credential(
+    title: &str,
+    mode: SshMode,
+    by_label: &HashMap<&str, &str>,
+) -> Result<Option<RelayCredential>, PolicyError> {
+    let key = by_label
+        .get("private_key")
+        .map(|v| v.trim())
+        .filter(|v| !v.is_empty());
+    let password = by_label.get("password").copied().filter(|v| !v.is_empty());
+    let cert_only =
+        "only relay targets hold an onward credential; remove the field or set mode to \"relay\"";
+    match (mode, key, password) {
+        (SshMode::Cert, None, None) => Ok(None),
+        (SshMode::Cert, Some(_), _) => Err(invalid(title, "private_key", cert_only)),
+        (SshMode::Cert, None, Some(_)) => Err(invalid(title, "password", cert_only)),
+        (SshMode::Relay, None, None) => Err(invalid(
+            title,
+            "password",
+            "missing: a relay target needs a \"password\" or a \"private_key\" field",
+        )),
+        (SshMode::Relay, Some(_), Some(_)) => Err(invalid(
+            title,
+            "private_key",
+            "set either \"private_key\" or \"password\", not both",
+        )),
+        (SshMode::Relay, Some(text), None) => parse_relay_key(text)
+            .map(|key| Some(RelayCredential::Key(key)))
+            .map_err(|reason| invalid(title, "private_key", reason)),
+        (SshMode::Relay, None, Some(password)) => Ok(Some(RelayCredential::Password(
+            Zeroizing::new(password.to_owned()),
+        ))),
+    }
+}
+
+/// Check a relay target's login key and return it in OpenSSH format. Only
+/// unencrypted Ed25519 keys are accepted, as OpenSSH or PKCS#8 PEM: warden
+/// performs no RSA or NIST-curve private-key operation. The key type is read
+/// from the container (the OpenSSH public key, the PKCS#8 algorithm
+/// identifier) before any private key material is decoded, so another key
+/// type is refused without being loaded. The input is never echoed.
+fn parse_relay_key(text: &str) -> Result<Zeroizing<String>, &'static str> {
+    const UNREADABLE: &str = "is not a readable OpenSSH or PKCS#8 PEM private key";
+    const NOT_ED25519: &str =
+        "relay keys must be Ed25519; use a password for targets that need another key type";
+    let is_ed25519 = if text.starts_with("-----BEGIN OPENSSH PRIVATE KEY-----") {
+        openssh_key_type(text).ok_or(UNREADABLE)? == b"ssh-ed25519"
+    } else if text.starts_with("-----BEGIN PRIVATE KEY-----") {
+        pkcs8_algorithm(text).ok_or(UNREADABLE)? == ed25519_dalek::pkcs8::ALGORITHM_OID
+    } else {
+        return Err(UNREADABLE);
+    };
+    if !is_ed25519 {
+        return Err(NOT_ED25519);
+    }
+    let key = parse_private_key(text).ok_or(UNREADABLE)?;
+    if key.is_encrypted() {
+        return Err("is passphrase-protected; an unencrypted key is required");
+    }
+    if key.algorithm() != Algorithm::Ed25519 {
+        return Err(NOT_ED25519);
+    }
+    key.to_openssh(LineEnding::LF).map_err(|_| UNREADABLE)
+}
+
+/// The key type of an OpenSSH private key file (`ssh-ed25519`, `ssh-rsa`,
+/// ...), read from the public key that precedes the private section. Only
+/// single-key files are accepted.
+fn openssh_key_type(text: &str) -> Option<Vec<u8>> {
+    let body = Zeroizing::new(
+        text.lines()
+            .map(str::trim)
+            .filter(|l| !l.starts_with("-----"))
+            .collect::<String>(),
+    );
+    let bytes = Zeroizing::new(STANDARD.decode(body.as_bytes()).ok()?);
+    let mut rest = bytes.strip_prefix(b"openssh-key-v1\0")?;
+    // Cipher name, KDF name and KDF options.
+    for _ in 0..3 {
+        ssh_string(&mut rest)?;
+    }
+    let count = rest.get(..4)?;
+    if count != 1_u32.to_be_bytes() {
+        return None;
+    }
+    rest = &rest[4..];
+    let mut public_key = ssh_string(&mut rest)?;
+    ssh_string(&mut public_key).map(<[u8]>::to_vec)
+}
+
+/// Take one length-prefixed SSH `string` off the front of `input`.
+fn ssh_string<'a>(input: &mut &'a [u8]) -> Option<&'a [u8]> {
+    let (len, rest) = input.split_first_chunk::<4>()?;
+    let len = usize::try_from(u32::from_be_bytes(*len)).ok()?;
+    let (value, rest) = rest.split_at_checked(len)?;
+    *input = rest;
+    Some(value)
+}
+
+/// The algorithm identifier of a PKCS#8 PEM private key, without decoding
+/// the private key it wraps.
+fn pkcs8_algorithm(text: &str) -> Option<ed25519_dalek::pkcs8::ObjectIdentifier> {
+    let (label, document) = ed25519_dalek::pkcs8::SecretDocument::from_pem(text).ok()?;
+    if label != "PRIVATE KEY" {
+        return None;
+    }
+    let info = ed25519_dalek::pkcs8::PrivateKeyInfo::try_from(document.as_bytes()).ok()?;
+    Some(info.algorithm.oid)
 }
 
 /// Validate an API secret item. Optional fields that are absent or blank
@@ -646,6 +791,17 @@ fn check_ca_pem(pem: &str) -> Result<(), &'static str> {
 
 /// Split `host`, `host:port` or `[ipv6]:port`; the port defaults to 22.
 fn parse_address(s: &str) -> Result<(String, u16), &'static str> {
+    let (host, port) = parse_host_port(s)?;
+    Ok((host, port.unwrap_or(22)))
+}
+
+/// Split `host`, `host:port` or `[ipv6]:port` into the host (without
+/// brackets) and the port, if one is given. The host must be a plausible
+/// host name or IP address; the port 1-65535.
+///
+/// # Errors
+/// Why the address is unusable, as a fixed message that never echoes it.
+pub(crate) fn parse_host_port(s: &str) -> Result<(String, Option<u16>), &'static str> {
     let (host, port) = if let Some(rest) = s.strip_prefix('[') {
         let (host, tail) = rest.split_once(']').ok_or("unterminated '[' in address")?;
         host.parse::<Ipv6Addr>()
@@ -674,9 +830,9 @@ fn parse_address(s: &str) -> Result<(String, u16), &'static str> {
         return Err("host is empty or contains unsupported characters");
     }
     let port = match port {
-        None => 22,
+        None => None,
         Some(p) => match p.parse::<u16>() {
-            Ok(n) if n != 0 => n,
+            Ok(n) if n != 0 => Some(n),
             _ => return Err("port must be 1-65535"),
         },
     };

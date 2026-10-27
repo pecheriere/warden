@@ -209,6 +209,93 @@ fn config_proxy_response_limit_defaults_and_bounds() {
     }
 }
 
+#[test]
+fn config_relay_defaults_and_public_address() {
+    let cfg = Config::from_lookup(env).unwrap();
+    assert_eq!(cfg.relay.listen.to_string(), "127.0.0.1:2222");
+    assert_eq!(
+        cfg.relay.host_key_path,
+        std::path::Path::new("/data/relay_host_ed25519")
+    );
+    assert!(cfg.relay.public_addr.is_none());
+
+    let with = |var: &'static str, value: &'static str| {
+        move |v: &str| {
+            if v == var {
+                Some(value.to_owned())
+            } else {
+                env(v)
+            }
+        }
+    };
+    let cfg = Config::from_lookup(with(
+        "WARDEN_RELAY_PUBLIC_ADDR",
+        "warden.example.ts.net:2222",
+    ))
+    .unwrap();
+    let addr = cfg.relay.public_addr.unwrap();
+    assert_eq!(addr.host, "warden.example.ts.net");
+    assert_eq!(addr.port, 2222);
+    let cfg = Config::from_lookup(with("WARDEN_RELAY_PUBLIC_ADDR", "[2001:db8::1]:22")).unwrap();
+    let addr = cfg.relay.public_addr.unwrap();
+    assert_eq!((addr.host.as_str(), addr.port), ("2001:db8::1", 22));
+
+    let cfg = Config::from_lookup(with("WARDEN_RELAY_LISTEN", "0.0.0.0:2200")).unwrap();
+    assert_eq!(cfg.relay.listen.to_string(), "0.0.0.0:2200");
+    let cfg = Config::from_lookup(with("WARDEN_RELAY_HOST_KEY_PATH", "/keys/relay")).unwrap();
+    assert_eq!(cfg.relay.host_key_path, std::path::Path::new("/keys/relay"));
+
+    for bad in [
+        "warden.example.ts.net",
+        "warden.example.ts.net:0",
+        "warden.example.ts.net:65536",
+        "warden example:22",
+        ":22",
+        "2001:db8::1:22",
+        "-warden:22",
+    ] {
+        let err = Config::from_lookup(with("WARDEN_RELAY_PUBLIC_ADDR", bad)).unwrap_err();
+        assert!(
+            err.to_string().contains("WARDEN_RELAY_PUBLIC_ADDR"),
+            "{bad}: {err}"
+        );
+    }
+    let err = Config::from_lookup(with("WARDEN_RELAY_LISTEN", "nope")).unwrap_err();
+    assert!(err.to_string().contains("WARDEN_RELAY_LISTEN"), "{err}");
+}
+
+#[test]
+fn config_relay_max_sessions() {
+    let with = |value: &'static str| {
+        move |v: &str| {
+            if v == "WARDEN_RELAY_MAX_SESSIONS" {
+                Some(value.to_owned())
+            } else {
+                env(v)
+            }
+        }
+    };
+    assert_eq!(Config::from_lookup(env).unwrap().relay.max_sessions, 16);
+    assert_eq!(
+        Config::from_lookup(with("4")).unwrap().relay.max_sessions,
+        4
+    );
+    assert_eq!(
+        Config::from_lookup(with("1024"))
+            .unwrap()
+            .relay
+            .max_sessions,
+        1024
+    );
+    for bad in ["0", "1025", "-1", "many", "1.5"] {
+        let err = Config::from_lookup(with(bad)).unwrap_err();
+        assert!(
+            err.to_string().contains("WARDEN_RELAY_MAX_SESSIONS"),
+            "{bad}: {err}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn add_audited_records_agent_added() {
     let dir = tempfile::tempdir().unwrap();

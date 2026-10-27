@@ -11,6 +11,7 @@
     { "id": "f2", "type": "STRING", "label": "mode", "value": "relay" },
     { "id": "f3", "type": "STRING", "label": "users", "value": "backup" },
     { "id": "f4", "type": "STRING", "label": "max_window", "value": "1h" },
-    { "id": "f5", "type": "STRING", "label": "host_keys", "value": "{{HOST_KEY}}" }
+    { "id": "f5", "type": "STRING", "label": "host_keys", "value": "{{HOST_KEY}}" },
+    { "id": "password", "type": "CONCEALED", "purpose": "PASSWORD", "label": "password", "value": "throwaway-test-password" }
   ]
 }

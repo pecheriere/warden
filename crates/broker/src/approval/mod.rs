@@ -16,7 +16,7 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use ssh_key::PublicKey;
 use warden_broker_proto::{
-    Access, ApiError, GrantAccess, GrantView, Id, SshGrant, UnixUser, Window,
+    Access, ApiError, GrantAccess, GrantView, Id, RelayGrant, SshGrant, UnixUser, Window,
 };
 use webauthn_rs::prelude::{PublicKeyCredential, RegisterPublicKeyCredential};
 
@@ -24,8 +24,10 @@ use crate::AppState;
 use crate::audit::AuditEvent;
 use crate::identity::Owner;
 use crate::policy::{ApiSecretPolicy, CaKey, SshMode, SshTarget};
+use crate::relay::RelayEndpoint;
 use crate::requests::{
-    BACKEND_UNAVAILABLE, Destination, PendingView, RequestError, sha256_hex, window_label,
+    BACKEND_UNAVAILABLE, Destination, PendingView, RELAY_NOT_CONFIGURED, RequestError, sha256_hex,
+    window_label,
 };
 use crate::ssh_ca::{self, IssueInput};
 
@@ -320,29 +322,35 @@ fn internal_page(context: &str, error: &dyn std::fmt::Display) -> Response {
 // --- approval ---------------------------------------------------------------
 
 /// Whether the policy as it is now still allows `view`'s request for
-/// `window`.
-fn check_policy(view: &PendingView, window: Window) -> Result<(), String> {
+/// `window`, on a broker whose relay is `relay`.
+fn check_policy(
+    view: &PendingView,
+    window: Window,
+    relay: Option<&RelayEndpoint>,
+) -> Result<(), String> {
     view.destination.check_window(window)?;
     match (&view.request.access, &view.destination) {
-        (Access::Ssh { user, .. }, Destination::Ssh(target)) => check_ssh(target, user),
+        (Access::Ssh { user, .. }, Destination::Ssh(target)) => check_ssh(target, user, relay),
         (Access::Api { .. }, Destination::Api(_)) => Ok(()),
         _ => Err("the request does not match its policy kind".to_owned()),
     }
 }
 
-/// The SSH-specific checks: `user` is allowed and the mode is supported.
-fn check_ssh(target: &SshTarget, user: &UnixUser) -> Result<(), String> {
+/// The SSH-specific checks: `user` is allowed, and a relay target needs the
+/// relay configured.
+fn check_ssh(
+    target: &SshTarget,
+    user: &UnixUser,
+    relay: Option<&RelayEndpoint>,
+) -> Result<(), String> {
     if !target.users.contains(user) {
         return Err(format!(
             "user {user} is not allowed on target {}",
             target.name
         ));
     }
-    if target.mode != SshMode::Cert {
-        return Err(format!(
-            "target {}: relay mode not supported yet",
-            target.name
-        ));
+    if target.mode == SshMode::Relay && relay.is_none() {
+        return Err(format!("target {}: {RELAY_NOT_CONFIGURED}", target.name));
     }
     Ok(())
 }
@@ -360,7 +368,7 @@ async fn approve_begin(
     if body.target != destination_digest {
         return json_error(StatusCode::CONFLICT, DESTINATION_CHANGED);
     }
-    if let Err(message) = check_policy(&view, body.window) {
+    if let Err(message) = check_policy(&view, body.window, state.requests.relay()) {
         return json_error(StatusCode::BAD_REQUEST, message);
     }
     let binding = ApprovalBinding {
@@ -423,13 +431,24 @@ async fn approve_finish(
     }
     // The policy was fetched fresh by `pending_for_token`; the window is the
     // one stored when the ceremony began.
-    if let Err(message) = check_policy(&view, binding.window) {
+    let relay = state.requests.relay();
+    if let Err(message) = check_policy(&view, binding.window, relay) {
         return json_error(
             StatusCode::CONFLICT,
             format!("policy changed since this page loaded: {message}"),
         );
     }
     let (grant, issued) = match &view.destination {
+        Destination::Ssh(target) if target.mode == SshMode::Relay => {
+            // `check_policy` already refused a relay target without a relay.
+            let Some(relay) = relay else {
+                return json_error(StatusCode::CONFLICT, RELAY_NOT_CONFIGURED);
+            };
+            match relay_grant(&view, relay, binding.window, now) {
+                Ok(grant) => (grant, None),
+                Err((context, cause)) => return internal(context, &cause),
+            }
+        }
         Destination::Ssh(target) => {
             let ca = match state.backend.ssh_ca().await {
                 Ok(ca) => ca,
@@ -541,6 +560,37 @@ fn ssh_grant(
         }),
     };
     Ok((grant, cert.key_id().to_owned()))
+}
+
+/// The grant for approving `view` on a relay target with `window` at `now`:
+/// valid from `now` for exactly the window, naming where the agent reaches
+/// `relay` and its host key, and carrying the digest of the approved
+/// destination, which the relay checks at every session start. There is no
+/// certificate: the relay admits the agent by the public key bound into the
+/// approved request.
+fn relay_grant(
+    view: &PendingView,
+    relay: &RelayEndpoint,
+    window: Window,
+    now: i64,
+) -> Result<GrantView, GrantFailure> {
+    let Access::Ssh { target, user, .. } = &view.request.access else {
+        return Err(("access kind", "not an ssh request".to_owned()));
+    };
+    let (not_before, not_after) = validity(window, now)?;
+    Ok(GrantView {
+        grant_id: Id::random(),
+        not_before,
+        not_after,
+        access: GrantAccess::Relay(RelayGrant {
+            target: target.clone(),
+            user: user.clone(),
+            relay_host: relay.host.clone(),
+            relay_port: relay.port,
+            relay_host_key: relay.host_key.clone(),
+            digest: view.destination.digest(),
+        }),
+    })
 }
 
 /// The grant for approving use of API secret `policy` with `window` at

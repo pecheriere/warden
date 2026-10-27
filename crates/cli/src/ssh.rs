@@ -8,7 +8,7 @@ use std::process::Command;
 use anyhow::{Context as _, Result, bail, ensure};
 use warden_broker_proto::{TargetName, UnixUser};
 
-use crate::agent::{GrantRecord, is_safe_host, load_grants};
+use crate::agent::{GrantRecord, Route, is_safe_host, load_grants};
 
 /// A grant this machine can use now.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,9 +42,12 @@ pub fn active_grant(grants: &Path, target: &TargetName, now: i64) -> Option<Acti
 /// `~/.ssh/id_*`. Host, port and user come
 /// from the server-signed grant and are validated again here; `--` ends
 /// option parsing so the remote `command` can never be read as ssh options.
+/// A relay grant connects to the relay's address and logs in as the
+/// target's name (the relay then logs in to the target as the user); every
+/// other option is the same.
 ///
 /// # Errors
-/// If the recorded host or user is not safe to pass to ssh.
+/// If the recorded host, user or target is not safe to pass to ssh.
 pub fn ssh_args(grant: &ActiveGrant, command: &[String]) -> Result<Vec<OsString>> {
     let rec = &grant.record;
     ensure!(
@@ -54,6 +57,11 @@ pub fn ssh_args(grant: &ActiveGrant, command: &[String]) -> Result<Vec<OsString>
     );
     // Re-validate: grant.json is a local file, not the server's word.
     let user = UnixUser::try_from(rec.user.as_str().to_owned()).context("grant user is invalid")?;
+    let login = match rec.route {
+        Route::Direct => user.to_string(),
+        // A `TargetName` is `[a-z0-9-]` only, checked when grant.json is read.
+        Route::Relay => rec.target.to_string(),
+    };
     let identity_agent = path_option("IdentityAgent", &rec.socket)?;
     let known_hosts = path_option("UserKnownHostsFile", &grant.dir.join("known_hosts"))?;
     let mut args: Vec<OsString> = vec![
@@ -76,7 +84,7 @@ pub fn ssh_args(grant: &ActiveGrant, command: &[String]) -> Result<Vec<OsString>
         "-p".into(),
         rec.port.to_string().into(),
         "--".into(),
-        format!("{user}@{}", rec.host).into(),
+        format!("{login}@{}", rec.host).into(),
     ];
     args.extend(command.iter().map(OsString::from));
     Ok(args)
@@ -117,7 +125,7 @@ mod tests {
     use warden_broker_proto::Id;
 
     use super::{ActiveGrant, active_grant, path_option, ssh_args};
-    use crate::agent::GrantRecord;
+    use crate::agent::{GrantRecord, Route};
 
     fn grant(host: &str, port: u16) -> ActiveGrant {
         ActiveGrant {
@@ -125,6 +133,7 @@ mod tests {
             record: GrantRecord {
                 grant_id: Id::random(),
                 target: "pi".parse().unwrap(),
+                route: Route::Direct,
                 host: host.to_owned(),
                 port,
                 user: "alice".parse().unwrap(),
@@ -173,6 +182,37 @@ mod tests {
                 "-o",
             ]
         );
+    }
+
+    fn relay_grant() -> ActiveGrant {
+        let mut g = grant("relay.example.com", 2222);
+        g.record.route = Route::Relay;
+        g
+    }
+
+    /// Through the relay, ssh logs in to the relay as the target's name,
+    /// with exactly the hardened options of a direct grant.
+    #[test]
+    fn relay_ssh_args_log_in_to_relay_as_target() {
+        let args = ssh_args(&relay_grant(), &["echo".to_owned(), "ok".to_owned()]).unwrap();
+        let direct = ssh_args(
+            &grant("relay.example.com", 2222),
+            &["echo".to_owned(), "ok".to_owned()],
+        )
+        .unwrap();
+        let args = strings(&args);
+        let direct = strings(&direct);
+        let at = args.iter().position(|a| *a == "--").unwrap();
+        assert_eq!(args[..at], direct[..at]);
+        assert_eq!(args[at..], ["--", "pi@relay.example.com", "echo", "ok"]);
+        assert_eq!(args[at - 2..at], ["-p", "2222"]);
+    }
+
+    #[test]
+    fn relay_ssh_args_reject_option_like_relay_host() {
+        let mut g = relay_grant();
+        g.record.host = "-oProxyCommand=evil".to_owned();
+        assert!(ssh_args(&g, &[]).is_err());
     }
 
     #[test]

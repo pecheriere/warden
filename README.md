@@ -6,18 +6,23 @@ notification on their phone, reviews the goal and exactly what would be
 granted, and approves with a passkey. warden then issues a credential that
 expires on its own. The agent never holds a long-lived secret.
 
-Two kinds of access are supported:
+Three kinds of access are supported:
 
-- **SSH.** The broker signs a short-lived SSH certificate for an ephemeral
-  Ed25519 key that exists only in memory on the requesting machine, and only
-  for the approved window.
+- **SSH, certificate mode.** The broker signs a short-lived SSH certificate
+  for an ephemeral Ed25519 key that exists only in memory on the requesting
+  machine, and only for the approved window.
+- **SSH, relay mode.** For hosts that cannot trust a CA (appliances, Dropbear,
+  password-only logins), the agent connects to the broker's SSH relay with the
+  approved ephemeral key, and the broker logs in to the target with a key or
+  password that never leaves it. The agent's commands are the same as in
+  certificate mode.
 - **HTTP API secrets.** The agent never sees the secret. For the approved
   window the broker makes HTTPS calls for the agent, adds the secret to the
   header the policy names, sends them only to the one origin and path prefix
   the policy allows, and returns the response with the secret redacted.
 
-Status: early development. This release (0.2.0) implements SSH certificate
-mode and HTTP proxy mode.
+Status: early development. This release (0.3.0) implements SSH certificate
+mode, SSH relay mode and HTTP proxy mode.
 
 ## Why
 
@@ -40,6 +45,8 @@ warden CLI --- HTTPS (tailnet) -----> warden-server --- Connect API --> 1Passwor
   |                                     |                       v
   |                                     |                     phone
   +--- ssh with the signed certificate ---------------------------------------> hosts that trust the CA
+  |
+  +--- ssh (approved key) --> relay (tailnet TCP) --- ssh (key/password) -----> appliances
 
 phone --- HTTPS (tailnet) ------------> approval page (WebAuthn passkey)
 ```
@@ -47,7 +54,8 @@ phone --- HTTPS (tailnet) ------------> approval page (WebAuthn passkey)
 ## Components
 
 - `warden-server` (crate `warden-broker`): the agent API, the approval web UI,
-  the SSH CA, the HTTP proxy, notifier dispatch, the hash-chained audit log and SQLite state.
+  the SSH CA, the SSH relay, the HTTP proxy, notifier dispatch, the
+  hash-chained audit log and SQLite state.
   It runs as a container.
 - `warden` (crate `warden-broker-cli`): the command-line client. It requests
   access, waits for the decision, keeps the ephemeral key in a per-grant
@@ -87,6 +95,13 @@ Assistant first and fall back to ntfy; see
    that trusts the same CA. `TrustedUserCAKeys` without
    `AuthorizedPrincipalsFile` would not accept the certificate at all.
 
+   A host that cannot trust a CA is a **relay target** instead: set its item's
+   `mode` to `relay`, pin its `host_keys`, and put the account's Ed25519
+   private key or password in the item (see
+   [docs/1password-items.md](docs/1password-items.md)). Nothing is installed
+   on the target except an ordinary login for that account. Set
+   `WARDEN_RELAY_PUBLIC_ADDR` (below) so agents know where the relay is.
+
 2. **Build and run the server.** The image is built from this repository; no
    image is published.
 
@@ -125,14 +140,27 @@ Assistant first and fall back to ntfy; see
    orchestrator to run `/warden-server healthcheck`, which requests `/healthz`
    on `WARDEN_API_LISTEN` and exits 0 when healthy and 1 otherwise.
 
+   Relay mode adds three variables. `WARDEN_RELAY_PUBLIC_ADDR` (`host:port`)
+   is the address agents connect to; it is required for relay targets, and
+   without it requests for them are refused. `WARDEN_RELAY_LISTEN` (default
+   `127.0.0.1:2222`) is the local listener, which the sidecar publishes as a
+   Tailscale Serve TCP forward (granted to the workstation only, like the API
+   port). `WARDEN_RELAY_HOST_KEY_PATH` (default `/data/relay_host_ed25519`) is
+   the relay's Ed25519 host key: it is generated on first use with mode 0600
+   and must stay on the data volume so the key does not change between
+   restarts. `WARDEN_RELAY_MAX_SESSIONS` (default 16, at most 1024) limits
+   relayed sessions open at once; each grant may hold 4.
+
    All variables: `WARDEN_DB_PATH`, `WARDEN_AUDIT_PATH`, `WARDEN_API_LISTEN`
    (default `127.0.0.1:8080`), `WARDEN_APPROVAL_LISTEN` (default
    `127.0.0.1:8081`), `WARDEN_PUBLIC_URL` (https), `WARDEN_OWNER_LOGIN`,
    `WARDEN_OP_CONNECT_URL`, `WARDEN_OP_CONNECT_TOKEN`, `WARDEN_OP_VAULT`
    (default `Warden`), `WARDEN_HA_WEBHOOK_URL`, `WARDEN_NTFY_URL`,
-   `WARDEN_NTFY_TOKEN` and `WARDEN_PROXY_MAX_RESPONSE_BYTES` (largest response
-   a proxied API call may return, default `1048576`, at most `67108864`). At
-   least one notifier is required.
+   `WARDEN_NTFY_TOKEN`, `WARDEN_PROXY_MAX_RESPONSE_BYTES` (largest response
+   a proxied API call may return, default `1048576`, at most `67108864`),
+   `WARDEN_RELAY_LISTEN`, `WARDEN_RELAY_PUBLIC_ADDR`,
+   `WARDEN_RELAY_HOST_KEY_PATH` and `WARDEN_RELAY_MAX_SESSIONS`. At least one
+   notifier is required.
 
 3. **Enroll your phone's passkey.**
 
@@ -167,7 +195,9 @@ Assistant first and fall back to ntfy; see
    ```
 
    `warden request` blocks until the owner approves, denies, or the request
-   expires, and prints a fingerprint the approval page also shows. See
+   expires, and prints a fingerprint the approval page also shows. A relay
+   target is requested and used with the same two commands; the session is
+   relayed by the broker, and forwarding and sftp are refused. See
    [docs/agent-usage.md](docs/agent-usage.md) for how an agent should use it.
 
    To call an API with a stored secret, add an API secret item to the vault
@@ -192,22 +222,23 @@ listeners on loopback. The sidecar publishes the agent API and the approval UI
 as two Tailscale Serve ports (proxying to `127.0.0.1:8080` and
 `127.0.0.1:8081`) with separate tailnet grants. Serve sets the
 `Tailscale-User-Login` header that warden checks; nothing else can reach the
-listeners to forge it. Grant the approval
-port to the owner's phone only, and the API port to the machine the agent runs
-on. Keep the Connect server on an internal network that only warden can
-reach, run warden with all capabilities dropped and a read-only root
-filesystem, and back up the `/data` volume. Details and the reasons are in the
-threat model.
+listeners to forge it. Grant the approval port to the owner's phone only, and
+the API and relay ports to the machine the agent runs on (the relay is a raw
+TCP forward, so the tailnet policy is its only network-level restriction). Keep
+the Connect server on an internal network that only warden can reach, run
+warden with all capabilities dropped and a read-only root filesystem, and back
+up the `/data` volume. Details and the reasons are in the threat model.
 
 ## Security model
 
 An agent can only request; a passkey approval from the owner's enrolled device,
 reachable only over the tailnet, is required for every grant; certificates are
-valid for at most four hours for one ephemeral key; API secrets never leave
-the broker except toward their approved origin; secrets never reach
-notifiers; and every step is written to a tamper-evident audit log. The actors,
-anti-goals, accepted residual risks and deployment assumptions are in
-[docs/threat-model.md](docs/threat-model.md).
+valid for at most four hours for one ephemeral key; relayed sessions end at
+revocation or expiry and the target's credential never leaves the broker; API
+secrets never leave the broker except toward their approved origin; secrets
+never reach notifiers; and every step is written to a tamper-evident audit log.
+The actors, anti-goals, accepted residual risks and deployment assumptions are
+in [docs/threat-model.md](docs/threat-model.md).
 
 ## Development
 

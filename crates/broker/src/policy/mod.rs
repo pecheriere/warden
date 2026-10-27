@@ -24,6 +24,17 @@ pub enum SshMode {
     Relay,
 }
 
+impl SshMode {
+    /// The item's spelling: `cert` or `relay`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Cert => "cert",
+            Self::Relay => "relay",
+        }
+    }
+}
+
 /// An SSH target as defined by its 1Password item.
 #[derive(Debug, Clone)]
 pub struct SshTarget {
@@ -44,10 +55,12 @@ pub struct SshTarget {
 }
 
 impl SshTarget {
-    /// Lowercase hex SHA-256 over where this target sends a connection: host,
-    /// port and the set of host keys (by SHA-256 key fingerprint, sorted, so
-    /// key order and comments do not matter). Every part is length-prefixed,
-    /// so distinct destinations cannot collide by concatenation.
+    /// Lowercase hex SHA-256 over where and how this target sends a
+    /// connection: the mode (a certificate for the agent, or the broker's
+    /// relay logging in with its own credential), host, port and the set of
+    /// host keys (by SHA-256 key fingerprint, sorted, so key order and
+    /// comments do not matter). Every part is length-prefixed, so distinct
+    /// destinations cannot collide by concatenation.
     #[must_use]
     pub fn destination_digest(&self) -> String {
         let mut keys: Vec<String> = self
@@ -59,7 +72,7 @@ impl SshTarget {
         keys.dedup();
         let port = self.port.to_string();
         digest_parts(
-            [self.host.as_str(), port.as_str()]
+            [self.mode.as_str(), self.host.as_str(), port.as_str()]
                 .into_iter()
                 .chain(keys.iter().map(String::as_str)),
         )
@@ -270,6 +283,42 @@ impl fmt::Debug for SecretValue {
     }
 }
 
+/// The credential warden logs in to a relay target with, from the target's
+/// 1Password item. Never printed; wiped on drop.
+///
+/// Zeroization is best effort, as for [`CaKey`]: the key text and the
+/// password live in `Zeroizing` buffers, and the HTTP body and field values
+/// they were read from are wiped when the fetch returns. Accepted residual:
+/// the copies inside reqwest/hyper receive buffers, `serde_json`'s unescape
+/// scratch space, and the PEM/base64/DER decoders' intermediate buffers are
+/// not wiped.
+pub enum RelayCredential {
+    /// An unencrypted Ed25519 private key, normalised to OpenSSH format
+    /// whatever format (OpenSSH or PKCS#8) the item held it in.
+    Key(Zeroizing<String>),
+    /// A password, verbatim.
+    Password(Zeroizing<String>),
+}
+
+impl fmt::Debug for RelayCredential {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Key(_) => "RelayCredential::Key(<redacted>)",
+            Self::Password(_) => "RelayCredential::Password(<redacted>)",
+        })
+    }
+}
+
+/// The error for asking a target that is not in relay mode for its relay
+/// credential.
+pub(crate) fn not_a_relay_target(item: &str) -> PolicyError {
+    PolicyError::Invalid {
+        item: item.to_owned(),
+        field: "mode".to_owned(),
+        reason: "is not \"relay\"; only relay targets have an onward credential".to_owned(),
+    }
+}
+
 /// A policy lookup failed. Messages name the item and field but never carry
 /// secret values.
 #[derive(Debug, thiserror::Error)]
@@ -351,12 +400,26 @@ impl fmt::Debug for CaKey {
 /// Source of targets, API secrets and the CA key. Always reads fresh data.
 #[async_trait]
 pub trait SecretBackend: Send + Sync + 'static {
-    /// Look up an SSH target by name.
+    /// Look up an SSH target by name. The whole item is validated, a relay
+    /// target's credential included, but the credential is not returned.
     ///
     /// # Errors
     /// [`PolicyError::NotFound`], [`PolicyError::Invalid`] or
     /// [`PolicyError::Unavailable`].
     async fn ssh_target(&self, name: &TargetName) -> Result<SshTarget, PolicyError>;
+
+    /// Look up a relay target and its onward credential in one read of its
+    /// item, only when a relay session is about to start, so the credential
+    /// always belongs to the policy it is used with. The item is validated
+    /// exactly as by [`SecretBackend::ssh_target`].
+    ///
+    /// # Errors
+    /// As [`SecretBackend::ssh_target`]; [`PolicyError::Invalid`] on field
+    /// `mode` if the target is not a relay target.
+    async fn relay_target_with_credential(
+        &self,
+        name: &TargetName,
+    ) -> Result<(SshTarget, RelayCredential), PolicyError>;
 
     /// Load the SSH CA key.
     ///

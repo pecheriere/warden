@@ -398,6 +398,29 @@ pub enum GrantAccess {
     Ssh(SshGrant),
     /// Brokered HTTPS API grant.
     Api(ApiGrant),
+    /// SSH session relayed by the broker.
+    Relay(RelayGrant),
+}
+
+/// SSH relay grant details: the agent connects to the broker's relay, which
+/// logs in to the target with a credential that never leaves the broker.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayGrant {
+    /// Target the relay opens the session to; also the user name to log in
+    /// to the relay with.
+    pub target: TargetName,
+    /// Unix account the relay logs in to the target as.
+    pub user: UnixUser,
+    /// Host name or address of the broker's relay listener.
+    pub relay_host: String,
+    /// Port of the broker's relay listener.
+    pub relay_port: u16,
+    /// The relay's host public key, OpenSSH format, for pinning.
+    pub relay_host_key: String,
+    /// Lowercase hex digest of the approved destination (target address,
+    /// port and pinned host keys): a session is refused once the target no
+    /// longer matches it.
+    pub digest: String,
 }
 
 /// Brokered API grant details. The secret value is never part of it.
@@ -696,6 +719,40 @@ mod tests {
         };
         let json = serde_json::to_string(&view).unwrap();
         assert!(json.contains(r#""access":{"kind":"api""#));
+        assert_eq!(serde_json::from_str::<GrantView>(&json).unwrap(), view);
+    }
+
+    #[test]
+    fn relay_grant_serde_tagged() {
+        let relay = GrantAccess::Relay(RelayGrant {
+            target: TargetName::try_from("nas".to_owned()).unwrap(),
+            user: UnixUser::try_from("backup".to_owned()).unwrap(),
+            relay_host: "warden.example.ts.net".to_owned(),
+            relay_port: 2222,
+            relay_host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample".to_owned(),
+            digest: "cd".repeat(32),
+        });
+        let json = serde_json::to_string(&relay).unwrap();
+        assert_eq!(
+            json,
+            format!(
+                r#"{{"kind":"relay","target":"nas","user":"backup","relay_host":"warden.example.ts.net","relay_port":2222,"relay_host_key":"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample","digest":"{}"}}"#,
+                "cd".repeat(32)
+            )
+        );
+        assert_eq!(serde_json::from_str::<GrantAccess>(&json).unwrap(), relay);
+        // Names are validated on the way in.
+        let bad = json.replace(r#""target":"nas""#, r#""target":"Bad Name""#);
+        assert!(serde_json::from_str::<GrantAccess>(&bad).is_err());
+
+        let view = GrantView {
+            grant_id: Id::random(),
+            not_before: 1,
+            not_after: 2,
+            access: relay,
+        };
+        let json = serde_json::to_string(&view).unwrap();
+        assert!(json.contains(r#""access":{"kind":"relay","target":"nas""#));
         assert_eq!(serde_json::from_str::<GrantView>(&json).unwrap(), view);
     }
 

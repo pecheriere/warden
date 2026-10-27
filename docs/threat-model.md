@@ -1,8 +1,9 @@
 # Threat model
 
 This describes what warden protects, who it trusts, what it must never allow,
-and the risks that are accepted. It covers the SSH certificate mode and the
-HTTP proxy mode (brokered API calls that use a stored secret). The design
+and the risks that are accepted. It covers the SSH certificate mode, the SSH
+relay mode (sessions the broker relays to targets that cannot trust a CA) and
+the HTTP proxy mode (brokered API calls that use a stored secret). The design
 rationale is in
 [design.md](design.md).
 
@@ -12,7 +13,7 @@ rationale is in
 |---|---|
 | Owner (phone, workstation) | Root of trust. Holds the passkey. Edits the 1Password vault. |
 | Agent (for example an AI coding agent on the owner's workstation) | Semi-trusted: well-intentioned but may be prompt-injected. Bounded by its stated goal, the approved window, and the targets and users the vault allows. It can only request access, never approve it. |
-| warden server | Trusted. Holds the SSH CA private key in memory and a read-only 1Password Connect token. Compromise of the server is compromise of everything it brokers, so it is hardened accordingly. |
+| warden server | Trusted. Holds the SSH CA private key and a read-only 1Password Connect token in memory, and relay login credentials briefly (see below). Compromise of the server is compromise of everything it brokers, so it is hardened accordingly. |
 | 1Password Connect | Trusted secret backend. Reachable only from warden. |
 | Notifiers (Home Assistant Companion, ntfy, push providers) | Untrusted doorbells. They receive the goal text, agent, target and a link, and nothing else. They cannot approve anything. |
 | Tailscale | Transport and network-level identity. The tailnet policy is the outer access control. |
@@ -161,18 +162,89 @@ These were recorded during implementation and are accepted for this release.
   wiped after use, and never logged or audited. Parts of it may sit in HTTP
   client buffers that warden cannot zeroize, as for the CA key above.
 
+## Relay mode residual risks
+
+- **The broker holds target credentials.** A relay target's private key or
+  password is read from 1Password and validated whenever the target item is
+  read (at request, at approval and at session start), and used only at
+  session start, where it is held zeroized and dropped right after the onward
+  login. A compromise of the running broker can therefore expose the
+  credentials of relay targets it reads, in the same way it exposes the CA key.
+  The relay is for targets that cannot trust a CA; prefer certificate mode where
+  it is possible. The credential never reaches the agent, the notifiers or the
+  audit log. Give each relay item a credential that is valid only for that
+  target and account.
+- **Parts of a password are copied beyond warden's reach.** The SSH library
+  takes a password as a `String`, which warden cannot zeroize, and the
+  credential also passes through HTTP client buffers (as the CA key does). A
+  password therefore may remain in freed memory after use; a private key does
+  not have this copy, which is why relay keys are limited to Ed25519 and
+  passwords are the alternative for everything else.
+- **Approval binds to the key, and the key to one access.** The relay accepts
+  an agent only by the ephemeral public key bound into the approved request. A
+  public key can be bound to one live request or grant at a time across all
+  agents, so one agent cannot use another's approval. The ephemeral private key
+  exists only in the agent's `ssh-agent`, as in certificate mode.
+- **Pinned host keys are required.** There is no trust on first use. Key
+  exchange negotiates only the algorithms of the pinned keys. RSA and ECDSA
+  host keys are accepted (verification only); SHA-1 signatures are never
+  negotiated, but a holder of the pinned private key could still sign with one.
+  An attacker who holds a target's host key can impersonate it to the broker.
+- **Everything inside the window passes through the target.** Once logged in,
+  the agent has the approved account's shell for the window. The relay forbids
+  port, agent and X11 forwarding and subsystems such as sftp, and filters the
+  environment, but it does not inspect commands. The audit log records
+  `exec` commands (first 200 characters) and byte counts, not interactive
+  input.
+- **Bounded, not instant, teardown.** Revocation, expiry, the 15 minute idle
+  limit and failures end a session; once it is told to end, it has at most
+  1 s to close before both connections are cut hard. Revoking through the
+  broker acts at once and expiry is checked every second, so such a session
+  is gone within about 2 s. A revoke made by another process (the server CLI)
+  is found by a check every second, each query bounded to 1.5 s: about 5 to
+  6 s in the worst case with a healthy database. With a database that cannot
+  be read, the relay fails closed (below) within about 10 to 11 s.
+- **Flow control is watchdog-based.** The SSH library has no reader-driven
+  back-pressure, so each direction of a session has a byte-bounded queue
+  (2 MiB towards the target, 8 MiB towards the agent) and a session whose
+  receiver does not read is ended: after 60 s of held, undelivered data in one
+  direction (reason `flow control: output to the agent not drained` or
+  `flow control: input to the target not drained`), or 2 s when both
+  directions are held up at once (`flow control: both directions held up`).
+  A target that stops reading its input is a target
+  failure, and the session ends. Residual: when that happens, an agent that
+  disconnects is noticed only after up to 60 s, and its session slot stays
+  taken that long.
+- **The per-address pre-login limit is global behind Tailscale Serve.** The
+  relay allows 5 connections per source address and 10 overall that have not
+  logged in. Serve forwards the TCP stream from `127.0.0.1`, so every peer has
+  the same address and the per-address limit acts as a global one: a peer that
+  can reach the relay port can fill the login slots for a few seconds at a
+  time (10 s login timeout, 3 attempts). It does not let anyone in. The tailnet
+  policy decides who can reach the port; grant it to the workstation only.
+- **Fail closed when state cannot be read.** The relay checks the grants of
+  its live sessions every second, each check bounded to 1.5 s. If none succeeds
+  for 10 s, every relayed session ends (reason `grant state unavailable`) and no
+  session starts until a check succeeds. A database outage longer than 10 s
+  therefore ends relay sessions, by design.
+- **A session start is recorded first.** `relay_session_started` is written
+  before the first byte reaches the target; if it cannot be written, the
+  session does not start.
+
 ## Deployment assumptions
 
 warden's guarantees depend on its environment being set up as follows.
 
 - **Tailscale sidecar.** warden runs in the network namespace of a dedicated
   Tailscale node (`--network container:<sidecar>`) with both listeners on
-  loopback (the defaults), and the node exposes the API and approval UI
-  through Tailscale Serve. No other container can reach warden, so none can
-  forge `Tailscale-User-Login`. Binding a listener to `0.0.0.0` or running
-  warden on a shared bridge network breaks this: anything that can reach the
-  listener directly can forge the header. The WebAuthn relying party is the node's name, so it
-  is not shared with other services. Nothing is published on the LAN.
+  loopback (the defaults), and the node exposes the API and approval UI through
+  Tailscale Serve and, for relay targets, the SSH relay port as a Serve TCP
+  forward (granted to the workstation only). No other container can reach
+  warden, so none can forge `Tailscale-User-Login`. Binding a listener to
+  `0.0.0.0` or running warden on a shared bridge network breaks this: anything
+  that can reach the listener directly can forge the header. The WebAuthn
+  relying party is the node's name, so it is not shared with other services.
+  Nothing is published on the LAN.
 - **Phone-only approval port.** The tailnet policy grants the approval UI port
   to the owner's phone only, never to the workstation the agent runs on. An
   agent that is prompt-injected must not be able to put an approval prompt in

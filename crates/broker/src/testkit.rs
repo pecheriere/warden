@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use axum::Router;
@@ -32,6 +33,7 @@ use webauthn_rs::prelude::{
 };
 use zeroize::Zeroizing;
 
+pub mod sshd;
 pub mod upstream;
 
 pub use upstream::{HttpsUpstream, Received};
@@ -42,10 +44,11 @@ use crate::config::Config;
 use crate::identity::TailscaleServeIdentity;
 use crate::notify::{Doorbell, Notifier, NotifyError};
 use crate::policy::{
-    ApiSecretPolicy, CaKey, PolicyError, SecretBackend, SecretValue, SshMode, SshTarget,
-    ValueFormat,
+    ApiSecretPolicy, CaKey, PolicyError, RelayCredential, SecretBackend, SecretValue, SshMode,
+    SshTarget, ValueFormat, not_a_relay_target,
 };
 use crate::proxy::ProxyLimits;
+use crate::relay::{RelayEndpoint, RelayLimits, RelayServer, host_key};
 use crate::requests::{Clock, Requests};
 use crate::{AppState, agents, store};
 
@@ -111,7 +114,7 @@ impl CapturingNotifier {
     /// If none arrives within 5 s.
     pub async fn next(&self) -> Doorbell {
         let mut rx = self.rx.lock().await;
-        tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+        tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await
             .expect("no doorbell within 5 s")
             .expect("capture channel closed")
@@ -185,19 +188,30 @@ pub const TEST_START: i64 = 1_800_000_000;
 /// Host of the default `pi` target.
 pub const PI_HOST: &str = "192.0.2.10";
 
+/// Host of [`FakeBackend::relay_target`].
+pub const NAS_HOST: &str = "192.0.2.20";
+
+/// Host of the relay's public address in a [`TestBroker`] (unless built
+/// without a relay).
+pub const RELAY_PUBLIC_HOST: &str = "relay.warden.test";
+
+/// Port of the relay's public address in a [`TestBroker`].
+pub const RELAY_PUBLIC_PORT: u16 = 2222;
+
 /// A software passkey that claims user verification, as Face ID would.
 pub type SoftAuthenticator = WebauthnAuthenticator<SoftPasskey>;
 
-/// An in-memory [`SecretBackend`]: targets and API secrets can be changed at
-/// any time, the CA key is generated per backend, and target or CA lookups
-/// can be made to fail as if the backend were down.
+/// An in-memory [`SecretBackend`]: targets (with relay credentials) and API
+/// secrets can be changed at any time, the CA key is generated per backend,
+/// and target or CA lookups can be made to fail as if the backend were down.
 pub struct FakeBackend {
-    targets: Mutex<HashMap<String, SshTarget>>,
+    targets: Mutex<HashMap<String, (SshTarget, Option<RelayCredential>)>>,
     api_secrets: Mutex<HashMap<String, (ApiSecretPolicy, Zeroizing<String>)>>,
     api_swap: Mutex<Option<(ApiSecretPolicy, Zeroizing<String>)>>,
     ca: PrivateKey,
     target_outage: Mutex<Option<String>>,
     ca_outage: Mutex<Option<String>>,
+    relay_read_delay: Mutex<Option<Duration>>,
 }
 
 impl FakeBackend {
@@ -209,12 +223,13 @@ impl FakeBackend {
     pub fn new() -> Self {
         let pi = Self::pi_target();
         Self {
-            targets: Mutex::new(HashMap::from([(pi.name.as_str().to_owned(), pi)])),
+            targets: Mutex::new(HashMap::from([(pi.name.as_str().to_owned(), (pi, None))])),
             api_secrets: Mutex::new(HashMap::new()),
             api_swap: Mutex::new(None),
             ca: PrivateKey::random(&mut OsRng, Algorithm::Ed25519).expect("CA key generation"),
             target_outage: Mutex::new(None),
             ca_outage: Mutex::new(None),
+            relay_read_delay: Mutex::new(None),
         }
     }
 
@@ -243,7 +258,30 @@ impl FakeBackend {
         }
     }
 
-    /// Add or replace a target.
+    /// Target `nas`: relay mode, user `backup`, max window 1h,
+    /// `192.0.2.20:22`, one random host key. Not added to any backend by
+    /// itself; see [`FakeBackend::set_relay_target`].
+    ///
+    /// # Panics
+    /// If no key can be generated.
+    #[must_use]
+    pub fn relay_target() -> SshTarget {
+        let host_key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519)
+            .expect("host key generation")
+            .public_key()
+            .clone();
+        SshTarget {
+            name: TargetName::try_from("nas".to_owned()).expect("valid target name"),
+            host: NAS_HOST.to_owned(),
+            port: 22,
+            mode: SshMode::Relay,
+            users: vec![UnixUser::try_from("backup".to_owned()).expect("valid user")],
+            max_window: Window::H1,
+            host_keys: vec![host_key],
+        }
+    }
+
+    /// Add or replace a target, without a relay credential.
     ///
     /// # Panics
     /// If the lock is poisoned.
@@ -251,7 +289,19 @@ impl FakeBackend {
         self.targets
             .lock()
             .expect("targets lock poisoned")
-            .insert(target.name.as_str().to_owned(), target);
+            .insert(target.name.as_str().to_owned(), (target, None));
+    }
+
+    /// Add or replace a relay target together with its onward credential.
+    ///
+    /// # Panics
+    /// If the target is not in relay mode or the lock is poisoned.
+    pub fn set_relay_target(&self, target: SshTarget, credential: RelayCredential) {
+        assert_eq!(target.mode, SshMode::Relay, "not a relay target");
+        self.targets
+            .lock()
+            .expect("targets lock poisoned")
+            .insert(target.name.as_str().to_owned(), (target, Some(credential)));
     }
 
     /// The current definition of target `name`.
@@ -264,7 +314,7 @@ impl FakeBackend {
             .lock()
             .expect("targets lock poisoned")
             .get(name)
-            .cloned()
+            .map(|(target, _)| target.clone())
             .expect("no such fake target")
     }
 
@@ -358,6 +408,16 @@ impl FakeBackend {
         *self.ca_outage.lock().expect("outage lock poisoned") = detail.map(str::to_owned);
     }
 
+    /// Make every read of a relay target with its credential take `delay`
+    /// before answering, as a slow secret backend would (`None` restores
+    /// them).
+    ///
+    /// # Panics
+    /// If the lock is poisoned.
+    pub fn set_relay_read_delay(&self, delay: Option<Duration>) {
+        *self.relay_read_delay.lock().expect("delay lock poisoned") = delay;
+    }
+
     fn outage(slot: &Mutex<Option<String>>) -> Result<(), PolicyError> {
         match slot
             .lock()
@@ -384,8 +444,46 @@ impl SecretBackend for FakeBackend {
             .lock()
             .map_err(|_| PolicyError::Unavailable("fake backend lock poisoned".to_owned()))?
             .get(name.as_str())
-            .cloned()
+            .map(|(target, _)| target.clone())
             .ok_or_else(|| PolicyError::NotFound(name.as_str().to_owned()))
+    }
+
+    async fn relay_target_with_credential(
+        &self,
+        name: &TargetName,
+    ) -> Result<(SshTarget, RelayCredential), PolicyError> {
+        let delay = *self
+            .relay_read_delay
+            .lock()
+            .map_err(|_| PolicyError::Unavailable("fake backend lock poisoned".to_owned()))?;
+        if let Some(delay) = delay {
+            tokio::time::sleep(delay).await;
+        }
+        Self::outage(&self.target_outage)?;
+        let targets = self
+            .targets
+            .lock()
+            .map_err(|_| PolicyError::Unavailable("fake backend lock poisoned".to_owned()))?;
+        let (target, credential) = targets
+            .get(name.as_str())
+            .ok_or_else(|| PolicyError::NotFound(name.as_str().to_owned()))?;
+        if target.mode != SshMode::Relay {
+            return Err(not_a_relay_target(name.as_str()));
+        }
+        let credential = match credential {
+            Some(RelayCredential::Key(key)) => RelayCredential::Key(key.clone()),
+            Some(RelayCredential::Password(password)) => {
+                RelayCredential::Password(password.clone())
+            }
+            None => {
+                return Err(PolicyError::Invalid {
+                    item: name.as_str().to_owned(),
+                    field: "password".to_owned(),
+                    reason: "missing: a relay target needs a credential".to_owned(),
+                });
+            }
+        };
+        Ok((target.clone(), credential))
     }
 
     async fn ssh_ca(&self) -> Result<CaKey, PolicyError> {
@@ -472,8 +570,16 @@ pub struct TestBroker {
     audit_path: PathBuf,
     default_passkey: tokio::sync::Mutex<Option<SoftAuthenticator>>,
     servers: Mutex<Vec<AbortHandle>>,
+    relays: Mutex<
+        Vec<(
+            tokio::sync::watch::Sender<bool>,
+            tokio::task::JoinHandle<()>,
+        )>,
+    >,
     dir: Option<TempDir>,
     proxy: ProxyLimits,
+    /// `WARDEN_RELAY_PUBLIC_ADDR`, if the relay is configured.
+    relay: Option<String>,
 }
 
 impl Drop for TestBroker {
@@ -483,16 +589,49 @@ impl Drop for TestBroker {
                 server.abort();
             }
         }
+        if let Ok(relays) = self.relays.get_mut() {
+            for (_, relay) in relays.drain(..) {
+                relay.abort();
+            }
+        }
     }
 }
 
 impl TestBroker {
-    /// A fresh broker with no agents and no passkeys.
+    /// A fresh broker with no agents and no passkeys. Its relay is
+    /// configured: public address [`RELAY_PUBLIC_HOST`]:[`RELAY_PUBLIC_PORT`],
+    /// host key created in the temporary directory.
     ///
     /// # Panics
     /// If any part of the setup fails.
     pub async fn new() -> Self {
         Self::with_proxy_limits(ProxyLimits::default()).await
+    }
+
+    /// Like [`TestBroker::new`], without `WARDEN_RELAY_PUBLIC_ADDR`: the
+    /// relay is off.
+    ///
+    /// # Panics
+    /// If any part of the setup fails.
+    pub async fn without_relay() -> Self {
+        Self::fresh(ProxyLimits::default(), None).await
+    }
+
+    /// Like [`TestBroker::new`], with the relay already running on an
+    /// ephemeral loopback port that is also its public address: relay
+    /// grants name where it really listens, so a client following a grant
+    /// (like the `warden` CLI) reaches it. Returns the relay's address too.
+    ///
+    /// # Panics
+    /// If any part of the setup fails.
+    pub async fn with_reachable_relay() -> (Self, std::net::SocketAddr) {
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("bind relay listener");
+        let addr = listener.local_addr().expect("relay listener address");
+        let broker = Self::fresh(ProxyLimits::default(), Some(addr.to_string())).await;
+        broker.serve_relay(listener, RelayLimits::default()).await;
+        (broker, addr)
     }
 
     /// Like [`TestBroker::new`], with proxied calls held to `proxy` (for
@@ -501,6 +640,14 @@ impl TestBroker {
     /// # Panics
     /// If any part of the setup fails.
     pub async fn with_proxy_limits(proxy: ProxyLimits) -> Self {
+        Self::fresh(
+            proxy,
+            Some(format!("{RELAY_PUBLIC_HOST}:{RELAY_PUBLIC_PORT}")),
+        )
+        .await
+    }
+
+    async fn fresh(proxy: ProxyLimits, relay: Option<String>) -> Self {
         let dir = tempfile::tempdir().expect("temp dir");
         let db_path = dir.path().join("warden.db");
         let audit_path = dir.path().join("audit.jsonl");
@@ -511,6 +658,7 @@ impl TestBroker {
             Arc::new(ManualClock::new(TEST_START)),
             Arc::new(FakeBackend::new()),
             proxy,
+            relay,
         )
         .await
     }
@@ -522,7 +670,21 @@ impl TestBroker {
     ///
     /// # Panics
     /// If any part of the setup fails.
-    pub async fn restart(mut self) -> Self {
+    pub async fn restart(self) -> Self {
+        let relay = self.relay.clone();
+        self.restart_with(relay).await
+    }
+
+    /// Like [`TestBroker::restart`], but the broker comes back without
+    /// `WARDEN_RELAY_PUBLIC_ADDR`.
+    ///
+    /// # Panics
+    /// If any part of the setup fails.
+    pub async fn restart_without_relay(self) -> Self {
+        self.restart_with(None).await
+    }
+
+    async fn restart_with(mut self, relay: Option<String>) -> Self {
         self.state.pool.close().await;
         let passkey = std::mem::take(self.default_passkey.get_mut());
         let next = Self::build(
@@ -532,6 +694,7 @@ impl TestBroker {
             self.clock.clone(),
             self.backend.clone(),
             self.proxy,
+            relay,
         )
         .await;
         *next.default_passkey.lock().await = passkey;
@@ -545,12 +708,28 @@ impl TestBroker {
         clock: Arc<ManualClock>,
         backend: Arc<FakeBackend>,
         proxy: ProxyLimits,
+        relay: Option<String>,
     ) -> Self {
         let pool = store::open(&db_path).await.expect("open database");
         let audit = Arc::new(AuditLog::open(&audit_path).await.expect("open audit log"));
-        let mut config = Config::from_lookup(test_env).expect("test configuration");
+        let host_key_path = db_path.with_file_name("relay_host_ed25519");
+        let mut config = Config::from_lookup(|var| match var {
+            "WARDEN_RELAY_PUBLIC_ADDR" => relay.clone(),
+            "WARDEN_RELAY_HOST_KEY_PATH" => Some(host_key_path.display().to_string()),
+            other => test_env(other),
+        })
+        .expect("test configuration");
         config.proxy = proxy;
         let config = Arc::new(config);
+        let relay_endpoint = match &config.relay.public_addr {
+            Some(addr) => {
+                let key = host_key::load_or_create(config.relay.host_key_path.clone())
+                    .await
+                    .expect("relay host key");
+                Some(RelayEndpoint::new(addr, &key).expect("relay endpoint"))
+            }
+            None => None,
+        };
         let capture = Arc::new(CapturingNotifier::new());
         let requests = Requests::new(
             pool.clone(),
@@ -559,6 +738,7 @@ impl TestBroker {
             capture.clone(),
             config.public_url.clone(),
             clock.clone(),
+            relay_endpoint,
         );
         let passkeys = Passkeys::new(
             pool.clone(),
@@ -589,8 +769,10 @@ impl TestBroker {
             audit_path,
             default_passkey: tokio::sync::Mutex::new(None),
             servers: Mutex::new(Vec::new()),
+            relays: Mutex::new(Vec::new()),
             dir,
             proxy,
+            relay,
         }
     }
 
@@ -666,6 +848,65 @@ impl TestBroker {
         BaseUrls { api, approval }
     }
 
+    /// Run the SSH relay with the default limits on an ephemeral loopback
+    /// port until the broker is dropped or [`TestBroker::stop_relay`] is
+    /// called; returns its address. It presents the host key relay grants
+    /// carry.
+    ///
+    /// # Panics
+    /// If the host key cannot be loaded or the listener cannot be bound.
+    pub async fn spawn_relay(&self) -> std::net::SocketAddr {
+        self.spawn_relay_with(RelayLimits::default()).await
+    }
+
+    /// Like [`TestBroker::spawn_relay`], with `limits`.
+    ///
+    /// # Panics
+    /// If the host key cannot be loaded or the listener cannot be bound.
+    pub async fn spawn_relay_with(&self, limits: RelayLimits) -> std::net::SocketAddr {
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("bind relay listener");
+        let addr = listener.local_addr().expect("relay listener address");
+        self.serve_relay(listener, limits).await;
+        addr
+    }
+
+    /// Run the SSH relay with `limits` on `listener` until the broker is
+    /// dropped or [`TestBroker::stop_relay`] is called.
+    async fn serve_relay(&self, listener: tokio::net::TcpListener, limits: RelayLimits) {
+        let key = host_key::load_or_create(self.db_path.with_file_name("relay_host_ed25519"))
+            .await
+            .expect("relay host key");
+        let server = RelayServer::new(
+            self.state.requests.clone(),
+            self.backend.clone(),
+            self.state.audit.clone(),
+            &key,
+            limits,
+        )
+        .expect("relay server");
+        let (stop, stop_rx) = tokio::sync::watch::channel(false);
+        let task = tokio::spawn(server.serve(listener, stop_rx));
+        self.relays
+            .lock()
+            .expect("relays lock poisoned")
+            .push((stop, task));
+    }
+
+    /// Stop every relay this broker runs, as on shutdown, and wait until
+    /// they have ended their sessions.
+    ///
+    /// # Panics
+    /// If a relay task failed.
+    pub async fn stop_relay(&self) {
+        let relays = std::mem::take(&mut *self.relays.lock().expect("relays lock poisoned"));
+        for (stop, task) in relays {
+            stop.send_replace(true);
+            task.await.expect("relay task");
+        }
+    }
+
     /// Shared state of the broker.
     #[must_use]
     pub const fn state(&self) -> &AppState {
@@ -727,6 +968,21 @@ impl TestBroker {
             },
             window,
         }
+    }
+
+    /// An SSH request for `backup@nas` (see [`FakeBackend::relay_target`])
+    /// with a fresh Ed25519 key.
+    ///
+    /// # Panics
+    /// If no key can be generated or `goal` is not valid.
+    #[must_use]
+    pub fn relay_request(goal: &str, window: Window) -> CreateRequest {
+        let mut request = Self::pi_request(goal, window);
+        if let Access::Ssh { target, user, .. } = &mut request.access {
+            *target = TargetName::try_from("nas".to_owned()).expect("valid target");
+            *user = UnixUser::try_from("backup".to_owned()).expect("valid user");
+        }
+        request
     }
 
     /// A request to use API secret `secret`.

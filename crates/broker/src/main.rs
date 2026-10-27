@@ -18,6 +18,8 @@ use warden_broker::health;
 use warden_broker::identity::TailscaleServeIdentity;
 use warden_broker::notify::{Fallback, HaWebhook, Notifier, Ntfy};
 use warden_broker::policy::OnePasswordConnect;
+use warden_broker::relay::host_key::RelayHostKey;
+use warden_broker::relay::{RelayEndpoint, RelayLimits, RelayServer, host_key};
 use warden_broker::requests::{self, Clock as _, Requests, SystemClock};
 use warden_broker::{AppState, agents, audit, build_routers, store};
 use warden_broker_proto::AgentName;
@@ -219,6 +221,48 @@ fn build_notifier(config: &Config) -> Result<Arc<dyn Notifier>> {
     Ok(Arc::new(Fallback::new(primary, secondary)))
 }
 
+/// Where agents reach the relay and the relay's host key (loaded, and
+/// created on first use), or `None` when `WARDEN_RELAY_PUBLIC_ADDR` is unset.
+async fn relay_endpoint(config: &Config) -> Result<Option<(RelayEndpoint, RelayHostKey)>> {
+    let Some(addr) = &config.relay.public_addr else {
+        tracing::info!("WARDEN_RELAY_PUBLIC_ADDR unset; relay targets cannot be requested");
+        return Ok(None);
+    };
+    let path = &config.relay.host_key_path;
+    let key = host_key::load_or_create(path.clone())
+        .await
+        .with_context(|| format!("loading the relay host key {}", path.display()))?;
+    tracing::info!(
+        public_addr = %format!("{}:{}", addr.host, addr.port),
+        host_key = %key.fingerprint(),
+        "relay host key loaded"
+    );
+    let endpoint = RelayEndpoint::new(addr, &key).context("encoding the relay host key")?;
+    Ok(Some((endpoint, key)))
+}
+
+/// Bind the relay listener and start serving agents until `stop`.
+async fn start_relay(
+    config: &Config,
+    requests: &Requests,
+    backend: Arc<OnePasswordConnect>,
+    audit: Arc<AuditLog>,
+    key: &RelayHostKey,
+    stop: watch::Receiver<bool>,
+) -> Result<tokio::task::JoinHandle<()>> {
+    let limits = RelayLimits {
+        max_sessions: config.relay.max_sessions,
+        ..RelayLimits::default()
+    };
+    let server = RelayServer::new(requests.clone(), backend, audit, key, limits)
+        .context("starting the SSH relay")?;
+    let listener = TcpListener::bind(config.relay.listen)
+        .await
+        .with_context(|| format!("binding the SSH relay on {}", config.relay.listen))?;
+    tracing::info!(relay = %config.relay.listen, max_sessions = limits.max_sessions, "SSH relay listening");
+    Ok(tokio::spawn(server.serve(listener, stop)))
+}
+
 /// Resolves on SIGTERM or Ctrl-C.
 async fn termination() -> Result<()> {
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
@@ -235,16 +279,18 @@ async fn stopped(mut rx: watch::Receiver<bool>) {
     let _ = rx.changed().await;
 }
 
-async fn serve() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        // Colour only for a person at a terminal: under Docker/systemd the
-        // lines go to a log pipeline, where escape codes are noise.
-        .with_ansi(std::io::stdout().is_terminal())
-        .init();
-    let config = Arc::new(Config::from_env().context("reading configuration")?);
+/// The broker's parts, ready to serve.
+struct App {
+    api: axum::Router,
+    approval: axum::Router,
+    requests: Requests,
+    backend: Arc<OnePasswordConnect>,
+    audit: Arc<AuditLog>,
+    /// The relay's host key, when the relay is configured.
+    relay_key: Option<RelayHostKey>,
+}
+
+async fn build_app(config: &Arc<Config>) -> Result<App> {
     let pool = store::open(&config.db_path).await?;
     let audit = Arc::new(
         AuditLog::open(&config.audit_path)
@@ -256,14 +302,16 @@ async fn serve() -> Result<()> {
         config.connect_token.clone(),
         config.vault.clone(),
     ));
+    let (relay, relay_key) = relay_endpoint(config).await?.unzip();
     let clock = Arc::new(SystemClock);
     let requests = Requests::new(
         pool.clone(),
         audit.clone(),
         backend.clone(),
-        build_notifier(&config)?,
+        build_notifier(config)?,
         config.public_url.clone(),
         clock.clone(),
+        relay,
     );
     let passkeys = Passkeys::new(
         pool.clone(),
@@ -276,13 +324,41 @@ async fn serve() -> Result<()> {
         pool,
         config: config.clone(),
         identity: Arc::new(TailscaleServeIdentity),
-        audit,
-        backend,
+        audit: audit.clone(),
+        backend: backend.clone(),
         clock,
         requests: requests.clone(),
         passkeys: Arc::new(passkeys),
     };
     let (api, approval) = build_routers(state);
+    Ok(App {
+        api,
+        approval,
+        requests,
+        backend,
+        audit,
+        relay_key,
+    })
+}
+
+async fn serve() -> Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
+        // Colour only for a person at a terminal: under Docker/systemd the
+        // lines go to a log pipeline, where escape codes are noise.
+        .with_ansi(std::io::stdout().is_terminal())
+        .init();
+    let config = Arc::new(Config::from_env().context("reading configuration")?);
+    let App {
+        api,
+        approval,
+        requests,
+        backend,
+        audit,
+        relay_key,
+    } = build_app(&config).await?;
 
     let api_listener = TcpListener::bind(config.api_listen)
         .await
@@ -299,12 +375,37 @@ async fn serve() -> Result<()> {
     );
 
     let (stop, stop_rx) = watch::channel(false);
+    let relay = match &relay_key {
+        Some(key) => {
+            Some(start_relay(&config, &requests, backend, audit, key, stop_rx.clone()).await?)
+        }
+        None => None,
+    };
+    // The private key now lives only in the relay's SSH configuration.
+    drop(relay_key);
     let sweeper = tokio::spawn(requests::sweep_loop(requests, SWEEP_EVERY, stop_rx.clone()));
+    let relay_done = async {
+        if let Some(relay) = relay {
+            // The relay returns once stopped and its sessions are recorded.
+            relay.await.context("SSH relay task failed")?;
+        }
+        Ok::<(), anyhow::Error>(())
+    };
     let servers = async {
         tokio::try_join!(
-            axum::serve(api_listener, api).with_graceful_shutdown(stopped(stop_rx.clone())),
-            axum::serve(approval_listener, approval)
-                .with_graceful_shutdown(stopped(stop_rx.clone())),
+            async {
+                axum::serve(api_listener, api)
+                    .with_graceful_shutdown(stopped(stop_rx.clone()))
+                    .await
+                    .context("serving the agent API")
+            },
+            async {
+                axum::serve(approval_listener, approval)
+                    .with_graceful_shutdown(stopped(stop_rx.clone()))
+                    .await
+                    .context("serving the approval UI")
+            },
+            relay_done,
         )
     };
     let grace = async {
@@ -319,7 +420,7 @@ async fn serve() -> Result<()> {
         std::future::pending::<Result<()>>().await
     };
     tokio::select! {
-        result = servers => { result.context("serving")?; }
+        result = servers => { result?; }
         result = signal => result?,
         () = grace => tracing::warn!("in-flight requests did not finish in time; exiting"),
     }

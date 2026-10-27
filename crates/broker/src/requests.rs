@@ -6,7 +6,8 @@
 //! entry is appended before the commit, so the audit trail never misses a
 //! transition (a failed commit can at worst leave an entry for a change that
 //! did not happen). After the commit the affected request ids are published
-//! on the [`StatusBus`] so long-polls wake up.
+//! on the [`StatusBus`] so long-polls wake up, and relay sessions of revoked
+//! grants are ended.
 
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -15,18 +16,19 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use sha2::{Digest as _, Sha256};
 use sqlx::sqlite::SqliteRow;
-use sqlx::{Row as _, Sqlite, SqlitePool, Transaction};
+use sqlx::{Row as _, Sqlite, SqliteConnection, SqlitePool, Transaction};
 use tokio::sync::broadcast;
 use url::Url;
 use warden_broker_proto::{
     Access, AgentName, CreateRequest, CreatedResponse, Fingerprint, GrantAccess, GrantView, Id,
-    RequestStatus, Window, fingerprint,
+    RequestStatus, TargetName, UnixUser, Window, fingerprint,
 };
 
 use crate::agents::{self, AgentError};
 use crate::audit::{AuditError, AuditEvent, AuditLog};
 use crate::notify::{Doorbell, Notifier, doorbell};
 use crate::policy::{ApiSecretPolicy, PolicyError, SecretBackend, SshMode, SshTarget};
+use crate::relay::{LiveSessions, RelayEndpoint};
 
 /// How long a request waits for the owner, in seconds.
 const PENDING_TTL_SECS: i64 = 600;
@@ -102,6 +104,10 @@ impl Default for StatusBus {
     }
 }
 
+/// Why a relay target cannot be requested or approved on a broker without
+/// `WARDEN_RELAY_PUBLIC_ADDR`.
+pub const RELAY_NOT_CONFIGURED: &str = "relay is not configured";
+
 /// What callers are told when the secret backend (targets or the SSH CA)
 /// cannot answer; the detail goes to the server log only.
 pub const BACKEND_UNAVAILABLE: &str = "secret backend unavailable";
@@ -156,6 +162,10 @@ pub enum RequestError {
     /// No agent has this name.
     #[error("unknown agent {0}")]
     UnknownAgent(AgentName),
+    /// The SSH public key is bound to another live request or grant: one of
+    /// another agent, or of this agent for another target.
+    #[error("this public key is already bound to another request or grant")]
+    KeyInUse,
     /// Too many concurrent creates for the same slot; retry.
     #[error("request slot contended; retry")]
     Contended,
@@ -316,6 +326,54 @@ pub struct ActiveGrant {
     pub not_after: i64,
 }
 
+/// An active relay grant, as the relay needs it to admit an agent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelayGrantRecord {
+    /// Grant id.
+    pub grant_id: Id,
+    /// Agent holding the grant.
+    pub agent: AgentName,
+    /// Target the relay opens the session to.
+    pub target: TargetName,
+    /// Unix account the relay logs in to the target as.
+    pub user: UnixUser,
+    /// Digest of the destination the owner approved (see
+    /// [`SshTarget::destination_digest`]): a session starts only while the
+    /// target still matches it.
+    pub destination_digest: String,
+    /// End of validity, Unix seconds.
+    pub not_after: i64,
+}
+
+/// Active relay grants for a target (`?1` now, `?2` the target), with the
+/// request that bound their key, longest lasting first. Grants are found by
+/// `not_after` through its index, so a login check never scans the history.
+const ACTIVE_RELAY_GRANTS: &str = "\
+    SELECT g.id, g.agent, g.not_after, g.view, r.body \
+    FROM grants g JOIN requests r ON r.id = g.request_id \
+    WHERE g.not_after > ?1 AND g.revoked_at IS NULL \
+    AND json_extract(g.view, '$.access.kind') = 'relay' \
+    AND json_extract(g.view, '$.access.target') = ?2 \
+    ORDER BY g.not_after DESC, g.id";
+
+/// Of the grants listed in `?2` (a JSON array of ids), those revoked or
+/// past their window at `?1` (now), each with whether it was revoked.
+/// Grants are found by primary key: the relay's periodic check costs one
+/// lookup per grant with a live session.
+const ENDED_GRANTS: &str = "\
+    SELECT id, revoked_at IS NOT NULL AS revoked FROM grants \
+    WHERE id IN (SELECT value FROM json_each(?2)) \
+    AND (revoked_at IS NOT NULL OR not_after <= ?1)";
+
+/// How a grant stopped being usable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GrantEnd {
+    /// It, or its agent, was revoked.
+    Revoked,
+    /// Its window is over.
+    Expired,
+}
+
 /// The request lifecycle service.
 #[derive(Clone)]
 pub struct Requests {
@@ -326,6 +384,9 @@ pub struct Requests {
     bus: StatusBus,
     public_url: Url,
     clock: Arc<dyn Clock>,
+    relay: Option<Arc<RelayEndpoint>>,
+    /// Live relay sessions, ended when their grant is revoked.
+    sessions: Arc<LiveSessions>,
 }
 
 /// Which pending requests an expiry pass looks at.
@@ -337,6 +398,8 @@ enum Scope {
 
 impl Requests {
     /// Build the service. Approval links are `<public_url>/approve/<token>`.
+    /// Relay targets can be requested only when `relay` (where agents reach
+    /// the relay) is given.
     #[must_use]
     pub fn new(
         pool: SqlitePool,
@@ -345,6 +408,7 @@ impl Requests {
         notifier: Arc<dyn Notifier>,
         public_url: Url,
         clock: Arc<dyn Clock>,
+        relay: Option<RelayEndpoint>,
     ) -> Self {
         Self {
             pool,
@@ -354,7 +418,51 @@ impl Requests {
             bus: StatusBus::new(),
             public_url,
             clock,
+            relay: relay.map(Arc::new),
+            sessions: LiveSessions::new(),
         }
+    }
+
+    /// The live relay sessions.
+    pub(crate) const fn live_sessions(&self) -> &Arc<LiveSessions> {
+        &self.sessions
+    }
+
+    /// Now, by this service's clock (Unix seconds).
+    pub(crate) fn now(&self) -> i64 {
+        self.clock.now()
+    }
+
+    /// Which of `grant_ids` are revoked or past their window now.
+    ///
+    /// # Errors
+    /// Storage failures or unreadable stored rows.
+    pub(crate) async fn ended_grants(
+        &self,
+        grant_ids: &[Id],
+    ) -> Result<Vec<(Id, GrantEnd)>, RequestError> {
+        let ids = serde_json::to_string(&grant_ids.iter().map(Id::as_str).collect::<Vec<_>>())?;
+        sqlx::query(ENDED_GRANTS)
+            .bind(self.clock.now())
+            .bind(ids)
+            .fetch_all(&self.pool)
+            .await?
+            .iter()
+            .map(|row| {
+                let end = if row.try_get::<bool, _>("revoked")? {
+                    GrantEnd::Revoked
+                } else {
+                    GrantEnd::Expired
+                };
+                Ok((parse(row, "id")?, end))
+            })
+            .collect()
+    }
+
+    /// Where agents reach the relay, if it is configured.
+    #[must_use]
+    pub fn relay(&self) -> Option<&RelayEndpoint> {
+        self.relay.as_deref()
     }
 
     /// The bus on which changed request ids are published.
@@ -368,9 +476,11 @@ impl Requests {
     /// target (or secret) and kind returns that request instead.
     ///
     /// # Errors
-    /// [`RequestError::Rejected`] for policy violations, the target or
-    /// secret errors from the backend, [`RequestError::AgentRevoked`], or
-    /// storage failures. No row is stored and nobody is notified on error.
+    /// [`RequestError::Rejected`] for policy violations,
+    /// [`RequestError::KeyInUse`] if the SSH public key backs another live
+    /// request or grant, the target or secret errors from the backend,
+    /// [`RequestError::AgentRevoked`], or storage failures. No row is stored
+    /// and nobody is notified on error.
     pub async fn create(
         &self,
         agent: &AgentName,
@@ -391,9 +501,9 @@ impl Requests {
                 }
                 check_window(req.window, policy.max_window, &format!("target {target}"))
                     .map_err(RequestError::Rejected)?;
-                if policy.mode != SshMode::Cert {
+                if policy.mode == SshMode::Relay && self.relay.is_none() {
                     return Err(RequestError::Rejected(format!(
-                        "target {target}: relay mode not supported yet"
+                        "target {target}: {RELAY_NOT_CONFIGURED}"
                     )));
                 }
                 format!("{agent}|ssh|{target}")
@@ -451,6 +561,14 @@ impl Requests {
         let id = Id::random();
         let fp = fingerprint(agent, req);
         let mut tx = begin(&self.pool).await?;
+        if let Access::Ssh {
+            target, public_key, ..
+        } = &req.access
+        {
+            // In the write transaction, so no concurrent create can bind the
+            // key between this check and the insert.
+            check_key_unbound(&mut tx, agent, target, public_key, now).await?;
+        }
         let inserted = sqlx::query(
             "INSERT INTO requests (id, agent, fingerprint, dedupe_key, body, \
              approval_token_hash, status, created_at, expires_at) \
@@ -837,6 +955,11 @@ impl Requests {
                 .bind(grant_id.as_str())
                 .fetch_optional(&mut *tx)
                 .await?;
+            // Revoked already, perhaps by another process: its sessions end
+            // now rather than at the relay's next check.
+            if exists.is_some() {
+                self.sessions.revoke_grant(grant_id);
+            }
             return exists.map(|_| ()).ok_or(RequestError::NotFound);
         };
         let request_id: Id = parse(&row, "request_id")?;
@@ -855,6 +978,7 @@ impl Requests {
             &format!("revocation of grant {grant_id}"),
         )
         .await?;
+        self.sessions.revoke_grant(grant_id);
         self.bus.publish(&request_id);
         Ok(())
     }
@@ -868,6 +992,7 @@ impl Requests {
         let name = name.clone();
         detached(async move {
             let affected = revoke_agent(&this.pool, &this.audit, &name, this.clock.now()).await?;
+            this.sessions.revoke_agent(&name);
             for id in &affected {
                 this.bus.publish(id);
             }
@@ -981,6 +1106,62 @@ impl Requests {
         Ok((serde_json::from_str(&view)?, revoked_at.is_some()))
     }
 
+    /// The active (neither revoked nor expired) relay grant for `target`
+    /// whose approved request bound `public_key`, if there is one: the relay
+    /// admits an agent offering that key for that target. Keys are compared
+    /// by key data, so comments do not matter. If several match, the one
+    /// lasting longest is returned.
+    ///
+    /// # Errors
+    /// Storage failures or unreadable stored rows.
+    pub async fn active_relay_grant(
+        &self,
+        target: &TargetName,
+        public_key: &ssh_key::PublicKey,
+    ) -> Result<Option<RelayGrantRecord>, RequestError> {
+        let rows = sqlx::query(ACTIVE_RELAY_GRANTS)
+            .bind(self.clock.now())
+            .bind(target.as_str())
+            .fetch_all(&self.pool)
+            .await?;
+        for row in &rows {
+            let body: String = row.try_get("body")?;
+            let request: CreateRequest = serde_json::from_str(&body)?;
+            let Access::Ssh {
+                public_key: bound, ..
+            } = &request.access
+            else {
+                return Err(RequestError::Corrupt(
+                    "relay grant for a non-SSH request".to_owned(),
+                ));
+            };
+            let bound = ssh_key::PublicKey::from_openssh(bound)
+                .map_err(|e| RequestError::Corrupt(format!("bound public key: {e}")))?;
+            if bound.key_data() != public_key.key_data() {
+                continue;
+            }
+            let view: String = row.try_get("view")?;
+            let view: GrantView = serde_json::from_str(&view)?;
+            let GrantAccess::Relay(grant) = view.access else {
+                return Err(RequestError::Corrupt("relay grant changed kind".to_owned()));
+            };
+            if grant.target != *target {
+                return Err(RequestError::Corrupt(
+                    "relay grant changed target".to_owned(),
+                ));
+            }
+            return Ok(Some(RelayGrantRecord {
+                grant_id: parse(row, "id")?,
+                agent: parse(row, "agent")?,
+                target: grant.target,
+                user: grant.user,
+                destination_digest: grant.digest,
+                not_after: row.try_get("not_after")?,
+            }));
+        }
+        Ok(None)
+    }
+
     /// End a grant on behalf of the agent that holds it. Revoking an already
     /// revoked grant does nothing.
     ///
@@ -1065,6 +1246,76 @@ impl Requests {
     }
 }
 
+/// The bound key of every live SSH access: pending requests not past their
+/// deadline (`pending` = 1), and requests whose grant is neither revoked nor
+/// expired (`pending` = 0). `?1` is now, `?2` now minus the pending TTL. Both
+/// halves read through an index (pending requests are at most
+/// [`PENDING_TTL_SECS`] old; grants are found by `not_after`), so the check
+/// never scans the whole history.
+const LIVE_SSH_KEYS: &str = "\
+    SELECT r.agent, r.body, 1 AS pending FROM requests r \
+    WHERE r.created_at > ?2 AND r.status = 'pending' AND r.expires_at > ?1 \
+    AND json_extract(r.body, '$.access.kind') = 'ssh' \
+    UNION ALL \
+    SELECT r.agent, r.body, 0 AS pending FROM grants g JOIN requests r ON r.id = g.request_id \
+    WHERE g.not_after > ?1 AND g.revoked_at IS NULL \
+    AND json_extract(r.body, '$.access.kind') = 'ssh'";
+
+/// Refuse `public_key` for `agent`'s request on `target` if it is bound to
+/// a live SSH access (see [`LIVE_SSH_KEYS`]) other than the agent's own
+/// pending request for the same target, which is the dedupe path and is
+/// left to it: each ephemeral key backs exactly one live access, so the
+/// relay can attribute a key to one grant. A live grant holds its key even
+/// for its own agent and target. Keys are compared by key data, so comments
+/// do not matter.
+///
+/// # Errors
+/// [`RequestError::KeyInUse`]; storage failures; [`RequestError::Corrupt`]
+/// for a stored key that no longer parses.
+async fn check_key_unbound(
+    conn: &mut SqliteConnection,
+    agent: &AgentName,
+    target: &TargetName,
+    public_key: &str,
+    now: i64,
+) -> Result<(), RequestError> {
+    let offered = ssh_key::PublicKey::from_openssh(public_key).map_err(|_| {
+        RequestError::Rejected("public_key must be an OpenSSH ssh-ed25519 public key".to_owned())
+    })?;
+    let rows = sqlx::query(LIVE_SSH_KEYS)
+        .bind(now)
+        .bind(now - PENDING_TTL_SECS)
+        .fetch_all(&mut *conn)
+        .await?;
+    for row in &rows {
+        let body: String = row.try_get("body")?;
+        let request: CreateRequest = serde_json::from_str(&body)?;
+        let Access::Ssh {
+            target: bound_target,
+            public_key: bound_key,
+            ..
+        } = &request.access
+        else {
+            return Err(RequestError::Corrupt(
+                "ssh request without ssh access".to_owned(),
+            ));
+        };
+        let bound_key = ssh_key::PublicKey::from_openssh(bound_key)
+            .map_err(|e| RequestError::Corrupt(format!("bound public key: {e}")))?;
+        if bound_key.key_data() != offered.key_data() {
+            continue;
+        }
+        let bound_agent: AgentName = parse(row, "agent")?;
+        let pending: bool = row.try_get("pending")?;
+        // Only the agent's own pending request for the same target may
+        // share the key: that is the dedupe path, which returns it.
+        if !pending || bound_agent != *agent || bound_target != target {
+            return Err(RequestError::KeyInUse);
+        }
+    }
+    Ok(())
+}
+
 /// Revoke agent `name` at `now` in one transaction: its key stops working,
 /// its pending requests end as revoked, and its active grants are revoked
 /// (their requests too). Returns the ids of every affected request so a
@@ -1072,7 +1323,8 @@ impl Requests {
 ///
 /// When this runs in another process (the `agent revoke` admin command), the
 /// server's in-process [`StatusBus`] is not told; its long-polls see
-/// `revoked` on their next re-read, within the 30 s wait cap.
+/// `revoked` on their next re-read, within the 30 s wait cap, and its relay
+/// ends the agent's sessions at its next grant check (every second).
 ///
 /// # Errors
 /// [`RequestError::UnknownAgent`] if no such agent exists; storage or audit
@@ -1312,9 +1564,117 @@ pub async fn sweep_loop(
 
 #[cfg(test)]
 mod tests {
-    use super::{AuditEvent, AuditLog, RequestError, audit_and_commit, begin};
+    use super::{
+        ACTIVE_RELAY_GRANTS, AuditEvent, AuditLog, ENDED_GRANTS, LIVE_SSH_KEYS, RequestError,
+        audit_and_commit, begin,
+    };
     use crate::store;
+    use sqlx::Row as _;
     use warden_broker_proto::Id;
+
+    /// The query plan of `sql`, one step per line.
+    async fn plan(pool: &sqlx::SqlitePool, sql: &str) -> Vec<String> {
+        // Test-only: `sql` is one of this module's constant queries.
+        sqlx::query(sqlx::AssertSqlSafe(format!("EXPLAIN QUERY PLAN {sql}")))
+            .bind(0_i64)
+            .bind("x")
+            .fetch_all(pool)
+            .await
+            .unwrap()
+            .iter()
+            .map(|row| row.get::<String, _>("detail"))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn live_access_lookups_never_scan_whole_tables() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = store::open(&dir.path().join("warden.db")).await.unwrap();
+        let keys = plan(&pool, LIVE_SSH_KEYS).await;
+        assert!(
+            keys.iter()
+                .any(|s| s.contains("USING INDEX requests_created_at")),
+            "{keys:?}"
+        );
+        let grants = plan(&pool, ACTIVE_RELAY_GRANTS).await;
+        for steps in [&keys, &grants] {
+            assert!(
+                steps
+                    .iter()
+                    .any(|s| s.contains("USING INDEX grants_not_after")),
+                "{steps:?}"
+            );
+            // A bare SCAN reads every row of a table.
+            assert!(
+                !steps
+                    .iter()
+                    .any(|s| s.starts_with("SCAN ") && !s.contains("INDEX")),
+                "{steps:?}"
+            );
+        }
+        // The relay's check looks grants up by id.
+        let ended = plan(&pool, ENDED_GRANTS).await;
+        assert!(
+            ended
+                .iter()
+                .any(|s| s.starts_with("SEARCH grants USING INDEX sqlite_autoindex_grants_1")),
+            "{ended:?}"
+        );
+        assert!(
+            !ended.iter().any(|s| s.starts_with("SCAN grants")),
+            "{ended:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn ended_grants_are_the_listed_revoked_or_expired_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = store::open(&dir.path().join("warden.db")).await.unwrap();
+        let mut conn = pool.acquire().await.unwrap();
+        // Bare grant rows: their requests and agents do not matter here.
+        sqlx::query("PRAGMA foreign_keys = OFF")
+            .execute(&mut *conn)
+            .await
+            .unwrap();
+        for (id, not_after, revoked_at) in [
+            ("live", 1000, None),
+            ("revoked", 1000, Some(500)),
+            ("expired", 1000, None),
+            ("both", 900, Some(800)),
+            ("unlisted", 900, Some(800)),
+        ] {
+            let not_after = if id == "expired" { 999 } else { not_after };
+            sqlx::query(
+                "INSERT INTO grants (id, request_id, agent, window_secs, not_before, not_after, revoked_at, view) \
+                 VALUES (?, ?, 'a', 900, 0, ?, ?, '{}')",
+            )
+            .bind(id)
+            .bind(format!("r-{id}"))
+            .bind(not_after)
+            .bind(revoked_at)
+            .execute(&mut *conn)
+            .await
+            .unwrap();
+        }
+        let mut ended: Vec<(String, bool)> = sqlx::query(ENDED_GRANTS)
+            .bind(999_i64)
+            .bind(r#"["live","revoked","expired","both","missing"]"#)
+            .fetch_all(&mut *conn)
+            .await
+            .unwrap()
+            .iter()
+            .map(|row| (row.get("id"), row.get("revoked")))
+            .collect();
+        ended.sort();
+        assert_eq!(
+            ended,
+            [
+                ("both".to_owned(), true),
+                ("expired".to_owned(), false),
+                ("revoked".to_owned(), true),
+            ]
+        );
+    }
 
     #[tokio::test]
     async fn failed_commit_is_recorded_as_not_taking_effect() {
