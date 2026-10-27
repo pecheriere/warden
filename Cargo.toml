@@ -37,7 +37,9 @@ webauthn-rs = "=0.5.5"
 # Direct dependency only to turn on its `vendored` feature (webauthn-rs links it).
 openssl = "0.10.81"
 webauthn-authenticator-rs = { version = "=0.5.5", features = ["softpasskey"] }
-ssh-key = { version = "0.6.7", features = ["ed25519", "std", "getrandom"] }
+# Only what parsing public keys needs (`warden-broker-proto` validates
+# signing keys with it); the broker and CLI add the crypto they use.
+ssh-key = { version = "0.6.7", default-features = false, features = ["alloc", "ecdsa"] }
 # The SSH wire-format traits `ssh-key` 0.6 implements (`Decode` for `SshSig`):
 # the broker decodes a `Warden-Signature` blob with them. Must stay the
 # version `ssh-key` itself uses, or the traits would not match.

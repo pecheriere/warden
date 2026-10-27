@@ -50,6 +50,117 @@ pub const PUBLISHED_TEST_KEYS: [&str; 2] = [
     "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBC+QqOP9eVCRD+mZKR9M9swQ1UATTw3+lcxT1Yj8H0huXEBHMc58PIqZfCWeiPzLR8jnMD8GKW77zKgpJ5a91W0=",
 ];
 
+/// Why an OpenSSH public key line is not an acceptable signing key. The
+/// broker (at enrollment) and the CLI (at login) word each case for their
+/// user; neither echoes the line.
+///
+/// Exhaustive on purpose: a new refusal must make every caller choose how to
+/// word it.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum SigningKeyError {
+    /// Not a single OpenSSH public key line.
+    #[error("not an OpenSSH public key line")]
+    Malformed,
+    /// A security key (`sk-*`): it needs a touch for every signature.
+    #[error("security keys (sk-*) are refused")]
+    SecurityKey,
+    /// An OpenSSH certificate rather than a plain public key.
+    #[error("certificates are refused")]
+    Certificate,
+    /// Any other key type, RSA and other ECDSA curves included. Carries the
+    /// algorithm name as written when it is short and printable, else
+    /// `(unprintable)`.
+    #[error("unsupported key type {0}")]
+    Unsupported(String),
+    /// One of the [`PUBLISHED_TEST_KEYS`].
+    #[error("the published test key")]
+    PublishedTestKey,
+}
+
+/// A key that may sign agent requests: an `ssh-ed25519` or
+/// `ecdsa-sha2-nistp256` public key, not a security key, certificate or
+/// published test key, without its comment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SigningPublicKey {
+    key: ssh_key::PublicKey,
+    openssh: String,
+}
+
+impl SigningPublicKey {
+    /// Validate one OpenSSH public key line (`<type> <base64> [comment]`;
+    /// surrounding whitespace is ignored, control characters are not).
+    ///
+    /// # Errors
+    /// [`SigningKeyError`] saying why the line is refused.
+    pub fn parse(line: &str) -> Result<Self, SigningKeyError> {
+        let line = line.trim();
+        if line.is_empty() || line.chars().any(char::is_control) {
+            return Err(SigningKeyError::Malformed);
+        }
+        // Classify by the written type first, so that keys this crate
+        // cannot parse (RSA, other curves) are named rather than malformed.
+        let algorithm = line.split_ascii_whitespace().next().unwrap_or_default();
+        if algorithm.starts_with("sk-") {
+            return Err(SigningKeyError::SecurityKey);
+        }
+        if algorithm.ends_with("-cert-v01@openssh.com") {
+            return Err(SigningKeyError::Certificate);
+        }
+        if !matches!(algorithm, "ssh-ed25519" | "ecdsa-sha2-nistp256")
+            && (algorithm.starts_with("ssh-") || algorithm.starts_with("ecdsa-"))
+        {
+            let printable = algorithm.len() <= 64
+                && algorithm
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'@' | b'.' | b'_'));
+            return Err(SigningKeyError::Unsupported(
+                if printable {
+                    algorithm
+                } else {
+                    "(unprintable)"
+                }
+                .to_owned(),
+            ));
+        }
+        let parsed =
+            ssh_key::PublicKey::from_openssh(line).map_err(|_| SigningKeyError::Malformed)?;
+        // The written type and the encoded key agree (`from_openssh`
+        // checks), so this only catches a type the checks above let pass.
+        match parsed.algorithm() {
+            ssh_key::Algorithm::Ed25519
+            | ssh_key::Algorithm::Ecdsa {
+                curve: ssh_key::EcdsaCurve::NistP256,
+            } => {}
+            _ => return Err(SigningKeyError::Malformed),
+        }
+        // `PublicKey::new` with an empty comment drops the comment.
+        let key = ssh_key::PublicKey::new(parsed.key_data().clone(), "");
+        let openssh = key.to_openssh().map_err(|_| SigningKeyError::Malformed)?;
+        if PUBLISHED_TEST_KEYS.contains(&openssh.as_str()) {
+            return Err(SigningKeyError::PublishedTestKey);
+        }
+        Ok(Self { key, openssh })
+    }
+
+    /// The key as an OpenSSH line without a comment.
+    #[must_use]
+    pub fn openssh(&self) -> &str {
+        &self.openssh
+    }
+
+    /// The key's fingerprint, `SHA256:…` (as `ssh-keygen -lf` prints it).
+    #[must_use]
+    pub fn fingerprint(&self) -> String {
+        self.key.fingerprint(ssh_key::HashAlg::Sha256).to_string()
+    }
+
+    /// The key, without a comment.
+    #[must_use]
+    pub fn into_public_key(self) -> ssh_key::PublicKey {
+        self.key
+    }
+}
+
 /// Single-use request nonce: 32 lowercase hex characters (16 random bytes).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
@@ -245,7 +356,7 @@ mod tests {
 
     use super::{
         Audience, MAX_TARGET_LEN, Nonce, PROTOCOL, PUBLISHED_TEST_KEYS, SignedRequestParts,
-        canonical_message, parse_timestamp,
+        SigningKeyError, SigningPublicKey, canonical_message, parse_timestamp,
     };
     use crate::{AgentName, CreateRequest, fingerprint};
 
@@ -584,6 +695,96 @@ mod tests {
             "１",
         ] {
             assert!(parse_timestamp(bad).is_err(), "{bad:?} accepted");
+        }
+    }
+
+    const ED25519: &str =
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOh0zJ+xlPfFH6uwtZmJ2O9GrkMxjqMwPQTsBVmbbBrE bot@host";
+    const P256: &str = "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBCWJQpSZmFxJPPeU/PDoB2NnjgwLS2wmaVYl88TcOy3gOC1ULAl9rciGR37TQzJLoct+uVn+U86IoyUnjODSRrU= bot@host";
+    const P384: &str = "ecdsa-sha2-nistp384 AAAAE2VjZHNhLXNoYTItbmlzdHAzODQAAAAIbmlzdHAzODQAAABhBJIBXLctzYt9bmZlMumBipjA4vHiyyHO3nzzd23kZbPXxSvhyPEOmOu5QNqWE20d1FTeOp4A7Qd+j6+0XEEByQpwrwRdzR57rXWdtzURc0kdZt0Lqb7+C8kM/AIZ688HvQ== bot@host";
+    const RSA: &str = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC+O4k9FKR0OYtXYz3ve1qNb7DFQlUBGPEdUSx0KfcsMl3nS//z1jcA55Fc5mjegXuiM1kPhczoEZ0H30EAUdhkpy/fHianJgEHsM+VfhsVeYSB+M3pvje2fgrBhn1qr9uere1HYdUtT/zoQ/7z1QHGHWzu0VaoN0kqvr4Kr4gzsGIduGzSLOvtRgPxbpBpo52Czu+d0As3GDasYdZD+DVUVTP8c1Kq+OrKZ+PpSKDqpDDg5DRmqI6VTOqmA+QdlkuBpnEfHkI7I5AuQcAlqDG70o2wDDm793//85mnb/Dm7Xx699i/AL/hXoPgR1EDTDizUe6C6LpPZ6wEXo75UPsz bot@host";
+    // Security keys and certificates are refused on their written type, so
+    // any blob stands in for the key material.
+    const SK_ED25519: &str =
+        "sk-ssh-ed25519@openssh.com AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29t bot@host";
+    const SK_ECDSA: &str = "sk-ecdsa-sha2-nistp256@openssh.com AAAAInNrLWVjZHNhLXNoYTItbmlzdHAyNTZAb3BlbnNzaC5jb20= bot@host";
+    const CERT: &str = "ssh-ed25519-cert-v01@openssh.com AAAAC3NzaC1lZDI1NTE5LWNlcnQtdjAxQG9wZW5zc2guY29t bot@host";
+
+    #[test]
+    fn signing_key_is_normalised_without_comment() {
+        let key = SigningPublicKey::parse(ED25519).unwrap();
+        assert_eq!(key.openssh(), ED25519.strip_suffix(" bot@host").unwrap());
+        assert_eq!(
+            key.fingerprint(),
+            "SHA256:rLfP/9fNazMeV7ZhIokovGEA7KjM7wpAGTEPeWPAtME"
+        );
+        assert_eq!(
+            SigningPublicKey::parse(&format!(" \t{ED25519}\n")).unwrap(),
+            key
+        );
+        assert_eq!(SigningPublicKey::parse(key.openssh()).unwrap(), key);
+        assert_eq!(key.clone().into_public_key().comment(), "");
+        let p256 = SigningPublicKey::parse(P256).unwrap();
+        assert_eq!(p256.openssh(), P256.strip_suffix(" bot@host").unwrap());
+    }
+
+    #[test]
+    fn signing_key_policy_refuses_other_keys() {
+        let long_type = format!("ssh-{} AAAA", "x".repeat(70));
+        for (line, expected) in [
+            (SK_ED25519, SigningKeyError::SecurityKey),
+            (SK_ECDSA, SigningKeyError::SecurityKey),
+            (CERT, SigningKeyError::Certificate),
+            (RSA, SigningKeyError::Unsupported("ssh-rsa".to_owned())),
+            (
+                P384,
+                SigningKeyError::Unsupported("ecdsa-sha2-nistp384".to_owned()),
+            ),
+            (
+                "ssh-dss AAAAB3NzaC1kc3M=",
+                SigningKeyError::Unsupported("ssh-dss".to_owned()),
+            ),
+            (
+                &long_type,
+                SigningKeyError::Unsupported("(unprintable)".to_owned()),
+            ),
+            (
+                "ssh-r\u{e9}sa AAAA",
+                SigningKeyError::Unsupported("(unprintable)".to_owned()),
+            ),
+            ("", SigningKeyError::Malformed),
+            ("   ", SigningKeyError::Malformed),
+            ("not a key", SigningKeyError::Malformed),
+            ("ssh-ed25519", SigningKeyError::Malformed),
+            ("ssh-ed25519 AAAA", SigningKeyError::Malformed),
+            (&format!("{ED25519}\n{P256}"), SigningKeyError::Malformed),
+            (
+                &ED25519.replace(" bot@host", " bot\u{7}host"),
+                SigningKeyError::Malformed,
+            ),
+            // The written type must match the encoded key.
+            (
+                &P256.replacen("ecdsa-sha2-nistp256", "ssh-ed25519", 1),
+                SigningKeyError::Malformed,
+            ),
+        ] {
+            assert_eq!(
+                SigningPublicKey::parse(line).unwrap_err(),
+                expected,
+                "{line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn signing_key_policy_refuses_the_published_test_keys() {
+        for key in PUBLISHED_TEST_KEYS {
+            for line in [key.to_owned(), format!("{key} a comment")] {
+                assert_eq!(
+                    SigningPublicKey::parse(&line).unwrap_err(),
+                    SigningKeyError::PublishedTestKey
+                );
+            }
         }
     }
 }

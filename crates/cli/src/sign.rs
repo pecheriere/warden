@@ -18,11 +18,11 @@ use sha2::{Digest as _, Sha256};
 use ssh_agent_lib::agent::Session as _;
 use ssh_agent_lib::proto::{PublicCredential, SignRequest};
 use ssh_encoding::Encode as _;
-use ssh_key::{Algorithm, EcdsaCurve, HashAlg, PublicKey, SshSig};
+use ssh_key::{HashAlg, PublicKey, SshSig};
 use warden_broker_proto::AgentName;
 use warden_broker_proto::signing::{
-    AGENT_HEADER, Audience, NAMESPACE, NONCE_HEADER, Nonce, PUBLISHED_TEST_KEYS, SIGNATURE_HEADER,
-    SignedRequestParts, TIMESTAMP_HEADER, canonical_message,
+    AGENT_HEADER, Audience, NAMESPACE, NONCE_HEADER, Nonce, SIGNATURE_HEADER, SignedRequestParts,
+    SigningKeyError, SigningPublicKey, TIMESTAMP_HEADER, canonical_message,
 };
 use zeroize::Zeroizing;
 
@@ -47,38 +47,25 @@ const HASH_ALG: HashAlg = HashAlg::Sha512;
 /// # Errors
 /// Why the line is refused. Messages never echo the line.
 pub fn parse_signing_key(line: &str) -> Result<PublicKey> {
-    let line = line.trim();
-    ensure!(
-        !line.is_empty() && !line.chars().any(char::is_control),
-        "not an OpenSSH public key: expected one line such as 'ssh-ed25519 AAAA… comment'"
-    );
-    let algorithm = line.split_ascii_whitespace().next().unwrap_or_default();
-    if algorithm.starts_with("sk-") {
-        bail!(
+    match SigningPublicKey::parse(line) {
+        Ok(key) => Ok(key.into_public_key()),
+        Err(SigningKeyError::Malformed) => bail!(
+            "not an OpenSSH public key: expected one line such as 'ssh-ed25519 AAAA… comment'"
+        ),
+        Err(SigningKeyError::SecurityKey) => bail!(
             "security keys (sk-*) cannot sign requests: they need a touch for every signature, \
              and every API call is signed"
-        );
+        ),
+        Err(SigningKeyError::Certificate) => {
+            bail!("certificates cannot sign requests: use the plain public key")
+        }
+        Err(SigningKeyError::Unsupported(algorithm)) => {
+            bail!("unsupported key type {algorithm}; use ssh-ed25519 or ecdsa-sha2-nistp256")
+        }
+        Err(SigningKeyError::PublishedTestKey) => {
+            bail!("this is the published test key from the protocol document; generate your own")
+        }
     }
-    if algorithm.ends_with("-cert-v01@openssh.com") {
-        bail!("certificates cannot sign requests: use the plain public key");
-    }
-    let parsed = PublicKey::from_openssh(line).map_err(|_| {
-        anyhow!("not an OpenSSH public key: expected one line such as 'ssh-ed25519 AAAA… comment'")
-    })?;
-    match parsed.algorithm() {
-        Algorithm::Ed25519
-        | Algorithm::Ecdsa {
-            curve: EcdsaCurve::NistP256,
-        } => {}
-        other => bail!("unsupported key type {other}; use ssh-ed25519 or ecdsa-sha2-nistp256"),
-    }
-    let key = PublicKey::new(parsed.key_data().clone(), "");
-    let openssh = key.to_openssh().context("cannot encode the public key")?;
-    ensure!(
-        !PUBLISHED_TEST_KEYS.contains(&openssh.as_str()),
-        "this is the published test key from the protocol document; generate your own"
-    );
-    Ok(key)
 }
 
 /// Read and validate the signing key's public key file (the `.pub`).
@@ -606,9 +593,10 @@ mod tests {
         for (line, why) in [
             ("", "not an OpenSSH public key"),
             ("ssh-ed25519", "not an OpenSSH public key"),
+            // Named by its written type, as the broker does.
             (
                 "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQ",
-                "not an OpenSSH public key",
+                "unsupported key type ssh-rsa",
             ),
             ("sk-ssh-ed25519@openssh.com AAAA", "security keys"),
             ("sk-ecdsa-sha2-nistp256@openssh.com AAAA", "security keys"),

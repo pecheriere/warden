@@ -15,9 +15,9 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use secrecy::{ExposeSecret as _, SecretString};
 use sha2::{Digest as _, Sha256};
 use sqlx::{Row as _, SqliteExecutor, SqlitePool};
-use ssh_key::{Algorithm, EcdsaCurve, HashAlg, PublicKey};
+use ssh_key::PublicKey;
 use warden_broker_proto::AgentName;
-use warden_broker_proto::signing::PUBLISHED_TEST_KEYS;
+use warden_broker_proto::signing::{SigningKeyError, SigningPublicKey};
 use zeroize::Zeroizing;
 
 use crate::audit::{AuditError, AuditEvent, AuditLog};
@@ -58,6 +58,18 @@ pub enum PublicKeyError {
     PublishedTestKey,
 }
 
+impl From<SigningKeyError> for PublicKeyError {
+    fn from(e: SigningKeyError) -> Self {
+        match e {
+            SigningKeyError::Malformed => Self::Malformed,
+            SigningKeyError::SecurityKey => Self::SecurityKey,
+            SigningKeyError::Certificate => Self::Certificate,
+            SigningKeyError::Unsupported(algorithm) => Self::Unsupported(algorithm),
+            SigningKeyError::PublishedTestKey => Self::PublishedTestKey,
+        }
+    }
+}
+
 /// A validated agent signing key: an Ed25519 or ECDSA P-256 public key in
 /// normalised OpenSSH form (comment dropped) with its `SHA256:…` fingerprint.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,47 +87,10 @@ impl AgentPublicKey {
     /// security key, a certificate, another key type (RSA, other curves), or
     /// a published test key.
     pub fn parse(line: &str) -> Result<Self, PublicKeyError> {
-        let line = line.trim();
-        if line.is_empty() || line.chars().any(char::is_control) {
-            return Err(PublicKeyError::Malformed);
-        }
-        let algorithm = line.split_ascii_whitespace().next().unwrap_or_default();
-        if algorithm.starts_with("sk-") {
-            return Err(PublicKeyError::SecurityKey);
-        }
-        if algorithm.ends_with("-cert-v01@openssh.com") {
-            return Err(PublicKeyError::Certificate);
-        }
-        if matches!(algorithm, "ssh-ed25519" | "ecdsa-sha2-nistp256") {
-            // Parsed below.
-        } else if algorithm.starts_with("ssh-") || algorithm.starts_with("ecdsa-") {
-            let safe = algorithm.len() <= 64
-                && algorithm
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'@' | b'.' | b'_'));
-            return Err(PublicKeyError::Unsupported(
-                if safe { algorithm } else { "(unprintable)" }.to_owned(),
-            ));
-        }
-        let parsed = PublicKey::from_openssh(line).map_err(|_| PublicKeyError::Malformed)?;
-        match parsed.algorithm() {
-            Algorithm::Ed25519
-            | Algorithm::Ecdsa {
-                curve: EcdsaCurve::NistP256,
-            } => {}
-            other => return Err(PublicKeyError::Unsupported(other.to_string())),
-        }
-        // `PublicKey::new` with an empty comment drops the comment.
-        let normalised = PublicKey::new(parsed.key_data().clone(), "");
-        let openssh = normalised
-            .to_openssh()
-            .map_err(|_| PublicKeyError::Malformed)?;
-        if PUBLISHED_TEST_KEYS.contains(&openssh.as_str()) {
-            return Err(PublicKeyError::PublishedTestKey);
-        }
+        let key = SigningPublicKey::parse(line)?;
         Ok(Self {
-            fingerprint: normalised.fingerprint(HashAlg::Sha256).to_string(),
-            openssh,
+            fingerprint: key.fingerprint(),
+            openssh: key.openssh().to_owned(),
         })
     }
 
