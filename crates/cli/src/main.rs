@@ -417,10 +417,12 @@ async fn login_with_key(login: KeyLogin) -> Result<()> {
         "the broker at {server} does not accept signed requests ({PROTOCOL}); upgrade it to \
          0.6 or later"
     );
-    let pinned = config::load_existing()?
+    let previous = config::load_existing()?;
+    let pinned = previous
+        .as_ref()
         .filter(|old| old.server == server)
-        .and_then(|old| old.ssh_key)
-        .map(|old| old.audience);
+        .and_then(|old| old.ssh_key.as_ref())
+        .map(|old| old.audience.clone());
     match (&audience, &pinned) {
         (Some(expected), _) if *expected != info.audience => bail!(
             "the broker at {server} reports audience {}, not {expected} as given: this is \
@@ -470,6 +472,13 @@ async fn login_with_key(login: KeyLogin) -> Result<()> {
         config.server,
         path.display()
     );
+    #[cfg(target_os = "macos")]
+    if let Some(command) = previous.as_ref().and_then(config::keychain_cleanup_command) {
+        eprintln!(
+            "the bearer key of the previous login may still be in the Keychain, unused; once \
+             you no longer need it, delete it with:\n  {command}"
+        );
+    }
     Ok(())
 }
 

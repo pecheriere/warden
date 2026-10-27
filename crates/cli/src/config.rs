@@ -34,7 +34,7 @@ use crate::sign::{self, Signer};
 pub const AGENT_KEY_ENV: &str = "WARDEN_AGENT_KEY";
 
 /// Keychain service under which agent keys are stored.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", test))]
 const KEYCHAIN_SERVICE: &str = "warden-broker";
 
 /// Where the broker is and which agent this machine acts as.
@@ -275,6 +275,25 @@ fn keychain_account(config: &Config) -> String {
     format!("{}|{}", config.server, config.agent)
 }
 
+/// The `security` command that deletes the Keychain entry of `old`'s bearer
+/// key, for a login that replaced that configuration with a signing key;
+/// `None` if `old` used a signing key already. The CLI only prints it: the
+/// key may still be wanted (another checkout, a rollback), so deleting it is
+/// left to the user.
+#[cfg(any(target_os = "macos", test))]
+#[must_use]
+pub fn keychain_cleanup_command(old: &Config) -> Option<String> {
+    if old.ssh_key.is_some() {
+        return None;
+    }
+    // Server URLs and agent names cannot hold a quote; escape one anyway so
+    // the command is always safe to paste.
+    let account = keychain_account(old).replace('\'', r"'\''");
+    Some(format!(
+        "security delete-generic-password -s {KEYCHAIN_SERVICE} -a '{account}'"
+    ))
+}
+
 /// The agent key: `WARDEN_AGENT_KEY` if set, otherwise the Keychain entry.
 ///
 /// # Errors
@@ -343,7 +362,7 @@ mod tests {
 
     use super::{
         Config, SshKeyConfig, check_agent_key, check_server_url, keychain_account,
-        load_existing_from, load_from, save_to,
+        keychain_cleanup_command, load_existing_from, load_from, save_to,
     };
 
     fn url(s: &str) -> url::Url {
@@ -493,6 +512,18 @@ mod tests {
             keychain_account(&sample()),
             "https://warden.example.ts.net/|bot"
         );
+    }
+
+    #[test]
+    fn keychain_cleanup_only_for_a_replaced_bearer_login() {
+        assert_eq!(
+            keychain_cleanup_command(&sample()).as_deref(),
+            Some(
+                "security delete-generic-password -s warden-broker \
+                 -a 'https://warden.example.ts.net/|bot'"
+            )
+        );
+        assert_eq!(keychain_cleanup_command(&signed_sample()), None);
     }
 
     #[test]

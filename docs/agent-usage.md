@@ -107,10 +107,11 @@ described in [agent-protocol.md](agent-protocol.md), for clients other than
 key, have the owner run
 `warden-server agent set-key laptop "$(cat ~/.ssh/warden-laptop.pub)"`
 (the bearer key stops working at once), then run `warden login --ssh-key …`
-as above. The old bearer key can then be deleted from the Keychain
+as above. On macOS, that login prints the command that deletes the old
+bearer key from the Keychain
 (`security delete-generic-password -s warden-broker -a '<server>|<agent>'`,
-for example `-a 'https://warden.example.ts.net/|laptop'`) and from the
-password manager.
+for example `-a 'https://warden.example.ts.net/|laptop'`); it deletes
+nothing itself. Run it, and delete the key from the password manager too.
 
 ### With a bearer key (legacy)
 

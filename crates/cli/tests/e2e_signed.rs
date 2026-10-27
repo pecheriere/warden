@@ -460,6 +460,39 @@ async fn e2e_login_refuses_wrong_audience() {
     assert_eq!(status.status.code(), Some(0), "{}", text(&status.stderr));
 }
 
+/// A key login that replaces a bearer-key login says, on macOS, how to
+/// delete the old key from the Keychain (it deletes nothing itself); a key
+/// login over a key login says nothing of the Keychain.
+#[tokio::test(flavor = "multi_thread")]
+async fn e2e_key_login_over_bearer_login_hints_keychain_cleanup() {
+    let broker = TestBroker::without_relay().await;
+    broker.clock.set(now());
+    let urls = broker.spawn().await;
+    let key = broker.add_signing_agent(AGENT, Algorithm::Ed25519).await;
+    let cli = SignedCli::new(&key).await;
+    fs::create_dir_all(cli.config_path().parent().unwrap()).unwrap();
+    fs::write(
+        cli.config_path(),
+        format!("server = \"{}\"\nagent = \"{AGENT}\"\n", urls.api),
+    )
+    .unwrap();
+
+    let login = cli.login(&urls.api, &[]);
+    assert_eq!(login.status.code(), Some(0), "{}", text(&login.stderr));
+    let said = text(&login.stderr);
+    let hint = format!(
+        "security delete-generic-password -s warden-broker -a '{}|{AGENT}'",
+        urls.api
+    );
+    assert_eq!(said.contains(&hint), cfg!(target_os = "macos"), "{said}");
+    assert!(cli.config().contains("[ssh_key]"));
+
+    let again = cli.login(&urls.api, &[]);
+    assert_eq!(again.status.code(), Some(0), "{}", text(&again.stderr));
+    let said = text(&again.stderr);
+    assert!(!said.contains("Keychain"), "{said}");
+}
+
 /// Key mode needs the broker at the root of its origin, an agent holding
 /// the key, and the key enrolled.
 #[tokio::test(flavor = "multi_thread")]
