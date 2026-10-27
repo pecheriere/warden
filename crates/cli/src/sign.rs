@@ -24,6 +24,7 @@ use warden_broker_proto::signing::{
     AGENT_HEADER, Audience, NAMESPACE, NONCE_HEADER, Nonce, PUBLISHED_TEST_KEYS, SIGNATURE_HEADER,
     SignedRequestParts, TIMESTAMP_HEADER, canonical_message,
 };
+use zeroize::Zeroizing;
 
 /// Environment variable naming the default `ssh-agent` socket.
 pub const SSH_AUTH_SOCK: &str = "SSH_AUTH_SOCK";
@@ -88,7 +89,8 @@ pub fn parse_signing_key(line: &str) -> Result<PublicKey> {
 pub fn read_signing_key(path: &Path) -> Result<PublicKey> {
     let file = std::fs::File::open(path)
         .with_context(|| format!("cannot open the public key {}", path.display()))?;
-    let mut raw = String::new();
+    // Zeroized: the path may name a private key by mistake.
+    let mut raw = Zeroizing::new(String::new());
     file.take(MAX_PUBLIC_KEY_FILE + 1)
         .read_to_string(&mut raw)
         .with_context(|| format!("cannot read the public key {}", path.display()))?;

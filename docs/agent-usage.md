@@ -38,10 +38,17 @@ An agent authenticates every call to the broker in one of two ways:
      agent unlocks unattended), run `ssh-tpm-agent`, and use its socket. The
      key file it writes is usable only with that TPM.
    - **YubiKey PIV.** Generate an ECC P-256 key in a PIV slot with PIN
-     policy `never` (or once) and touch policy `never`:
-     `ykman piv keys generate --algorithm ECCP256 --pin-policy NEVER
-     --touch-policy NEVER …`, then load it into an `ssh-agent` with
-     `ssh-add -s <path to libykcs11>`.
+     policy `never` (or once) and touch policy `never`, and give the slot a
+     certificate (the PKCS#11 module exposes a slot's key only when it holds
+     one; a self-signed one does):
+
+     ```sh
+     ykman piv keys generate --algorithm ECCP256 --pin-policy NEVER \
+       --touch-policy NEVER 9a warden-laptop.pem
+     ykman piv certificates generate --subject "CN=warden-laptop" 9a warden-laptop.pem
+     ssh-add -s <path to libykcs11>
+     ssh-add -L > ~/.ssh/warden-laptop.pub   # keep only the slot's line
+     ```
    - **A plain key file** (weakest: anyone who copies the file can sign).
      `ssh-keygen -t ed25519 -f ~/.ssh/warden-laptop`, used for nothing else,
      loaded with `ssh-add ~/.ssh/warden-laptop`.
@@ -87,7 +94,12 @@ An agent authenticates every call to the broker in one of two ways:
    changed, `warden` says so.
 
 Each request is signed with a fresh timestamp and nonce, so the machine's
-clock must be within 60 seconds of the broker's (use NTP). The protocol is
+clock must be within 60 seconds of the broker's (use NTP). If a request
+cannot be signed (for example while the `ssh-agent` restarts), the command
+stops, also in the middle of waiting for a decision: rerun it once the agent
+is back. If the broker then answers that a request is already pending, cancel
+the old one (`warden request cancel <id>`, with the id printed before) or
+let it expire. The protocol is
 described in [agent-protocol.md](agent-protocol.md), for clients other than
 `warden`.
 
@@ -96,8 +108,9 @@ key, have the owner run
 `warden-server agent set-key laptop "$(cat ~/.ssh/warden-laptop.pub)"`
 (the bearer key stops working at once), then run `warden login --ssh-key …`
 as above. The old bearer key can then be deleted from the Keychain
-(`security delete-generic-password -s warden-broker`) and from the password
-manager.
+(`security delete-generic-password -s warden-broker -a '<server>|<agent>'`,
+for example `-a 'https://warden.example.ts.net/|laptop'`) and from the
+password manager.
 
 ### With a bearer key (legacy)
 

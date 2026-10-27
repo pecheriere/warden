@@ -172,7 +172,9 @@ pub fn load() -> Result<Config> {
     let path = config_path()?;
     load_from(&path).with_context(|| {
         format!(
-            "cannot load {}; run `warden login --server <url> --agent <name>` first",
+            "cannot load {}; run `warden login --server <url> --agent <name> --ssh-key \
+             <path.pub>` (signing key) or `warden login --server <url> --agent <name>` (bearer \
+             key) first",
             path.display()
         )
     })
@@ -205,13 +207,30 @@ pub fn check_socket_path(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The configuration at [`config_path`], or `None` when there is none or it
-/// cannot be used.
+/// The configuration at [`config_path`], or `None` when there is none.
 ///
 /// # Errors
-/// If the configuration path cannot be determined.
+/// If the configuration path cannot be determined, or a configuration
+/// exists but cannot be read or is invalid: it may hold a pinned audience,
+/// which must not be overwritten unseen.
 pub fn load_existing() -> Result<Option<Config>> {
-    Ok(load_from(&config_path()?).ok())
+    load_existing_from(&config_path()?)
+}
+
+fn load_existing_from(path: &Path) -> Result<Option<Config>> {
+    match load_from(path) {
+        Ok(config) => Ok(Some(config)),
+        Err(e)
+            if e.downcast_ref::<std::io::Error>()
+                .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound) =>
+        {
+            Ok(None)
+        }
+        Err(e) => Err(e.context(format!(
+            "cannot load the existing configuration {}; fix or remove it, then log in again",
+            path.display()
+        ))),
+    }
 }
 
 /// Write the configuration to [`config_path`].
@@ -323,8 +342,8 @@ mod tests {
     use std::os::unix::fs::PermissionsExt as _;
 
     use super::{
-        Config, SshKeyConfig, check_agent_key, check_server_url, keychain_account, load_from,
-        save_to,
+        Config, SshKeyConfig, check_agent_key, check_server_url, keychain_account,
+        load_existing_from, load_from, save_to,
     };
 
     fn url(s: &str) -> url::Url {
@@ -381,6 +400,22 @@ mod tests {
                 .contains("agent_socket")
         );
         assert_eq!(load_from(&path).unwrap(), no_socket);
+    }
+
+    /// Only a missing configuration counts as none; a broken one (which may
+    /// hold a pinned audience) stops the login, naming the file.
+    #[test]
+    fn existing_config_is_none_only_when_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        assert_eq!(load_existing_from(&path).unwrap(), None);
+        let config = signed_sample();
+        save_to(&path, &config).unwrap();
+        assert_eq!(load_existing_from(&path).unwrap(), Some(config));
+        std::fs::write(&path, "server = \"https://w.example/\"\n[ssh_key\n").unwrap();
+        let err = format!("{:#}", load_existing_from(&path).unwrap_err());
+        assert!(err.contains(&path.display().to_string()), "{err}");
+        assert!(err.contains("fix or remove it"), "{err}");
     }
 
     #[test]
