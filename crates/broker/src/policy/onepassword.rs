@@ -7,14 +7,14 @@ use std::time::Duration;
 use async_trait::async_trait;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
-use http::{HeaderName, Method};
+use http::{HeaderName, Method, StatusCode};
 use rustls_pki_types::CertificateDer;
 use rustls_pki_types::pem::PemObject as _;
 use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use ssh_key::{Algorithm, LineEnding, PrivateKey, PublicKey};
-use tokio::sync::OnceCell;
+use tokio::sync::Mutex;
 use url::{Origin, Url};
 use warden_broker_proto::{SecretName, TargetName, UnixUser, Window};
 use zeroize::Zeroizing;
@@ -97,13 +97,16 @@ fn secret_string<'de, D: serde::Deserializer<'de>>(
 }
 
 /// Reads policy from a 1Password Connect server. Items are fetched on every
-/// call; only the vault id is cached.
+/// call; only the vault id is cached, and it is resolved again when Connect
+/// stops knowing it (the vault was recreated).
 pub struct OnePasswordConnect {
     client: reqwest::Client,
     base: Url,
     token: SecretString,
     vault: String,
-    vault_id: OnceCell<String>,
+    /// The resolved vault id. The lock is held while resolving, so concurrent
+    /// callers share one lookup (single flight).
+    vault_id: Mutex<Option<String>>,
 }
 
 impl OnePasswordConnect {
@@ -125,7 +128,7 @@ impl OnePasswordConnect {
             base: url,
             token,
             vault,
-            vault_id: OnceCell::new(),
+            vault_id: Mutex::new(None),
         }
     }
 
@@ -136,14 +139,7 @@ impl OnePasswordConnect {
     ) -> Result<T, PolicyError> {
         let body = self.get_bytes(segments, query).await?;
         // Never interpolate the serde error itself: it can quote a field value.
-        serde_json::from_slice(&body).map_err(|e| {
-            PolicyError::Unavailable(format!(
-                "1Password Connect sent an unreadable response ({:?} error at line {}, column {})",
-                e.classify(),
-                e.line(),
-                e.column()
-            ))
-        })
+        serde_json::from_slice(&body).map_err(|e| unreadable(&e))
     }
 
     /// GET and return the raw body in memory that is wiped on drop.
@@ -152,6 +148,21 @@ impl OnePasswordConnect {
         segments: &[&str],
         query: &[(&str, &str)],
     ) -> Result<Zeroizing<Vec<u8>>, PolicyError> {
+        self.get_found(segments, query).await?.ok_or_else(|| {
+            PolicyError::Unavailable(format!(
+                "1Password Connect returned HTTP {}",
+                StatusCode::NOT_FOUND
+            ))
+        })
+    }
+
+    /// Like [`Self::get_bytes`], but `Ok(None)` for a 404, so that callers
+    /// can tell "not found" from a failure.
+    async fn get_found(
+        &self,
+        segments: &[&str],
+        query: &[(&str, &str)],
+    ) -> Result<Option<Zeroizing<Vec<u8>>>, PolicyError> {
         let mut url = self.base.clone();
         url.path_segments_mut()
             .map_err(|()| PolicyError::Unavailable("Connect URL cannot be a base".into()))?
@@ -174,6 +185,9 @@ impl OnePasswordConnect {
                 ))
             })?;
         let status = response.status();
+        if status == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
         if !status.is_success() {
             return Err(PolicyError::Unavailable(format!(
                 "1Password Connect returned HTTP {status}"
@@ -188,37 +202,92 @@ impl OnePasswordConnect {
         })? {
             body.extend_from_slice(&chunk);
         }
-        Ok(body)
+        Ok(Some(body))
     }
 
-    async fn vault_id(&self) -> Result<&str, PolicyError> {
-        self.vault_id
-            .get_or_try_init(|| async {
-                if self.vault.contains(['"', '\\']) {
-                    return Err(PolicyError::Unavailable(
-                        "vault name contains unsupported characters".into(),
-                    ));
-                }
-                let filter = format!("name eq \"{}\"", self.vault);
-                let vaults: Vec<Vault> =
-                    self.get(&["v1", "vaults"], &[("filter", &filter)]).await?;
-                let vault = vaults
-                    .into_iter()
-                    .find(|v| v.name == self.vault)
-                    .ok_or_else(|| {
-                        PolicyError::Unavailable(format!("vault \"{}\" not found", self.vault))
-                    })?;
-                check_id(&vault.id)?;
-                Ok(vault.id)
-            })
-            .await
-            .map(String::as_str)
+    /// The cached vault id, resolved by name on first use.
+    async fn vault_id(&self) -> Result<String, PolicyError> {
+        let mut cached = self.vault_id.lock().await;
+        if let Some(id) = cached.as_ref() {
+            return Ok(id.clone());
+        }
+        let id = self.resolve_vault().await?;
+        *cached = Some(id.clone());
+        Ok(id)
+    }
+
+    /// Resolve the vault again after Connect answered 404 for `stale`.
+    /// Returns the current id, which equals `stale` when the vault still has
+    /// it (the 404 was for something else). Callers that saw the same stale
+    /// id queue on the lock; the first one resolves and the rest find the
+    /// new id already cached. A vault that no longer resolves clears the
+    /// cache and fails.
+    async fn refresh_vault_id(&self, stale: &str) -> Result<String, PolicyError> {
+        let mut cached = self.vault_id.lock().await;
+        if let Some(id) = cached.as_ref().filter(|id| id.as_str() != stale) {
+            return Ok(id.clone());
+        }
+        *cached = None;
+        let id = self.resolve_vault().await?;
+        *cached = Some(id.clone());
+        Ok(id)
+    }
+
+    async fn resolve_vault(&self) -> Result<String, PolicyError> {
+        if self.vault.contains(['"', '\\']) {
+            return Err(PolicyError::Unavailable(
+                "vault name contains unsupported characters".into(),
+            ));
+        }
+        let filter = format!("name eq \"{}\"", self.vault);
+        let vaults: Vec<Vault> = self.get(&["v1", "vaults"], &[("filter", &filter)]).await?;
+        let vault = vaults
+            .into_iter()
+            .find(|v| v.name == self.vault)
+            .ok_or_else(|| {
+                PolicyError::Unavailable(format!("vault \"{}\" not found", self.vault))
+            })?;
+        check_id(&vault.id)?;
+        Ok(vault.id)
+    }
+
+    /// GET `/v1/vaults/{vault}/{tail…}`. On a 404 the vault id is resolved
+    /// again; if the vault has a new id the request is repeated once with it.
+    /// Otherwise (same id, or a second 404) the 404 is reported as it is, so
+    /// a vault that is truly gone fails closed without a retry loop.
+    async fn vault_bytes(&self, tail: &[&str]) -> Result<Zeroizing<Vec<u8>>, PolicyError> {
+        let mut vault_id = self.vault_id().await?;
+        for retry in [true, false] {
+            let mut segments = vec!["v1", "vaults", vault_id.as_str()];
+            segments.extend_from_slice(tail);
+            if let Some(body) = self.get_found(&segments, &[]).await? {
+                return Ok(body);
+            }
+            if !retry {
+                break;
+            }
+            let current = self.refresh_vault_id(&vault_id).await?;
+            if current == vault_id {
+                break;
+            }
+            vault_id = current;
+        }
+        Err(PolicyError::Unavailable(format!(
+            "1Password Connect returned HTTP {}",
+            StatusCode::NOT_FOUND
+        )))
+    }
+
+    /// [`Self::vault_bytes`], decoded. Never interpolates the serde error: it
+    /// can quote a field value.
+    async fn vault_get<T: DeserializeOwned>(&self, tail: &[&str]) -> Result<T, PolicyError> {
+        let body = self.vault_bytes(tail).await?;
+        serde_json::from_slice(&body).map_err(|e| unreadable(&e))
     }
 
     /// Summaries of all items in the vault carrying `tag`.
     async fn tagged(&self, tag: &str) -> Result<Vec<ItemSummary>, PolicyError> {
-        let vault_id = self.vault_id().await?;
-        let items: Vec<ItemSummary> = self.get(&["v1", "vaults", vault_id, "items"], &[]).await?;
+        let items: Vec<ItemSummary> = self.vault_get(&["items"]).await?;
         Ok(items
             .into_iter()
             .filter(|i| i.tags.iter().any(|t| t == tag))
@@ -261,10 +330,7 @@ impl OnePasswordConnect {
             .await?
             .ok_or_else(|| PolicyError::UnknownSecret(name.as_str().to_owned()))?;
         check_id(&summary.id)?;
-        let vault_id = self.vault_id().await?;
-        let body = self
-            .get_bytes(&["v1", "vaults", vault_id, "items", &summary.id], &[])
-            .await?;
+        let body = self.vault_bytes(&["items", &summary.id]).await?;
         // Never interpolate the serde error: it can quote the credential.
         let item: ApiItem = serde_json::from_slice(&body).map_err(|_| {
             PolicyError::Unavailable(format!(
@@ -286,10 +352,7 @@ impl OnePasswordConnect {
             .await?
             .ok_or_else(|| PolicyError::NotFound(name.as_str().to_owned()))?;
         check_id(&summary.id)?;
-        let vault_id = self.vault_id().await?;
-        let body = self
-            .get_bytes(&["v1", "vaults", vault_id, "items", &summary.id], &[])
-            .await?;
+        let body = self.vault_bytes(&["items", &summary.id]).await?;
         // Never interpolate the serde error: it can quote the credential.
         let item: TargetItem = serde_json::from_slice(&body).map_err(|_| {
             PolicyError::Unavailable(format!(
@@ -299,6 +362,17 @@ impl OnePasswordConnect {
         drop(body);
         parse_target(name, &item)
     }
+}
+
+/// The error for a response that is not the JSON we expect. Only the position
+/// and class of the serde error are used: its text can quote a field value.
+fn unreadable(e: &serde_json::Error) -> PolicyError {
+    PolicyError::Unavailable(format!(
+        "1Password Connect sent an unreadable response ({:?} error at line {}, column {})",
+        e.classify(),
+        e.line(),
+        e.column()
+    ))
 }
 
 /// Connect ids are 26 lowercase alphanumerics; refuse anything that could
@@ -345,10 +419,7 @@ impl SecretBackend for OnePasswordConnect {
         let ca_error =
             |reason: &str| PolicyError::Ca(format!("item \"{}\": {reason}", summary.title));
         check_id(&summary.id)?;
-        let vault_id = self.vault_id().await?;
-        let body = self
-            .get_bytes(&["v1", "vaults", vault_id, "items", &summary.id], &[])
-            .await?;
+        let body = self.vault_bytes(&["items", &summary.id]).await?;
         // Never interpolate the serde error: it can quote a field value.
         let item: CaItem =
             serde_json::from_slice(&body).map_err(|_| ca_error("unreadable CA item"))?;

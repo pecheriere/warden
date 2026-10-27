@@ -6,6 +6,14 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- A 1Password vault that was deleted and recreated under the same name is
+  picked up without restarting the broker: on a Connect 404 the vault id is
+  resolved again (once, shared by concurrent callers) and the request retried
+  once. A vault that is gone, or a missing item in an unchanged vault, still
+  fails closed with the same error.
+
 ### Added
 
 - An agent can cancel its own pending request: `warden request cancel <id>`

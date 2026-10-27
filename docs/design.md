@@ -513,6 +513,12 @@ warden reads policy from Connect on each request; an item without required
 fields is unusable (fail closed). Only the owner, in 1Password, can change
 where a secret may go.
 
+Only the vault id is cached. When Connect answers 404 for a vault-scoped
+request, warden resolves the vault by name again (concurrent callers share
+one lookup) and, if the vault now has a different id, repeats the request
+once with it. A 404 for a missing item in an unchanged vault, a vault that
+no longer resolves, or a second 404 is reported as unavailable: no retry loop.
+
 ## 11. Audit log
 
 - Append-only JSON lines, one event per request / decision / grant / use /
