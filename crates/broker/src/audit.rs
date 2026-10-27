@@ -70,6 +70,13 @@ pub enum AuditEvent {
         /// Request id.
         id: Id,
     },
+    /// An agent withdrew its own pending request.
+    RequestCancelled {
+        /// Request id.
+        id: Id,
+        /// The agent that made and cancelled it.
+        agent: AgentName,
+    },
     /// A request timed out.
     Expired {
         /// Request id.

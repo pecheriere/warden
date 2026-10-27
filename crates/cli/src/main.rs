@@ -31,6 +31,9 @@ const EXIT_DENIED: u8 = 2;
 const EXIT_EXPIRED: u8 = 3;
 /// Exit code: the grant was revoked.
 const EXIT_REVOKED: u8 = 4;
+/// Exit code: a request was cancelled (by the agent, from another terminal)
+/// while this command waited for it.
+const EXIT_CANCELLED: u8 = 6;
 /// Exit code: `warden ssh` found no active grant for the target.
 const EXIT_NO_GRANT: u8 = 5;
 /// Exit code: `warden http --fail` got an upstream status of 400 or more
@@ -38,6 +41,12 @@ const EXIT_NO_GRANT: u8 = 5;
 const EXIT_HTTP_FAIL: u8 = 22;
 /// Exit code: any other failure.
 const EXIT_ERROR: u8 = 1;
+/// Exit code: interrupted with Ctrl-C (128 plus SIGINT, as shells report it).
+const EXIT_INTERRUPTED: u8 = 130;
+
+/// How long Ctrl-C waits for the broker to confirm the cancellation of the
+/// request being waited for.
+const CANCEL_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// How long `warden request` waits for a decision (pending requests expire
 /// on the server after 10 minutes).
@@ -153,6 +162,12 @@ enum RequestKind {
         #[arg(long)]
         goal: Goal,
     },
+    /// Withdraw one of this agent's pending requests, so its approval link
+    /// stops working.
+    Cancel {
+        /// Request identifier, as printed while `warden request` waits.
+        id: Id,
+    },
 }
 
 /// Failure with a specific exit code and message.
@@ -223,6 +238,9 @@ async fn run(cmd: Cmd) -> Result<()> {
                     goal,
                 },
         } => request_api(secret, methods, path, window, goal).await,
+        Cmd::Request {
+            kind: RequestKind::Cancel { id },
+        } => cancel(&id).await,
         Cmd::Http {
             secret,
             method,
@@ -309,9 +327,17 @@ fn terminal_exit_code(status: &RequestStatus) -> Option<u8> {
         RequestStatus::Approved(_) => Some(0),
         RequestStatus::Denied => Some(EXIT_DENIED),
         RequestStatus::Expired => Some(EXIT_EXPIRED),
+        RequestStatus::Cancelled => Some(EXIT_CANCELLED),
         RequestStatus::Revoked => Some(EXIT_REVOKED),
         RequestStatus::Error { .. } => Some(EXIT_ERROR),
     }
+}
+
+async fn cancel(id: &Id) -> Result<()> {
+    let (_, client) = client()?;
+    client.cancel(id).await?;
+    println!("cancelled: request {id}");
+    Ok(())
 }
 
 async fn request_ssh(target: TargetName, user: UnixUser, window: Window, goal: Goal) -> Result<()> {
@@ -447,14 +473,24 @@ fn announce(grant: &GrantView) {
 
 /// Create `req`, wait for the owner's decision and return the approved
 /// grant. `subject` completes "a request …" in messages. Denied, expired,
-/// revoked and failed requests end the process with their own exit codes.
+/// revoked, cancelled and failed requests end the process with their own exit
+/// codes. Ctrl-C while waiting cancels the request (best effort, for at most
+/// [`CANCEL_TIMEOUT`]) and exits 130.
 async fn request_grant(
     config: &Config,
     client: &Client,
     req: &CreateRequest,
     subject: &str,
 ) -> Result<GrantView> {
-    let created = client.create(req).await?;
+    // Registered before anything is sent, so Ctrl-C is never lost.
+    let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+        .context("cannot listen for Ctrl-C")?;
+    let created = tokio::select! {
+        created = client.create(req) => created?,
+        _ = interrupt.recv() => {
+            return Err(Exit::new(EXIT_INTERRUPTED, "interrupted before the request was made").into());
+        }
+    };
     if created.fingerprint != fingerprint(&config.agent, req) {
         // The broker answered with another pending request of this agent for
         // the same target or secret, made with a different goal, window or
@@ -465,14 +501,18 @@ async fn request_grant(
         );
     }
     eprintln!(
-        "fingerprint {} — waiting for approval…",
-        created.fingerprint
+        "request {}, fingerprint {} — waiting for approval…",
+        created.id, created.fingerprint
     );
 
     let created_at = unix_now();
     let deadline = Instant::now() + DECISION_TIMEOUT;
     let poll = || client.status(&created.id, MAX_WAIT_SECS);
-    let status = match wait_for_decision(poll, deadline, FIRST_RETRY_DELAY).await {
+    let waited = tokio::select! {
+        waited = wait_for_decision(poll, deadline, FIRST_RETRY_DELAY) => waited,
+        _ = interrupt.recv() => return Err(cancel_after_interrupt(client, &created.id).await.into()),
+    };
+    let status = match waited {
         Ok(status) => status,
         Err(reason) => bail!(
             "{reason}; request {} may still be pending on the broker, where it expires \
@@ -491,11 +531,28 @@ async fn request_grant(
             let what = match other {
                 RequestStatus::Denied => "denied",
                 RequestStatus::Expired => "expired",
+                RequestStatus::Cancelled => "cancelled",
                 _ => "revoked",
             };
             Err(Exit::new(code, format!("request {what}")).into())
         }
     }
+}
+
+/// Cancel request `id` after Ctrl-C and say what came of it. The exit is
+/// the same either way; a cancellation that fails or takes longer than
+/// [`CANCEL_TIMEOUT`] leaves the request to expire on its own.
+async fn cancel_after_interrupt(client: &Client, id: &Id) -> Exit {
+    let message = match tokio::time::timeout(CANCEL_TIMEOUT, client.cancel(id)).await {
+        Ok(Ok(())) => format!("interrupted; request {id} cancelled"),
+        Ok(Err(e)) => format!(
+            "interrupted; could not cancel request {id} ({e}); it expires unanswered on the broker"
+        ),
+        Err(_) => format!(
+            "interrupted; cancelling request {id} timed out; it expires unanswered on the broker"
+        ),
+    };
+    Exit::new(EXIT_INTERRUPTED, message)
 }
 
 /// Long-poll until the request reaches a terminal status. Transport errors
@@ -1093,6 +1150,7 @@ mod tests {
         assert_eq!(terminal_exit_code(&RequestStatus::Approved(grant)), Some(0));
         assert_eq!(terminal_exit_code(&RequestStatus::Denied), Some(2));
         assert_eq!(terminal_exit_code(&RequestStatus::Expired), Some(3));
+        assert_eq!(terminal_exit_code(&RequestStatus::Cancelled), Some(6));
         assert_eq!(terminal_exit_code(&RequestStatus::Revoked), Some(4));
         assert_eq!(
             terminal_exit_code(&RequestStatus::Error {

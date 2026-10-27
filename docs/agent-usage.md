@@ -94,7 +94,7 @@ reads or writes stdin and stdout instead.
 `warden request` prints this to stderr:
 
 ```
-fingerprint b65b-9812-eb72 — waiting for approval…
+request 0b8f4c1e…, fingerprint b65b-9812-eb72 — waiting for approval…
 ```
 
 The approval page shows the same fingerprint. If you are talking with the
@@ -104,6 +104,24 @@ mismatch means the request they see is not yours, and they should deny it.
 Only one request per agent and target can be pending at a time. If another
 one is already waiting, `warden request` stops and prints that request's
 fingerprint. It does not wait on a request it did not make.
+
+## Cancelling a request
+
+If you no longer need access, withdraw the request so the owner's
+notification stops being actionable:
+
+- Press Ctrl-C while `warden request` waits. It cancels the pending request
+  (waiting at most 5 s for the broker), says so on stderr and exits 130. If
+  the broker cannot be reached in time, it says that too; the request then
+  expires on its own.
+- Or run `warden request cancel <id>` with the id printed on the
+  `request …` line, for example from another terminal. The waiting
+  `warden request` then exits 6.
+
+You can cancel only your own requests, and only while they are pending. The
+approval link of a cancelled request shows "Cancelled by the agent." and
+cannot be approved; the request appears as `cancelled` in the owner's history
+and the audit log.
 
 The CLI waits for a decision for up to 11 minutes. Pending requests expire
 after 10. If the broker is briefly unreachable or fails with a 5xx while
@@ -204,7 +222,9 @@ also cleans up expired grants and stops their agents.
 | 3 | The request expired without a decision. The owner may be away. Retry later, not in a loop. |
 | 4 | The grant was revoked. |
 | 5 | `warden ssh` or `warden http` found no active grant. Run `warden request ssh …` or `warden request api …` first. For `warden http`, also when no active grant covers the method and path; the message gives the `warden request api <secret> --methods <METHOD> …` command to run. |
+| 6 | The request was cancelled while `warden request` waited for it (`warden request cancel` from another terminal). |
 | 22 | `warden http --fail` got an upstream status of 400 or more. The body is still written to stdout. |
+| 130 | Interrupted with Ctrl-C while `warden request` waited; the pending request was cancelled (or, if the broker did not answer in time, left to expire). |
 
 `warden http` exits 0 for any upstream status unless `--fail` is given. A
 refusal or failure by the broker (policy violation, 409, timeout, size limit)

@@ -715,6 +715,43 @@ async fn deny_marks_denied_and_wakes_cli() {
 }
 
 #[tokio::test]
+async fn cancelled_request_cannot_be_approved() {
+    let (broker, created, token) = pending().await;
+    let mut auth = broker.enroll_soft_passkey().await;
+    // The ceremony starts while the request is still pending.
+    let begin = broker.begin_approval(&token, Window::M15).await;
+    assert_eq!(begin.status, StatusCode::OK, "{}", begin.body);
+    let (ceremony, credential) = TestBroker::sign(&mut auth, &begin);
+
+    broker
+        .state()
+        .requests
+        .cancel(&bot(), &created.id)
+        .await
+        .unwrap();
+    assert_eq!(status(&broker, &created.id).await, RequestStatus::Cancelled);
+
+    let page = broker.get(&format!("/approve/{token}")).await;
+    assert_eq!(page.status, StatusCode::NOT_FOUND);
+    assert!(
+        page.body.contains("Cancelled by the agent."),
+        "{}",
+        page.body
+    );
+    let again = broker.begin_approval(&token, Window::M15).await;
+    assert_eq!(again.status, StatusCode::NOT_FOUND, "{}", again.body);
+    let finish = broker.finish_approval(&token, &ceremony, &credential).await;
+    assert_eq!(finish.status, StatusCode::CONFLICT, "{}", finish.body);
+    assert_eq!(grant_count(&broker).await, 0);
+    assert_eq!(status(&broker, &created.id).await, RequestStatus::Cancelled);
+    let denied = broker.deny(&token).await;
+    assert_eq!(denied.status, StatusCode::CONFLICT, "{}", denied.body);
+
+    let history = broker.get("/history").await;
+    assert!(history.body.contains("cancelled"), "{}", history.body);
+}
+
+#[tokio::test]
 async fn grants_page_lists_and_revokes() {
     let (broker, created, token) = pending().await;
     let approved = broker.approve(&token, Window::M30).await;

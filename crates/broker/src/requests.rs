@@ -301,7 +301,7 @@ pub struct HistoryEntry {
     pub fingerprint: Fingerprint,
     /// The request as made.
     pub request: CreateRequest,
-    /// Stored status (`pending`, `approved`, `denied`, `expired`, `revoked`, `error`).
+    /// Stored status (`pending`, `approved`, `denied`, `expired`, `revoked`, `error`, `cancelled`).
     pub status: String,
     /// When the request was made, Unix seconds.
     pub created_at: i64,
@@ -846,6 +846,71 @@ impl Requests {
         .await?;
         self.bus.publish(&id);
         Ok(())
+    }
+
+    /// Withdraw `agent`'s own pending request `id`. The request becomes
+    /// `cancelled` and its approval link stops working; nothing else about
+    /// it changes.
+    ///
+    /// # Errors
+    /// [`RequestError::NotFound`] if no such request belongs to `agent`;
+    /// [`RequestError::AlreadyDecided`] if it is no longer pending (decided,
+    /// cancelled or past its expiry).
+    pub async fn cancel(&self, agent: &AgentName, id: &Id) -> Result<(), RequestError> {
+        let this = self.clone();
+        let (agent, id) = (agent.clone(), id.clone());
+        detached(async move { this.cancel_now(&agent, &id).await }).await
+    }
+
+    async fn cancel_now(&self, agent: &AgentName, id: &Id) -> Result<(), RequestError> {
+        let now = self.clock.now();
+        let mut tx = begin(&self.pool).await?;
+        let cancelled = sqlx::query(
+            "UPDATE requests SET status = 'cancelled', decided_at = ?1 \
+             WHERE id = ?2 AND agent = ?3 AND status = 'pending' AND expires_at > ?1",
+        )
+        .bind(now)
+        .bind(id.as_str())
+        .bind(agent.as_str())
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        if cancelled == 0 {
+            drop(tx);
+            // Existence is only revealed for the agent's own requests.
+            return Err(match self.status_row(agent, id).await {
+                Ok(_) => RequestError::AlreadyDecided,
+                Err(e) => e,
+            });
+        }
+        let event = AuditEvent::RequestCancelled {
+            id: id.clone(),
+            agent: agent.clone(),
+        };
+        audit_and_commit(
+            &self.audit,
+            tx,
+            vec![event],
+            &format!("cancellation of request {id}"),
+        )
+        .await?;
+        self.bus.publish(id);
+        Ok(())
+    }
+
+    /// Whether the approval link `token` belongs to a request its agent
+    /// cancelled.
+    ///
+    /// # Errors
+    /// Storage failures.
+    pub async fn is_cancelled(&self, token: &str) -> Result<bool, RequestError> {
+        Ok(sqlx::query(
+            "SELECT 1 FROM requests WHERE approval_token_hash = ? AND status = 'cancelled'",
+        )
+        .bind(sha256_hex(token))
+        .fetch_optional(&self.pool)
+        .await?
+        .is_some())
     }
 
     /// Approve the pending request behind `token` with `grant`, atomically:
@@ -1489,6 +1554,7 @@ fn to_status(row: &SqliteRow) -> Result<RequestStatus, RequestError> {
         }
         "denied" => RequestStatus::Denied,
         "expired" => RequestStatus::Expired,
+        "cancelled" => RequestStatus::Cancelled,
         "revoked" => RequestStatus::Revoked,
         "error" => RequestStatus::Error {
             message: row

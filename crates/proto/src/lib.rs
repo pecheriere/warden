@@ -416,6 +416,8 @@ pub enum RequestStatus {
     Denied,
     /// Expired without a decision.
     Expired,
+    /// Withdrawn by the agent that made it, before any decision.
+    Cancelled,
     /// Revoked after approval.
     Revoked,
     /// Failed, for example no notifier could deliver.
@@ -690,6 +692,10 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&RequestStatus::Pending).unwrap(),
             r#"{"status":"pending"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&RequestStatus::Cancelled).unwrap(),
+            r#"{"status":"cancelled"}"#
         );
         let e = RequestStatus::Error {
             message: "boom".to_owned(),

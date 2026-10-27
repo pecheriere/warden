@@ -393,3 +393,123 @@ async fn backend_outage_is_503_without_detail() {
     );
     assert_eq!(resp.body, r#"{"error":"secret backend unavailable"}"#);
 }
+
+#[tokio::test]
+async fn agent_cancels_pending_request() {
+    let broker = TestBroker::new().await;
+    let key = broker.add_agent("bot").await;
+    let created = create(&broker, &key, "restart the backup job").await;
+    let token = warden_broker::testkit::CapturingNotifier::token(&broker.capture.next().await);
+
+    let (status, cancelled) = tokio::join!(poll(&broker, &key, &created.id, 30), async {
+        // Let the long-poll subscribe, so the cancel has to wake it.
+        while broker.state().requests.bus().receiver_count() == 0 {
+            tokio::task::yield_now().await;
+        }
+        broker
+            .api_post(&key, &format!("/v1/requests/{}/cancel", created.id))
+            .await
+    });
+    assert_eq!(
+        cancelled.status,
+        StatusCode::NO_CONTENT,
+        "{}",
+        cancelled.body
+    );
+    assert!(cancelled.body.is_empty());
+    assert_eq!(status, RequestStatus::Cancelled);
+    assert_eq!(
+        poll(&broker, &key, &created.id, 0).await,
+        RequestStatus::Cancelled
+    );
+    assert!(
+        broker
+            .audit_types()
+            .contains(&"request_cancelled".to_owned())
+    );
+    let audit = std::fs::read_to_string(broker.audit_path()).unwrap();
+    assert!(
+        audit.contains(&format!(
+            r#""type":"request_cancelled","id":"{}","agent":"bot""#,
+            created.id
+        )),
+        "{audit}"
+    );
+
+    // The slot is free again: the same request can be made anew.
+    let again = create(&broker, &key, "restart the backup job").await;
+    assert_ne!(again.id, created.id);
+    // The approval link of the cancelled request is dead.
+    let page = broker.get(&format!("/approve/{token}")).await;
+    assert_eq!(page.status, StatusCode::NOT_FOUND);
+    assert!(
+        page.body.contains("Cancelled by the agent."),
+        "{}",
+        page.body
+    );
+}
+
+#[tokio::test]
+async fn cancel_refused_for_other_agent_and_decided() {
+    let broker = TestBroker::new().await;
+    let key = broker.add_agent("bot").await;
+    let other = broker.add_agent("other").await;
+    let created = create(&broker, &key, "restart the backup job").await;
+    let token = warden_broker::testkit::CapturingNotifier::token(&broker.capture.next().await);
+    let path = format!("/v1/requests/{}/cancel", created.id);
+
+    // Another agent, and a request that does not exist, look the same.
+    let foreign = broker.api_post(&other, &path).await;
+    assert_eq!(foreign.status, StatusCode::NOT_FOUND, "{}", foreign.body);
+    let unknown = broker
+        .api_post(&key, &format!("/v1/requests/{}/cancel", Id::random()))
+        .await;
+    assert_eq!(unknown.status, StatusCode::NOT_FOUND, "{}", unknown.body);
+    let bad = broker.api_post(&key, "/v1/requests/nope/cancel").await;
+    assert_eq!(bad.status, StatusCode::BAD_REQUEST, "{}", bad.body);
+    assert_eq!(
+        poll(&broker, &key, &created.id, 0).await,
+        RequestStatus::Pending
+    );
+
+    // Approved: refused, and the grant stays.
+    let done = broker.approve(&token, Window::M30).await;
+    assert_eq!(done.status, StatusCode::OK, "{}", done.body);
+    let late = broker.api_post(&key, &path).await;
+    assert_eq!(late.status, StatusCode::CONFLICT, "{}", late.body);
+    assert!(matches!(
+        poll(&broker, &key, &created.id, 0).await,
+        RequestStatus::Approved(_)
+    ));
+
+    // Cancelled twice: the second is refused too.
+    let second = create(&broker, &key, "second").await;
+    let second_path = format!("/v1/requests/{}/cancel", second.id);
+    assert_eq!(
+        broker.api_post(&key, &second_path).await.status,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        broker.api_post(&key, &second_path).await.status,
+        StatusCode::CONFLICT
+    );
+
+    // Expired: refused.
+    broker.clock.advance(601);
+    let third = create(&broker, &key, "third").await;
+    broker.clock.advance(601);
+    let expired = broker
+        .api_post(&key, &format!("/v1/requests/{}/cancel", third.id))
+        .await;
+    assert_eq!(expired.status, StatusCode::CONFLICT, "{}", expired.body);
+    assert_eq!(
+        poll(&broker, &key, &third.id, 0).await,
+        RequestStatus::Expired
+    );
+    let cancelled = broker
+        .audit_types()
+        .iter()
+        .filter(|t| *t == "request_cancelled")
+        .count();
+    assert_eq!(cancelled, 1);
+}

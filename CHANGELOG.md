@@ -8,6 +8,16 @@ All notable changes to this project are recorded here. The format follows
 
 ### Added
 
+- An agent can cancel its own pending request: `warden request cancel <id>`
+  (`POST /v1/requests/{id}/cancel`, 404 for another agent's or an unknown
+  request, 409 once it is no longer pending), audited as `request_cancelled`.
+  The approval page of a cancelled request says "Cancelled by the agent." and
+  cannot be approved, and the history lists it as `cancelled`. Ctrl-C while
+  `warden request` waits cancels the pending request (waiting at most 5 s) and
+  exits 130; a request cancelled from another terminal ends the waiting
+  command with exit 6. `warden request` now prints the request id, which
+  `warden request cancel` takes. Schema migration `0003` widens the status
+  check of `requests`, rebuilding it and `grants` with all rows preserved.
 - Proxied API calls in flight are limited per agent
   (`WARDEN_PROXY_MAX_CALLS_PER_AGENT`, default 4, 1 to 64) and overall
   (`WARDEN_PROXY_MAX_CALLS`, default 16, 1 to 256, at least the per-agent

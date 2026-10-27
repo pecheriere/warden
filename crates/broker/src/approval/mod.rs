@@ -260,9 +260,11 @@ fn passkey_error(e: &PasskeyError) -> Response {
 async fn approve_page(State(state): State<AppState>, Path(token): Path<String>) -> Response {
     match state.requests.pending_for_token(&token).await {
         Ok(view) => pages::approve(&view, state.clock.now()).into_response(),
-        Err(RequestError::NotFound) => {
-            (StatusCode::NOT_FOUND, pages::not_pending()).into_response()
-        }
+        Err(RequestError::NotFound) => match state.requests.is_cancelled(&token).await {
+            Ok(true) => (StatusCode::NOT_FOUND, pages::cancelled()).into_response(),
+            Ok(false) => (StatusCode::NOT_FOUND, pages::not_pending()).into_response(),
+            Err(e) => internal_page("approve page", &e),
+        },
         Err(RequestError::Unavailable(detail)) => {
             tracing::error!(error = %detail, "secret backend unavailable");
             (
