@@ -874,7 +874,8 @@ curl "$@" "$WARDEN_URL$target"
 
 `--data-binary` sends the file byte for byte (`-d` would strip newlines and
 change the hash), `--path-as-is` stops curl from normalising the path, and
-`--globoff` keeps `[]{}` literal.
+`--globoff` keeps `[]{}` literal. warden's tests run this script, exactly as
+shown here, against a broker with Ed25519 and P-256 keys in an `ssh-agent`.
 
 A session with it (`jq` only for reading the answers):
 
