@@ -37,8 +37,9 @@ All notable changes to this project are recorded here. The format follows
   cannot be approved, and the history lists it as `cancelled`. Ctrl-C while
   `warden request` waits cancels the pending request (waiting at most about
   10 s) and exits 130, revoking the grant if the owner approved first; a
-  request cancelled from another terminal ends the waiting command with
-  exit 6. `warden request` now prints the request id, which
+  second Ctrl-C, or one while the approved grant is being installed, exits
+  130 at once and says what may be left behind. A request cancelled from
+  another terminal ends the waiting command with exit 6. `warden request` now prints the request id, which
   `warden request cancel` takes.
 - Proxied API calls in flight are limited per agent
   (`WARDEN_PROXY_MAX_CALLS_PER_AGENT`, default 4, 1 to 64) and overall

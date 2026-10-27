@@ -553,3 +553,48 @@ async fn e2e_request_cancel() {
             .is_empty()
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn e2e_second_ctrl_c_exits_at_once() {
+    use std::io::Read as _;
+
+    // A broker that accepts connections and never answers: after Ctrl-C the
+    // CLI would wait up to 10 s for it to confirm the withdrawal.
+    let s = setup().await;
+    let hole = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let server = url::Url::parse(&format!("http://{}/", hole.local_addr().unwrap())).unwrap();
+    let (connected, mut accepted) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        let mut held = Vec::new();
+        while let Ok((stream, _)) = hole.accept().await {
+            held.push(stream);
+            let _ = connected.send(());
+        }
+    });
+    let cli = Cli::new(&server, "e2e", s.cli.key.clone());
+    let mut child = spawn_request(&cli, &[]);
+    accepted.recv().await.unwrap();
+    let pid = rustix::process::Pid::from_child(&child);
+    let int = || rustix::process::kill_process(pid, rustix::process::Signal::INT).unwrap();
+
+    // The first Ctrl-C starts the withdrawal and says how to skip it...
+    int();
+    let stderr = BufReader::new(child.stderr.take().unwrap());
+    let mut stderr = wait_for_line(stderr, "Ctrl-C again").await;
+    // ...and the second ends the process at once, with exit 130.
+    let asked = std::time::Instant::now();
+    int();
+    let out = tokio::task::spawn_blocking(move || child.wait_with_output())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        asked.elapsed() < std::time::Duration::from_secs(3),
+        "{:?}",
+        asked.elapsed()
+    );
+    assert_eq!(out.status.code(), Some(130));
+    let mut rest = String::new();
+    stderr.read_to_string(&mut rest).unwrap();
+    assert!(rest.contains("interrupted again"), "{rest}");
+}

@@ -487,7 +487,9 @@ fn announce(grant: &GrantView) {
 /// grant. `subject` completes "a request …" in messages. Denied, expired,
 /// revoked, cancelled and failed requests end the process with their own exit
 /// codes. Ctrl-C while waiting cancels the request (best effort, for at most
-/// [`CANCEL_TIMEOUT`]) and exits 130.
+/// [`CANCEL_TIMEOUT`]) and exits 130; a second Ctrl-C during that, or a
+/// Ctrl-C once the grant is returned (while the caller installs it), exits
+/// 130 at once.
 async fn request_grant(
     config: &Config,
     client: &Client,
@@ -500,19 +502,26 @@ async fn request_grant(
     let create = client.create(req);
     tokio::pin!(create);
     let created = tokio::select! {
-        created = &mut create => created?,
-        _ = interrupt.recv() => {
-            // The request may be made already: give the broker's answer a
-            // moment, then withdraw what it made.
-            let exit = match tokio::time::timeout(CANCEL_TIMEOUT, &mut create).await {
-                Ok(Ok(created)) => withdraw_after_interrupt(client, &created.id).await,
-                Ok(Err(_)) | Err(_) => Exit::new(
-                    EXIT_INTERRUPTED,
-                    "interrupted; the request may have been made; it expires unanswered on the broker",
-                ),
-            };
-            return Err(exit.into());
-        }
+        created = &mut create => Some(created?),
+        _ = interrupt.recv() => None,
+    };
+    let Some(created) = created else {
+        exit_on_interrupt(
+            interrupt,
+            "interrupted again; the request may have been made; it expires unanswered on the broker"
+                .to_owned(),
+        );
+        eprintln!("warden: interrupted; withdrawing the request (Ctrl-C again to stop at once)…");
+        // The request may be made already: give the broker's answer a
+        // moment, then withdraw what it made.
+        let exit = match tokio::time::timeout(CANCEL_TIMEOUT, &mut create).await {
+            Ok(Ok(created)) => withdraw_after_interrupt(client, &created.id).await,
+            Ok(Err(_)) | Err(_) => Exit::new(
+                EXIT_INTERRUPTED,
+                "interrupted; the request may have been made; it expires unanswered on the broker",
+            ),
+        };
+        return Err(exit.into());
     };
     if created.fingerprint != fingerprint(&config.agent, req) {
         // The broker answered with another pending request of this agent for
@@ -532,8 +541,23 @@ async fn request_grant(
     let deadline = Instant::now() + DECISION_TIMEOUT;
     let poll = || client.status(&created.id, MAX_WAIT_SECS);
     let waited = tokio::select! {
-        waited = wait_for_decision(poll, deadline, FIRST_RETRY_DELAY) => waited,
-        _ = interrupt.recv() => return Err(withdraw_after_interrupt(client, &created.id).await.into()),
+        waited = wait_for_decision(poll, deadline, FIRST_RETRY_DELAY) => Some(waited),
+        _ = interrupt.recv() => None,
+    };
+    let Some(waited) = waited else {
+        exit_on_interrupt(
+            interrupt,
+            format!(
+                "interrupted again; request {} may still be pending or approved: check \
+                 `warden status` and revoke any grant",
+                created.id
+            ),
+        );
+        eprintln!(
+            "warden: interrupted; withdrawing request {} (Ctrl-C again to stop at once)…",
+            created.id
+        );
+        return Err(withdraw_after_interrupt(client, &created.id).await.into());
     };
     let status = match waited {
         Ok(status) => status,
@@ -545,7 +569,17 @@ async fn request_grant(
         ),
     };
     match status {
-        RequestStatus::Approved(grant) => Ok(grant),
+        RequestStatus::Approved(grant) => {
+            exit_on_interrupt(
+                interrupt,
+                format!(
+                    "interrupted while installing grant {0}; revoke it with `warden revoke {0}` \
+                     if it is not wanted",
+                    grant.grant_id
+                ),
+            );
+            Ok(grant)
+        }
         RequestStatus::Error { message } => {
             Err(Exit::new(EXIT_ERROR, format!("request failed: {message}")).into())
         }
@@ -554,6 +588,20 @@ async fn request_grant(
             Err(Exit::new(code, format!("request {}", status_word(&other))).into())
         }
     }
+}
+
+/// From now on, end the process at once on Ctrl-C: print `message` and exit
+/// 130. Used once Ctrl-C has started a withdrawal (a second one skips the
+/// wait) and once a grant is being installed (nothing is left to withdraw).
+/// The exit skips destructors on purpose: it is the user's way out of a
+/// wait, as the default Ctrl-C handling would be.
+fn exit_on_interrupt(mut interrupt: tokio::signal::unix::Signal, message: String) {
+    tokio::spawn(async move {
+        if interrupt.recv().await.is_some() {
+            eprintln!("warden: {message}");
+            std::process::exit(i32::from(EXIT_INTERRUPTED));
+        }
+    });
 }
 
 /// Withdraw request `id` after Ctrl-C and say what came of it, within
