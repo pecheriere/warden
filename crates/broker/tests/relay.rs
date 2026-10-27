@@ -1759,6 +1759,63 @@ async fn agent_disconnect_with_stalled_target_ends_quickly() {
     assert_eq!(events_of(&s.broker, "relay_session_ended").len(), 1);
 }
 
+/// A session whose input has been held for longer than the agent-left
+/// grace (2 s), ended by the relay with `end`: the reason on record is the
+/// one the relay gave, not the agent leaving because the relay cut it.
+async fn held_session_ended_by_relay(end: impl AsyncFnOnce(&Setup, &Agent), reason: &str) {
+    let s = key_target().await;
+    let agent = approved_agent(&s.broker, "bot").await;
+    let ssh = OpenSsh::new(&s.broker, s.relay, &agent.key);
+    let (_child, _stdout, accepted) = feed_until_held(&ssh, &["sleep", "600"]).await;
+    assert!(accepted < 32, "{accepted} MiB accepted");
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    assert!(
+        events_of(&s.broker, "relay_session_ended").is_empty(),
+        "{:?}",
+        audit_events(&s.broker)
+    );
+    end(&s, &agent).await;
+    let ended = tokio::time::timeout(
+        Duration::from_secs(10),
+        await_events(&s.broker, "relay_session_ended", 1),
+    )
+    .await
+    .expect("the session ended");
+    assert_eq!(ended[0]["reason"], reason, "{:?}", audit_events(&s.broker));
+    s.broker.stop_relay().await;
+    assert_eq!(events_of(&s.broker, "relay_session_ended").len(), 1);
+    assert_each_start_ended(&s.broker).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stop_relay_wins_over_the_agent_leaving() {
+    held_session_ended_by_relay(
+        async |s, _| {
+            tokio::time::timeout(Duration::from_secs(10), s.broker.stop_relay())
+                .await
+                .expect("the relay stopped promptly");
+        },
+        "relay shutting down",
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn revoke_wins_over_the_agent_leaving() {
+    held_session_ended_by_relay(
+        async |s, agent| {
+            s.broker
+                .state()
+                .requests
+                .revoke_grant(&agent.grant_id, "owner")
+                .await
+                .unwrap();
+        },
+        "revoked",
+    )
+    .await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn stop_relay_completes_with_wedged_session() {
     // The wedge is left in place (no wedge timeout) for the stop to meet.

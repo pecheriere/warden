@@ -131,13 +131,19 @@ pub struct ApprovalBinding {
     pub request_expires_at: i64,
 }
 
-/// A verified approval: exactly what `begin` stored, and who signed it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ApprovedCeremony {
-    /// What the approval applies to.
-    pub binding: ApprovalBinding,
-    /// Id of the passkey that signed.
-    pub passkey_id: String,
+/// An approval ceremony taken out for finishing (it cannot be finished
+/// again): what `begin` bound it to, not yet verified.
+pub struct ApprovalCeremony {
+    binding: ApprovalBinding,
+    state: PasskeyAuthentication,
+}
+
+impl ApprovalCeremony {
+    /// What the ceremony was bound to when it began.
+    #[must_use]
+    pub fn binding(&self) -> &ApprovalBinding {
+        &self.binding
+    }
 }
 
 /// A stored passkey, as listed to the owner.
@@ -350,22 +356,33 @@ impl Passkeys {
         Ok((id, options))
     }
 
-    /// Verify the assertion for approval `ceremony` and return exactly what
-    /// `begin_approval` bound it to. The passkey's stored counter is raised, never
-    /// lowered: an assertion whose counter is not above it is refused.
+    /// Take approval `ceremony` out for finishing, so that its binding can be
+    /// checked before the assertion is: a ceremony is used up by this call,
+    /// whatever follows.
     ///
     /// # Errors
     /// [`PasskeyError::CeremonyExpired`], [`PasskeyError::WrongCeremony`],
+    /// [`PasskeyError::Internal`] if the ceremony table is unusable.
+    pub fn take_approval(&self, ceremony: &Id) -> Result<ApprovalCeremony, PasskeyError> {
+        match self.take(ceremony)? {
+            Ceremony::Approval { binding, state } => Ok(ApprovalCeremony { binding, state }),
+            Ceremony::Registration { .. } => Err(PasskeyError::WrongCeremony),
+        }
+    }
+
+    /// Verify the assertion for approval `ceremony` and return the id of the
+    /// passkey that signed it. The passkey's stored counter is raised, never
+    /// lowered: an assertion whose counter is not above it is refused.
+    ///
+    /// # Errors
     /// [`PasskeyError::Verification`], [`PasskeyError::UnknownCredential`],
     /// [`PasskeyError::CounterRegressed`], storage failures.
     pub async fn finish_approval(
         &self,
-        ceremony: &Id,
+        ceremony: ApprovalCeremony,
         cred: &PublicKeyCredential,
-    ) -> Result<ApprovedCeremony, PasskeyError> {
-        let Ceremony::Approval { binding, state } = self.take(ceremony)? else {
-            return Err(PasskeyError::WrongCeremony);
-        };
+    ) -> Result<String, PasskeyError> {
+        let ApprovalCeremony { state, .. } = ceremony;
         let result = self
             .webauthn
             .finish_passkey_authentication(cred, &state)
@@ -390,10 +407,7 @@ impl Passkeys {
             result.counter(),
         )
         .await?;
-        Ok(ApprovedCeremony {
-            binding,
-            passkey_id,
-        })
+        Ok(passkey_id)
     }
 
     /// Store `credential` and `counter` for passkey `passkey_id` only if

@@ -416,15 +416,11 @@ async fn approve_finish(
     Path(token): Path<String>,
     Json(body): Json<FinishApproval>,
 ) -> Response {
-    let approved = match state
-        .passkeys
-        .finish_approval(&body.ceremony, &body.credential)
-        .await
-    {
-        Ok(approved) => approved,
+    let ceremony = match state.passkeys.take_approval(&body.ceremony) {
+        Ok(ceremony) => ceremony,
         Err(e) => return passkey_error(&e),
     };
-    let binding = &approved.binding;
+    let binding = ceremony.binding().clone();
     if binding.token_hash != sha256_hex(&token) {
         return json_error(
             StatusCode::BAD_REQUEST,
@@ -442,6 +438,12 @@ async fn approve_finish(
             json_error(StatusCode::CONFLICT, "this request was already decided")
         }
     };
+    // Everything that would refuse this approval regardless of the passkey is
+    // checked before the assertion, so that a request decided meanwhile is
+    // refused as such instead of reaching the counter check: a second
+    // approval finishing after the first would otherwise look like a cloned
+    // authenticator. None of it says more than the approval page shows to
+    // whoever holds the token.
     let view = match state.requests.pending_for_token(&token).await {
         Ok(view) => view,
         Err(RequestError::NotFound) => return undecidable(),
@@ -465,6 +467,14 @@ async fn approve_finish(
             format!("policy changed since this page loaded: {message}"),
         );
     }
+    let passkey_id = match state
+        .passkeys
+        .finish_approval(ceremony, &body.credential)
+        .await
+    {
+        Ok(passkey_id) => passkey_id,
+        Err(e) => return passkey_error(&e),
+    };
     let (grant, issued) = match &view.destination {
         Destination::Ssh(target) if target.mode == SshMode::Relay => {
             // `check_policy` already refused a relay target without a relay.
@@ -494,7 +504,7 @@ async fn approve_finish(
     let (grant_id, not_after) = (grant.grant_id.clone(), grant.not_after);
     match state
         .requests
-        .mark_approved(&token, binding.window, grant, &approved.passkey_id)
+        .mark_approved(&token, binding.window, grant, &passkey_id)
         .await
     {
         Ok(()) => {}
