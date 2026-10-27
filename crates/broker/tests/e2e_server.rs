@@ -189,6 +189,70 @@ async fn healthz_unauthenticated() {
 }
 
 #[tokio::test]
+async fn info_endpoint_shape() {
+    let broker = TestBroker::new().await;
+    // No Tailscale login and no agent key: tagged devices have neither.
+    let resp = broker
+        .api_send(Request::get("/v1/info").body(Body::empty()).unwrap())
+        .await;
+    assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
+    let info: Value = serde_json::from_str(&resp.body).unwrap();
+    assert_eq!(info.as_object().unwrap().len(), 2, "{info}");
+    assert_eq!(info["protocols"], json!(["warden-request-v1"]));
+    let audience = info["audience"].as_str().unwrap();
+    assert_eq!(audience.len(), 32);
+    assert!(
+        audience
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    );
+    assert_eq!(audience, broker.state().audience.as_str());
+    assert_eq!(
+        serde_json::from_str::<warden_broker_proto::InfoResponse>(&resp.body)
+            .unwrap()
+            .audience,
+        broker.state().audience
+    );
+    // The same on every call, and never cached.
+    let again = broker
+        .api_send(Request::get("/v1/info").body(Body::empty()).unwrap())
+        .await;
+    assert_eq!(again.body, resp.body);
+    // Only GET is routed.
+    let post = broker
+        .api_send(Request::post("/v1/info").body(Body::empty()).unwrap())
+        .await;
+    assert_eq!(post.status, StatusCode::METHOD_NOT_ALLOWED);
+}
+
+#[tokio::test]
+async fn a_key_agent_has_no_bearer_key() {
+    let broker = TestBroker::new().await;
+    let bearer = broker.add_agent("bot").await;
+    let before = broker.api_get(&bearer, "/v1/grants").await;
+    assert_eq!(before.status, StatusCode::OK, "{}", before.body);
+
+    let key = warden_broker::agents::AgentPublicKey::parse(
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOh0zJ+xlPfFH6uwtZmJ2O9GrkMxjqMwPQTsBVmbbBrE",
+    )
+    .unwrap();
+    warden_broker::agents::set_key_audited(
+        &broker.state().pool,
+        &broker.state().audit,
+        &"bot".to_owned().try_into().unwrap(),
+        &key,
+    )
+    .await
+    .unwrap();
+    let after = broker.api_get(&bearer, "/v1/grants").await;
+    assert_eq!(after.status, StatusCode::UNAUTHORIZED, "{}", after.body);
+    assert_eq!(after.body, r#"{"error":"unauthorized"}"#);
+    // Guessing is no better: a key agent's bearer slot is empty.
+    let empty = broker.api_get("wdn_", "/v1/grants").await;
+    assert_eq!(empty.status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
 async fn every_other_route_requires_the_owner_and_an_agent_key() {
     let broker = TestBroker::new().await;
     let key = broker.add_agent("bot").await;

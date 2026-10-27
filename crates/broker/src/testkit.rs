@@ -736,9 +736,11 @@ impl TestBroker {
         let pool = store::open(&db_path).await.expect("open database");
         let audit = Arc::new(AuditLog::open(&audit_path).await.expect("open audit log"));
         let host_key_path = db_path.with_file_name("relay_host_ed25519");
+        let audience_path = db_path.with_file_name("audience");
         let mut config = Config::from_lookup(|var| match var {
             "WARDEN_RELAY_PUBLIC_ADDR" => relay.clone(),
             "WARDEN_RELAY_HOST_KEY_PATH" => Some(host_key_path.display().to_string()),
+            "WARDEN_AUDIENCE_PATH" => Some(audience_path.display().to_string()),
             other => test_env(other),
         })
         .expect("test configuration");
@@ -753,6 +755,9 @@ impl TestBroker {
             }
             None => None,
         };
+        let audience = crate::audience::load_or_create(config.audience_path.clone())
+            .await
+            .expect("audience");
         let capture = Arc::new(CapturingNotifier::new());
         let requests = Requests::new(
             pool.clone(),
@@ -780,6 +785,7 @@ impl TestBroker {
             requests,
             passkeys: Arc::new(passkeys),
             proxy_calls: CallSlots::new(config.proxy.max_calls_per_agent, config.proxy.max_calls),
+            audience,
         };
         let (api_router, router) = crate::build_routers(state.clone());
         Self {

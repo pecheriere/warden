@@ -1242,6 +1242,7 @@ async fn spawn_server(dir: &Path, relay_public: bool) -> (tokio::process::Child,
         .env("WARDEN_APPROVAL_LISTEN", format!("127.0.0.1:{approval}"))
         .env("WARDEN_RELAY_LISTEN", format!("127.0.0.1:{relay}"))
         .env("WARDEN_RELAY_HOST_KEY_PATH", &host_key)
+        .env("WARDEN_AUDIENCE_PATH", dir.join("audience"))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())

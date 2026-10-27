@@ -179,6 +179,14 @@ pub enum AuditEvent {
         /// Agent name.
         agent: AgentName,
     },
+    /// An agent was switched to (or created with) request signing by this
+    /// public key. The key itself is not recorded, only its fingerprint.
+    AgentKeySet {
+        /// Agent name.
+        agent: AgentName,
+        /// The key's `SHA256:…` fingerprint.
+        fingerprint: String,
+    },
     /// An agent was revoked.
     AgentRevoked {
         /// Agent name.

@@ -22,7 +22,7 @@ use warden_broker::proxy::CallSlots;
 use warden_broker::relay::host_key::RelayHostKey;
 use warden_broker::relay::{RelayEndpoint, RelayLimits, RelayServer, host_key};
 use warden_broker::requests::{self, Clock as _, Requests, SystemClock};
-use warden_broker::{AppState, agents, audit, build_routers, store};
+use warden_broker::{AppState, agents, audience, audit, build_routers, store};
 use warden_broker_proto::AgentName;
 
 #[derive(Parser)]
@@ -68,9 +68,24 @@ enum AuditCommand {
 
 #[derive(Subcommand)]
 enum AgentCommand {
-    /// Create an agent and print its key once.
-    Add { name: AgentName },
-    /// List agents.
+    /// Create an agent. With --public-key it signs its requests with that
+    /// SSH key and no bearer key is made; without, its bearer key is printed
+    /// once.
+    Add {
+        name: AgentName,
+        /// The agent's OpenSSH public key line (ssh-ed25519 or
+        /// ecdsa-sha2-nistp256), as in its .pub file.
+        #[arg(long)]
+        public_key: Option<String>,
+    },
+    /// Switch an existing agent to signing requests with an SSH key; its
+    /// bearer key stops working at once.
+    SetKey {
+        name: AgentName,
+        /// The OpenSSH public key line, as in the .pub file.
+        public_key: String,
+    },
+    /// List agents with their kind of authentication and key fingerprint.
     List,
     /// Revoke an agent's key.
     Revoke { name: AgentName },
@@ -125,7 +140,10 @@ async fn main() -> Result<()> {
     };
     let pool = store::open(&db_path()?).await?;
     match command {
-        AgentCommand::Add { name } => {
+        AgentCommand::Add {
+            name,
+            public_key: None,
+        } => {
             let audit = open_audit().await?;
             let key = agents::add_audited(&pool, &audit, &name)
                 .await
@@ -133,12 +151,44 @@ async fn main() -> Result<()> {
             eprintln!("warning: this key is shown once and cannot be recovered; store it now.");
             println!("{}", key.expose());
         }
+        AgentCommand::Add {
+            name,
+            public_key: Some(line),
+        } => {
+            let key = agents::AgentPublicKey::parse(&line).context("refusing the public key")?;
+            let audit = open_audit().await?;
+            agents::add_key_audited(&pool, &audit, &name, &key)
+                .await
+                .with_context(|| format!("adding agent {name}"))?;
+            eprintln!(
+                "agent {name} added; it signs requests with key {}",
+                key.fingerprint()
+            );
+        }
+        AgentCommand::SetKey { name, public_key } => {
+            let key =
+                agents::AgentPublicKey::parse(&public_key).context("refusing the public key")?;
+            let audit = open_audit().await?;
+            agents::set_key_audited(&pool, &audit, &name, &key)
+                .await
+                .with_context(|| format!("setting the key of agent {name}"))?;
+            eprintln!(
+                "agent {name} now signs requests with key {}; any bearer key it had no longer works",
+                key.fingerprint()
+            );
+        }
         AgentCommand::List => {
             for agent in agents::list(&pool).await? {
                 let state = agent
                     .revoked_at
                     .map_or_else(|| "active".to_owned(), |t| format!("revoked@{t}"));
-                println!("{}\tcreated@{}\t{state}", agent.name, agent.created_at);
+                println!(
+                    "{}\tcreated@{}\t{state}\t{}\t{}",
+                    agent.name,
+                    agent.created_at,
+                    agent.auth.as_str(),
+                    agent.fingerprint.as_deref().unwrap_or("-")
+                );
             }
         }
         AgentCommand::Revoke { name } => {
@@ -297,6 +347,10 @@ async fn build_app(config: &Arc<Config>) -> Result<App> {
         config.connect_token.clone(),
         config.vault.clone(),
     ));
+    let audience = audience::load_or_create(config.audience_path.clone())
+        .await
+        .with_context(|| format!("loading the audience {}", config.audience_path.display()))?;
+    tracing::info!(%audience, "audience loaded");
     let (relay, relay_key) = relay_endpoint(config).await?.unzip();
     let clock = Arc::new(SystemClock);
     let requests = Requests::new(
@@ -325,6 +379,7 @@ async fn build_app(config: &Arc<Config>) -> Result<App> {
         requests: requests.clone(),
         passkeys: Arc::new(passkeys),
         proxy_calls: CallSlots::new(config.proxy.max_calls_per_agent, config.proxy.max_calls),
+        audience,
     };
     let (api, approval) = build_routers(state);
     Ok(App {

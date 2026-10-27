@@ -188,6 +188,9 @@ pub struct Config {
     pub db_path: PathBuf,
     /// `WARDEN_AUDIT_PATH`.
     pub audit_path: PathBuf,
+    /// `WARDEN_AUDIENCE_PATH`, default `/data/audience`: the file holding
+    /// the broker's audience id, created on first start and never changed.
+    pub audience_path: PathBuf,
     /// `WARDEN_API_LISTEN`, default `127.0.0.1:8080`.
     pub api_listen: SocketAddr,
     /// `WARDEN_APPROVAL_LISTEN`, default `127.0.0.1:8081`.
@@ -325,6 +328,9 @@ impl Config {
         Ok(Self {
             db_path: required("WARDEN_DB_PATH")?.into(),
             audit_path: required("WARDEN_AUDIT_PATH")?.into(),
+            audience_path: get("WARDEN_AUDIENCE_PATH")
+                .unwrap_or_else(|| "/data/audience".to_owned())
+                .into(),
             api_listen: addr("WARDEN_API_LISTEN", "127.0.0.1:8080")?,
             approval_listen: addr("WARDEN_APPROVAL_LISTEN", "127.0.0.1:8081")?,
             public_url,

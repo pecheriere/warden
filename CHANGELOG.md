@@ -4,6 +4,30 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Agents can be registered with an SSH public key instead of a bearer key
+  (`ssh-ed25519` or `ecdsa-sha2-nistp256`; security keys, RSA, other curves
+  and certificates are refused, as are the published test keys of the
+  protocol document): `warden-server agent add <name> --public-key '<line>'`
+  creates a key-signed agent without a bearer key, `warden-server agent set-key
+  <name> '<line>'` switches an existing agent (its bearer key stops working at
+  once), and `agent list` shows the kind of authentication and the key's
+  `SHA256:` fingerprint. Each change is audited as `agent_key_set`. Verifying
+  signed requests follows in a later change.
+- `GET /v1/info` returns the accepted signing protocols and the broker's
+  audience, a random id created on first start in `WARDEN_AUDIENCE_PATH`
+  (default `/data/audience`, next to the relay host key; never overwritten).
+  It needs neither an agent key nor the owner's Tailscale login.
+
+### Changed
+
+- Schema migration `0005` rebuilds `agents` (and, below it, `requests` and
+  `grants`, with all rows preserved) for the key columns and adds the nonce
+  table; it runs on first start and is one-way.
+
 ## [0.5.0] - unreleased
 
 ### Changed

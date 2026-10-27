@@ -186,6 +186,16 @@ channels you choose (Home Assistant, ntfy) in the order you choose; see
    The key is printed once. Store it in 1Password. `agent list` and `agent
    revoke <name>` manage agents.
 
+   An agent can instead sign its requests with an SSH key (Ed25519 or ECDSA
+   P-256; see [docs/agent-protocol.md](docs/agent-protocol.md)):
+   `agent add <name> --public-key '<line of the .pub file>'` creates one with
+   no bearer key, and `agent set-key <name> '<line>'` switches an existing
+   agent (its bearer key stops working at once). `agent list` shows each
+   agent's kind of authentication and key fingerprint. The broker's audience
+   id, which signatures name, is created on first start in the file
+   `WARDEN_AUDIENCE_PATH` (default `/data/audience`; keep it on the data
+   volume) and is published at `GET /v1/info`.
+
 5. **Log in from the workstation** (macOS; the key goes into the Keychain):
 
    ```sh

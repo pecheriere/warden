@@ -1,6 +1,6 @@
 //! The agent API: create requests, long-poll their status, list and revoke
 //! grants, and make HTTP calls with an api grant. Every route except
-//! `/healthz` requires the owner's Tailscale identity and an agent key (see
+//! `/healthz` and `/v1/info` requires the owner's Tailscale identity and an agent key (see
 //! [`AuthedAgent`]).
 
 use std::time::Duration;
@@ -16,7 +16,7 @@ use serde::de::DeserializeOwned;
 use url::Url;
 use warden_broker_proto::{
     AgentName, ApiError, ApiGrant, CreateRequest, CreatedResponse, GrantAccess, GrantView, Id,
-    ProxyRequest, ProxyResponse, RequestStatus,
+    InfoResponse, ProxyRequest, ProxyResponse, RequestStatus, signing,
 };
 
 use crate::AppState;
@@ -50,6 +50,7 @@ const MAX_WAIT_SECS: u64 = 30;
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
+        .route("/v1/info", get(info))
         .route("/v1/requests", post(create_request))
         .route("/v1/requests/{id}", get(request_status))
         .route("/v1/requests/{id}/cancel", post(cancel_request))
@@ -190,6 +191,17 @@ fn parse_id(raw: &str) -> Result<Id, Failure> {
 
 async fn healthz() -> &'static str {
     "ok"
+}
+
+/// The signing protocols this broker accepts and its audience. Needs no
+/// agent key and no owner login: a client reads it before it can sign, and
+/// key-signed agents on tagged devices have no user login. The network
+/// controls in front of the API (Tailscale Serve, the gateway) still apply.
+async fn info(State(state): State<AppState>) -> Json<InfoResponse> {
+    Json(InfoResponse {
+        protocols: vec![signing::PROTOCOL.to_owned()],
+        audience: state.audience,
+    })
 }
 
 async fn not_found() -> Failure {
