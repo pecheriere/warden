@@ -872,3 +872,23 @@ async fn call_outside_narrowed_scope_refused() {
     .await;
     assert_eq!(proxied(&inside).0.status, 200);
 }
+
+/// A grant holding the item's whole scope, as 0.3 approvals stored, keeps
+/// allowing every item method: the stored scope is honoured, not
+/// re-defaulted to read-only.
+#[tokio::test]
+async fn full_scope_grant_still_allows_item_write_methods() {
+    let s = setup().await;
+    let grant = approve_scoped(&s.broker, "bot", "svc", &["GET", "POST"], Some("/")).await;
+    let post = call_as(
+        &s.broker,
+        &s.key,
+        &grant,
+        "POST",
+        &s.upstream.url("/v1/items"),
+        Some(b"x"),
+    )
+    .await;
+    assert_eq!(proxied(&post).0.status, 200);
+    assert_eq!(s.upstream.received()[0].method, "POST");
+}

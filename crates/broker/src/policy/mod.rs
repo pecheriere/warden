@@ -819,6 +819,19 @@ mod tests {
         })
     }
 
+    #[test]
+    fn scope_from_stored_grant_rejects_invalid_methods() {
+        let item = item("/v1/", &[Method::POST, Method::GET]);
+        let grant = full_grant(&item);
+        let scope = ApiScope::try_from(&grant).unwrap();
+        assert_eq!(names(&scope), ["GET", "POST"]);
+        assert_eq!(scope.path_prefix, "/v1/");
+
+        let mut damaged = grant;
+        damaged.methods.push("get it".to_owned());
+        assert!(ApiScope::try_from(&damaged).is_err());
+    }
+
     fn names(scope: &ApiScope) -> Vec<&str> {
         scope.methods.iter().map(Method::as_str).collect()
     }
