@@ -508,13 +508,31 @@ async fn approve_is_single_use_under_concurrency() {
         broker.finish_approval(&token, &c1, &a1),
         broker.finish_approval(&token, &c2, &a2),
     );
+    // Exactly one wins. The loser is refused either as already decided or,
+    // when it gets past the pending check before the winner is approved but
+    // stores its counter after the winner's higher one, as a counter
+    // regression: storing the counter and approving are separate steps, so
+    // two finishes landing at the same moment can look like a cloned
+    // authenticator. The sequential case is never refused that way
+    // (`decided_request_refused_before_passkey_check`).
     let mut codes = [r1.status, r2.status];
     codes.sort();
-    assert_eq!(
-        codes,
-        [StatusCode::OK, StatusCode::CONFLICT],
+    assert!(
+        codes == [StatusCode::OK, StatusCode::FORBIDDEN]
+            || codes == [StatusCode::OK, StatusCode::CONFLICT],
         "{r1:?} {r2:?}"
     );
+    let loser = if r1.status == StatusCode::OK {
+        &r2
+    } else {
+        &r1
+    };
+    let expected = if loser.status == StatusCode::CONFLICT {
+        "this request was already decided"
+    } else {
+        "passkey refused: its signature counter went backwards"
+    };
+    assert_eq!(loser.json()["error"], expected, "{}", loser.body);
     assert_eq!(grant_count(&broker).await, 1);
     assert!(matches!(
         status(&broker, &created.id).await,
@@ -529,6 +547,38 @@ async fn approve_is_single_use_under_concurrency() {
 
     // A ceremony is single use: replaying a finished one is refused.
     let replay = broker.finish_approval(&token, &c1, &a1).await;
+    assert_eq!(replay.status, StatusCode::GONE, "{}", replay.body);
+}
+
+#[tokio::test]
+async fn decided_request_refused_before_passkey_check() {
+    let (broker, created, token) = pending().await;
+    let mut auth = broker.enroll_soft_passkey().await;
+    let first = broker.begin_approval(&token, Window::M15).await;
+    let second = broker.begin_approval(&token, Window::M30).await;
+    let (c1, older) = TestBroker::sign(&mut auth, &first);
+    let (c2, newer) = TestBroker::sign(&mut auth, &second);
+
+    // The newer assertion approves the request; the older one arrives after
+    // that and is refused as already decided, not as a counter regression.
+    let done = broker.finish_approval(&token, &c2, &newer).await;
+    assert_eq!(done.status, StatusCode::OK, "{}", done.body);
+    let late = broker.finish_approval(&token, &c1, &older).await;
+    assert_eq!(late.status, StatusCode::CONFLICT, "{}", late.body);
+    assert_eq!(late.json()["error"], "this request was already decided");
+    assert_eq!(grant_count(&broker).await, 1);
+    assert!(matches!(
+        status(&broker, &created.id).await,
+        RequestStatus::Approved(_)
+    ));
+    assert_eq!(stored_counters(&broker).await, [2]);
+    let types = broker.audit_types();
+    assert!(
+        !types.contains(&"passkey_counter_regressed".to_owned()),
+        "{types:?}"
+    );
+    // The refused ceremony was used up all the same.
+    let replay = broker.finish_approval(&token, &c1, &older).await;
     assert_eq!(replay.status, StatusCode::GONE, "{}", replay.body);
 }
 

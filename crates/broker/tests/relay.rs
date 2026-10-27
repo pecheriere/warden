@@ -1660,6 +1660,84 @@ async fn large_transfers_both_ways() {
     assert_each_start_ended(&s.broker).await;
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn slow_agent_gets_the_end_of_its_output() {
+    const SIZE: usize = 1024 * 1024;
+    let s = key_target().await;
+    let agent = approved_agent(&s.broker, "bot").await;
+    let ssh = OpenSsh::new(&s.broker, s.relay, &agent.key);
+    // Less than the client's window: the relay hands all of it over, with
+    // the exit status and the close, and its session is over. The agent
+    // takes its output only well after that, as over a slow link or with a
+    // busy reader.
+    let child = ssh
+        .command(TARGET, &[], &["head", "-c", &SIZE.to_string(), "/dev/zero"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let ended = await_events(&s.broker, "relay_session_ended", 1).await;
+    assert_eq!(ended[0]["reason"], "exited", "{ended:?}");
+    tokio::time::sleep(Duration::from_secs(5)).await;
+
+    // It still gets every byte and the exit status, not a hang-up.
+    let out = tokio::time::timeout(Duration::from_secs(60), child.wait_with_output())
+        .await
+        .expect("ssh finished")
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    assert_eq!(out.stdout.len(), SIZE);
+    assert_each_start_ended(&s.broker).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn agent_that_stays_after_its_session_is_hung_up() {
+    let s = key_target_with(RelayLimits {
+        stall_timeout: Duration::from_secs(2),
+        max_sessions_per_grant: 1,
+        ..RelayLimits::default()
+    })
+    .await;
+    let agent = approved_agent(&s.broker, "bot").await;
+    let c = login(&s.broker, s.relay, TARGET, &agent.key).await;
+    let mut channel = c.handle.channel_open_session().await.unwrap();
+    channel.exec(true, "echo ok").await.unwrap();
+    assert!(reply(&mut channel).await);
+    let out = collect(&mut channel).await;
+    assert_eq!(
+        (text(&out.stdout).as_str(), out.exit_status),
+        ("ok\n", Some(0))
+    );
+    let over = Instant::now();
+    await_events(&s.broker, "relay_session_ended", 1).await;
+
+    // The session is over but the agent stays: until it is hung up, it
+    // keeps its place.
+    let ssh = OpenSsh::new(&s.broker, s.relay, &agent.key);
+    too_many(
+        &ssh.run(&["true"]).await,
+        "warden relay: too many sessions for this grant",
+    );
+    let deadline = over + Duration::from_secs(2 + 5);
+    while !c.handle.is_closed() {
+        assert!(Instant::now() < deadline, "the relay kept the connection");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(over.elapsed() >= Duration::from_millis(1500));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let out = ssh.run(&["echo", "ok"]).await;
+        if out.status.success() {
+            assert_eq!(text(&out.stdout), "ok\n");
+            break;
+        }
+        assert!(Instant::now() < deadline, "{}", text(&out.stderr));
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert_each_start_ended(&s.broker).await;
+}
+
 /// An agent running `cat` on the target that feeds it input and never
 /// reads the output, until its input stops being accepted (or 96 MiB).
 /// Returns the ssh child, its unread stdout, and the MiB accepted.
@@ -1759,6 +1837,63 @@ async fn agent_disconnect_with_stalled_target_ends_quickly() {
     );
     assert_each_start_ended(&s.broker).await;
     assert_eq!(events_of(&s.broker, "relay_session_ended").len(), 1);
+}
+
+/// A session whose input has been held for longer than the agent-left
+/// grace (2 s), ended by the relay with `end`: the reason on record is the
+/// one the relay gave, not the agent leaving because the relay cut it.
+async fn held_session_ended_by_relay(end: impl AsyncFnOnce(&Setup, &Agent), reason: &str) {
+    let s = key_target().await;
+    let agent = approved_agent(&s.broker, "bot").await;
+    let ssh = OpenSsh::new(&s.broker, s.relay, &agent.key);
+    let (_child, _stdout, accepted) = feed_until_held(&ssh, &["sleep", "600"]).await;
+    assert!(accepted < 32, "{accepted} MiB accepted");
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    assert!(
+        events_of(&s.broker, "relay_session_ended").is_empty(),
+        "{:?}",
+        audit_events(&s.broker)
+    );
+    end(&s, &agent).await;
+    let ended = tokio::time::timeout(
+        Duration::from_secs(10),
+        await_events(&s.broker, "relay_session_ended", 1),
+    )
+    .await
+    .expect("the session ended");
+    assert_eq!(ended[0]["reason"], reason, "{:?}", audit_events(&s.broker));
+    s.broker.stop_relay().await;
+    assert_eq!(events_of(&s.broker, "relay_session_ended").len(), 1);
+    assert_each_start_ended(&s.broker).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stop_relay_wins_over_the_agent_leaving() {
+    held_session_ended_by_relay(
+        async |s, _| {
+            tokio::time::timeout(Duration::from_secs(10), s.broker.stop_relay())
+                .await
+                .expect("the relay stopped promptly");
+        },
+        "relay shutting down",
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn revoke_wins_over_the_agent_leaving() {
+    held_session_ended_by_relay(
+        async |s, agent| {
+            s.broker
+                .state()
+                .requests
+                .revoke_grant(&agent.grant_id, "owner")
+                .await
+                .unwrap();
+        },
+        "revoked",
+    )
+    .await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -2285,7 +2420,11 @@ async fn hung_grant_query_still_fails_closed_and_expires() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn connection_closed_once_its_session_is_over() {
-    let s = key_target().await;
+    let s = key_target_with(RelayLimits {
+        stall_timeout: Duration::from_secs(2),
+        ..RelayLimits::default()
+    })
+    .await;
     let agent = approved_agent(&s.broker, "bot").await;
     let c = login(&s.broker, s.relay, TARGET, &agent.key).await;
     let mut channel = c.handle.channel_open_session().await.unwrap();
@@ -2302,8 +2441,8 @@ async fn connection_closed_once_its_session_is_over() {
     let out = collect(&mut channel).await;
     assert_eq!(out.exit_status, Some(255), "{out:?}");
     let over = Instant::now();
-    // ... and the agent keeps the connection: the relay hangs up after a
-    // 2 s wait for it to leave.
+    // ... and the agent keeps the connection: the relay hangs up once it
+    // has had the stall timeout (2 s here) to leave.
     while !c.handle.is_closed() {
         assert!(
             over.elapsed() < Duration::from_secs(4),

@@ -96,7 +96,9 @@ All notable changes to this project are recorded here. The format follows
   login, 4 MiB after, twice the agent's window), so the agent leaving is
   seen even while that library is held up. Input still held for the target
   when the agent leaves is dropped. The session still gets exactly one
-  `relay_session_ended` entry.
+  `relay_session_ended` entry, and a session the relay ends (shutdown,
+  revocation, expiry, grant state unavailable) keeps that reason although
+  the agent's side closes as a result.
 - The relay's login-time grant lookup is bounded to 1.5 s, like the grant
   checks of live sessions, instead of only by the 10 s login timeout: an
   attempt whose lookup does not answer in time is refused and audited as
@@ -105,13 +107,21 @@ All notable changes to this project are recorded here. The format follows
   recorded with the reason `revoked` (or `expired`) rather than `exited`, as
   long as the revocation reached it before its teardown completed. It still
   gets exactly one `relay_session_ended` entry.
+- The relay no longer hangs up 2 s after a session ends on an agent still
+  taking the end of its output: such an agent (on a slow link, or with a busy
+  reader) lost the rest of its output and got exit code 255 instead of the
+  session's exit status. An agent now has the stall timeout (60 s) to take it
+  and leave, and its connection keeps its place in the session limits until
+  it is gone.
 - A passkey's signature counter is never stored lower than it was: it lives in
   its own column (migration `0004`, backfilled from the stored credential) and
   is raised with one conditional update, so two concurrent approvals cannot
   overwrite each other's newer value. An assertion whose counter does not
   increase (unless the authenticator always reports 0) is refused as a
   possible cloned authenticator with a fixed message, no grant is issued, and
-  it is audited as `passkey_counter_regressed`.
+  it is audited as `passkey_counter_regressed`. Approving a request that was
+  already decided is refused as already decided before the passkey is checked,
+  so a second approval finishing after the first is not taken for a clone.
 - A 1Password vault that was deleted and recreated under the same name is
   picked up without restarting the broker: on a Connect 404 the vault id is
   resolved again (once, shared by concurrent callers) and the request retried
