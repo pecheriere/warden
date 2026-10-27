@@ -117,7 +117,16 @@ guarantee because the server is the trusted party:
     sent to another broker (the audience), or altered (method, target and
     body are signed). The nonce is recorded only after the signature
     verified, so callers who cannot sign cannot fill the nonce table, and
-    expired nonces are swept.
+    expired nonces are swept. Other `Warden-*` header names are reserved
+    and refused.
+  - Before a signed request is verified, its body is read capped in size
+    (the route's limit, 16 KiB or 2 MiB for proxied calls; 413) and in time
+    (10 s; 408), so a caller naming a known agent cannot hold a connection
+    or memory beyond that without a valid signature.
+  - Each refused signed request is logged at warn level with its reason
+    (and the agent name once it parsed). A caller can therefore add log
+    lines at the rate it can send requests; this is bounded by who the
+    tailnet policy lets reach the API port, and accepted.
   - **Bearer keys** (legacy): `wdn_` followed by 256 random bits, shown once
     and stored only as a SHA-256 hash, accepted only with the owner's
     `Tailscale-User-Login`.

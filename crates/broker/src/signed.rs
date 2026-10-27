@@ -7,21 +7,24 @@
 //! the documented order, stopping at the first failure:
 //!
 //! 1. the four `Warden-*` headers are present, each once, and well formed,
-//!    the signature at most [`MAX_SIGNATURE_LEN`] characters, and no
-//!    `Authorization` header is present;
+//!    the signature at most [`MAX_SIGNATURE_LEN`] characters, no other
+//!    (reserved) `Warden-*` header and no `Authorization` header is present;
 //! 2. the agent exists, is not revoked and has a registered signing key;
 //! 3. the timestamp is within [`MAX_CLOCK_SKEW_SECS`] of the broker's clock;
-//! 4. the body is read within the route's body limit (413 beyond it);
+//! 4. the body is read within the route's body limit (413 beyond it) and
+//!    within [`BODY_READ_TIMEOUT`] (408 beyond it);
 //! 5. the SSHSIG verifies: namespace [`NAMESPACE`], hash `sha512` or
 //!    `sha256`, made by exactly the registered key, over the canonical
 //!    message rebuilt from the request as received;
 //! 6. the nonce is recorded as new for the agent; only now, so callers that
 //!    cannot sign cannot fill the nonce table.
 //!
-//! Every failure except the body limit is a 401 with the fixed body
+//! Every failure except the body's size and time limits is a 401 with the fixed body
 //! `{"error":"unauthorized"}`; the reason is logged, never key material or
 //! signature bytes. A request that passes carries a [`SignedAgent`]
 //! extension and its body, already read, for the handler.
+
+use std::time::Duration;
 
 use axum::body::{Body, Bytes};
 use axum::extract::{FromRequest as _, OriginalUri, Request, State};
@@ -52,6 +55,19 @@ pub const MAX_SIGNATURE_LEN: usize = 4096;
 /// window in which its signature could be accepted (the clock skew allowed
 /// on either side).
 pub const NONCE_RETENTION_SECS: i64 = 600;
+
+/// How long reading the body of a signed request may take before it is
+/// verified. A caller naming a known agent cannot hold a connection open
+/// with a trickled body longer than this; it gets a 408.
+pub const BODY_READ_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The protocol's headers; any other `Warden-*` name is reserved and refused.
+const SIGNING_HEADERS: [&str; 4] = [
+    AGENT_HEADER,
+    TIMESTAMP_HEADER,
+    NONCE_HEADER,
+    SIGNATURE_HEADER,
+];
 
 /// The only SSHSIG version there is.
 const SSHSIG_VERSION: u32 = 1;
@@ -88,6 +104,8 @@ enum Refusal {
     Unauthorized(&'static str),
     /// The body could not be read within the route's limit (or at all).
     Body(StatusCode),
+    /// The body did not arrive within [`BODY_READ_TIMEOUT`].
+    BodyTimeout,
     /// The database failed.
     Internal,
 }
@@ -111,6 +129,19 @@ impl Refusal {
                 }),
             )
                 .into_response(),
+            Self::BodyTimeout => {
+                tracing::warn!(
+                    agent = agent.map(tracing::field::display),
+                    "signed request body too slow"
+                );
+                (
+                    StatusCode::REQUEST_TIMEOUT,
+                    axum::Json(ApiError {
+                        error: "request body timed out".to_owned(),
+                    }),
+                )
+                    .into_response()
+            }
             Self::Internal => AuthRejection::Internal.into_response(),
         }
     }
@@ -161,6 +192,14 @@ impl SignatureHeaders {
             return Err(Refusal::Unauthorized(
                 "Authorization and Warden-* headers together",
             ));
+        }
+        if headers.keys().any(|name| {
+            name.as_str().starts_with(HEADER_PREFIX)
+                && !SIGNING_HEADERS
+                    .iter()
+                    .any(|known| name.as_str().eq_ignore_ascii_case(known))
+        }) {
+            return Err(Refusal::Unauthorized("reserved Warden-* header"));
         }
         let agent = AgentName::try_from(single(headers, AGENT_HEADER)?.to_owned())
             .map_err(|_| Refusal::Unauthorized("Warden-Agent is not an agent name"))?;
@@ -260,8 +299,9 @@ async fn authenticate(
     let (mut parts, body) = req.into_parts();
     let mut body_req = Request::new(body);
     body_req.extensions_mut().clone_from(&parts.extensions);
-    let bytes = Bytes::from_request(body_req, &())
+    let bytes = tokio::time::timeout(BODY_READ_TIMEOUT, Bytes::from_request(body_req, &()))
         .await
+        .map_err(|_| Refusal::BodyTimeout)?
         .map_err(|rejection| Refusal::Body(rejection.status()))?;
 
     // 5. The signature, over the request as received: the original target

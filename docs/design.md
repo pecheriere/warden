@@ -517,8 +517,10 @@ agent, in one of two ways:
   enrolled with `warden-server agent add <name> --public-key '<line>'`. The
   SSHSIG covers the broker's audience, the agent, method, request target,
   timestamp, a single-use nonce and the body's SHA-256. The broker checks the
-  headers, the agent, the clock (±60 s), the body size, the signature and
-  then the nonce, in that order; it records a nonce only once the signature
+  headers (any other `Warden-*` name is reserved and refused), the agent, the
+  clock (±60 s), the body (within the route's size limit, 413, and within
+  `BODY_READ_TIMEOUT`, 10 s, 408), the signature and then the nonce, in that
+  order; it records a nonce only once the signature
   verified, keeps it 10 minutes and sweeps it with the request sweeper. No
   reusable secret is stored on the agent's machine and a captured request
   cannot be replayed. **Key-signed agents do not need the owner's
@@ -533,8 +535,9 @@ agent, in one of two ways:
   approve.
 - The agent name is recorded on requests, grants and audit events, and shown
   on the approval page ("requested by `laptop`").
-- Grants are bound to the requesting agent; another agent cannot use them. A relay grant is bound to the agent that requested it, and the relay
-  logs the grant id with every session.
+- Grants are bound to the requesting agent; another agent cannot use them.
+  A relay grant is bound to the agent that requested it, and the relay logs
+  the grant id with every session.
 - `warden-server agent list|revoke <name>`: revoke disables the key
   immediately, cancels its pending requests, ends its grants and kills its
   relay sessions.

@@ -2,20 +2,24 @@
 //! section 3): what the broker accepts, and every way a captured, altered or
 //! forged request is refused.
 
+use std::convert::Infallible;
 use std::path::Path;
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-use axum::body::Body;
+use axum::body::{Body, Bytes};
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, HeaderValue, Request, StatusCode};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
+use http_body_util::channel::Channel;
 use serde_json::json;
 use sha2::{Digest as _, Sha256};
 use ssh_encoding::{Decode as _, Encode as _};
 use ssh_key::{Algorithm, EcdsaCurve, HashAlg, PrivateKey, SshSig};
 use warden_broker::agents::{self, AgentPublicKey};
-use warden_broker::requests::Clock as _;
+use warden_broker::requests::{self, Clock as _};
+use warden_broker::signed::{BODY_READ_TIMEOUT, NONCE_RETENTION_SECS};
 use warden_broker::testkit::{HttpsUpstream, TEST_OWNER, TestBroker, request_signature};
 use warden_broker_proto::signing::{
     AGENT_HEADER, Audience, NAMESPACE, NONCE_HEADER, Nonce, SIGNATURE_HEADER, SignedRequestParts,
@@ -529,6 +533,9 @@ const MALFORMED: &[HeaderChange] = &[
         blob.push(0);
         h.insert(SIGNATURE_HEADER, value(&STANDARD.encode(blob)));
     }),
+    ("reserved warden header", |h| {
+        h.insert("Warden-Extra", value("1"));
+    }),
     ("signature without padding", |h| {
         let padded = text(h, SIGNATURE_HEADER);
         let unpadded = padded.trim_end_matches('=');
@@ -943,4 +950,89 @@ async fn openssh_ssh_keygen_signature_accepted() {
     let status = openssh_round_trip(&broker, &urls.api, &signer, ("GET", "/v1/grants", b"")).await;
     assert_eq!(status, StatusCode::OK);
     agent.kill().await.unwrap();
+}
+
+#[tokio::test]
+async fn stalled_body_times_out_before_verification() {
+    let broker = TestBroker::new().await;
+    let key = broker.add_signing_agent("bot", Algorithm::Ed25519).await;
+    let parts = head(broker.signed_request(&key, "bot", "POST", "/v1/requests", Vec::new()));
+    // A body whose sender stays open and never sends anything.
+    let (sender, stalled) = Channel::<Bytes, Infallible>::new(1);
+    let mut req = Request::post("/v1/requests")
+        .body(Body::new(stalled))
+        .unwrap();
+    *req.headers_mut() = parts.headers.clone();
+
+    let started = Instant::now();
+    let resp = broker.api_send(req).await;
+    let waited = started.elapsed();
+    assert_eq!(resp.status, StatusCode::REQUEST_TIMEOUT, "{}", resp.body);
+    assert_eq!(resp.body, r#"{"error":"request body timed out"}"#);
+    assert!(waited >= BODY_READ_TIMEOUT, "{waited:?}");
+    assert!(
+        waited < BODY_READ_TIMEOUT + Duration::from_secs(5),
+        "{waited:?}"
+    );
+    assert_eq!(nonce_rows(&broker).await, 0);
+    drop(sender);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_replays_accept_exactly_one() {
+    const COPIES: usize = 16;
+    let broker = TestBroker::new().await;
+    let key = broker.add_signing_agent("bot", Algorithm::Ed25519).await;
+    let urls = broker.spawn().await;
+    let parts = head(broker.signed_request(&key, "bot", "GET", "/v1/grants", Vec::new()));
+    let url = urls.api.join("v1/grants").unwrap();
+    let client = reqwest::Client::new();
+
+    let start = Arc::new(tokio::sync::Barrier::new(COPIES));
+    let mut sends = tokio::task::JoinSet::new();
+    for _ in 0..COPIES {
+        let request = client.get(url.clone()).headers(parts.headers.clone());
+        let start = start.clone();
+        sends.spawn(async move {
+            start.wait().await;
+            request.send().await.unwrap().status()
+        });
+    }
+    let statuses = sends.join_all().await;
+    let ok = statuses.iter().filter(|s| **s == StatusCode::OK).count();
+    let refused = statuses
+        .iter()
+        .filter(|s| **s == StatusCode::UNAUTHORIZED)
+        .count();
+    assert_eq!((ok, refused), (1, COPIES - 1), "{statuses:?}");
+    assert_eq!(nonce_rows(&broker).await, 1);
+}
+
+#[tokio::test]
+async fn sweep_loop_forgets_expired_nonces() {
+    let broker = TestBroker::new().await;
+    let key = broker.add_signing_agent("bot", Algorithm::Ed25519).await;
+    let resp = broker
+        .api_signed(&key, "bot", "GET", "/v1/grants", b"")
+        .await;
+    assert_eq!(resp.status, StatusCode::OK);
+
+    let (stop, stop_rx) = tokio::sync::watch::channel(false);
+    let sweeper = tokio::spawn(requests::sweep_loop(
+        broker.state().requests.clone(),
+        Duration::from_millis(10),
+        stop_rx,
+    ));
+    // Several sweeps run while the nonce is still within its retention.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(nonce_rows(&broker).await, 1);
+
+    broker.clock.advance(NONCE_RETENTION_SECS);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while nonce_rows(&broker).await != 0 {
+        assert!(Instant::now() < deadline, "the sweeper kept the nonce");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    stop.send_replace(true);
+    sweeper.await.unwrap();
 }

@@ -261,7 +261,9 @@ ready to put in the blob.
   - any `Warden-*` header comes together with an `Authorization` header;
   - a `Warden-*` header is repeated or carries several values;
   - `Warden-Signature` is longer than 4096 characters (it is refused before
-    it is decoded; real signatures are under 400).
+    it is decoded; real signatures are under 400);
+  - it carries any other `Warden-*` header: other `Warden-*` header names
+    are reserved and refused.
 - **Errors.** An authentication failure is a 401. Branch on the status
   only. The body is `{"error":"unauthorized"}` for a signature failure,
   but it may say something else for other failures (for example
@@ -272,15 +274,16 @@ ready to put in the blob.
 ### What the broker checks
 
 In this order, stopping at the first failure. Every failure is a 401,
-except an oversized body, which is a 413:
+except an oversized body (413) and a body too slow to arrive (408):
 
 1. The four `Warden-*` headers are present, each once, and well formed;
-   `Warden-Signature` is at most 4096 characters; no `Authorization` header
-   is present.
+   `Warden-Signature` is at most 4096 characters; no other `Warden-*` header
+   and no `Authorization` header is present.
 2. The agent exists, is not revoked and has a registered signing key.
 3. The timestamp is within 60 seconds of the broker's clock.
-4. The body is read, within the endpoint's size limit. A larger body is
-   refused with 413 at this step, before the signature is checked.
+4. The body is read, within the endpoint's size limit and within 10
+   seconds. A larger body is refused with 413, and a body still incomplete
+   after 10 seconds with 408, at this step, before the signature is checked.
 5. The signature verifies: namespace `warden-request-v1`, hash `sha512` or
    `sha256`, made by exactly the agent's registered key, over the canonical
    message rebuilt from the request as received.
@@ -455,6 +458,10 @@ that it is the expected key, as `-Y verify` with an allowed-signers file does
   `POST /v1/grants/{id}/http` which accepts 2 MiB. Over the limit is 413
   `{"error":"request body rejected"}`. This is checked before the signature,
   so an oversized signed request gets a 413, not a 401.
+- **Time limit.** The body of a signed request must arrive within 10
+  seconds of the headers; one still incomplete then is
+  `408 {"error":"request body timed out"}`, also before the signature is
+  checked. Send the body at once: sign it buffered, not streamed slowly.
 - **Identifiers.** Request and grant ids are 32 lowercase hex characters.
   A malformed id in a path is `400 {"error":"invalid id"}`.
 - **Times** are Unix seconds (integers).
@@ -464,7 +471,7 @@ that it is the expected key, as `-Y verify` with an allowed-signers file does
   characters before printing it.
 - **Common statuses** for every signed endpoint: 401 (authentication
   failed, or the agent is revoked; branch on the status, as the body varies,
-  see [Rules](#rules)), 413 (body over the limit), 500 `{"error":"internal error"}`, 503 (the broker's secret
+  see [Rules](#rules)), 408 (body too slow), 413 (body over the limit), 500 `{"error":"internal error"}`, 503 (the broker's secret
   backend is unavailable: `{"error":"secret backend unavailable"}`; or a
   short contention, `{"error":"request slot contended; retry"}`). An unknown
   path is `404 {"error":"not found"}`.

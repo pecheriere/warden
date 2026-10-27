@@ -21,11 +21,13 @@ All notable changes to this project are recorded here. The format follows
   `Warden-Agent`, `Warden-Timestamp`, `Warden-Nonce` and `Warden-Signature`
   (an SSHSIG, namespace `warden-request-v1`, hash `sha512` or `sha256`) on
   every call, including long polls and proxied calls. The broker refuses with
-  401 a missing, repeated or malformed header, an oversized signature, a
-  `Warden-*` header together with `Authorization`, an unknown, revoked or
+  401 a missing, repeated or malformed header, an oversized signature, any
+  other (reserved) `Warden-*` header, a `Warden-*` header together with
+  `Authorization`, an unknown, revoked or
   bearer-key agent, a timestamp more than 60 seconds off, a signature by any
   other key or over anything else, and a nonce already used; an oversized body
-  is a 413 before the signature is checked. Nonces are recorded only once the
+  is a 413, and a body not received within 10 seconds a 408, before the
+  signature is checked. Nonces are recorded only once the
   signature verified, kept 10 minutes and swept with expired requests.
 - `GET /v1/info` returns the accepted signing protocols and the broker's
   audience, a random id created on first start in `WARDEN_AUDIENCE_PATH`
