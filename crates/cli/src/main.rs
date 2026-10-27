@@ -25,22 +25,22 @@ use zeroize::Zeroizing;
 use crate::client::{CallError, Client, MAX_WAIT_SECS};
 use crate::config::Config;
 
+/// Exit code: any other failure.
+const EXIT_ERROR: u8 = 1;
 /// Exit code: a request was denied.
 const EXIT_DENIED: u8 = 2;
 /// Exit code: a request expired before a decision.
 const EXIT_EXPIRED: u8 = 3;
 /// Exit code: the grant was revoked.
 const EXIT_REVOKED: u8 = 4;
+/// Exit code: `warden ssh` found no active grant for the target.
+const EXIT_NO_GRANT: u8 = 5;
 /// Exit code: a request was cancelled (by the agent, from another terminal)
 /// while this command waited for it.
 const EXIT_CANCELLED: u8 = 6;
-/// Exit code: `warden ssh` found no active grant for the target.
-const EXIT_NO_GRANT: u8 = 5;
 /// Exit code: `warden http --fail` got an upstream status of 400 or more
 /// (curl's code for the same condition).
 const EXIT_HTTP_FAIL: u8 = 22;
-/// Exit code: any other failure.
-const EXIT_ERROR: u8 = 1;
 /// Exit code: interrupted with Ctrl-C (128 plus SIGINT, as shells report it).
 const EXIT_INTERRUPTED: u8 = 130;
 
@@ -485,10 +485,21 @@ async fn request_grant(
     // Registered before anything is sent, so Ctrl-C is never lost.
     let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
         .context("cannot listen for Ctrl-C")?;
+    let create = client.create(req);
+    tokio::pin!(create);
     let created = tokio::select! {
-        created = client.create(req) => created?,
+        created = &mut create => created?,
         _ = interrupt.recv() => {
-            return Err(Exit::new(EXIT_INTERRUPTED, "interrupted before the request was made").into());
+            // The request may be made already: give the broker's answer a
+            // moment, then withdraw what it made.
+            let exit = match tokio::time::timeout(CANCEL_TIMEOUT, &mut create).await {
+                Ok(Ok(created)) => withdraw_after_interrupt(client, &created.id).await,
+                Ok(Err(_)) | Err(_) => Exit::new(
+                    EXIT_INTERRUPTED,
+                    "interrupted; the request may have been made; it expires unanswered on the broker",
+                ),
+            };
+            return Err(exit.into());
         }
     };
     if created.fingerprint != fingerprint(&config.agent, req) {
@@ -510,7 +521,7 @@ async fn request_grant(
     let poll = || client.status(&created.id, MAX_WAIT_SECS);
     let waited = tokio::select! {
         waited = wait_for_decision(poll, deadline, FIRST_RETRY_DELAY) => waited,
-        _ = interrupt.recv() => return Err(cancel_after_interrupt(client, &created.id).await.into()),
+        _ = interrupt.recv() => return Err(withdraw_after_interrupt(client, &created.id).await.into()),
     };
     let status = match waited {
         Ok(status) => status,
@@ -528,31 +539,71 @@ async fn request_grant(
         }
         other => {
             let code = terminal_exit_code(&other).unwrap_or(EXIT_ERROR);
-            let what = match other {
-                RequestStatus::Denied => "denied",
-                RequestStatus::Expired => "expired",
-                RequestStatus::Cancelled => "cancelled",
-                _ => "revoked",
-            };
-            Err(Exit::new(code, format!("request {what}")).into())
+            Err(Exit::new(code, format!("request {}", status_word(&other))).into())
         }
     }
 }
 
-/// Cancel request `id` after Ctrl-C and say what came of it. The exit is
-/// the same either way; a cancellation that fails or takes longer than
-/// [`CANCEL_TIMEOUT`] leaves the request to expire on its own.
-async fn cancel_after_interrupt(client: &Client, id: &Id) -> Exit {
-    let message = match tokio::time::timeout(CANCEL_TIMEOUT, client.cancel(id)).await {
-        Ok(Ok(())) => format!("interrupted; request {id} cancelled"),
-        Ok(Err(e)) => format!(
-            "interrupted; could not cancel request {id} ({e}); it expires unanswered on the broker"
+/// Withdraw request `id` after Ctrl-C and say what came of it, within
+/// [`CANCEL_TIMEOUT`]. The exit is the same either way; a request that could
+/// not be cancelled is left to expire on its own, except one the owner
+/// approved first, whose grant is revoked.
+async fn withdraw_after_interrupt(client: &Client, id: &Id) -> Exit {
+    let message = tokio::time::timeout(CANCEL_TIMEOUT, cancel_or_revoke(client, id))
+        .await
+        .unwrap_or_else(|_| {
+            format!(
+                "interrupted; cancelling request {id} timed out; it expires unanswered on the broker"
+            )
+        });
+    Exit::new(EXIT_INTERRUPTED, message)
+}
+
+/// Cancel request `id`. If the broker refuses because it was decided in the
+/// meantime, look at how: an approval has produced a grant nobody will use,
+/// which is revoked.
+async fn cancel_or_revoke(client: &Client, id: &Id) -> String {
+    let refused = match client.cancel(id).await {
+        Ok(()) => return format!("interrupted; request {id} cancelled"),
+        Err(e @ CallError::Unavailable(_)) => {
+            return format!(
+                "interrupted; could not cancel request {id} ({e}); it expires unanswered on the broker"
+            );
+        }
+        Err(e) => e,
+    };
+    match client.status(id, 0).await {
+        Ok(RequestStatus::Approved(grant)) => match client.revoke(&grant.grant_id).await {
+            Ok(()) => format!(
+                "interrupted; request {id} was approved before it could be cancelled; grant {} revoked",
+                grant.grant_id
+            ),
+            Err(e) => format!(
+                "interrupted; request {id} was approved before it could be cancelled; could not revoke grant {} ({e})",
+                grant.grant_id
+            ),
+        },
+        Ok(other) => format!(
+            "interrupted; request {id} was already {}; nothing to cancel",
+            status_word(&other)
         ),
         Err(_) => format!(
-            "interrupted; cancelling request {id} timed out; it expires unanswered on the broker"
+            "interrupted; could not cancel request {id} ({refused}); it expires unanswered on the broker"
         ),
-    };
-    Exit::new(EXIT_INTERRUPTED, message)
+    }
+}
+
+/// The word for a terminal or pending `status` in messages.
+const fn status_word(status: &RequestStatus) -> &'static str {
+    match status {
+        RequestStatus::Pending => "pending",
+        RequestStatus::Approved(_) => "approved",
+        RequestStatus::Denied => "denied",
+        RequestStatus::Expired => "expired",
+        RequestStatus::Cancelled => "cancelled",
+        RequestStatus::Revoked => "revoked",
+        RequestStatus::Error { .. } => "failed",
+    }
 }
 
 /// Long-poll until the request reaches a terminal status. Transport errors
@@ -1000,6 +1051,51 @@ mod tests {
         );
         record.route = Route::Direct;
         assert_eq!(local_subject(&record), "backup@relay.example.com:2222");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn interrupt_after_approval_revokes_the_grant() {
+        use warden_broker::testkit::{CapturingNotifier, TestBroker};
+        use warden_broker_proto::Window;
+        use zeroize::Zeroizing;
+
+        use crate::{Client, EXIT_INTERRUPTED, withdraw_after_interrupt};
+
+        let broker = TestBroker::new().await;
+        let key = broker.add_agent("bot").await;
+        let urls = broker.spawn_behind_serve().await;
+        let client = Client::new(&urls.api, Zeroizing::new(key)).unwrap();
+        let req = TestBroker::pi_request("restart the backup job", Window::M30);
+        let created = client.create(&req).await.unwrap();
+        let token = CapturingNotifier::token(&broker.capture.next().await);
+        let approved = broker.approve(&token, Window::M30).await;
+        assert!(approved.status.is_success(), "{}", approved.body);
+
+        // The owner approved before the cancel: the grant is revoked, not left.
+        let exit = withdraw_after_interrupt(&client, &created.id).await;
+        assert_eq!(exit.code, EXIT_INTERRUPTED);
+        assert!(
+            exit.message
+                .contains("approved before it could be cancelled")
+                && exit.message.contains("revoked"),
+            "{}",
+            exit.message
+        );
+        assert_eq!(
+            client.status(&created.id, 0).await,
+            Ok(RequestStatus::Revoked)
+        );
+        assert!(client.grants().await.unwrap().is_empty());
+
+        // A request decided otherwise is just reported.
+        let again = client.create(&req).await.unwrap();
+        assert_eq!(client.cancel(&again.id).await, Ok(()));
+        let exit = withdraw_after_interrupt(&client, &again.id).await;
+        assert!(
+            exit.message.contains("already cancelled"),
+            "{}",
+            exit.message
+        );
     }
 
     #[test]

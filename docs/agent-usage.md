@@ -118,6 +118,12 @@ notification stops being actionable:
   `request …` line, for example from another terminal. The waiting
   `warden request` then exits 6.
 
+If the owner approves in the instant before the cancel arrives, `warden
+request` revokes the grant that approval produced and says so. Ctrl-C after
+approval, while the CLI installs the grant, is not handled specially (the
+window is short): run `warden status` and `warden revoke <grant>` if a grant
+you do not want was left.
+
 You can cancel only your own requests, and only while they are pending. The
 approval link of a cancelled request shows "Cancelled by the agent." and
 cannot be approved; the request appears as `cancelled` in the owner's history
