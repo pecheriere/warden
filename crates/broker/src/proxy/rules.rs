@@ -8,7 +8,7 @@ use http::{HeaderMap, HeaderName, HeaderValue, Method};
 use url::Url;
 use warden_broker_proto::{ProxyRequest, under_prefix};
 
-use crate::policy::{ApiSecretPolicy, is_reserved_header};
+use crate::policy::{ApiSecretPolicy, check_path_prefix, is_reserved_header};
 
 /// A request that passed [`check`], ready to be sent once the secret header
 /// is added. Holds nothing the agent did not send.
@@ -82,13 +82,6 @@ pub const OUTBOUND_ACCEPT_ENCODING: &str = "identity";
 /// The only spelling of the scheme accepted in the URL as sent.
 const SCHEME_PREFIX: &str = "https://";
 
-/// Percent-encodings refused in the path, lowercase: `.`, `/`, `\` and `;`
-/// (which servers may decode into dot segments, separators or parameters),
-/// `%` (which a server decoding twice would turn into any of them), the
-/// overlong UTF-8 lead bytes `%c0`/`%c1` (decoded by lax servers as `.` or
-/// `/`) and IIS-style `%u` escapes.
-const ENCODED_SEPARATORS: [&str; 8] = ["%2e", "%2f", "%5c", "%3b", "%25", "%c0", "%c1", "%u"];
-
 /// Headers an agent may not set although they are not reserved:
 /// `Accept-Encoding`, `Range` and `If-Range` would let the response carry the
 /// secret compressed or in fragments that redaction cannot see; the method
@@ -150,29 +143,14 @@ fn check_url(policy: &ApiSecretPolicy, raw: &str) -> Result<Url, Refusal> {
     let raw_path = after_authority
         .find('?')
         .map_or(after_authority, |at| &after_authority[..at]);
-    if !is_plain_path(raw_path) {
+    let sent_path = if raw_path.is_empty() { "/" } else { raw_path };
+    if check_path_prefix(sent_path).is_err() {
         return Err(Refusal::Path);
     }
-    let sent_path = if raw_path.is_empty() { "/" } else { raw_path };
     if url.path() != sent_path || !under_prefix(sent_path, &policy.path_prefix) {
         return Err(Refusal::Path);
     }
     Ok(url)
-}
-
-/// No `.`/`..` segments, empty segments (`//`), `;` parameters or encoded
-/// separators.
-pub(crate) fn is_plain_path(path: &str) -> bool {
-    let lower = path.to_ascii_lowercase();
-    if ENCODED_SEPARATORS.iter().any(|enc| lower.contains(enc))
-        || path.contains("//")
-        || path.contains(';')
-    {
-        return false;
-    }
-    !path
-        .split('/')
-        .any(|segment| segment == "." || segment == "..")
 }
 
 /// The method, if the policy lists it. `CONNECT` and `TRACE` are never

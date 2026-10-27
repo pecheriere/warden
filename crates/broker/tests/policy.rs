@@ -773,6 +773,10 @@ async fn path_prefix_must_start_with_slash() {
         "/v1//x",
         "/v 1",
         "/v1\\x",
+        "/v1/%2f",
+        "/v1/%2E%2e/x",
+        "/v1/%5c",
+        "/v1;x",
     ] {
         let mut item = api_item();
         set_field(&mut item, "path_prefix", Some(bad));

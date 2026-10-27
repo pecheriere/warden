@@ -13,8 +13,6 @@ use warden_broker_proto::{
 };
 use zeroize::Zeroizing;
 
-use crate::proxy::rules::is_plain_path;
-
 pub mod onepassword;
 
 pub use onepassword::OnePasswordConnect;
@@ -105,7 +103,16 @@ pub(crate) fn parse_method(token: &str) -> Option<Method> {
         .and_then(|t| Method::from_bytes(t.as_bytes()).ok())
 }
 
-/// An absolute path without query, fragment, empty or dot segments, or
+/// Percent-encodings refused in a path, lowercase: `.`, `/`, `\` and `;`
+/// (which servers may decode into dot segments, separators or parameters),
+/// `%` (which a server decoding twice would turn into any of them), the
+/// overlong UTF-8 lead bytes `%c0`/`%c1` (decoded by lax servers as `.` or
+/// `/`) and IIS-style `%u` escapes.
+const ENCODED_SEPARATORS: [&str; 8] = ["%2e", "%2f", "%5c", "%3b", "%25", "%c0", "%c1", "%u"];
+
+/// The one validator for paths the broker compares: an item's or a request's
+/// path prefix, and the path of a call. An absolute path without query,
+/// fragment, empty or dot segments, `;` parameters, encoded separators or
 /// characters that need quoting.
 pub(crate) fn check_path_prefix(prefix: &str) -> Result<(), &'static str> {
     if !prefix.starts_with('/') {
@@ -116,6 +123,13 @@ pub(crate) fn check_path_prefix(prefix: &str) -> Result<(), &'static str> {
         .all(|c| c.is_ascii_graphic() && !matches!(c, '?' | '#' | '\\'))
     {
         return Err("must be printable ASCII without spaces, ?, # or \\");
+    }
+    if prefix.contains(';') {
+        return Err("must not contain ;");
+    }
+    let lower = prefix.to_ascii_lowercase();
+    if ENCODED_SEPARATORS.iter().any(|enc| lower.contains(enc)) {
+        return Err("must not contain encoded separators");
     }
     // The leading "/" yields one empty first segment; a trailing "/" one
     // empty last segment. Any other empty segment is a "//".
@@ -317,11 +331,6 @@ impl ApiSecretPolicy {
             Some(wanted) => {
                 check_path_prefix(wanted)
                     .map_err(|reason| format!("secret {name}: path prefix {reason}"))?;
-                if !is_plain_path(wanted) {
-                    return Err(format!(
-                        "secret {name}: path prefix must not contain encoded separators or ;"
-                    ));
-                }
                 if !under_prefix(wanted, &self.path_prefix) {
                     return Err(format!(
                         "secret {name}: path prefix must be under {}",
@@ -834,11 +843,30 @@ mod tests {
             strings(&["get"]),
             strings(&["GET,POST"]),
             strings(&[""]),
-            strings(&["A", "B", "C", "D", "E", "F", "G", "H", "I"]),
+            strings(&[" GET"]),
+            strings(&["GET "]),
         ] {
             let err = p.scope(Some(&bad), None).unwrap_err();
             assert!(err.starts_with("secret github: methods "), "{bad:?}: {err}");
         }
+    }
+
+    #[test]
+    fn method_count_limit_is_eight() {
+        let nine = [
+            "GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "LINK", "UNLINK",
+        ];
+        let methods: Vec<Method> = nine
+            .iter()
+            .map(|m| Method::from_bytes(m.as_bytes()).unwrap())
+            .collect();
+        let p = item("/", &methods);
+        let eight = strings(&nine[..8]);
+        assert_eq!(p.scope(Some(&eight), None).unwrap().methods.len(), 8);
+        assert_eq!(
+            p.scope(Some(&strings(&nine)), None).unwrap_err(),
+            "secret github: methods must list 1 to 8 methods"
+        );
     }
 
     #[test]
@@ -884,6 +912,8 @@ mod tests {
             "/api/%2e%2e/x",
             "/api/%2E/x",
             "/api/%2f",
+            "/api/%5c",
+            "/api/%5C",
             "/api/x;y",
             "/api/x?y",
             "api/x",

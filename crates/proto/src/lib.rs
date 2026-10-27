@@ -276,12 +276,14 @@ pub enum Access {
 /// The methods that cannot modify anything on the server.
 pub const READ_ONLY_METHODS: [&str; 2] = ["GET", "HEAD"];
 
-/// Whether every method in `methods` is one of [`READ_ONLY_METHODS`].
+/// Whether `methods` is non-empty and every method in it is one of
+/// [`READ_ONLY_METHODS`]. An empty list is not read-only: fail closed.
 #[must_use]
 pub fn is_read_only(methods: &[String]) -> bool {
-    methods
-        .iter()
-        .all(|m| READ_ONLY_METHODS.contains(&m.as_str()))
+    !methods.is_empty()
+        && methods
+            .iter()
+            .all(|m| READ_ONLY_METHODS.contains(&m.as_str()))
 }
 
 /// `path` is `prefix` or below it, on a segment boundary: `/api` covers
@@ -758,6 +760,7 @@ mod tests {
         assert!(is_read_only(&m(&["HEAD", "GET"])));
         assert!(!is_read_only(&m(&["GET", "POST"])));
         assert!(!is_read_only(&m(&["OPTIONS"])));
+        assert!(!is_read_only(&m(&[])));
     }
 
     #[test]
