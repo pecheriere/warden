@@ -17,6 +17,7 @@ use sha2::{Digest as _, Sha256};
 use sqlx::{Row as _, SqliteExecutor, SqlitePool};
 use ssh_key::{Algorithm, EcdsaCurve, HashAlg, PublicKey};
 use warden_broker_proto::AgentName;
+use warden_broker_proto::signing::PUBLISHED_TEST_KEYS;
 use zeroize::Zeroizing;
 
 use crate::audit::{AuditError, AuditEvent, AuditLog};
@@ -29,18 +30,6 @@ const KEY_BYTES: usize = 32;
 
 /// Length of base64url without padding of [`KEY_BYTES`] bytes.
 const KEY_ENCODED_LEN: usize = 43;
-
-/// The published Ed25519 test key of the protocol document
-/// (`crates/proto/tests/fixtures/signing-v1.json`), without its comment. Its
-/// private half is in the repository, so enrolling it would let anyone sign
-/// as the agent.
-const PUBLISHED_ED25519_KEY: &str =
-    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFtEYSaZPFM5lYU6qb0mU18GImVC77EbHBHD9eXvkSjX";
-
-/// The published P-256 test key of the protocol document, without its
-/// comment. Its private half was discarded, but it is still a documented
-/// example and not a key anyone should rely on.
-const PUBLISHED_P256_KEY: &str = "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBC+QqOP9eVCRD+mZKR9M9swQ1UATTw3+lcxT1Yj8H0huXEBHMc58PIqZfCWeiPzLR8jnMD8GKW77zKgpJ5a91W0=";
 
 /// Why a public key line was refused at enrollment. Messages never echo the
 /// line.
@@ -121,7 +110,7 @@ impl AgentPublicKey {
         let openssh = normalised
             .to_openssh()
             .map_err(|_| PublicKeyError::Malformed)?;
-        if openssh == PUBLISHED_ED25519_KEY || openssh == PUBLISHED_P256_KEY {
+        if PUBLISHED_TEST_KEYS.contains(&openssh.as_str()) {
             return Err(PublicKeyError::PublishedTestKey);
         }
         Ok(Self {

@@ -25,7 +25,9 @@ rpassword.workspace = true
 rustix.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 ssh-agent-lib.workspace = true
+ssh-encoding.workspace = true
 ssh-key.workspace = true
 tokio.workspace = true
 toml.workspace = true
@@ -42,5 +44,9 @@ keyring-core.workspace = true
 
 [dev-dependencies]
 warden-broker = { workspace = true, features = ["testkit"] }
+# `p256`: the tests generate ECDSA P-256 signing keys and verify the
+# signatures the CLI gets from an ssh-agent; the CLI itself only asks the
+# agent to sign.
+ssh-key = { workspace = true, features = ["p256"] }
 tempfile.workspace = true
 rustix = { workspace = true, features = ["net"] }

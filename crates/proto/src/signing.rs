@@ -39,6 +39,17 @@ pub const MAX_CLOCK_SKEW_SECS: i64 = 60;
 /// Longest accepted request target (path and query), in bytes.
 pub const MAX_TARGET_LEN: usize = 8192;
 
+/// The public keys of the protocol document's test vectors, as OpenSSH lines
+/// without a comment: the Ed25519 key, whose private half is in the
+/// repository (`tests/fixtures/throwaway-test-only-signing-ed25519.key`),
+/// and the P-256 key, whose private half was discarded but which is still a
+/// documented example. Neither may ever be used as a signing key: the
+/// broker refuses to enroll them and the CLI refuses to sign with them.
+pub const PUBLISHED_TEST_KEYS: [&str; 2] = [
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFtEYSaZPFM5lYU6qb0mU18GImVC77EbHBHD9eXvkSjX",
+    "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBC+QqOP9eVCRD+mZKR9M9swQ1UATTw3+lcxT1Yj8H0huXEBHMc58PIqZfCWeiPzLR8jnMD8GKW77zKgpJ5a91W0=",
+];
+
 /// Single-use request nonce: 32 lowercase hex characters (16 random bytes).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
@@ -233,8 +244,8 @@ mod tests {
     use ssh_key::{HashAlg, LineEnding, PrivateKey, PublicKey, SshSig};
 
     use super::{
-        Audience, MAX_TARGET_LEN, Nonce, PROTOCOL, SignedRequestParts, canonical_message,
-        parse_timestamp,
+        Audience, MAX_TARGET_LEN, Nonce, PROTOCOL, PUBLISHED_TEST_KEYS, SignedRequestParts,
+        canonical_message, parse_timestamp,
     };
     use crate::{AgentName, CreateRequest, fingerprint};
 
@@ -411,6 +422,25 @@ mod tests {
             ed25519
                 .verify(PROTOCOL, message.as_bytes(), &signature)
                 .is_err()
+        );
+    }
+
+    /// The keys refused as published are exactly the fixture's keys.
+    #[test]
+    fn published_test_keys_are_the_fixture_keys() {
+        let fixture = fixture();
+        let without_comment = |line: &str| {
+            let key = PublicKey::from_openssh(line).unwrap();
+            PublicKey::new(key.key_data().clone(), "")
+                .to_openssh()
+                .unwrap()
+        };
+        assert_eq!(
+            PUBLISHED_TEST_KEYS,
+            [
+                without_comment(&fixture.public_key).as_str(),
+                without_comment(&fixture.ecdsa_p256.public_key).as_str(),
+            ]
         );
     }
 

@@ -33,6 +33,24 @@ All notable changes to this project are recorded here. The format follows
   audience, a random id created on first start in `WARDEN_AUDIENCE_PATH`
   (default `/data/audience`, next to the relay host key; never overwritten).
   It needs neither an agent key nor the owner's Tailscale login.
+- The CLI signs its requests with an SSH key held by an `ssh-agent`:
+  `warden login --server <url> --agent <name> --ssh-key <path to .pub>
+  [--ssh-agent-socket <path>] [--audience <id>]` pins the broker's audience
+  from `/v1/info` (refusing one other than `--audience`, or than the one
+  pinned before for that URL), checks that the agent holds the key, makes
+  one signed call to confirm the enrollment and records the server, agent,
+  public key, socket (default: `$SSH_AUTH_SOCK` at each run) and audience in
+  the configuration; nothing secret is stored and no Keychain is needed, so
+  it also works on Linux. Every call, each long poll and retry included, is
+  signed anew (fresh timestamp and nonce) over the exact method, target and
+  body bytes sent; the private key is never read by the CLI. Only
+  `ssh-ed25519` and `ecdsa-sha2-nistp256` keys are used (security keys, RSA,
+  other curves, certificates and the published test keys are refused), and
+  the server URL must have no path. A refused signed call says when the
+  broker's audience has changed. `docs/agent-usage.md` covers Secretive
+  (Secure Enclave), `ssh-tpm-agent`, YubiKey PIV and key files, and migrating
+  a bearer-key agent with `warden-server agent set-key`. Bearer-key login is
+  unchanged.
 
 ### Changed
 
