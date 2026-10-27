@@ -77,7 +77,7 @@ enum Cmd {
         #[command(subcommand)]
         kind: RequestKind,
     },
-    /// Run ssh to a target through its newest active grant.
+    /// Run ssh to a target through its active grant that stays valid longest.
     Ssh {
         /// Target name.
         target: TargetName,

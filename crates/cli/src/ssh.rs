@@ -1,4 +1,4 @@
-//! `warden ssh`: run OpenSSH through the newest active grant for a target.
+//! `warden ssh`: run OpenSSH through the longest-lived active grant for a target.
 
 use std::ffi::OsString;
 use std::os::unix::process::CommandExt as _;
@@ -19,7 +19,7 @@ pub struct ActiveGrant {
     pub record: GrantRecord,
 }
 
-/// The newest grant for `target` that is still valid at `now` and whose
+/// The grant for `target` that is valid at `now`, stays valid longest and whose
 /// agent socket exists.
 #[must_use]
 pub fn active_grant(grants: &Path, target: &TargetName, now: i64) -> Option<ActiveGrant> {
@@ -252,7 +252,7 @@ mod tests {
     }
 
     #[test]
-    fn active_grant_is_newest_live_one_for_target() {
+    fn active_grant_is_longest_lived_one_for_target() {
         let root = tempfile::tempdir().unwrap();
         let grants = root.path().join("grants");
         let socket = root.path().join("live.sock");

@@ -124,9 +124,9 @@ warden ssh pi                       # interactive shell
 warden ssh pi -- systemctl status x # run one command
 ```
 
-`warden ssh` uses the newest active grant for the target. It runs OpenSSH
-with your `~/.ssh/config` ignored, with only the grant's agent, and with only
-the host keys the broker pinned (`StrictHostKeyChecking=yes`). Passwords and
+`warden ssh` uses the active grant for the target that stays valid longest.
+It runs OpenSSH with your `~/.ssh/config` ignored, with only the grant's agent,
+and with only the host keys the broker pinned (`StrictHostKeyChecking=yes`). Passwords and
 keyboard-interactive login are disabled. Put everything after `--`. It is
 the remote command, never ssh options.
 
