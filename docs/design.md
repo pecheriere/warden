@@ -532,6 +532,20 @@ warning, together with the methods and the path prefix of the narrowed scope.
 The notification and the audit summary show `api github (read-only)` or `api
 github (CAN MODIFY: POST, PUT)`.
 
+### Screenshots
+
+The unit test `every_page_renders_self_contained` renders every approval page
+with fixture data and fails on inline styles, external origins, images or any
+script and stylesheet other than `/static/warden.js` and `/static/warden.css`.
+`scripts/screenshot-pages.sh <out-dir>` runs it with
+`WARDEN_RENDER_PAGES_DIR` set, serves the pages on `127.0.0.1` and captures
+each at 320x568, 390x844, 466x678, 678x466, 626x890, 890x626 and 1280x800, light and
+dark, with headless Chrome (needs ImageMagick). Screenshots are captured at
+viewport height (what is on screen without scrolling) and land in
+`<out-dir>/warden-pages/shots` (the script deletes and recreates only that
+subdirectory); keep `<out-dir>` outside the repository, as screenshots are
+never committed.
+
 ## 10. Policy: 1Password as the source of truth
 
 A dedicated vault (**`Warden`** by default) is the only vault the Connect

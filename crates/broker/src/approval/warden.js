@@ -27,7 +27,8 @@
     const result = document.getElementById('result');
     if (!result) return;
     result.textContent = text;
-    result.style.color = ok ? 'green' : '#b00';
+    result.classList.toggle('ok', ok);
+    result.classList.toggle('err', !ok);
   };
 
   const post = async (path, body) => {
@@ -97,18 +98,19 @@
   const setupApproval = () => {
     const approve = document.getElementById('approve');
     const deny = document.getElementById('deny');
-    const select = document.getElementById('window');
     const approval = document.getElementById('approval');
-    if (!approve || !deny || !select || !approval) return;
+    if (!approve || !deny || !approval) return;
     const base = window.location.pathname.replace(/\/+$/, '');
 
     approve.addEventListener('click', async () => {
       busy([approve, deny], true);
       try {
+        const picked = document.querySelector('input[name="window"]:checked');
+        if (!picked) throw new Error('Choose how long to grant access for.');
         // The digest of the destination shown on this page: the server refuses
         // to approve if the policy of the target or secret changed since.
         const begun = await post(`${base}/begin`, {
-          window: select.value,
+          window: picked.value,
           target: approval.dataset.target,
         });
         show('Confirm with your passkey…', true);
@@ -139,7 +141,7 @@
         const left = Math.max(0, Math.round((deadline - Date.now()) / 1000));
         const mins = Math.floor(left / 60);
         const secs = String(left % 60).padStart(2, '0');
-        countdown.textContent = left > 0 ? `in ${mins}:${secs}` : 'expired';
+        countdown.textContent = left > 0 ? `expires in ${mins}:${secs}` : 'expired';
         if (left === 0) busy([approve, deny], true);
         else window.setTimeout(tick, 1000);
       };
