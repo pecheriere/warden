@@ -1276,6 +1276,15 @@ impl Requests {
         u64::try_from(expired.len()).map_err(|_| RequestError::Internal("count out of range"))
     }
 
+    /// Forget the nonces of signed requests whose retention has ended (see
+    /// [`crate::signed::NONCE_RETENTION_SECS`]).
+    ///
+    /// # Errors
+    /// Storage failures.
+    pub async fn sweep_nonces(&self) -> Result<u64, RequestError> {
+        Ok(crate::signed::sweep_nonces(&self.pool, self.clock.now()).await?)
+    }
+
     async fn expire_due(&self, scope: Scope) -> Result<Vec<Id>, RequestError> {
         let this = self.clone();
         detached(async move { this.expire_due_now(&scope).await }).await
@@ -1626,8 +1635,9 @@ pub const fn window_label(window: Window) -> &'static str {
     }
 }
 
-/// Expire due pending requests every `every` until `shutdown` changes (or
-/// its sender is dropped). Failures are logged and never end the loop.
+/// Expire due pending requests and forget expired nonces every `every`
+/// until `shutdown` changes (or its sender is dropped). Failures are logged
+/// and never end the loop.
 pub async fn sweep_loop(
     requests: Requests,
     every: Duration,
@@ -1637,11 +1647,16 @@ pub async fn sweep_loop(
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tokio::select! {
-            _ = ticker.tick() => match requests.sweep_expired().await {
-                Ok(0) => {}
-                Ok(n) => tracing::info!(expired = n, "expired pending requests"),
-                Err(e) => tracing::error!(error = %e, "expiry sweep failed"),
-            },
+            _ = ticker.tick() => {
+                match requests.sweep_expired().await {
+                    Ok(0) => {}
+                    Ok(n) => tracing::info!(expired = n, "expired pending requests"),
+                    Err(e) => tracing::error!(error = %e, "expiry sweep failed"),
+                }
+                if let Err(e) = requests.sweep_nonces().await {
+                    tracing::error!(error = %e, "nonce sweep failed");
+                }
+            }
             // Any change, or the sender going away, means stop.
             _ = shutdown.changed() => return,
         }

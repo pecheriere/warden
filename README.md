@@ -23,7 +23,7 @@ Three kinds of access are supported:
   header the policy names, sends them only to the one origin and path prefix
   the policy allows, and returns the response with the secret redacted.
 
-Status: early development. This release (0.5.0) implements SSH certificate
+Status: early development. This release (0.6.0) implements SSH certificate
 mode, SSH relay mode and HTTP proxy mode.
 
 ## Why
@@ -188,7 +188,32 @@ channels you choose (Home Assistant, ntfy) in the order you choose; see
    The key is printed once. Store it in 1Password. `agent list` and `agent
    revoke <name>` manage agents.
 
-5. **Log in from the workstation** (macOS; the key goes into the Keychain):
+   An agent can instead sign its requests with an SSH key (Ed25519 or ECDSA
+   P-256; see [docs/agent-protocol.md](docs/agent-protocol.md)):
+   `agent add <name> --public-key '<line of the .pub file>'` creates one with
+   no bearer key, and `agent set-key <name> '<line>'` switches an existing
+   agent (its bearer key stops working at once). `agent list` shows each
+   agent's kind of authentication and key fingerprint. The broker's audience
+   id, which signatures name, is created on first start in the file
+   `WARDEN_AUDIENCE_PATH` (default `/data/audience`; keep it on the data
+   volume) and is published at `GET /v1/info`.
+
+5. **Log in from the agent's machine.** With a signing key, held by an
+   `ssh-agent` (Secretive's Secure Enclave key on macOS, `ssh-tpm-agent` on
+   Linux, or a plain key file):
+
+   ```sh
+   warden login --server https://warden.example.ts.net --agent laptop \
+     --ssh-key ~/.ssh/warden-laptop.pub
+   ```
+
+   It pins the broker's audience, checks that the `ssh-agent` (at
+   `$SSH_AUTH_SOCK`, or `--ssh-agent-socket`) holds the key and makes one
+   signed call. Nothing secret is stored. See
+   [docs/agent-usage.md](docs/agent-usage.md#with-a-signing-key) for how to
+   make the key and migrate an existing agent.
+
+   With a bearer key instead (macOS; the key goes into the Keychain):
 
    ```sh
    op read "op://Private/warden agent laptop/key" \

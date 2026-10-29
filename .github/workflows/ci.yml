@@ -47,6 +47,10 @@ jobs:
         run: scripts/check-no-reqwest-decompression.sh
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - run: cargo test --workspace --all-features --locked
+      - name: Build the documentation
+        run: cargo doc --workspace --all-features --no-deps --locked
+        env:
+          RUSTDOCFLAGS: -D warnings
 
   deny:
     runs-on: ubuntu-latest

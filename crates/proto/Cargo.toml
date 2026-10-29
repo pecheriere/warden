@@ -16,5 +16,14 @@ hex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+# Parses and normalises agent signing keys (`signing::SigningPublicKey`),
+# the one key-type policy the broker and CLI share. Public-key parsing only:
+# no private keys, no signature crypto (see the workspace features).
+ssh-key.workspace = true
 thiserror.workspace = true
 unicode-properties.workspace = true
+
+[dev-dependencies]
+# Checks the signing test vectors against an independent SSHSIG
+# implementation (Ed25519 and P-256): the signature crypto is test-only.
+ssh-key = { workspace = true, features = ["std", "ed25519", "getrandom", "p256"] }

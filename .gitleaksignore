@@ -13,3 +13,7 @@ crates/broker/tests/fixtures/throwaway-test-only-rsa.key:private-key:1
 # PEM header marker string the CA loader matches to pick the OpenSSH parser.
 # It is a literal format marker, not key material.
 crates/broker/src/policy/onepassword.rs:private-key:293
+
+# Throwaway Ed25519 key that makes the signed-request test vectors in
+# docs/agent-protocol.md reproducible. It protects nothing and is not a secret.
+crates/proto/tests/fixtures/throwaway-test-only-signing-ed25519.key:private-key:1

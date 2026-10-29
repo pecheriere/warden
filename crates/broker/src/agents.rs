@@ -1,7 +1,11 @@
-//! Agent API keys: creation, verification, listing and revocation.
+//! Agents: creation, bearer-key verification, SSH public keys, listing and
+//! revocation.
 //!
-//! Keys are `wdn_` + base64url(32 random bytes). Only the lowercase hex
-//! SHA-256 of a key is stored.
+//! An agent authenticates either with a bearer key (`wdn_` +
+//! base64url(32 random bytes), of which only the lowercase hex SHA-256 is
+//! stored) or by signing its requests with an SSH key whose public half the
+//! owner registered ([`AgentPublicKey`]). Verifying signatures is the job of
+//! the request-signing layer; this module only stores and validates the keys.
 
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -11,7 +15,9 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use secrecy::{ExposeSecret as _, SecretString};
 use sha2::{Digest as _, Sha256};
 use sqlx::{Row as _, SqliteExecutor, SqlitePool};
+use ssh_key::PublicKey;
 use warden_broker_proto::AgentName;
+use warden_broker_proto::signing::{SigningKeyError, SigningPublicKey};
 use zeroize::Zeroizing;
 
 use crate::audit::{AuditError, AuditEvent, AuditLog};
@@ -25,6 +31,112 @@ const KEY_BYTES: usize = 32;
 /// Length of base64url without padding of [`KEY_BYTES`] bytes.
 const KEY_ENCODED_LEN: usize = 43;
 
+/// Why a public key line was refused at enrollment. Messages never echo the
+/// line.
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+pub enum PublicKeyError {
+    /// Not a single OpenSSH public key line.
+    #[error("not an OpenSSH public key: expected one line such as 'ssh-ed25519 AAAA… comment'")]
+    Malformed,
+    /// A security key (`sk-*`).
+    #[error(
+        "security keys (sk-ssh-ed25519@openssh.com, sk-ecdsa-sha2-nistp256@openssh.com) are \
+         refused: they need a touch for every signature, and every API call is signed"
+    )]
+    SecurityKey,
+    /// An OpenSSH certificate.
+    #[error(
+        "certificates are refused: enroll the plain public key (ssh-ed25519 or ecdsa-sha2-nistp256)"
+    )]
+    Certificate,
+    /// Any other key type, including RSA and other ECDSA curves; carries the
+    /// algorithm name as written.
+    #[error("unsupported key type {0}; use ssh-ed25519 or ecdsa-sha2-nistp256")]
+    Unsupported(String),
+    /// The key is the published test key of the protocol document.
+    #[error("this is the published test key from the protocol document; generate your own")]
+    PublishedTestKey,
+}
+
+impl From<SigningKeyError> for PublicKeyError {
+    fn from(e: SigningKeyError) -> Self {
+        match e {
+            SigningKeyError::Malformed => Self::Malformed,
+            SigningKeyError::SecurityKey => Self::SecurityKey,
+            SigningKeyError::Certificate => Self::Certificate,
+            SigningKeyError::Unsupported(algorithm) => Self::Unsupported(algorithm),
+            SigningKeyError::PublishedTestKey => Self::PublishedTestKey,
+        }
+    }
+}
+
+/// A validated agent signing key: an Ed25519 or ECDSA P-256 public key in
+/// normalised OpenSSH form (comment dropped) with its `SHA256:…` fingerprint.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentPublicKey {
+    openssh: String,
+    fingerprint: String,
+}
+
+impl AgentPublicKey {
+    /// Validate an OpenSSH public key line.
+    ///
+    /// # Errors
+    ///
+    /// [`PublicKeyError`] saying why the line is refused: malformed, a
+    /// security key, a certificate, another key type (RSA, other curves), or
+    /// a published test key.
+    pub fn parse(line: &str) -> Result<Self, PublicKeyError> {
+        let key = SigningPublicKey::parse(line)?;
+        Ok(Self {
+            fingerprint: key.fingerprint(),
+            openssh: key.openssh().to_owned(),
+        })
+    }
+
+    /// The key as an OpenSSH line without a comment.
+    #[must_use]
+    pub fn openssh(&self) -> &str {
+        &self.openssh
+    }
+
+    /// The key's fingerprint, `SHA256:…` (as `ssh-keygen -lf` prints it).
+    #[must_use]
+    pub fn fingerprint(&self) -> &str {
+        &self.fingerprint
+    }
+}
+
+/// How an agent proves its identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthKind {
+    /// A `wdn_` bearer key.
+    Bearer,
+    /// Requests signed with a registered SSH key.
+    SshKey,
+}
+
+impl AuthKind {
+    /// The name stored in the database and shown by `agent list`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Bearer => "bearer",
+            Self::SshKey => "ssh-key",
+        }
+    }
+
+    fn from_stored(value: &str) -> Result<Self, AgentError> {
+        match value {
+            "bearer" => Ok(Self::Bearer),
+            "ssh-key" => Ok(Self::SshKey),
+            other => Err(AgentError::Db(sqlx::Error::Decode(
+                format!("unknown auth kind {other:?}").into(),
+            ))),
+        }
+    }
+}
+
 /// Failure of an agent key operation.
 #[derive(Debug, thiserror::Error)]
 pub enum AgentError {
@@ -37,6 +149,15 @@ pub enum AgentError {
     /// The agent's key has been revoked.
     #[error("agent key revoked")]
     Revoked,
+    /// The public key is refused.
+    #[error("{0}")]
+    PublicKey(#[from] PublicKeyError),
+    /// Another agent has registered this public key.
+    #[error("this key is already registered to agent {0} (revoked agents keep their key)")]
+    KeyInUse(AgentName),
+    /// Recording the key change failed, so the change was not made.
+    #[error("the key change could not be audited, so it was not made: {0}")]
+    Audit(#[from] AuditError),
     /// The database failed.
     #[error("database error: {0}")]
     Db(#[from] sqlx::Error),
@@ -107,6 +228,10 @@ pub struct AgentInfo {
     pub created_at: i64,
     /// Revocation time, unix seconds, if revoked.
     pub revoked_at: Option<i64>,
+    /// How the agent authenticates.
+    pub auth: AuthKind,
+    /// The registered public key's fingerprint, for key-signed agents.
+    pub fingerprint: Option<String>,
 }
 
 fn key_hash(key: &str) -> String {
@@ -128,12 +253,14 @@ fn unix_now() -> i64 {
 /// no randomness is available.
 pub async fn add(pool: &SqlitePool, name: &AgentName) -> Result<AgentKey, AgentError> {
     let key = AgentKey::generate()?;
-    let result = sqlx::query("INSERT INTO agents (name, key_hash, created_at) VALUES (?, ?, ?)")
-        .bind(name.as_str())
-        .bind(key_hash(key.expose()))
-        .bind(unix_now())
-        .execute(pool)
-        .await;
+    let result = sqlx::query(
+        "INSERT INTO agents (name, auth_kind, key_hash, created_at) VALUES (?, 'bearer', ?, ?)",
+    )
+    .bind(name.as_str())
+    .bind(key_hash(key.expose()))
+    .bind(unix_now())
+    .execute(pool)
+    .await;
     match result {
         Ok(_) => Ok(key),
         Err(sqlx::Error::Database(e)) if e.is_unique_violation() => Err(AgentError::AlreadyExists),
@@ -170,18 +297,151 @@ pub async fn add_audited(
     Ok(key)
 }
 
-/// Resolve a presented key to its agent.
+/// Start a write transaction at once (`BEGIN IMMEDIATE`), so a read followed
+/// by a write cannot fail with `SQLITE_BUSY` when the lock upgrade is refused.
+async fn begin_immediate(
+    pool: &SqlitePool,
+) -> Result<sqlx::Transaction<'_, sqlx::Sqlite>, sqlx::Error> {
+    pool.begin_with("BEGIN IMMEDIATE").await
+}
+
+/// The agent other than `name` that has registered `key`, if any. Revoked
+/// agents keep their key, so they count.
+async fn other_key_owner(
+    tx: &mut sqlx::SqliteConnection,
+    name: &AgentName,
+    key: &AgentPublicKey,
+) -> Result<Option<AgentName>, AgentError> {
+    let owner: Option<String> =
+        sqlx::query_scalar("SELECT name FROM agents WHERE key_fingerprint = ? AND name <> ?")
+            .bind(key.fingerprint())
+            .bind(name.as_str())
+            .fetch_optional(tx)
+            .await?;
+    owner
+        .map(|owner| {
+            AgentName::try_from(owner).map_err(|e| AgentError::Db(sqlx::Error::Decode(Box::new(e))))
+        })
+        .transpose()
+}
+
+/// Create a key-signed agent registered with `key`, recording
+/// [`AuditEvent::AgentAdded`] and [`AuditEvent::AgentKeySet`]. The agent
+/// exists only if both entries were written.
+///
+/// # Errors
+///
+/// [`AgentError::AlreadyExists`] if the name is taken, even by a revoked
+/// agent; [`AgentError::KeyInUse`] if another agent, revoked or not, has this key;
+/// [`AgentError::Audit`] if the audit log could not be written (nothing is
+/// created); [`AgentError::Db`] on database failure.
+pub async fn add_key_audited(
+    pool: &SqlitePool,
+    audit: &AuditLog,
+    name: &AgentName,
+    key: &AgentPublicKey,
+) -> Result<(), AgentError> {
+    let mut tx = begin_immediate(pool).await?;
+    if let Some(owner) = other_key_owner(&mut tx, name, key).await? {
+        return Err(AgentError::KeyInUse(owner));
+    }
+    let inserted = sqlx::query(
+        "INSERT INTO agents (name, auth_kind, public_key, key_fingerprint, created_at) \
+         VALUES (?, 'ssh-key', ?, ?, ?)",
+    )
+    .bind(name.as_str())
+    .bind(key.openssh())
+    .bind(key.fingerprint())
+    .bind(unix_now())
+    .execute(&mut *tx)
+    .await;
+    match inserted {
+        Ok(_) => {}
+        Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {
+            return Err(AgentError::AlreadyExists);
+        }
+        Err(e) => return Err(e.into()),
+    }
+    audit
+        .append(AuditEvent::AgentAdded {
+            agent: name.clone(),
+        })
+        .await?;
+    audit
+        .append(AuditEvent::AgentKeySet {
+            agent: name.clone(),
+            fingerprint: key.fingerprint().to_owned(),
+        })
+        .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Switch an existing agent to signing with `key`, recording
+/// [`AuditEvent::AgentKeySet`]. Its bearer key (if it had one) is deleted,
+/// so it stops working at once. The change is made only if the audit entry
+/// was written.
+///
+/// # Errors
+///
+/// [`AgentError::Unknown`] if no such agent exists; [`AgentError::Revoked`]
+/// if it is revoked; [`AgentError::KeyInUse`] if another agent, revoked or not, has this key;
+/// [`AgentError::Audit`] if the audit log could not be written (nothing is
+/// changed); [`AgentError::Db`] on database failure.
+pub async fn set_key_audited(
+    pool: &SqlitePool,
+    audit: &AuditLog,
+    name: &AgentName,
+    key: &AgentPublicKey,
+) -> Result<(), AgentError> {
+    let mut tx = begin_immediate(pool).await?;
+    let revoked_at: Option<Option<i64>> =
+        sqlx::query_scalar("SELECT revoked_at FROM agents WHERE name = ?")
+            .bind(name.as_str())
+            .fetch_optional(&mut *tx)
+            .await?;
+    match revoked_at {
+        None => return Err(AgentError::Unknown),
+        Some(Some(_)) => return Err(AgentError::Revoked),
+        Some(None) => {}
+    }
+    if let Some(owner) = other_key_owner(&mut tx, name, key).await? {
+        return Err(AgentError::KeyInUse(owner));
+    }
+    sqlx::query(
+        "UPDATE agents SET auth_kind = 'ssh-key', key_hash = NULL, public_key = ?, \
+         key_fingerprint = ? WHERE name = ?",
+    )
+    .bind(key.openssh())
+    .bind(key.fingerprint())
+    .bind(name.as_str())
+    .execute(&mut *tx)
+    .await?;
+    audit
+        .append(AuditEvent::AgentKeySet {
+            agent: name.clone(),
+            fingerprint: key.fingerprint().to_owned(),
+        })
+        .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Resolve a presented bearer key to its agent. Key-signed agents have no
+/// bearer key and are never resolved here.
 ///
 /// # Errors
 ///
 /// [`AgentError::Unknown`] if no agent has this key, [`AgentError::Revoked`]
 /// if its agent is revoked.
 pub async fn authenticate(pool: &SqlitePool, presented: &str) -> Result<AgentName, AgentError> {
-    let row = sqlx::query("SELECT name, revoked_at FROM agents WHERE key_hash = ?")
-        .bind(key_hash(presented))
-        .fetch_optional(pool)
-        .await?
-        .ok_or(AgentError::Unknown)?;
+    let row = sqlx::query(
+        "SELECT name, revoked_at FROM agents WHERE auth_kind = 'bearer' AND key_hash = ?",
+    )
+    .bind(key_hash(presented))
+    .fetch_optional(pool)
+    .await?
+    .ok_or(AgentError::Unknown)?;
     let revoked_at: Option<i64> = row.try_get("revoked_at")?;
     if revoked_at.is_some() {
         return Err(AgentError::Revoked);
@@ -190,24 +450,57 @@ pub async fn authenticate(pool: &SqlitePool, presented: &str) -> Result<AgentNam
     AgentName::try_from(name).map_err(|e| AgentError::Db(sqlx::Error::Decode(Box::new(e))))
 }
 
+/// The signing key registered for agent `name`, or `None` if it
+/// authenticates with a bearer key.
+///
+/// # Errors
+///
+/// [`AgentError::Unknown`] if no such agent exists, [`AgentError::Revoked`]
+/// if it is revoked; [`AgentError::Db`] on database failure or a stored key
+/// that does not parse.
+pub async fn signing_key(
+    pool: &SqlitePool,
+    name: &AgentName,
+) -> Result<Option<PublicKey>, AgentError> {
+    let row = sqlx::query("SELECT revoked_at, public_key FROM agents WHERE name = ?")
+        .bind(name.as_str())
+        .fetch_optional(pool)
+        .await?
+        .ok_or(AgentError::Unknown)?;
+    let revoked_at: Option<i64> = row.try_get("revoked_at")?;
+    if revoked_at.is_some() {
+        return Err(AgentError::Revoked);
+    }
+    let key: Option<String> = row.try_get("public_key")?;
+    key.map(|line| {
+        PublicKey::from_openssh(&line).map_err(|e| AgentError::Db(sqlx::Error::Decode(Box::new(e))))
+    })
+    .transpose()
+}
+
 /// List all agents, oldest first.
 ///
 /// # Errors
 ///
 /// Fails on database error or a stored name that does not validate.
 pub async fn list(pool: &SqlitePool) -> Result<Vec<AgentInfo>, AgentError> {
-    let rows =
-        sqlx::query("SELECT name, created_at, revoked_at FROM agents ORDER BY created_at, name")
-            .fetch_all(pool)
-            .await?;
+    let rows = sqlx::query(
+        "SELECT name, created_at, revoked_at, auth_kind, key_fingerprint FROM agents \
+         ORDER BY created_at, name",
+    )
+    .fetch_all(pool)
+    .await?;
     rows.iter()
         .map(|row| {
             let name: String = row.try_get("name")?;
+            let auth: String = row.try_get("auth_kind")?;
             Ok(AgentInfo {
                 name: AgentName::try_from(name)
                     .map_err(|e| AgentError::Db(sqlx::Error::Decode(Box::new(e))))?,
                 created_at: row.try_get("created_at")?,
                 revoked_at: row.try_get("revoked_at")?,
+                auth: AuthKind::from_stored(&auth)?,
+                fingerprint: row.try_get("key_fingerprint")?,
             })
         })
         .collect()

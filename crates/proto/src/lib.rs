@@ -57,6 +57,20 @@ macro_rules! string_newtype {
     };
 }
 
+pub mod signing;
+
+/// 16 bytes of OS randomness as 32 lowercase hex characters.
+///
+/// # Panics
+///
+/// Panics if the operating system cannot provide randomness, which leaves no
+/// safe way to continue.
+fn random_hex16() -> String {
+    let mut bytes = [0_u8; 16];
+    getrandom::fill(&mut bytes).expect("OS random number generator unavailable");
+    hex::encode(bytes)
+}
+
 fn is_name(s: &str, first: impl Fn(u8) -> bool, rest: impl Fn(u8) -> bool) -> bool {
     let bytes = s.as_bytes();
     match bytes.split_first() {
@@ -338,9 +352,7 @@ impl Id {
     /// no safe way to continue.
     #[must_use]
     pub fn random() -> Self {
-        let mut bytes = [0_u8; 16];
-        getrandom::fill(&mut bytes).expect("OS random number generator unavailable");
-        Self(hex::encode(bytes))
+        Self(random_hex16())
     }
 }
 
@@ -531,6 +543,18 @@ pub struct SshGrant {
     pub user: UnixUser,
     /// Host public keys, `known_hosts` format.
     pub host_keys: Vec<String>,
+}
+
+/// Body of `GET /v1/info`: the signing protocols the broker accepts and
+/// the audience a signed request must name. Clients pin the audience when
+/// they log in.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InfoResponse {
+    /// Accepted protocol identifiers, for example
+    /// [`signing::PROTOCOL`].
+    pub protocols: Vec<String>,
+    /// The broker's audience.
+    pub audience: signing::Audience,
 }
 
 /// Error body returned by the API.
@@ -921,6 +945,18 @@ mod tests {
         };
         let json = serde_json::to_string(&res).unwrap();
         assert_eq!(serde_json::from_str::<ProxyResponse>(&json).unwrap(), res);
+    }
+
+    #[test]
+    fn info_response_wire_shape() {
+        let json =
+            r#"{"protocols":["warden-request-v1"],"audience":"40ad20029e94984d193159667b296d8a"}"#;
+        let info: InfoResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(info.protocols, [signing::PROTOCOL]);
+        assert_eq!(serde_json::to_string(&info).unwrap(), json);
+        assert!(
+            serde_json::from_str::<InfoResponse>(r#"{"protocols":[],"audience":"nope"}"#).is_err()
+        );
     }
 
     #[test]

@@ -1,7 +1,9 @@
 //! The agent API: create requests, long-poll their status, list and revoke
 //! grants, and make HTTP calls with an api grant. Every route except
-//! `/healthz` requires the owner's Tailscale identity and an agent key (see
-//! [`AuthedAgent`]).
+//! `/healthz` and `/v1/info` requires an authenticated agent: a signed
+//! request ([`signed::verify`]) or the owner's Tailscale identity with a
+//! bearer key (see [`AuthedAgent`]). Every route, those two included,
+//! refuses requests that came through Tailscale Funnel ([`refuse_funnel`]).
 
 use std::time::Duration;
 
@@ -9,22 +11,23 @@ use axum::extract::rejection::{JsonRejection, QueryRejection};
 use axum::extract::{DefaultBodyLimit, FromRequest, Path, Query, Request, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{MethodRouter, get, post};
 use axum::{Json, Router, middleware};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use url::Url;
 use warden_broker_proto::{
     AgentName, ApiError, ApiGrant, CreateRequest, CreatedResponse, GrantAccess, GrantView, Id,
-    ProxyRequest, ProxyResponse, RequestStatus,
+    InfoResponse, ProxyRequest, ProxyResponse, RequestStatus, signing,
 };
 
 use crate::AppState;
 use crate::audit::AuditEvent;
-use crate::identity::AuthedAgent;
+use crate::identity::{AuthedAgent, refuse_funnel};
 use crate::policy::{ApiScope, PolicyError};
 use crate::proxy::{self, CallInfo, Needles};
 use crate::requests::{BACKEND_UNAVAILABLE, RequestError};
+use crate::signed;
 
 /// Largest accepted request body, in bytes.
 const BODY_LIMIT: usize = 16 * 1024;
@@ -48,19 +51,37 @@ const MAX_WAIT_SECS: u64 = 30;
 
 /// Routes of the agent API listener, with `state` applied.
 pub fn router(state: AppState) -> Router {
+    // An agent route with bodies of at most `limit` bytes. The signature
+    // check sits inside the body limit, which it applies when it reads the
+    // body, and times the body by the same limit.
+    let agent = |route: MethodRouter<AppState>, limit: usize| {
+        let verified: MethodRouter<AppState> = route.layer(middleware::from_fn_with_state(
+            signed::SignedRoute::new(state.clone(), limit),
+            signed::verify,
+        ));
+        verified.layer(DefaultBodyLimit::max(limit))
+    };
     Router::new()
         .route("/healthz", get(healthz))
-        .route("/v1/requests", post(create_request))
-        .route("/v1/requests/{id}", get(request_status))
-        .route("/v1/requests/{id}/cancel", post(cancel_request))
-        .route("/v1/grants", get(list_grants))
-        .route("/v1/grants/{id}/revoke", post(revoke_grant))
+        .route("/v1/info", get(info))
+        .route("/v1/requests", agent(post(create_request), BODY_LIMIT))
+        .route("/v1/requests/{id}", agent(get(request_status), BODY_LIMIT))
+        .route(
+            "/v1/requests/{id}/cancel",
+            agent(post(cancel_request), BODY_LIMIT),
+        )
+        .route("/v1/grants", agent(get(list_grants), BODY_LIMIT))
+        .route(
+            "/v1/grants/{id}/revoke",
+            agent(post(revoke_grant), BODY_LIMIT),
+        )
         .route(
             "/v1/grants/{id}/http",
-            post(proxy_call).layer(DefaultBodyLimit::max(PROXY_BODY_LIMIT)),
+            agent(post(proxy_call), PROXY_BODY_LIMIT),
         )
         .fallback(not_found)
         .layer(DefaultBodyLimit::max(BODY_LIMIT))
+        .layer(middleware::from_fn(refuse_funnel))
         .layer(middleware::map_response(no_store))
         .with_state(state)
 }
@@ -190,6 +211,17 @@ fn parse_id(raw: &str) -> Result<Id, Failure> {
 
 async fn healthz() -> &'static str {
     "ok"
+}
+
+/// The signing protocols this broker accepts and its audience. Needs no
+/// agent key and no owner login: a client reads it before it can sign, and
+/// key-signed agents on tagged devices have no user login. The network
+/// controls in front of the API (Tailscale Serve, the gateway) still apply.
+async fn info(State(state): State<AppState>) -> Json<InfoResponse> {
+    Json(InfoResponse {
+        protocols: vec![signing::PROTOCOL.to_owned()],
+        audience: state.audience,
+    })
 }
 
 async fn not_found() -> Failure {

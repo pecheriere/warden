@@ -1,5 +1,10 @@
 //! Client for the broker's agent API.
 //!
+//! Every call goes through one helper, [`Client::call`], which authenticates
+//! it: with the bearer key, or by signing the exact method, request target
+//! and body bytes it sends (`docs/agent-protocol.md`, section 3), with a
+//! fresh timestamp and nonce for every attempt.
+//!
 //! The CLI never sets `Tailscale-User-Login`: in production Tailscale Serve
 //! injects it after authenticating this machine.
 
@@ -7,72 +12,191 @@ use std::fmt;
 use std::time::Duration;
 
 use anyhow::{Context as _, Result};
-use reqwest::{Response, StatusCode};
+use reqwest::header::CONTENT_TYPE;
+use reqwest::{Method, Response, StatusCode};
+use serde::Serialize;
 use serde::de::DeserializeOwned;
-use url::Url;
+use url::{Position, Url};
 use warden_broker_proto::{
-    ApiError, CreateRequest, CreatedResponse, GrantView, Id, ProxyRequest, ProxyResponse,
-    RequestStatus,
+    ApiError, CreateRequest, CreatedResponse, GrantView, Id, InfoResponse, ProxyRequest,
+    ProxyResponse, RequestStatus,
 };
 use zeroize::Zeroizing;
 
 use crate::config::check_server_url;
 use crate::http::sanitize;
+use crate::sign::Signer;
 
 /// Longest the server may hold a status request (`wait`), in seconds.
 pub const MAX_WAIT_SECS: u64 = 30;
 
-/// Authenticated agent API client.
-pub struct Client {
-    http: reqwest::Client,
-    base: Url,
-    key: Zeroizing<String>,
+/// How the client authenticates its calls.
+pub enum Auth {
+    /// `Authorization: Bearer <agent key>` (legacy).
+    Bearer(Zeroizing<String>),
+    /// Signed requests through an `ssh-agent`.
+    Signed(Box<Signer>),
 }
 
-impl fmt::Debug for Client {
+impl fmt::Debug for Auth {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Client")
-            .field("base", &self.base.as_str())
-            .field("key", &"<redacted>")
-            .finish_non_exhaustive()
+        match self {
+            Self::Bearer(_) => f.write_str("Bearer(<redacted>)"),
+            Self::Signed(signer) => f.debug_tuple("Signed").field(signer).finish(),
+        }
     }
 }
 
+/// Authenticated agent API client.
+#[derive(Debug)]
+pub struct Client {
+    http: reqwest::Client,
+    base: Url,
+    auth: Auth,
+}
+
+/// The HTTP client every call uses: bounded connect and total time (long
+/// polls hold the request for up to [`MAX_WAIT_SECS`]), no redirects.
+fn http_client() -> Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(MAX_WAIT_SECS + 20))
+        .redirect(reqwest::redirect::Policy::none())
+        .user_agent(concat!("warden/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .context("cannot build the HTTP client")
+}
+
+/// `base` with a trailing `/`, so that relative API paths join under it.
+fn as_directory(base: &Url) -> Url {
+    let mut base = base.clone();
+    if !base.path().ends_with('/') {
+        let path = format!("{}/", base.path());
+        base.set_path(&path);
+    }
+    base
+}
+
+/// The request target of `url` as it goes on the request line: the path
+/// and, if there is one, `?` and the query. `url` is already normalised by
+/// the `url` crate, and the HTTP stack sends these bytes unchanged.
+fn request_target(url: &Url) -> &str {
+    &url[Position::BeforePath..Position::AfterQuery]
+}
+
+/// The broker's signing protocols and audience (`GET /v1/info`, which needs
+/// no authentication).
+///
+/// # Errors
+/// If the server is unreachable or answers something else.
+pub async fn fetch_info(server: &Url) -> Result<InfoResponse, CallError> {
+    check_server_url(server).map_err(|e| CallError::Refused(format!("{e:#}")))?;
+    let http = http_client().map_err(|e| CallError::Refused(format!("{e:#}")))?;
+    let url = join(&as_directory(server), "v1/info")?;
+    let resp = http
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| CallError::Unavailable(format!("cannot reach the broker: {e}")))?;
+    json(resp, StatusCode::OK).await
+}
+
+fn join(base: &Url, path: &str) -> Result<Url, CallError> {
+    base.join(path)
+        .map_err(|e| CallError::Refused(format!("cannot build the request URL: {e}")))
+}
+
+/// The JSON encoding of `value`, sent and (in key mode) signed as is.
+fn json_body<T: Serialize>(value: &T) -> Result<Vec<u8>, CallError> {
+    serde_json::to_vec(value)
+        .map_err(|e| CallError::Refused(format!("cannot encode the request: {e}")))
+}
+
 impl Client {
-    /// A client for the API at `base`, authenticating with `key`.
+    /// A client for the API at `base`, authenticating with `auth`.
     ///
     /// # Errors
     /// If `base` is not an acceptable server URL or the HTTP client cannot be
     /// built.
-    pub fn new(base: &Url, key: Zeroizing<String>) -> Result<Self> {
+    pub fn new(base: &Url, auth: Auth) -> Result<Self> {
         check_server_url(base)?;
-        let http = reqwest::Client::builder()
-            .connect_timeout(Duration::from_secs(10))
-            // Long polls hold the request for up to MAX_WAIT_SECS.
-            .timeout(Duration::from_secs(MAX_WAIT_SECS + 20))
-            .redirect(reqwest::redirect::Policy::none())
-            .user_agent(concat!("warden/", env!("CARGO_PKG_VERSION")))
-            .build()
-            .context("cannot build the HTTP client")?;
-        let mut base = base.clone();
-        if !base.path().ends_with('/') {
-            let path = format!("{}/", base.path());
-            base.set_path(&path);
+        if matches!(auth, Auth::Signed(_)) {
+            crate::config::check_root_url(base)?;
         }
-        Ok(Self { http, base, key })
+        Ok(Self {
+            http: http_client()?,
+            base: as_directory(base),
+            auth,
+        })
     }
 
     fn url(&self, path: &str) -> Result<Url, CallError> {
-        self.base
-            .join(path)
-            .map_err(|e| CallError::Refused(format!("cannot build the request URL: {e}")))
+        join(&self.base, path)
     }
 
-    async fn send(&self, req: reqwest::RequestBuilder) -> Result<Response, CallError> {
-        req.bearer_auth(self.key.as_str())
+    /// Send one authenticated call: `method url`, with `body` as JSON if
+    /// given. In key mode the signature covers the method, the target taken
+    /// from the final `url` and the exact body bytes, with a fresh timestamp
+    /// and nonce, so every call (each long poll and retry included) is
+    /// signed anew.
+    async fn call(
+        &self,
+        method: Method,
+        url: Url,
+        body: Option<Vec<u8>>,
+    ) -> Result<Response, CallError> {
+        let mut req = self.http.request(method.clone(), url.clone());
+        match &self.auth {
+            Auth::Bearer(key) => req = req.bearer_auth(key.as_str()),
+            Auth::Signed(signer) => {
+                let headers = signer
+                    .sign_request(
+                        method.as_str(),
+                        request_target(&url),
+                        body.as_deref().unwrap_or_default(),
+                    )
+                    .await
+                    .map_err(|e| CallError::Refused(format!("{e:#}")))?;
+                for (name, value) in headers {
+                    req = req.header(name, value);
+                }
+            }
+        }
+        if let Some(body) = body {
+            req = req.header(CONTENT_TYPE, "application/json").body(body);
+        }
+        let resp = req
             .send()
             .await
-            .map_err(|e| CallError::Unavailable(format!("cannot reach the broker: {e}")))
+            .map_err(|e| CallError::Unavailable(format!("cannot reach the broker: {e}")))?;
+        if resp.status() == StatusCode::UNAUTHORIZED
+            && let Auth::Signed(signer) = &self.auth
+        {
+            return Err(self.signature_refused(signer, resp).await);
+        }
+        Ok(resp)
+    }
+
+    /// Explain a 401 to a signed call: the broker's audience changed (another
+    /// broker, or its data was reset), or else what to check.
+    async fn signature_refused(&self, signer: &Signer, resp: Response) -> CallError {
+        let refused = failure(resp).await;
+        match fetch_info(&self.base).await {
+            Ok(info) if &info.audience != signer.audience() => CallError::Refused(format!(
+                "{refused}: the broker's audience is now {}, not {} as pinned at login: this \
+                 is another broker, or its data was reset. Ask the owner, then run \
+                 `warden login` again with --audience {}",
+                info.audience,
+                signer.audience(),
+                info.audience
+            )),
+            _ => CallError::Refused(format!(
+                "{refused}: the signed request was not accepted; check that the agent is enrolled \
+                 with the key {} and not revoked (warden-server agent list), and that this \
+                 machine's clock is within 60 s of the broker's",
+                signer.fingerprint()
+            )),
+        }
     }
 
     /// Create a request.
@@ -81,7 +205,11 @@ impl Client {
     /// If the server is unreachable or refuses.
     pub async fn create(&self, req: &CreateRequest) -> Result<CreatedResponse, CallError> {
         let resp = self
-            .send(self.http.post(self.url("v1/requests")?).json(req))
+            .call(
+                Method::POST,
+                self.url("v1/requests")?,
+                Some(json_body(req)?),
+            )
             .await?;
         json(resp, StatusCode::CREATED).await
     }
@@ -94,7 +222,7 @@ impl Client {
         let mut url = self.url(&format!("v1/requests/{id}"))?;
         url.query_pairs_mut()
             .append_pair("wait", &wait.min(MAX_WAIT_SECS).to_string());
-        let resp = self.send(self.http.get(url)).await?;
+        let resp = self.call(Method::GET, url, None).await?;
         Ok(match json(resp, StatusCode::OK).await? {
             RequestStatus::Error { message } => RequestStatus::Error {
                 message: sanitize(&message),
@@ -110,7 +238,7 @@ impl Client {
     /// pending).
     pub async fn cancel(&self, id: &Id) -> Result<(), CallError> {
         let url = self.url(&format!("v1/requests/{id}/cancel"))?;
-        let resp = self.send(self.http.post(url)).await?;
+        let resp = self.call(Method::POST, url, None).await?;
         if resp.status() == StatusCode::NO_CONTENT {
             Ok(())
         } else {
@@ -123,7 +251,7 @@ impl Client {
     /// # Errors
     /// If the server is unreachable or refuses.
     pub async fn grants(&self) -> Result<Vec<GrantView>, CallError> {
-        let resp = self.send(self.http.get(self.url("v1/grants")?)).await?;
+        let resp = self.call(Method::GET, self.url("v1/grants")?, None).await?;
         json(resp, StatusCode::OK).await
     }
 
@@ -133,7 +261,7 @@ impl Client {
     /// If the server is unreachable or refuses.
     pub async fn proxy(&self, id: &Id, call: &ProxyRequest) -> Result<ProxyResponse, CallError> {
         let url = self.url(&format!("v1/grants/{id}/http"))?;
-        let resp = self.send(self.http.post(url).json(call)).await?;
+        let resp = self.call(Method::POST, url, Some(json_body(call)?)).await?;
         json(resp, StatusCode::OK).await
     }
 
@@ -143,7 +271,7 @@ impl Client {
     /// If the server is unreachable or refuses.
     pub async fn revoke(&self, id: &Id) -> Result<(), CallError> {
         let url = self.url(&format!("v1/grants/{id}/revoke"))?;
-        let resp = self.send(self.http.post(url)).await?;
+        let resp = self.call(Method::POST, url, None).await?;
         if resp.status() == StatusCode::NO_CONTENT {
             Ok(())
         } else {
@@ -226,14 +354,18 @@ mod tests {
     use warden_broker_proto::{Id, RequestStatus};
     use zeroize::Zeroizing;
 
-    use super::{CallError, Client};
+    use super::{Auth, CallError, Client};
+
+    fn bearer(key: &str) -> Auth {
+        Auth::Bearer(Zeroizing::new(key.to_owned()))
+    }
 
     #[test]
     fn debug_redacts_the_agent_key() {
         let key = format!("wdn_{}", "S".repeat(43));
         let client = Client::new(
             &url::Url::parse("https://warden.example/api").unwrap(),
-            Zeroizing::new(key.clone()),
+            bearer(&key),
         )
         .unwrap();
         let shown = format!("{client:?}");
@@ -266,7 +398,7 @@ mod tests {
     }
 
     fn client(url: &url::Url) -> Client {
-        Client::new(url, Zeroizing::new(format!("wdn_{}", "S".repeat(43)))).unwrap()
+        Client::new(url, bearer(&format!("wdn_{}", "S".repeat(43)))).unwrap()
     }
 
     #[tokio::test]
@@ -368,6 +500,212 @@ mod tests {
     #[test]
     fn cleartext_remote_server_is_refused() {
         let url = url::Url::parse("http://warden.example/").unwrap();
-        assert!(Client::new(&url, Zeroizing::new(String::new())).is_err());
+        assert!(Client::new(&url, bearer("")).is_err());
+    }
+
+    /// One request as it arrived on the wire.
+    struct Captured {
+        method: String,
+        target: String,
+        headers: Vec<(String, String)>,
+        body: Vec<u8>,
+    }
+
+    impl Captured {
+        fn header(&self, name: &str) -> Option<&str> {
+            self.headers
+                .iter()
+                .find(|(n, _)| n.eq_ignore_ascii_case(name))
+                .map(|(_, v)| v.as_str())
+        }
+    }
+
+    /// A broker that records each raw request and answers `status` and
+    /// `body`.
+    async fn recording(
+        status: u16,
+        body: &'static str,
+    ) -> (url::Url, tokio::sync::mpsc::UnboundedReceiver<Captured>) {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            while let Ok((mut conn, _)) = listener.accept().await {
+                let mut raw = Vec::new();
+                let mut buf = [0_u8; 4096];
+                let head_end = loop {
+                    let n = conn.read(&mut buf).await.unwrap();
+                    assert!(n > 0, "connection closed mid-request");
+                    raw.extend_from_slice(&buf[..n]);
+                    if let Some(i) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
+                        break i;
+                    }
+                };
+                let head = String::from_utf8(raw[..head_end].to_vec()).unwrap();
+                let mut lines = head.split("\r\n");
+                let mut line = lines.next().unwrap().split(' ');
+                let method = line.next().unwrap().to_owned();
+                let target = line.next().unwrap().to_owned();
+                let headers: Vec<(String, String)> = lines
+                    .map(|l| {
+                        let (n, v) = l.split_once(':').unwrap();
+                        (n.to_owned(), v.trim().to_owned())
+                    })
+                    .collect();
+                let len: usize = headers
+                    .iter()
+                    .find(|(n, _)| n.eq_ignore_ascii_case("content-length"))
+                    .map_or(0, |(_, v)| v.parse().unwrap());
+                let mut received = raw[head_end + 4..].to_vec();
+                while received.len() < len {
+                    let n = conn.read(&mut buf).await.unwrap();
+                    received.extend_from_slice(&buf[..n]);
+                }
+                tx.send(Captured {
+                    method,
+                    target,
+                    headers,
+                    body: received,
+                })
+                .unwrap();
+                let resp = format!(
+                    "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\n\
+                     content-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = conn.write_all(resp.as_bytes()).await;
+            }
+        });
+        (url::Url::parse(&format!("http://{addr}/")).unwrap(), rx)
+    }
+
+    /// In key mode the signature covers the method, the request target and
+    /// the body exactly as they went on the wire, with no `Authorization`;
+    /// every call carries a fresh nonce.
+    #[tokio::test]
+    async fn signed_calls_sign_what_is_sent() {
+        use sha2::{Digest as _, Sha256};
+        use ssh_key::rand_core::OsRng;
+        use ssh_key::{Algorithm, PrivateKey};
+        use warden_broker_proto::signing::{
+            Audience, NAMESPACE, Nonce, SignedRequestParts, canonical_message, parse_timestamp,
+        };
+
+        use crate::sign::testing::TestAgent;
+        use crate::sign::{Signer, parse_signing_key};
+
+        let agent = TestAgent::start();
+        let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+        agent.add(&key).await;
+        let audience = Audience::random();
+        let signer = Signer::new(
+            "bot".parse().unwrap(),
+            audience.clone(),
+            parse_signing_key(&key.public_key().to_openssh().unwrap()).unwrap(),
+            agent.socket.clone(),
+        );
+        let (url, mut seen) = recording(200, r#"{"status":"pending"}"#).await;
+        let client = Client::new(&url, Auth::Signed(Box::new(signer))).unwrap();
+
+        let id = Id::random();
+        assert_eq!(client.status(&id, 30).await, Ok(RequestStatus::Pending));
+        assert_eq!(client.status(&id, 30).await, Ok(RequestStatus::Pending));
+        let call = warden_broker_proto::ProxyRequest {
+            method: "POST".to_owned(),
+            url: "https://api.example.com/a b?q=é".to_owned(),
+            headers: vec![("X-A".to_owned(), "1".to_owned())],
+            body_b64: Some("eyJ4IjoxfQ==".to_owned()),
+        };
+        // The answer is not a proxy response: only the request matters.
+        assert!(client.proxy(&id, &call).await.is_err());
+
+        let mut nonces = Vec::new();
+        for expected in [
+            ("GET", format!("/v1/requests/{id}?wait=30")),
+            ("GET", format!("/v1/requests/{id}?wait=30")),
+            ("POST", format!("/v1/grants/{id}/http")),
+        ] {
+            let got = seen.recv().await.unwrap();
+            assert_eq!(
+                (got.method.as_str(), got.target.clone()),
+                (expected.0, expected.1)
+            );
+            assert_eq!(got.header("authorization"), None);
+            assert_eq!(got.header("warden-agent"), Some("bot"));
+            let nonce = Nonce::try_from(got.header("warden-nonce").unwrap().to_owned()).unwrap();
+            let message = canonical_message(&SignedRequestParts {
+                audience: &audience,
+                agent: &"bot".parse().unwrap(),
+                method: &got.method,
+                target: &got.target,
+                timestamp: parse_timestamp(got.header("warden-timestamp").unwrap()).unwrap(),
+                nonce: &nonce,
+                body_sha256: Sha256::digest(&got.body).into(),
+            })
+            .unwrap();
+            let blob = base64::Engine::decode(
+                &base64::engine::general_purpose::STANDARD,
+                got.header("warden-signature").unwrap(),
+            )
+            .unwrap();
+            let sig =
+                <ssh_key::SshSig as ssh_encoding::Decode>::decode(&mut blob.as_slice()).unwrap();
+            key.public_key()
+                .verify(NAMESPACE, message.as_bytes(), &sig)
+                .unwrap();
+            if got.method == "POST" {
+                assert_eq!(got.header("content-type"), Some("application/json"));
+                assert_eq!(got.body, serde_json::to_vec(&call).unwrap());
+            } else {
+                assert!(got.body.is_empty());
+            }
+            nonces.push(nonce);
+        }
+        assert_ne!(nonces[0], nonces[1]);
+    }
+
+    /// A bearer client sends its key and no `Warden-*` header.
+    #[tokio::test]
+    async fn bearer_calls_are_unsigned() {
+        let (url, mut seen) = recording(200, "[]").await;
+        let key = format!("wdn_{}", "S".repeat(43));
+        let client = Client::new(&url, bearer(&key)).unwrap();
+        assert_eq!(client.grants().await, Ok(Vec::new()));
+        let got = seen.recv().await.unwrap();
+        assert_eq!(
+            got.header("authorization"),
+            Some(format!("Bearer {key}").as_str())
+        );
+        assert!(
+            !got.headers
+                .iter()
+                .any(|(n, _)| n.to_ascii_lowercase().starts_with("warden-"))
+        );
+    }
+
+    /// A signing client refuses a server URL with a path: the API is at the
+    /// root and the path is signed.
+    #[test]
+    fn signed_client_needs_a_root_url() {
+        let signer = crate::sign::Signer::new(
+            "bot".parse().unwrap(),
+            warden_broker_proto::signing::Audience::random(),
+            crate::sign::parse_signing_key(
+                &ssh_key::PrivateKey::random(
+                    &mut ssh_key::rand_core::OsRng,
+                    ssh_key::Algorithm::Ed25519,
+                )
+                .unwrap()
+                .public_key()
+                .to_openssh()
+                .unwrap(),
+            )
+            .unwrap(),
+            "/s".into(),
+        );
+        let url = url::Url::parse("https://warden.example/api/").unwrap();
+        let err = Client::new(&url, Auth::Signed(Box::new(signer))).unwrap_err();
+        assert!(err.to_string().contains("no path"), "{err}");
     }
 }

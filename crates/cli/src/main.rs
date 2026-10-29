@@ -4,9 +4,11 @@ mod agent;
 mod client;
 mod config;
 mod http;
+mod sign;
 mod ssh;
 
 use std::io::{BufRead as _, IsTerminal as _};
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -15,6 +17,7 @@ use clap::{Parser, Subcommand};
 use ssh_key::rand_core::OsRng;
 use ssh_key::{Algorithm, Certificate, PrivateKey};
 use url::Url;
+use warden_broker_proto::signing::{Audience, PROTOCOL};
 use warden_broker_proto::{
     Access, AgentName, ApiGrant, CreateRequest, Goal, GrantAccess, GrantView, Id, RequestStatus,
     SecretName, TargetName, UnixUser, Window, fingerprint, is_read_only, modifying_methods,
@@ -22,8 +25,9 @@ use warden_broker_proto::{
 };
 use zeroize::Zeroizing;
 
-use crate::client::{CallError, Client, MAX_WAIT_SECS};
-use crate::config::Config;
+use crate::client::{Auth, CallError, Client, MAX_WAIT_SECS};
+use crate::config::{Config, SshKeyConfig};
+use crate::sign::Signer;
 
 /// Exit code: any other failure.
 const EXIT_ERROR: u8 = 1;
@@ -71,15 +75,33 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Cmd {
-    /// Store this machine's agent key (read from stdin) in the Keychain and
-    /// remember the broker URL and agent name.
+    /// Set up this machine as an agent. With --ssh-key: pin the broker's
+    /// audience, check that the ssh-agent holds the key and that the broker
+    /// accepts a signed call, and remember all of it (nothing secret).
+    /// Without: store the agent's bearer key (read from stdin) in the
+    /// Keychain.
     Login {
-        /// Broker agent API URL (https, or http on loopback).
+        /// Broker agent API URL (https, or http on loopback); with --ssh-key,
+        /// the root of the origin, with no path.
         #[arg(long)]
         server: Url,
-        /// Agent name the key belongs to.
+        /// Agent name.
         #[arg(long)]
         agent: AgentName,
+        /// Sign requests with this key: the path of its public key (.pub),
+        /// enrolled on the broker with `warden-server agent add <name>
+        /// --public-key`. The private key stays in the ssh-agent.
+        #[arg(long, value_name = "PATH")]
+        ssh_key: Option<PathBuf>,
+        /// The ssh-agent socket holding the key (default: `SSH_AUTH_SOCK`
+        /// whenever warden runs).
+        #[arg(long, value_name = "PATH", requires = "ssh_key")]
+        ssh_agent_socket: Option<PathBuf>,
+        /// The broker's audience as the owner gave it; the login fails if
+        /// the broker reports another. Needed to pin a new audience over a
+        /// different one pinned earlier.
+        #[arg(long, requires = "ssh_key")]
+        audience: Option<Audience>,
     },
     /// Ask the owner for access and wait for the decision.
     Request {
@@ -230,7 +252,28 @@ fn cleanup_state(now: i64) {
 
 async fn run(cmd: Cmd) -> Result<()> {
     match cmd {
-        Cmd::Login { server, agent } => login(server, agent),
+        Cmd::Login {
+            server,
+            agent,
+            ssh_key: None,
+            ..
+        } => login(server, agent),
+        Cmd::Login {
+            server,
+            agent,
+            ssh_key: Some(ssh_key),
+            ssh_agent_socket,
+            audience,
+        } => {
+            let login = KeyLogin {
+                server,
+                agent,
+                public_key: ssh_key,
+                agent_socket: ssh_agent_socket,
+                audience,
+            };
+            login_with_key(login).await
+        }
         Cmd::Request {
             kind:
                 RequestKind::Ssh {
@@ -300,14 +343,21 @@ fn local_time(unix: i64) -> String {
 
 fn client() -> Result<(Config, Client)> {
     let config = config::load()?;
-    let key = config::agent_key(&config)?;
-    let client = Client::new(&config.server, key)?;
+    let auth = match config.signer()? {
+        Some(signer) => Auth::Signed(Box::new(signer)),
+        None => Auth::Bearer(config::agent_key(&config)?),
+    };
+    let client = Client::new(&config.server, auth)?;
     Ok((config, client))
 }
 
 fn login(server: Url, agent: AgentName) -> Result<()> {
     config::check_server_url(&server)?;
-    let config = Config { server, agent };
+    let config = Config {
+        server,
+        agent,
+        ssh_key: None,
+    };
     let key = if std::io::stdin().is_terminal() {
         eprint!("agent key for {}: ", config.agent);
         Zeroizing::new(rpassword::read_password().context("cannot read the agent key")?)
@@ -328,6 +378,107 @@ fn login(server: Url, agent: AgentName) -> Result<()> {
         config.server,
         path.display()
     );
+    Ok(())
+}
+
+/// What `warden login --ssh-key` was given.
+struct KeyLogin {
+    server: Url,
+    agent: AgentName,
+    public_key: PathBuf,
+    agent_socket: Option<PathBuf>,
+    audience: Option<Audience>,
+}
+
+/// Set up a key-signed agent: read the public key, pin the broker's
+/// audience (refusing one that differs from what the owner gave or from
+/// what was pinned before), check that the ssh-agent holds the key and that
+/// the broker accepts a signed call, then write the configuration.
+async fn login_with_key(login: KeyLogin) -> Result<()> {
+    let KeyLogin {
+        server,
+        agent,
+        public_key,
+        agent_socket,
+        audience,
+    } = login;
+    config::check_server_url(&server)?;
+    config::check_root_url(&server)?;
+    if let Some(socket) = &agent_socket {
+        config::check_socket_path(socket)?;
+    }
+    let key = sign::read_signing_key(&public_key)?;
+
+    let info = client::fetch_info(&server)
+        .await
+        .with_context(|| format!("cannot read the broker's /v1/info at {server}"))?;
+    ensure!(
+        info.protocols.iter().any(|p| p == PROTOCOL),
+        "the broker at {server} does not accept signed requests ({PROTOCOL}); upgrade it to \
+         0.6 or later"
+    );
+    let previous = config::load_existing()?;
+    let pinned = previous
+        .as_ref()
+        .filter(|old| old.server == server)
+        .and_then(|old| old.ssh_key.as_ref())
+        .map(|old| old.audience.clone());
+    match (&audience, &pinned) {
+        (Some(expected), _) if *expected != info.audience => bail!(
+            "the broker at {server} reports audience {}, not {expected} as given: this is \
+             another broker; check the URL with the owner",
+            info.audience
+        ),
+        (None, Some(old)) if *old != info.audience => bail!(
+            "the broker at {server} reports audience {}, but {old} was pinned before: this is \
+             another broker, or its data was reset. Ask the owner for the broker's audience, \
+             then log in again with --audience <audience>",
+            info.audience
+        ),
+        _ => {}
+    }
+
+    let signer = Signer::new(
+        agent.clone(),
+        info.audience.clone(),
+        key.clone(),
+        sign::agent_socket(agent_socket.as_deref())?,
+    );
+    signer.check_key_loaded().await?;
+    let fingerprint = signer.fingerprint();
+    let client = Client::new(&server, Auth::Signed(Box::new(signer)))?;
+    client.grants().await.with_context(|| {
+        format!(
+            "the broker did not accept a call signed by agent {agent} with key {fingerprint}; \
+             the owner enrolls it with `warden-server agent add {agent} --public-key '<.pub \
+             line>'` (or `agent set-key`)"
+        )
+    })?;
+
+    let audience = info.audience;
+    let config = Config {
+        server,
+        agent,
+        ssh_key: Some(SshKeyConfig {
+            public_key: key.to_openssh().context("cannot encode the public key")?,
+            agent_socket,
+            audience: audience.clone(),
+        }),
+    };
+    let path = config::save(&config)?;
+    eprintln!(
+        "logged in as {} at {} with key {fingerprint}, audience {audience} ({})",
+        config.agent,
+        config.server,
+        path.display()
+    );
+    #[cfg(target_os = "macos")]
+    if let Some(command) = previous.as_ref().and_then(config::keychain_cleanup_command) {
+        eprintln!(
+            "the bearer key of the previous login may still be in the Keychain, unused; once \
+             you no longer need it, delete it with:\n  {command}"
+        );
+    }
     Ok(())
 }
 
@@ -1139,7 +1290,7 @@ mod tests {
         let broker = TestBroker::new().await;
         let key = broker.add_agent("bot").await;
         let urls = broker.spawn_behind_serve().await;
-        let client = Client::new(&urls.api, Zeroizing::new(key)).unwrap();
+        let client = Client::new(&urls.api, crate::Auth::Bearer(Zeroizing::new(key))).unwrap();
         let req = TestBroker::pi_request("restart the backup job", Window::M30);
         let created = client.create(&req).await.unwrap();
         let token = CapturingNotifier::token(&broker.capture.next().await);
