@@ -4,6 +4,8 @@ use std::sync::Arc;
 
 use sqlx::SqlitePool;
 
+use warden_broker_proto::signing::Audience;
+
 use crate::approval::passkeys::Passkeys;
 use crate::audit::AuditLog;
 use crate::config::Config;
@@ -15,6 +17,7 @@ use crate::requests::{Clock, Requests};
 pub mod agents;
 pub mod api;
 pub mod approval;
+pub mod audience;
 pub mod audit;
 pub mod config;
 pub mod health;
@@ -24,6 +27,7 @@ pub mod policy;
 pub mod proxy;
 pub mod relay;
 pub mod requests;
+pub mod signed;
 pub mod ssh_ca;
 pub mod store;
 #[cfg(feature = "testkit")]
@@ -50,6 +54,8 @@ pub struct AppState {
     pub passkeys: Arc<Passkeys>,
     /// Proxied calls in flight, held to the limits in [`Config::proxy`].
     pub proxy_calls: Arc<CallSlots>,
+    /// This broker's audience, published at `GET /v1/info`.
+    pub audience: Audience,
 }
 
 /// The two routers of the broker: the agent API and the approval UI, each

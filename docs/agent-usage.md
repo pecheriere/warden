@@ -6,7 +6,119 @@ secret) and then uses it. The owner approves on their phone
 with a passkey. The CLI makes an Ed25519 key in memory. That key goes only
 to a dedicated `ssh-agent` and is never written to disk.
 
-## One-time setup (done by the owner)
+## One-time setup
+
+An agent authenticates every call to the broker in one of two ways:
+
+- **A signing key (recommended).** Every request is signed with an SSH key
+  held by an `ssh-agent`, ideally in hardware. Nothing secret is stored on
+  the machine, and a captured request cannot be replayed. Works on macOS and
+  Linux; no Keychain is involved.
+- **A bearer key (legacy).** A `wdn_…` key kept in the macOS Keychain or in
+  `WARDEN_AGENT_KEY`. Whoever copies it can use it.
+
+### With a signing key
+
+1. **Make a key** the agent can sign with unattended: no touch, PIN or
+   biometric prompt per signature, since every call is signed (a long poll
+   every 30 seconds while a request waits). Pick the strongest option the
+   machine has:
+
+   - **macOS, Secure Enclave, with
+     [Secretive](https://github.com/maxgoedjen/secretive).** Create a key
+     with authentication set to *none* (no Touch ID per signature). It is an
+     `ecdsa-sha2-nistp256` key that cannot leave the Secure Enclave. Its
+     agent socket is
+     `~/Library/Containers/com.maxgoedjen.Secretive.SecretAgent/Data/socket.ssh`;
+     save the public key Secretive shows to a file such as
+     `~/.ssh/warden-laptop.pub`.
+   - **Linux, TPM, with
+     [ssh-tpm-agent](https://github.com/Foxboron/ssh-tpm-agent).** Create a
+     P-256 key sealed to the TPM with `ssh-tpm-keygen` (no PIN, or one the
+     agent unlocks unattended), run `ssh-tpm-agent`, and use its socket. The
+     key file it writes is usable only with that TPM.
+   - **YubiKey PIV.** Generate an ECC P-256 key in a PIV slot with PIN
+     policy `never` (or once) and touch policy `never`, and give the slot a
+     certificate (the PKCS#11 module exposes a slot's key only when it holds
+     one; a self-signed one does):
+
+     ```sh
+     ykman piv keys generate --algorithm ECCP256 --pin-policy NEVER \
+       --touch-policy NEVER 9a warden-laptop.pem
+     ykman piv certificates generate --subject "CN=warden-laptop" 9a warden-laptop.pem
+     ssh-add -s <path to libykcs11>
+     ssh-add -L > ~/.ssh/warden-laptop.pub   # keep only the slot's line
+     ```
+   - **A plain key file** (weakest: anyone who copies the file can sign).
+     `ssh-keygen -t ed25519 -f ~/.ssh/warden-laptop`, used for nothing else,
+     loaded with `ssh-add ~/.ssh/warden-laptop`.
+
+   Security keys (`sk-ssh-ed25519@openssh.com`,
+   `sk-ecdsa-sha2-nistp256@openssh.com`) need a touch for every signature
+   and are refused, as are RSA keys, other ECDSA curves and certificates.
+
+2. **Have the owner enroll the public key**, on the broker:
+
+   ```sh
+   warden-server agent add laptop --public-key "$(cat ~/.ssh/warden-laptop.pub)"
+   ```
+
+   `warden-server agent list` shows the key's `SHA256:` fingerprint; compare
+   it with `ssh-keygen -lf ~/.ssh/warden-laptop.pub`.
+
+   A key is enrolled for one agent only, and stays with it after the agent
+   is revoked: a revoked agent's key can never be enrolled again, for any
+   agent. If the agent is revoked (for example because its machine was
+   compromised), make a new key and have it enrolled under a new name.
+
+3. **Log in** with the public key file (the CLI never reads a private key):
+
+   ```sh
+   warden login --server https://warden.example.ts.net --agent laptop \
+     --ssh-key ~/.ssh/warden-laptop.pub \
+     --ssh-agent-socket ~/Library/Containers/com.maxgoedjen.Secretive.SecretAgent/Data/socket.ssh
+   ```
+
+   Without `--ssh-agent-socket` the CLI uses `$SSH_AUTH_SOCK` each time it
+   runs. `warden login` fetches the broker's audience from `GET /v1/info`
+   and pins it, checks that the `ssh-agent` holds the key, makes one signed
+   call to confirm the enrollment, and writes the server URL, agent name,
+   public key, socket and audience to `~/.config/warden/config.toml` (or
+   `$XDG_CONFIG_HOME/warden/config.toml`), mode 0600. Nothing in it is
+   secret. The server URL must be the root of the broker's origin, with no
+   path: the API is at the root, and the path is part of what is signed.
+
+   The audience identifies the broker; a signature for one broker is
+   refused by every other. The owner can read it from the broker's
+   `/data/audience` file (or its startup log) and give it to you; pass it
+   with `--audience <id>` and the login fails if the broker reports another.
+   Once an audience is pinned, logging in again to the same URL fails if
+   the broker reports a different one: you are talking to another broker, or
+   its data was reset. Ask the owner, then log in with `--audience <new id>`.
+   For the same reason, if a call is refused and the broker's audience has
+   changed, `warden` says so.
+
+Each request is signed with a fresh timestamp and nonce, so the machine's
+clock must be within 60 seconds of the broker's (use NTP). If a request
+cannot be signed (for example while the `ssh-agent` restarts), the command
+stops, also in the middle of waiting for a decision: rerun it once the agent
+is back. If the broker then answers that a request is already pending, cancel
+the old one (`warden request cancel <id>`, with the id printed before) or
+let it expire. The protocol is
+described in [agent-protocol.md](agent-protocol.md), for clients other than
+`warden`.
+
+**Migrating an existing agent** from a bearer key to a signing key: make the
+key, have the owner run
+`warden-server agent set-key laptop "$(cat ~/.ssh/warden-laptop.pub)"`
+(the bearer key stops working at once), then run `warden login --ssh-key …`
+as above. On macOS, that login prints the command that deletes the old
+bearer key from the Keychain
+(`security delete-generic-password -s warden-broker -a '<server>|<agent>'`,
+for example `-a 'https://warden.example.ts.net/|laptop'`); it deletes
+nothing itself. Run it, and delete the key from the password manager too.
+
+### With a bearer key (legacy)
 
 ```sh
 op read "op://Private/warden agent laptop/key" \
@@ -19,13 +131,16 @@ a piped key is read as one line. The key goes into the macOS Keychain
 agent name go into `~/.config/warden/config.toml` (or
 `$XDG_CONFIG_HOME/warden/config.toml`), mode 0600.
 
-The server URL must be `https://` (Tailscale Serve), or plain `http://` to a
-loopback address. The CLI never sets the `Tailscale-User-Login` header.
-Tailscale Serve adds it after authenticating the machine.
-
 `WARDEN_AGENT_KEY`, when set, takes precedence over the Keychain. Use it for
 CI and tests, and on platforms without a Keychain. Fill it from a secret
 manager, never from a file in a repository.
+
+### Either way
+
+The server URL must be `https://` (Tailscale Serve), or plain `http://` to a
+loopback address. The CLI never sets the `Tailscale-User-Login` header.
+Tailscale Serve adds it after authenticating the machine; a key-signed agent
+does not need it, so it also works from a tagged machine.
 
 ## When to request access
 

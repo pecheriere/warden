@@ -4810,7 +4810,7 @@ dependencies = [
 
 [[package]]
 name = "warden-broker"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4839,6 +4839,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.1",
  "sqlx",
+ "ssh-encoding 0.2.0",
  "ssh-key 0.6.7",
  "tempfile",
  "thiserror 2.0.21",
@@ -4858,7 +4859,7 @@ dependencies = [
 
 [[package]]
 name = "warden-broker-cli"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "apple-native-keyring-store",
@@ -4872,7 +4873,9 @@ dependencies = [
  "rustix",
  "serde",
  "serde_json",
+ "sha2 0.11.1",
  "ssh-agent-lib",
+ "ssh-encoding 0.2.0",
  "ssh-key 0.6.7",
  "tempfile",
  "tokio",
@@ -4886,13 +4889,14 @@ dependencies = [
 
 [[package]]
 name = "warden-broker-proto"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "getrandom 0.4.3",
  "hex",
  "serde",
  "serde_json",
  "sha2 0.11.1",
+ "ssh-key 0.6.7",
  "thiserror 2.0.21",
  "unicode-properties",
 ]

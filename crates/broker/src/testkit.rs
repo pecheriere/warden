@@ -13,15 +13,23 @@ use async_trait::async_trait;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{HeaderMap, Request, StatusCode};
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
 use http_body_util::BodyExt as _;
 use serde_json::{Value, json};
+use sha2::{Digest as _, Sha256};
+use ssh_encoding::Encode as _;
 use ssh_key::rand_core::OsRng;
-use ssh_key::{Algorithm, PrivateKey, PublicKey};
+use ssh_key::{Algorithm, HashAlg, PrivateKey, PublicKey};
 use tempfile::TempDir;
 use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
 use tower::ServiceExt as _;
 use url::Url;
+use warden_broker_proto::signing::{
+    AGENT_HEADER, NAMESPACE, NONCE_HEADER, Nonce, SIGNATURE_HEADER, SignedRequestParts,
+    TIMESTAMP_HEADER, canonical_message,
+};
 use warden_broker_proto::{
     Access, AgentName, CreateRequest, CreatedResponse, Goal, SecretName, TargetName, UnixUser,
     Window,
@@ -50,6 +58,7 @@ use crate::policy::{
 use crate::proxy::{CallSlots, ProxyLimits};
 use crate::relay::{RelayEndpoint, RelayLimits, RelayServer, host_key};
 use crate::requests::{Clock, Requests};
+use crate::signed::BodyReadTimeout;
 use crate::{AppState, agents, store};
 
 /// A clock that only moves when told to.
@@ -575,6 +584,14 @@ pub struct BaseUrls {
     pub approval: Url,
 }
 
+/// The limits a test may change from the broker's defaults; kept across
+/// [`TestBroker::restart`].
+#[derive(Debug, Clone, Copy, Default)]
+struct Limits {
+    proxy: ProxyLimits,
+    body_read_timeout: BodyReadTimeout,
+}
+
 /// A broker running in-process: real state, real routes driven with
 /// `tower::ServiceExt::oneshot` (or on loopback ports after
 /// [`TestBroker::spawn`]), a fake backend, a capturing notifier and a manual
@@ -600,7 +617,7 @@ pub struct TestBroker {
         )>,
     >,
     dir: Option<TempDir>,
-    proxy: ProxyLimits,
+    limits: Limits,
     /// `WARDEN_RELAY_PUBLIC_ADDR`, if the relay is configured.
     relay: Option<String>,
 }
@@ -637,7 +654,7 @@ impl TestBroker {
     /// # Panics
     /// If any part of the setup fails.
     pub async fn without_relay() -> Self {
-        Self::fresh(ProxyLimits::default(), None).await
+        Self::fresh(Limits::default(), None).await
     }
 
     /// Like [`TestBroker::new`], with the relay already running on an
@@ -652,7 +669,7 @@ impl TestBroker {
             .await
             .expect("bind relay listener");
         let addr = listener.local_addr().expect("relay listener address");
-        let broker = Self::fresh(ProxyLimits::default(), Some(addr.to_string())).await;
+        let broker = Self::fresh(Limits::default(), Some(addr.to_string())).await;
         broker.serve_relay(listener, RelayLimits::default()).await;
         (broker, addr)
     }
@@ -664,13 +681,33 @@ impl TestBroker {
     /// If any part of the setup fails.
     pub async fn with_proxy_limits(proxy: ProxyLimits) -> Self {
         Self::fresh(
-            proxy,
+            Limits {
+                proxy,
+                ..Limits::default()
+            },
             Some(format!("{RELAY_PUBLIC_HOST}:{RELAY_PUBLIC_PORT}")),
         )
         .await
     }
 
-    async fn fresh(proxy: ProxyLimits, relay: Option<String>) -> Self {
+    /// Like [`TestBroker::new`], with the body of a signed request given
+    /// `timeout` to arrive instead of the broker's fixed default (to test
+    /// it without waiting seconds).
+    ///
+    /// # Panics
+    /// If any part of the setup fails.
+    pub async fn with_body_read_timeout(timeout: BodyReadTimeout) -> Self {
+        Self::fresh(
+            Limits {
+                body_read_timeout: timeout,
+                ..Limits::default()
+            },
+            Some(format!("{RELAY_PUBLIC_HOST}:{RELAY_PUBLIC_PORT}")),
+        )
+        .await
+    }
+
+    async fn fresh(limits: Limits, relay: Option<String>) -> Self {
         let dir = tempfile::tempdir().expect("temp dir");
         let db_path = dir.path().join("warden.db");
         let audit_path = dir.path().join("audit.jsonl");
@@ -680,7 +717,7 @@ impl TestBroker {
             audit_path,
             Arc::new(ManualClock::new(TEST_START)),
             Arc::new(FakeBackend::new()),
-            proxy,
+            limits,
             relay,
         )
         .await
@@ -716,7 +753,7 @@ impl TestBroker {
             self.audit_path.clone(),
             self.clock.clone(),
             self.backend.clone(),
-            self.proxy,
+            self.limits,
             relay,
         )
         .await;
@@ -730,19 +767,22 @@ impl TestBroker {
         audit_path: PathBuf,
         clock: Arc<ManualClock>,
         backend: Arc<FakeBackend>,
-        proxy: ProxyLimits,
+        limits: Limits,
         relay: Option<String>,
     ) -> Self {
         let pool = store::open(&db_path).await.expect("open database");
         let audit = Arc::new(AuditLog::open(&audit_path).await.expect("open audit log"));
         let host_key_path = db_path.with_file_name("relay_host_ed25519");
+        let audience_path = db_path.with_file_name("audience");
         let mut config = Config::from_lookup(|var| match var {
             "WARDEN_RELAY_PUBLIC_ADDR" => relay.clone(),
             "WARDEN_RELAY_HOST_KEY_PATH" => Some(host_key_path.display().to_string()),
+            "WARDEN_AUDIENCE_PATH" => Some(audience_path.display().to_string()),
             other => test_env(other),
         })
         .expect("test configuration");
-        config.proxy = proxy;
+        config.proxy = limits.proxy;
+        config.body_read_timeout = limits.body_read_timeout;
         let config = Arc::new(config);
         let relay_endpoint = match &config.relay.public_addr {
             Some(addr) => {
@@ -753,6 +793,9 @@ impl TestBroker {
             }
             None => None,
         };
+        let audience = crate::audience::load_or_create(config.audience_path.clone())
+            .await
+            .expect("audience");
         let capture = Arc::new(CapturingNotifier::new());
         let requests = Requests::new(
             pool.clone(),
@@ -780,6 +823,7 @@ impl TestBroker {
             requests,
             passkeys: Arc::new(passkeys),
             proxy_calls: CallSlots::new(config.proxy.max_calls_per_agent, config.proxy.max_calls),
+            audience,
         };
         let (api_router, router) = crate::build_routers(state.clone());
         Self {
@@ -795,7 +839,7 @@ impl TestBroker {
             servers: Mutex::new(Vec::new()),
             relays: Mutex::new(Vec::new()),
             dir,
-            proxy,
+            limits,
             relay,
         }
     }
@@ -985,6 +1029,81 @@ impl TestBroker {
             .expect("add agent")
             .expose()
             .to_owned()
+    }
+
+    /// Add a key-signed agent with a fresh signing key of `algorithm`
+    /// (Ed25519 or ECDSA P-256) and return the key.
+    ///
+    /// # Panics
+    /// If the key cannot be generated or the agent cannot be added.
+    pub async fn add_signing_agent(&self, name: &str, algorithm: Algorithm) -> PrivateKey {
+        let key = PrivateKey::random(&mut OsRng, algorithm).expect("signing key generation");
+        let line = key.public_key().to_openssh().expect("encode public key");
+        let public = agents::AgentPublicKey::parse(&line).expect("acceptable signing key");
+        let name = AgentName::try_from(name.to_owned()).expect("valid agent name");
+        agents::add_key_audited(&self.state.pool, &self.state.audit, &name, &public)
+            .await
+            .expect("add key-signed agent");
+        key
+    }
+
+    /// A request to the agent API signed by `key` as `agent`, with a fresh
+    /// nonce, the broker clock's current time and this broker's audience,
+    /// and no `Tailscale-User-Login`. A non-empty body is sent as JSON.
+    ///
+    /// # Panics
+    /// If the request cannot be signed or built.
+    #[must_use]
+    pub fn signed_request(
+        &self,
+        key: &PrivateKey,
+        agent: &str,
+        method: &str,
+        target: &str,
+        body: Vec<u8>,
+    ) -> Request<Body> {
+        let agent_name = AgentName::try_from(agent.to_owned()).expect("valid agent name");
+        let nonce = Nonce::random();
+        let timestamp = self.clock.now();
+        let signature = request_signature(
+            key,
+            &SignedRequestParts {
+                audience: &self.state.audience,
+                agent: &agent_name,
+                method,
+                target,
+                timestamp,
+                nonce: &nonce,
+                body_sha256: Sha256::digest(&body).into(),
+            },
+        );
+        let mut builder = Request::builder()
+            .method(method)
+            .uri(target)
+            .header(AGENT_HEADER, agent)
+            .header(TIMESTAMP_HEADER, timestamp.to_string())
+            .header(NONCE_HEADER, nonce.as_str())
+            .header(SIGNATURE_HEADER, signature);
+        if !body.is_empty() {
+            builder = builder.header("Content-Type", "application/json");
+        }
+        builder.body(Body::from(body)).expect("request")
+    }
+
+    /// Send [`TestBroker::signed_request`] to the agent API.
+    ///
+    /// # Panics
+    /// If the request cannot be signed or the router fails.
+    pub async fn api_signed(
+        &self,
+        key: &PrivateKey,
+        agent: &str,
+        method: &str,
+        target: &str,
+        body: &[u8],
+    ) -> TestResponse {
+        self.api_send(self.signed_request(key, agent, method, target, body.to_vec()))
+            .await
     }
 
     /// An SSH request for `alice@pi` with a fresh Ed25519 key.
@@ -1299,6 +1418,23 @@ impl TestBroker {
         self.post_json(&format!("/approve/{token}/deny"), &json!({}))
             .await
     }
+}
+
+/// The `Warden-Signature` value for `parts`: an SSHSIG by `key` (namespace
+/// `warden-request-v1`, hash `sha512`) over their canonical message, as
+/// standard base64 of the binary blob.
+///
+/// # Panics
+/// If `parts` cannot be signed.
+#[must_use]
+pub fn request_signature(key: &PrivateKey, parts: &SignedRequestParts<'_>) -> String {
+    let message = canonical_message(parts).expect("signable request");
+    let signature = key
+        .sign(NAMESPACE, HashAlg::Sha512, message.as_bytes())
+        .expect("sign request");
+    let mut blob = Vec::new();
+    signature.encode(&mut blob).expect("encode signature");
+    STANDARD.encode(blob)
 }
 
 async fn read(resp: axum::response::Response) -> TestResponse {

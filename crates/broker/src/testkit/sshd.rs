@@ -228,7 +228,7 @@ impl Sshd {
     /// partly written one.
     ///
     /// # Panics
-    /// If it was started with [`SshdLogin::Password`] or the file cannot be
+    /// If it was started with `SshdLogin::Password` (Linux only) or the file cannot be
     /// replaced.
     pub fn authorize_only(&self, key: &PublicKey) {
         let authorized = self.authorized_keys.as_ref().expect("a key login sshd");
