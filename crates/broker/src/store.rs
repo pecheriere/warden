@@ -185,4 +185,56 @@ mod tests {
         assert!(insert("r5", "cancelled").await.is_ok());
         assert!(insert("r6", "bogus").await.is_err());
     }
+
+    /// Migration 0004 backfills `passkeys.counter` from the counter inside
+    /// the stored credential; a credential without one starts at 0.
+    #[tokio::test]
+    async fn passkey_counter_migration_backfills_from_the_credential() {
+        let dir = tempfile::tempdir().unwrap();
+        let options = SqliteConnectOptions::new()
+            .filename(dir.path().join("warden.db"))
+            .create_if_missing(true);
+        let pool = SqlitePoolOptions::new()
+            .connect_with(options)
+            .await
+            .unwrap();
+        let mut old = sqlx::migrate!("./migrations");
+        old.migrations = Cow::Owned(
+            old.migrations
+                .iter()
+                .filter(|m| m.version < 4)
+                .cloned()
+                .collect(),
+        );
+        old.run(&pool).await.unwrap();
+        for (id, credential) in [
+            ("p1", r#"{"cred":{"cred_id":"x","counter":7}}"#),
+            ("p2", r#"{"cred":{"cred_id":"x","counter":0}}"#),
+            ("p3", r#"{"cred":{"cred_id":"x"}}"#),
+        ] {
+            sqlx::query(
+                "INSERT INTO passkeys (id, label, credential, created_at) VALUES (?, 'l', ?, 1)",
+            )
+            .bind(id)
+            .bind(credential)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+
+        let counters: Vec<(String, i64)> =
+            sqlx::query("SELECT id, counter FROM passkeys ORDER BY id")
+                .fetch_all(&pool)
+                .await
+                .unwrap()
+                .iter()
+                .map(|r| (r.get("id"), r.get("counter")))
+                .collect();
+        assert_eq!(
+            counters,
+            [("p1".into(), 7), ("p2".into(), 0), ("p3".into(), 0)]
+        );
+    }
 }

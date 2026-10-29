@@ -14,6 +14,15 @@ All notable changes to this project are recorded here. The format follows
   session's exit status. An agent now has the stall timeout (60 s) to take it
   and leave, and its connection keeps its place in the session limits until
   it is gone.
+- A passkey's signature counter is never stored lower than it was: it lives in
+  its own column (migration `0004`, backfilled from the stored credential) and
+  is raised with one conditional update, so two concurrent approvals cannot
+  overwrite each other's newer value. An assertion whose counter does not
+  increase (unless the authenticator always reports 0) is refused as a
+  possible cloned authenticator with a fixed message, no grant is issued, and
+  it is audited as `passkey_counter_regressed`. Approving a request that was
+  already decided is refused as already decided before the passkey is checked,
+  so a second approval finishing after the first is not taken for a clone.
 - A 1Password vault that was deleted and recreated under the same name is
   picked up without restarting the broker: on a Connect 404 the vault id is
   resolved again (once, shared by concurrent callers) and the request retried

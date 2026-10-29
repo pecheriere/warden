@@ -119,6 +119,15 @@ async fn enroll_with_code_then_code_is_spent() {
     assert_eq!(listed[0].id, passkey_id);
     assert_eq!(listed[0].label, "phone");
     assert_eq!(listed[0].created_at, TEST_START);
+    // The counter column mirrors the one inside the credential from the start.
+    let mirrored: i64 = sqlx::query(
+        "SELECT COUNT(*) FROM passkeys WHERE counter = json_extract(credential, '$.cred.counter')",
+    )
+    .fetch_one(&broker.state().pool)
+    .await
+    .unwrap()
+    .get(0);
+    assert_eq!(mirrored, 1);
     assert!(
         broker
             .audit_types()
@@ -338,6 +347,16 @@ async fn approve_applies_window_chosen_at_begin() {
     assert!(types.contains(&"cert_issued".to_owned()), "{types:?}");
     // The signature counter was stored back.
     assert_ne!(stored_credentials(&broker).await, before);
+    // The counter column mirrors the one inside the stored credential.
+    let mirrored: i64 = sqlx::query(
+        "SELECT COUNT(*) FROM passkeys WHERE counter > 0 \
+         AND counter = json_extract(credential, '$.cred.counter')",
+    )
+    .fetch_one(&broker.state().pool)
+    .await
+    .unwrap()
+    .get(0);
+    assert_eq!(mirrored, 1);
 }
 
 #[tokio::test]
@@ -489,13 +508,31 @@ async fn approve_is_single_use_under_concurrency() {
         broker.finish_approval(&token, &c1, &a1),
         broker.finish_approval(&token, &c2, &a2),
     );
+    // Exactly one wins. The loser is refused either as already decided or,
+    // when it gets past the pending check before the winner is approved but
+    // stores its counter after the winner's higher one, as a counter
+    // regression: storing the counter and approving are separate steps, so
+    // two finishes landing at the same moment can look like a cloned
+    // authenticator. The sequential case is never refused that way
+    // (`decided_request_refused_before_passkey_check`).
     let mut codes = [r1.status, r2.status];
     codes.sort();
-    assert_eq!(
-        codes,
-        [StatusCode::OK, StatusCode::CONFLICT],
+    assert!(
+        codes == [StatusCode::OK, StatusCode::FORBIDDEN]
+            || codes == [StatusCode::OK, StatusCode::CONFLICT],
         "{r1:?} {r2:?}"
     );
+    let loser = if r1.status == StatusCode::OK {
+        &r2
+    } else {
+        &r1
+    };
+    let expected = if loser.status == StatusCode::CONFLICT {
+        "this request was already decided"
+    } else {
+        "passkey refused: its signature counter went backwards"
+    };
+    assert_eq!(loser.json()["error"], expected, "{}", loser.body);
     assert_eq!(grant_count(&broker).await, 1);
     assert!(matches!(
         status(&broker, &created.id).await,
@@ -510,6 +547,38 @@ async fn approve_is_single_use_under_concurrency() {
 
     // A ceremony is single use: replaying a finished one is refused.
     let replay = broker.finish_approval(&token, &c1, &a1).await;
+    assert_eq!(replay.status, StatusCode::GONE, "{}", replay.body);
+}
+
+#[tokio::test]
+async fn decided_request_refused_before_passkey_check() {
+    let (broker, created, token) = pending().await;
+    let mut auth = broker.enroll_soft_passkey().await;
+    let first = broker.begin_approval(&token, Window::M15).await;
+    let second = broker.begin_approval(&token, Window::M30).await;
+    let (c1, older) = TestBroker::sign(&mut auth, &first);
+    let (c2, newer) = TestBroker::sign(&mut auth, &second);
+
+    // The newer assertion approves the request; the older one arrives after
+    // that and is refused as already decided, not as a counter regression.
+    let done = broker.finish_approval(&token, &c2, &newer).await;
+    assert_eq!(done.status, StatusCode::OK, "{}", done.body);
+    let late = broker.finish_approval(&token, &c1, &older).await;
+    assert_eq!(late.status, StatusCode::CONFLICT, "{}", late.body);
+    assert_eq!(late.json()["error"], "this request was already decided");
+    assert_eq!(grant_count(&broker).await, 1);
+    assert!(matches!(
+        status(&broker, &created.id).await,
+        RequestStatus::Approved(_)
+    ));
+    assert_eq!(stored_counters(&broker).await, [2]);
+    let types = broker.audit_types();
+    assert!(
+        !types.contains(&"passkey_counter_regressed".to_owned()),
+        "{types:?}"
+    );
+    // The refused ceremony was used up all the same.
+    let replay = broker.finish_approval(&token, &c1, &older).await;
     assert_eq!(replay.status, StatusCode::GONE, "{}", replay.body);
 }
 
@@ -1734,4 +1803,59 @@ async fn audit_summary_includes_scope() {
             "api github (read-only) for 15m: list the open pull requests",
         ]
     );
+}
+
+#[tokio::test]
+async fn counter_regression_refused() {
+    let (broker, first, token_a) = pending().await;
+    let mut auth = broker.enroll_soft_passkey().await;
+    broker.add_agent("other").await;
+    let (_second, token_b) = broker
+        .create_request(
+            "other",
+            TestBroker::pi_request("rotate the logs", Window::M15),
+        )
+        .await;
+
+    // Both ceremonies begin while the stored counter is 0; the authenticator
+    // signs the first with counter 1 and the second with counter 2.
+    let begin_a = broker.begin_approval(&token_a, Window::M15).await;
+    let begin_b = broker.begin_approval(&token_b, Window::M15).await;
+    let (ceremony_a, older) = TestBroker::sign(&mut auth, &begin_a);
+    let (ceremony_b, newer) = TestBroker::sign(&mut auth, &begin_b);
+
+    // The newer assertion arrives first and is stored.
+    let done = broker.finish_approval(&token_b, &ceremony_b, &newer).await;
+    assert_eq!(done.status, StatusCode::OK, "{}", done.body);
+    let stored = stored_counters(&broker).await;
+    assert_eq!(stored, [2]);
+    let credential = stored_credentials(&broker).await;
+
+    // The older one arrives late: refused as a possible cloned authenticator,
+    // with a fixed message, no grant, and the stored counter untouched.
+    let late = broker.finish_approval(&token_a, &ceremony_a, &older).await;
+    assert_eq!(late.status, StatusCode::FORBIDDEN, "{}", late.body);
+    assert_eq!(
+        late.json()["error"],
+        "passkey refused: its signature counter went backwards"
+    );
+    assert_eq!(grant_count(&broker).await, 1);
+    assert_eq!(status(&broker, &first.id).await, RequestStatus::Pending);
+    assert_eq!(stored_counters(&broker).await, [2]);
+    assert_eq!(stored_credentials(&broker).await, credential);
+    let types = broker.audit_types();
+    assert!(
+        types.contains(&"passkey_counter_regressed".to_owned()),
+        "{types:?}"
+    );
+}
+
+async fn stored_counters(broker: &TestBroker) -> Vec<i64> {
+    sqlx::query("SELECT counter FROM passkeys ORDER BY created_at, id")
+        .fetch_all(&broker.state().pool)
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| row.get(0))
+        .collect()
 }

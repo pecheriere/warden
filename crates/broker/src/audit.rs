@@ -189,6 +189,12 @@ pub enum AuditEvent {
         /// Passkey id.
         passkey_id: String,
     },
+    /// An approval was refused because the passkey's signature counter did
+    /// not increase: a possible cloned authenticator.
+    PasskeyCounterRegressed {
+        /// Passkey id.
+        passkey_id: String,
+    },
     /// A passkey was removed.
     PasskeyRemoved {
         /// Passkey id.
