@@ -331,6 +331,29 @@ async fn echoed_secret_is_redacted_in_every_encoding() {
 }
 
 #[tokio::test]
+async fn secret_echoed_into_a_header_name_is_dropped_whatever_its_case() {
+    // Header-name safe, with upper case the HTTP stack lowercases.
+    let secret = "MiXeD-Case-Cred42";
+    let s = setup().await;
+    s.broker
+        .backend
+        .set_api_secret(s.upstream.policy("svc"), secret);
+    let resp = get(&s, "/name-echo").await;
+    assert_response_clean(&resp, secret);
+    assert!(
+        !resp
+            .body
+            .to_ascii_lowercase()
+            .contains(&secret.to_ascii_lowercase()),
+        "lowercased leak: {}",
+        resp.body
+    );
+    let (proxied, _) = proxied(&resp);
+    assert_eq!(header(&proxied, "x-plain"), Some("fine"));
+    assert_eq!(proxied.redactions, 1);
+}
+
+#[tokio::test]
 async fn redirect_is_returned_not_followed() {
     let s = setup().await;
     let resp = get(&s, "/redirect").await;

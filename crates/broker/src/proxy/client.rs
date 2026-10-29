@@ -13,7 +13,7 @@ use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use reqwest::{Certificate, Client, redirect};
 use warden_broker_proto::ProxyResponse;
 
-use super::redact::{Needles, redact};
+use super::redact::{Needles, redact, redact_name};
 use super::rules::{OUTBOUND_ACCEPT_ENCODING, Prepared};
 use crate::policy::{ApiSecretPolicy, SecretValue};
 
@@ -260,9 +260,10 @@ pub fn redact_response(upstream: &Upstream, needles: &Needles) -> ProxyResponse 
         {
             continue;
         }
-        // A name carrying the secret cannot be redacted into a valid
-        // header name: the whole header goes.
-        let (_, in_name) = redact(name.as_bytes(), needles);
+        // A name carrying the secret (in any letter case: names are
+        // lowercased) cannot be redacted into a valid header name: the
+        // whole header goes.
+        let (_, in_name) = redact_name(name.as_bytes(), needles);
         if in_name > 0 {
             redactions = redactions.saturating_add(in_name);
             continue;
@@ -384,6 +385,25 @@ mod tests {
             [("x-plain".to_owned(), "fine".to_owned())]
         );
         assert_eq!(response.redactions, 2);
+    }
+
+    #[test]
+    fn header_names_match_the_secret_case_insensitively() {
+        // The HTTP stack lowercases names, so a mixed-case secret echoed
+        // into a name arrives in lowercase.
+        let secret = "MiXeD-Case-Cred42";
+        let needles = Needles::new(secret, &format!("Bearer {secret}"));
+        let upstream = Upstream {
+            status: StatusCode::OK,
+            headers: headers(&[("x-mixed-case-cred42", "v"), ("x-plain", "fine")]),
+            body: Vec::new(),
+        };
+        let response = redact_response(&upstream, &needles);
+        assert_eq!(
+            response.headers,
+            [("x-plain".to_owned(), "fine".to_owned())]
+        );
+        assert_eq!(response.redactions, 1);
     }
 
     #[test]

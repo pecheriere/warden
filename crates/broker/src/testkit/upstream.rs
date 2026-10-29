@@ -56,6 +56,9 @@ pub struct Received {
 /// Routes (any method):
 /// - `/echo`: every request header and the body, raw and in several
 ///   encodings, in the body and in `x-echo-*` response headers;
+/// - `/name-echo`: the `Authorization` value without its `Bearer ` prefix,
+///   echoed into a response header *name* (`x-seen-<value>`; the HTTP stack
+///   lowercases it);
 /// - `/redirect`: `302` to another origin, carrying the request's
 ///   `Authorization` value percent-encoded in the `Location` query;
 /// - `/huge`, `/huge-chunked`: [`HUGE_BYTES`] bytes, with and without
@@ -221,6 +224,7 @@ async fn handle(State(log): State<Log>, req: Request) -> Response {
     });
     match parts.uri.path() {
         "/echo" => echo(&parts.headers, &body),
+        "/name-echo" => name_echo(&parts.headers),
         "/redirect" => redirect(&parts.headers),
         "/huge" => respond(StatusCode::OK, &[], Body::from(vec![b'a'; HUGE_BYTES])),
         "/huge-chunked" => respond(StatusCode::OK, &[], huge_chunked()),
@@ -310,6 +314,28 @@ fn echo(headers: &HeaderMap, body: &[u8]) -> Response {
     text.push('\n');
     let mut response = respond(StatusCode::OK, &[], Body::from(text));
     response.headers_mut().extend(out);
+    response
+}
+
+/// `x-seen-<credential>: 1`, with the credential taken from `Authorization`,
+/// and a harmless `x-plain` header.
+fn name_echo(headers: &HeaderMap) -> Response {
+    let mut response = respond(
+        StatusCode::OK,
+        &[("x-plain", "fine".to_owned())],
+        Body::empty(),
+    );
+    let credential = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.strip_prefix("Bearer ").unwrap_or(v));
+    if let Some(name) =
+        credential.and_then(|c| HeaderName::from_bytes(format!("x-seen-{c}").as_bytes()).ok())
+    {
+        response
+            .headers_mut()
+            .append(name, HeaderValue::from_static("1"));
+    }
     response
 }
 

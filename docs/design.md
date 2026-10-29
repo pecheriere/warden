@@ -390,7 +390,9 @@ byte alignments; and, per character, the percent-encoded form (either hex
 case), `+` for a space, JSON `\/`, `\"`, `\\` and `\u00hh`, and HTML
 `&amp;`, `&quot;`, `&lt;`, `&gt;`, `&apos;`, `&#NN;` and `&#xHH;`, mixed
 freely within one occurrence. Overlapping matches merge into one marker. A
-header whose name contains the secret is dropped, and hop-by-hop response
+header whose name contains the secret is dropped (the name cannot be
+redacted into a valid one) and counted; names are matched
+ASCII-case-insensitively, because the HTTP stack lowercases them. Hop-by-hop response
 headers and `Content-Length` are dropped. The number of redactions is
 audited and returned. Boundary residual: for a secret embedded in a larger
 base64 blob, the one base64 character on each side that mixes secret bits
