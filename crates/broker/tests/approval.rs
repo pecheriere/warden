@@ -917,7 +917,9 @@ async fn history_lists_decided_requests_newest_first() {
         "<bdi>second</bdi>",
         "alice@pi",
         "15m",
-        "2027-01-15 08:00:00 UTC",
+        // Date and time in separate spans, so a narrow column breaks only
+        // between them.
+        r#"<span class="nowrap">2027-01-15</span> <span class="nowrap">08:00:00 UTC</span>"#,
     ] {
         at(needle);
     }

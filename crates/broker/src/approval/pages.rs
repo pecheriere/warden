@@ -149,11 +149,23 @@ fn read_only_badge() -> Markup {
 
 /// The badge for access that can change things upstream through `what`.
 fn can_modify_badge(what: &str) -> Markup {
-    let warning = html! {
+    html! { strong.badge.modify { (icon(14, "2.4", &warning_icon())) " Can modify: " (what) } }
+}
+
+/// A warning triangle.
+fn warning_icon() -> Markup {
+    html! {
         path d="M12 3 2 20h20L12 3z" {}
         path d="M12 10v4M12 17h.01" {}
-    };
-    html! { strong.badge.modify { (icon(14, "2.4", &warning)) " Can modify: " (what) } }
+    }
+}
+
+/// A key: approving or creating with a passkey.
+fn key_icon() -> Markup {
+    html! {
+        circle cx="8" cy="15" r="4" {}
+        path d="m10.8 12.2 8.2-8.2M16 7l3 3M14 9l2 2" {}
+    }
 }
 
 /// What approving `request` gives access to under `destination`: for a
@@ -184,15 +196,15 @@ fn destination_access(request: &CreateRequest, destination: &Destination) -> Mar
     }
 }
 
-/// What an active grant gives access to.
+/// What an active grant gives access to: the access line and, for an API
+/// secret, its badge, each a child of the card's field.
 fn grant_access(grant: &ActiveGrant) -> Markup {
     match &grant.access {
         GrantAccess::Ssh(ssh) => {
             html! { code { (access_line(&grant.request, &ssh.host, ssh.port)) } }
         }
         GrantAccess::Api(api) => html! {
-            (api_access(api))
-            br;
+            span { (api_access(api)) }
             @match ApiScope::try_from(api) {
                 Ok(scope) => (modify_line(&scope)),
                 // A damaged record: the label must not claim read-only.
@@ -200,8 +212,10 @@ fn grant_access(grant: &ActiveGrant) -> Markup {
             }
         },
         GrantAccess::Relay(relay) => html! {
-            code { "ssh " bdi { (relay.user) "@" (relay.target) } }
-            " via the warden relay"
+            span {
+                code { "ssh " bdi { (relay.user) "@" (relay.target) } }
+                " via the warden relay"
+            }
         },
     }
 }
@@ -226,10 +240,6 @@ pub fn approve(view: &PendingView, now: i64) -> Markup {
     let clock = html! {
         circle cx="12" cy="12" r="9" {}
         path d="M12 7v5l3 2" {}
-    };
-    let key = html! {
-        circle cx="8" cy="15" r="4" {}
-        path d="m10.8 12.2 8.2-8.2M16 7l3 3M14 9l2 2" {}
     };
     // The script sends `data-target` back when the approval begins, binding
     // it to the destination shown here.
@@ -280,7 +290,7 @@ pub fn approve(view: &PendingView, now: i64) -> Markup {
                     }
                     div.btns {
                         button.btn.approve #approve type="button" {
-                            (icon(20, "2.2", &key)) " Approve with passkey"
+                            (icon(20, "2.2", &key_icon())) " Approve with passkey"
                         }
                         button.btn.deny #deny type="button" { "Deny" }
                     }
@@ -292,14 +302,68 @@ pub fn approve(view: &PendingView, now: i64) -> Markup {
     layout("Approve access", None, true, &content)
 }
 
+/// A link onward from an end state.
+struct Link {
+    href: &'static str,
+    text: &'static str,
+}
+
+/// The link from an end state to the owner's active grants.
+const TO_GRANTS: Link = Link {
+    href: "/grants",
+    text: "View active grants",
+};
+
+/// The status chip of an end state: an icon and a short text.
+struct Chip<'a> {
+    icon: Markup,
+    text: &'a str,
+}
+
+/// A finished or empty state: the large mascot in a halo, a status chip, a
+/// heading, a short message and, if given, a link onward.
+fn end_state(chip: &Chip<'_>, heading: &str, message: &Markup, link: Option<&Link>) -> Markup {
+    html! {
+        main.done {
+            div.halo { (mascot()) }
+            span.chip.center { (icon(14, "2.4", &chip.icon)) " " (chip.text) }
+            h1 { (heading) }
+            p { (message) }
+            @if let Some(link) = link {
+                a.btn.ghost.block href=(link.href) { (link.text) }
+            }
+        }
+    }
+}
+
+/// A tick in a circle: the request is over.
+fn done_icon() -> Markup {
+    html! { circle cx="12" cy="12" r="9" {} path d="m8 12 3 3 5-6" {} }
+}
+
+/// A crossed circle: withdrawn, or nothing there.
+fn none_icon() -> Markup {
+    html! { circle cx="12" cy="12" r="9" {} path d="m9 9 6 6M15 9l-6 6" {} }
+}
+
+/// An empty tray: nothing listed yet.
+fn empty_icon() -> Markup {
+    html! { path d="M3 13h5l1 3h6l1-3h5" {} path d="M5 13 7 5h10l2 8v6H5z" {} }
+}
+
 /// The request behind a link is unknown, decided or expired. Says nothing
 /// about which, so links reveal nothing.
 #[must_use]
 pub fn not_pending() -> Markup {
-    let content = html! {
-        h1 { "Nothing to approve" }
-        p { "This request is no longer pending: it was decided, expired or never existed." }
-    };
+    let content = end_state(
+        &Chip {
+            icon: done_icon(),
+            text: "No longer pending",
+        },
+        "Nothing to approve",
+        &html! { "This request is no longer pending: it was decided, expired or never existed." },
+        Some(&TO_GRANTS),
+    );
     layout("Nothing to approve", None, false, &content)
 }
 
@@ -307,92 +371,128 @@ pub fn not_pending() -> Markup {
 /// who holds the link, so it can say what happened.
 #[must_use]
 pub fn cancelled() -> Markup {
-    let content = html! {
-        h1 { "Nothing to approve" }
-        p { "Cancelled by the agent." }
-    };
+    let content = end_state(
+        &Chip {
+            icon: none_icon(),
+            text: "Cancelled",
+        },
+        "Nothing to approve",
+        &html! { "Cancelled by the agent." },
+        Some(&TO_GRANTS),
+    );
     layout("Nothing to approve", None, false, &content)
 }
 
 /// No page at this address.
 #[must_use]
 pub fn not_found() -> Markup {
-    let content = html! {
-        h1 { "Not found" }
-        p { "There is no page at this address." }
-    };
+    let content = end_state(
+        &Chip {
+            icon: none_icon(),
+            text: "No page here",
+        },
+        "Not found",
+        &html! { "There is no page at this address." },
+        Some(&TO_GRANTS),
+    );
     layout("Not found", None, false, &content)
 }
 
 /// The policy backend could not answer.
 #[must_use]
 pub fn unavailable(message: &str) -> Markup {
-    let content = html! {
-        h1 { "Policy unavailable" }
-        p { "The request cannot be shown right now: " (message) }
-    };
+    let content = end_state(
+        &Chip {
+            icon: warning_icon(),
+            text: "Unavailable",
+        },
+        "Policy unavailable",
+        &html! { "The request cannot be shown right now: " strong { bdi { (message) } } },
+        None,
+    );
     layout("Policy unavailable", None, false, &content)
 }
 
 /// Something failed on the server; details are in its log.
 #[must_use]
 pub fn internal_error() -> Markup {
-    let content = html! {
-        h1 { "Something went wrong" }
-        p { "The server logged the details." }
-    };
+    let content = end_state(
+        &Chip {
+            icon: warning_icon(),
+            text: "Error",
+        },
+        "Something went wrong",
+        &html! { "The server logged the details." },
+        None,
+    );
     layout("Error", None, false, &content)
 }
 
-/// Active grants with revoke buttons.
+/// Active grants, one card each, with revoke buttons.
 #[must_use]
 pub fn grants(grants: &[ActiveGrant], now: i64) -> Markup {
+    if grants.is_empty() {
+        let content = end_state(
+            &Chip {
+                icon: empty_icon(),
+                text: "None active",
+            },
+            "Active grants",
+            &html! { "No active grants. A grant shows here once you approve a request." },
+            None,
+        );
+        return layout("Active grants", Some(Nav::Grants), false, &content);
+    }
     let content = html! {
-        h1 { "Active grants" }
-        @if grants.is_empty() {
-            p { "No active grants." }
-        } @else {
-            table {
-                thead { tr { th { "Agent" } th { "Access" } th { "Fingerprint" } th { "Ends" } th {} } }
-                tbody {
-                    @for grant in grants {
-                        tr {
-                            td { bdi { (grant.agent) } }
-                            td { (grant_access(grant)) }
-                            td { code { (grant.fingerprint) } }
-                            td {
-                                (utc(grant.not_after))
+        main.wide {
+            h1 { "Active grants" }
+            @for grant in grants {
+                section.card.grant {
+                    div.field.tight {
+                        span.who { bdi { (grant.agent) } }
+                        (grant_access(grant))
+                        div.meta {
+                            span { "Fingerprint " code { (grant.fingerprint) } }
+                            span {
+                                "Ends " (utc(grant.not_after))
                                 " (in " (((grant.not_after - now).max(0) + 59) / 60) " min)"
                             }
-                            td {
-                                button.revoke type="button" data-grant=(grant.grant_id)
-                                    title=(grant.grant_id) { "Revoke" }
-                                br;
-                                small { code { (grant.grant_id) } }
-                            }
+                            span { "Grant " code { (grant.grant_id) } }
                         }
                     }
+                    button.revoke type="button" data-grant=(grant.grant_id) { "Revoke" }
                 }
             }
+            p.result #result role="status" {}
         }
-        p #result role="status" {}
     };
     layout("Active grants", Some(Nav::Grants), true, &content)
 }
 
-/// Read-only list of recent requests, newest first.
+/// Read-only list of recent requests, newest first: a card per request on a
+/// phone, a table from 720 px.
 #[must_use]
 pub fn history(entries: &[HistoryEntry]) -> Markup {
+    if entries.is_empty() {
+        let content = end_state(
+            &Chip {
+                icon: empty_icon(),
+                text: "Nothing yet",
+            },
+            "History",
+            &html! { "No requests yet. Every request an agent makes shows here." },
+            None,
+        );
+        return layout("History", Some(Nav::History), false, &content);
+    }
     let content = html! {
-        h1 { "History" }
-        @if entries.is_empty() {
-            p { "No requests yet." }
-        } @else {
-            table {
+        main.wide {
+            h1 { "History" }
+            table.history {
                 thead {
                     tr {
-                        th { "Time" } th { "Agent" } th { "Goal" } th { "Access" }
-                        th { "Fingerprint" } th { "Status" } th { "Window" }
+                        th.label { "Time" } th.label { "Agent" } th.label { "Goal" } th.label { "Access" }
+                        th.label { "Fingerprint" } th.label { "Status" } th.label { "Window" }
                     }
                 }
                 tbody {
@@ -401,14 +501,19 @@ pub fn history(entries: &[HistoryEntry]) -> Markup {
                             Access::Ssh { target, user, .. } => format!("{user}@{target}"),
                             Access::Api { secret, .. } => format!("api:{secret}"),
                         };
+                        // On a phone each row is a card; `data-label` names
+                        // the cell there, where the header row is hidden.
+                        @let (date, time) = utc_parts(entry.created_at);
                         tr {
-                            td { (utc(entry.created_at)) }
-                            td { bdi { (entry.agent) } }
-                            td { bdi { (entry.request.goal) } }
-                            td { code { (subject) } }
-                            td { code { (entry.fingerprint) } }
-                            td { (entry.status) }
-                            td {
+                            td data-label="Time" {
+                                span { span.nowrap { (date) } " " span.nowrap { (time) } }
+                            }
+                            td.who data-label="Agent" { bdi { (entry.agent) } }
+                            td data-label="Goal" { bdi { (entry.request.goal) } }
+                            td data-label="Access" { code { (subject) } }
+                            td data-label="Fingerprint" { code.nowrap { (entry.fingerprint) } }
+                            td data-label="Status" { span.chip { (entry.status) } }
+                            td data-label="Window" {
                                 @match entry.granted_secs {
                                     Some(secs) => (secs_label(secs)),
                                     None => { "asked " (window_label(entry.request.window)) },
@@ -427,20 +532,24 @@ pub fn history(entries: &[HistoryEntry]) -> Markup {
 #[must_use]
 pub fn enroll() -> Markup {
     let content = html! {
-        h1 { "Enroll a passkey" }
-        p { "Run " code { "warden-server enroll" } " on the server and enter the code it prints." }
-        main #enrollment {
-            p {
-                label for="code" { "Enrollment code" } br;
-                input #code type="text" autocomplete="one-time-code" autocapitalize="characters"
-                    spellcheck="false" maxlength="32";
+        main {
+            h1 { "Enroll a passkey" }
+            p.lead {
+                "Run " code { "warden-server enroll" } " on the server and enter the code it prints."
             }
-            p {
-                label for="label" { "Name for this passkey" } br;
-                input #label type="text" maxlength="64" placeholder="My phone";
+            section.card {
+                div.field {
+                    label.label for="code" { "Enrollment code" }
+                    input.input #code type="text" autocomplete="one-time-code"
+                        autocapitalize="characters" spellcheck="false" maxlength="32";
+                }
+                div.field {
+                    label.label for="label" { "Name for this passkey" }
+                    input.input #label type="text" maxlength="64" placeholder="My phone";
+                }
+                button.btn.approve #enroll type="button" { (icon(20, "2.2", &key_icon())) " Create passkey" }
             }
-            button #enroll type="button" { "Create passkey" }
-            p #result role="status" {}
+            p.result #result role="status" {}
         }
     };
     layout("Enroll a passkey", Some(Nav::Enroll), true, &content)
@@ -456,14 +565,24 @@ fn secs_label(secs: i64) -> String {
 
 /// `YYYY-MM-DD HH:MM:SS UTC` for Unix seconds `ts`.
 fn utc(ts: i64) -> String {
+    let (date, time) = utc_parts(ts);
+    format!("{date} {time}")
+}
+
+/// `YYYY-MM-DD` and `HH:MM:SS UTC` for Unix seconds `ts`, so a narrow
+/// column can break between them and nowhere else.
+fn utc_parts(ts: i64) -> (String, String) {
     let days = ts.div_euclid(86_400);
     let secs = ts.rem_euclid(86_400);
     let (year, month, day) = civil_from_days(days);
-    format!(
-        "{year:04}-{month:02}-{day:02} {:02}:{:02}:{:02} UTC",
-        secs / 3600,
-        secs % 3600 / 60,
-        secs % 60
+    (
+        format!("{year:04}-{month:02}-{day:02}"),
+        format!(
+            "{:02}:{:02}:{:02} UTC",
+            secs / 3600,
+            secs % 3600 / 60,
+            secs % 60
+        ),
     )
 }
 
@@ -937,6 +1056,109 @@ mod tests {
             r#"<code class="fingerprint">ab01-cd01-ef01</code>"#,
             r#"<button class="btn approve" id="approve" type="button">"#,
             r#"<button class="btn deny" id="deny" type="button">Deny</button>"#,
+            r#"<p class="result" id="result" role="status"></p>"#,
+        ] {
+            assert!(html.contains(hook), "{hook}: {html}");
+        }
+    }
+
+    #[test]
+    fn end_states_show_the_mascot_in_a_halo_with_a_chip() {
+        for (name, page) in [
+            ("not_pending", not_pending()),
+            ("cancelled", cancelled()),
+            ("not_found", not_found()),
+            ("unavailable", unavailable("x")),
+            ("internal_error", internal_error()),
+            ("grants_empty", grants(&[], NOW)),
+            ("history_empty", history(&[])),
+        ] {
+            let html = page.into_string();
+            assert!(
+                html.contains(r#"<main class="done"><div class="halo"><svg class="mascot" "#),
+                "{name}: {html}"
+            );
+            assert!(
+                html.contains(r#"<span class="chip center"><svg "#),
+                "{name}: {html}"
+            );
+            // Header mascot, menu icon, halo mascot, chip icon: all decoration.
+            assert_eq!(html.matches(r#"aria-hidden="true""#).count(), 4, "{name}");
+            assert!(!html.contains("<script"), "{name}: {html}");
+        }
+        assert!(
+            not_pending()
+                .into_string()
+                .contains(r#"<a class="btn ghost block" href="/grants">View active grants</a>"#)
+        );
+    }
+
+    #[test]
+    fn unavailable_escapes_and_isolates_the_message() {
+        let html = unavailable("<b>\u{202e}x").into_string();
+        assert!(
+            html.contains("<strong><bdi>&lt;b&gt;\u{202e}x</bdi></strong>"),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn grants_are_cards_with_the_revoke_hook() {
+        let html = grants(&active_grants(), NOW).into_string();
+        assert_eq!(
+            html.matches(r#"<section class="card grant">"#).count(),
+            4,
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!(
+                r#"<button class="revoke" type="button" data-grant="{}">Revoke</button>"#,
+                id(2)
+            )),
+            "{html}"
+        );
+        assert!(html.contains("<span class=\"who\"><bdi>build-agent</bdi></span>"));
+        assert!(html.contains(r#"<p class="result" id="result" role="status"></p>"#));
+        assert!(html.contains(r#"<script src="/static/warden.js" defer></script>"#));
+    }
+
+    #[test]
+    fn history_labels_every_cell_for_the_phone_cards() {
+        let html = history(&history_entries()).into_string();
+        assert!(html.contains(r#"<table class="history">"#), "{html}");
+        for label in [
+            "Time",
+            "Agent",
+            "Goal",
+            "Access",
+            "Fingerprint",
+            "Status",
+            "Window",
+        ] {
+            assert_eq!(
+                html.matches(&format!(r#"data-label="{label}""#)).count(),
+                3,
+                "{label}: {html}"
+            );
+            assert!(html.contains(&format!(r#"<th class="label">{label}</th>"#)));
+        }
+        assert!(
+            html.contains(
+                r#"<span><span class="nowrap">2027-01-15</span> <span class="nowrap">07:00:00 UTC</span></span>"#
+            ),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn enroll_page_keeps_the_script_hooks() {
+        let html = enroll().into_string();
+        for hook in [
+            r#"<label class="label" for="code">Enrollment code</label>"#,
+            r#"<input class="input" id="code" type="text" autocomplete="one-time-code""#,
+            r#"<label class="label" for="label">Name for this passkey</label>"#,
+            r#"<input class="input" id="label" type="text" maxlength="64""#,
+            r#"<button class="btn approve" id="enroll" type="button">"#,
             r#"<p class="result" id="result" role="status"></p>"#,
         ] {
             assert!(html.contains(hook), "{hook}: {html}");

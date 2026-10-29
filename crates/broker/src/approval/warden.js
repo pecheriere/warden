@@ -27,7 +27,8 @@
     const result = document.getElementById('result');
     if (!result) return;
     result.textContent = text;
-    result.style.color = ok ? 'green' : '#b00';
+    result.classList.toggle('ok', ok);
+    result.classList.toggle('err', !ok);
   };
 
   const post = async (path, body) => {
@@ -104,10 +105,12 @@
     approve.addEventListener('click', async () => {
       busy([approve, deny], true);
       try {
+        const picked = document.querySelector('input[name="window"]:checked');
+        if (!picked) throw new Error('Choose how long to grant access for.');
         // The digest of the destination shown on this page: the server refuses
         // to approve if the policy of the target or secret changed since.
         const begun = await post(`${base}/begin`, {
-          window: document.querySelector('input[name="window"]:checked').value,
+          window: picked.value,
           target: approval.dataset.target,
         });
         show('Confirm with your passkey…', true);
