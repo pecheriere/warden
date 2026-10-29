@@ -49,6 +49,13 @@ All notable changes to this project are recorded here. The format follows
   `relay_session_ended` entry, and a session the relay ends (shutdown,
   revocation, expiry, grant state unavailable) keeps that reason although
   the agent's side closes as a result.
+- The CLI's cleanup on every run also removes leftover grant-record temporary
+  files (`.<name>.<id>.tmp`, from a run that crashed mid-write) once they are
+  over ten minutes old, in the grants and api-grants directories; fresher ones
+  and live grants are never touched. Its failures are reported in a single
+  warning. A per-grant `ssh-agent` still lingers until the next `warden` run
+  after its grant ends (the agent's lifetime limit covers its keys, not the
+  process), but that run stops it.
 
 ### Added
 

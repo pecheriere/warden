@@ -17,7 +17,7 @@ use unicode_properties::{GeneralCategory, UnicodeGeneralCategory as _};
 use url::Url;
 use warden_broker_proto::{ApiGrant, Id, ProxyRequest, ProxyResponse, SecretName, under_prefix};
 
-use crate::agent::{private_dir, state_dir, write_new_private};
+use crate::agent::{private_dir, remove_stale_temps, state_dir, write_new_private};
 
 /// Largest request body the CLI sends, in bytes.
 pub const MAX_BODY_BYTES: usize = 1024 * 1024;
@@ -182,8 +182,9 @@ pub fn discard(grant_id: &Id) -> Result<bool> {
     }
 }
 
-/// Delete the records of grants ended by `now`. A record that cannot be
-/// read is kept, with a warning on `warn`.
+/// Delete the records of grants ended by `now`, and the stale temporary
+/// files of crashed writes. A record that cannot be read is kept, with a
+/// warning on `warn`.
 ///
 /// # Errors
 /// If the state directory is unusable or a record cannot be removed; every
@@ -210,6 +211,9 @@ fn cleanup_expired_in(dir: &Path, now: i64, warn: &mut impl std::io::Write) -> R
             )
             .context("cannot write a warning")?,
         }
+    }
+    if let Err(e) = remove_stale_temps(dir, now) {
+        failures.push(format!("{e:#}"));
     }
     ensure!(
         failures.is_empty(),
@@ -616,6 +620,42 @@ mod tests {
             .permissions()
             .mode();
         assert_eq!(mode & 0o777, 0o600);
+    }
+
+    /// A temporary file abandoned by a crashed write goes after ten
+    /// minutes; a fresh one (another `warden` mid-write) and live and ended
+    /// records are handled as before.
+    #[test]
+    fn cleanup_removes_only_stale_temp_files() {
+        let now: i64 = 1_000_000;
+        let dir = tempfile::tempdir().unwrap();
+        let live = record("svc", now + 500);
+        save_in(dir.path(), &live).unwrap();
+        let age = |name: &str, secs: u64| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, b"{").unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(
+                    std::time::UNIX_EPOCH
+                        + std::time::Duration::from_secs(u64::try_from(now).unwrap() - secs),
+                )
+                .unwrap();
+        };
+        age(".abandoned.json.aaa.tmp", 601);
+        age(".inflight.json.bbb.tmp", 599);
+        let mut warnings = Vec::new();
+        cleanup_expired_in(dir.path(), now, &mut warnings).unwrap();
+        assert!(warnings.is_empty());
+        assert_eq!(
+            names_in(dir.path()),
+            [
+                ".inflight.json.bbb.tmp".to_owned(),
+                format!("{}.json", live.grant_id)
+            ]
+        );
     }
 
     /// A record that cannot be read may be one another `warden` is writing,

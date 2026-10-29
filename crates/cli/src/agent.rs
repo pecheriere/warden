@@ -15,7 +15,7 @@ use std::os::unix::fs::{
 };
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::time::{Duration, UNIX_EPOCH};
 
 use anyhow::{Context as _, Result, anyhow, bail, ensure};
 use serde::{Deserialize, Serialize};
@@ -489,7 +489,57 @@ pub fn discard_grant(grant_id: &Id) -> Result<bool> {
     Ok(true)
 }
 
-/// Stop the agents of grants ended by `now` and delete their directories.
+/// How old an abandoned temporary file must be before it is removed: far
+/// longer than any write takes, so another CLI mid-write is never affected.
+const STALE_TEMP_AGE: Duration = Duration::from_secs(10 * 60);
+
+/// Remove the temporary files of [`write_new_private`] in `dir` that were
+/// last written at least ten minutes before `now` (Unix seconds): left by
+/// a CLI that crashed between creating one and renaming it. Fresher ones
+/// may belong to a write in progress and stay, as does everything else.
+///
+/// # Errors
+/// If `dir` cannot be listed or a stale file cannot be removed; every one
+/// is still attempted.
+pub fn remove_stale_temps(dir: &Path, now: i64) -> Result<()> {
+    let cutoff = UNIX_EPOCH + Duration::from_secs(u64::try_from(now).unwrap_or(0));
+    let mut failures = Vec::new();
+    for entry in fs::read_dir(dir)
+        .with_context(|| format!("cannot read {}", dir.display()))?
+        .flatten()
+    {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        // `file_type` does not follow symlinks: only regular files qualify.
+        let is_temp = name.starts_with('.') && name.ends_with(".tmp");
+        if !is_temp || !entry.file_type().is_ok_and(|t| t.is_file()) {
+            continue;
+        }
+        let Ok(modified) = entry.metadata().and_then(|m| m.modified()) else {
+            continue;
+        };
+        if modified
+            .checked_add(STALE_TEMP_AGE)
+            .is_some_and(|ripe| ripe <= cutoff)
+        {
+            match fs::remove_file(entry.path()) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => failures.push(format!("{}: {e}", entry.path().display())),
+            }
+        }
+    }
+    ensure!(
+        failures.is_empty(),
+        "cannot remove stale temporary files: {}",
+        failures.join("; ")
+    );
+    Ok(())
+}
+
+/// Stop the agents of grants ended by `now` and delete their directories;
+/// remove stale temporary files beside the live grants and in the grants
+/// directory.
 ///
 /// # Errors
 /// If the state directory is unusable or some grant cannot be cleaned up;
@@ -503,7 +553,7 @@ fn cleanup_expired_in(grants: &Path, now: i64) -> Result<()> {
     for (dir, record) in load_grants(grants) {
         let outcome = match record {
             Ok(rec) if rec.not_after <= now => discard(&dir, &rec.socket, rec.pid),
-            Ok(_) => Ok(()),
+            Ok(_) => remove_stale_temps(&dir, now),
             Err(e) => Err(e),
         };
         if let Err(e) = outcome {
@@ -515,6 +565,9 @@ fn cleanup_expired_in(grants: &Path, now: i64) -> Result<()> {
                 )
             ));
         }
+    }
+    if let Err(e) = remove_stale_temps(grants, now) {
+        failures.push(format!("{e:#}"));
     }
     ensure!(
         failures.is_empty(),
@@ -538,9 +591,9 @@ mod tests {
     use ssh_agent_lib::proto::PublicCredential;
 
     use super::{
-        GrantRecord, Route, add_key, cleanup_expired_in, is_safe_host, kill, load_grants,
-        parse_agent_pid, record, socket_dir, socket_path, start_in, write_known_hosts,
-        write_new_private,
+        GrantRecord, Route, add_key, cleanup_expired_in, is_listening, is_safe_host, kill,
+        load_grants, parse_agent_pid, record, remove_stale_temps, socket_dir, socket_path,
+        start_in, write_known_hosts, write_new_private,
     };
 
     fn host_key() -> String {
@@ -828,16 +881,144 @@ mod tests {
         kill(Path::new("/nonexistent/warden.sock"), 1).unwrap();
     }
 
+    /// A socket file nobody listens on, as left by a crashed agent. It is
+    /// bound but never put in the listening state: a listener closed with
+    /// `drop` can still be alive through a copy of its descriptor in a
+    /// process that a parallel test is forking, and `connect` would then
+    /// succeed.
+    fn stale_socket(path: &Path) {
+        use rustix::net::{AddressFamily, SocketAddrUnix, SocketType, bind, socket};
+        let fd = socket(AddressFamily::UNIX, SocketType::STREAM, None).unwrap();
+        bind(&fd, &SocketAddrUnix::new(path).unwrap()).unwrap();
+    }
+
     #[test]
     fn kill_removes_stale_socket_without_signalling() {
         let root = roots();
         let stale = root.path().join("stale.sock");
-        // A socket file nobody listens on, as left by a crashed agent.
-        drop(std::os::unix::net::UnixListener::bind(&stale).unwrap());
+        stale_socket(&stale);
         assert!(stale.exists());
+        assert!(!is_listening(&stale));
         // pid 1 would fail to be signalled; kill must not try.
         kill(&stale, 1).unwrap();
         assert!(!stale.exists());
+    }
+
+    fn record_for(id: &Id, agent: &super::GrantAgent, not_after: i64) -> GrantRecord {
+        GrantRecord {
+            grant_id: id.clone(),
+            target: "pi".parse().unwrap(),
+            route: Route::Direct,
+            host: "127.0.0.1".to_owned(),
+            port: 22,
+            user: "alice".parse().unwrap(),
+            not_after,
+            socket: agent.socket.clone(),
+            pid: agent.pid,
+        }
+    }
+
+    fn set_age(path: &Path, now: i64, age_secs: u64) {
+        let mtime =
+            std::time::UNIX_EPOCH + Duration::from_secs(u64::try_from(now).unwrap() - age_secs);
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
+    }
+
+    /// Cleanup stops the agent of an ended grant and leaves a live grant's
+    /// agent running with its directory intact.
+    #[test]
+    fn cleanup_stops_ended_agents_and_keeps_live_ones() {
+        let root = roots();
+        let grants = root.path().join("grants");
+        let sockets = root.path().join("s");
+        let ended_id = Id::random();
+        let live_id = Id::random();
+        let ended = start_in(&grants, &sockets, &ended_id, Duration::from_secs(60)).unwrap();
+        let live = start_in(&grants, &sockets, &live_id, Duration::from_secs(60)).unwrap();
+        let _stop_ended = StopOnDrop(ended.socket.clone(), ended.pid);
+        let _stop_live = StopOnDrop(live.socket.clone(), live.pid);
+        record(&ended, &record_for(&ended_id, &ended, 100)).unwrap();
+        record(&live, &record_for(&live_id, &live, 200)).unwrap();
+        assert!(is_listening(&ended.socket) && is_listening(&live.socket));
+
+        cleanup_expired_in(&grants, 150).unwrap();
+
+        assert!(!ended.dir.exists());
+        assert!(!ended.socket.exists());
+        assert!(live.dir.join("grant.json").exists());
+        assert!(is_listening(&live.socket));
+    }
+
+    /// Only temporary files abandoned for over ten minutes go; a fresh one
+    /// may be another CLI's write in progress, and records are never temps.
+    #[test]
+    fn stale_temp_files_are_removed_and_fresh_ones_kept() {
+        let now = 1_000_000;
+        let root = roots();
+        let grants = root.path().join("grants");
+        let live = grants.join(Id::random().as_str());
+        std::fs::create_dir_all(&live).unwrap();
+        for dir in [&grants, &live] {
+            for (name, age) in [
+                (".grant.json.aaa.tmp", 601),
+                (".grant.json.bbb.tmp", 599),
+                ("grant.json", 100_000),
+                (".hidden", 100_000),
+            ] {
+                let path = dir.join(name);
+                std::fs::write(&path, b"x").unwrap();
+                set_age(&path, now, age);
+            }
+        }
+        // A symlink named like a stale temp file is not followed or removed.
+        let target = root.path().join("target");
+        std::fs::write(&target, b"x").unwrap();
+        std::os::unix::fs::symlink(&target, live.join(".link.ccc.tmp")).unwrap();
+
+        // The live grant has no record: only the temp files are in scope.
+        remove_stale_temps(&live, now).unwrap();
+        remove_stale_temps(&grants, now).unwrap();
+
+        for dir in [&grants, &live] {
+            assert!(!dir.join(".grant.json.aaa.tmp").exists(), "{dir:?}");
+            assert!(dir.join(".grant.json.bbb.tmp").exists(), "{dir:?}");
+            assert!(dir.join("grant.json").exists(), "{dir:?}");
+            assert!(dir.join(".hidden").exists(), "{dir:?}");
+        }
+        assert!(live.join(".link.ccc.tmp").exists());
+        assert!(target.exists());
+    }
+
+    /// The run-time cleanup applies it to the grants directory and to live
+    /// grants' directories, and leaves the live grant itself alone.
+    #[test]
+    fn cleanup_removes_stale_temps_beside_live_grants() {
+        let now = 1_000_000;
+        let root = roots();
+        let grants = root.path().join("grants");
+        let sockets = root.path().join("s");
+        let id = Id::random();
+        let live = start_in(&grants, &sockets, &id, Duration::from_secs(60)).unwrap();
+        let _stop = StopOnDrop(live.socket.clone(), live.pid);
+        record(&live, &record_for(&id, &live, now + 60)).unwrap();
+        let in_grant = live.dir.join(".known_hosts.aaa.tmp");
+        let in_root = grants.join(".stray.bbb.tmp");
+        for path in [&in_grant, &in_root] {
+            std::fs::write(path, b"x").unwrap();
+            set_age(path, now, 601);
+        }
+
+        cleanup_expired_in(&grants, now).unwrap();
+
+        assert!(!in_grant.exists());
+        assert!(!in_root.exists());
+        assert!(live.dir.join("grant.json").exists());
+        assert!(is_listening(&live.socket));
     }
 
     #[test]
