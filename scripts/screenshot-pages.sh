@@ -6,6 +6,7 @@
 #   <out-dir> receives the rendered pages (<name>.html, static/warden.css) and
 #   the screenshots (shots/<name>-<WxH>-<light|dark>.png). Keep it outside the
 #   repository.
+# Screenshots show the viewport only (what is on screen without scrolling).
 # Needs: cargo, python3, Google Chrome (override with CHROME=...), ImageMagick.
 set -euo pipefail
 
@@ -18,7 +19,7 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 mkdir -p "$1"
 out="$(cd "$1" && pwd)"
 chrome="${CHROME:-/Applications/Google Chrome.app/Contents/MacOS/Google Chrome}"
-sizes=(390x844 768x1024 1280x800)
+sizes=(390x844 466x678 678x466 626x890 890x626 1280x800)
 shots="$out/shots"
 
 if [[ "$out" == "$root" || "$out" == "$root"/* ]]; then
@@ -30,7 +31,10 @@ for tool in cargo python3 magick; do
 done
 [[ -x "$chrome" ]] || { echo "error: Chrome not found at $chrome (set CHROME)" >&2; exit 1; }
 
-mkdir -p "$shots"
+# Start clean so pages from an earlier, failed run cannot leak into the list.
+rm -rf "$shots" "$out/static"
+rm -f "$out"/*.html
+mkdir -p "$shots" "$out/wrap"
 WARDEN_RENDER_PAGES_DIR="$out" cargo test --manifest-path "$root/Cargo.toml" \
     -p warden-broker --lib --locked every_page_renders_self_contained
 
@@ -64,7 +68,8 @@ for page in "$out"/*.html; do
         height="${size#*x}"
         # Chrome's headless window has a minimum width, so the page goes in an
         # iframe of the exact size and the screenshot is cropped to it.
-        wrapper="wrap-$name-$size.html"
+        # The inline <style> is for this capture harness only, not an app page.
+        wrapper="wrap/$name-$size.html"
         cat >"$out/$wrapper" <<HTML
 <!doctype html><meta charset="utf-8"><style>html,body{margin:0;background:#888}iframe{border:0;display:block}</style>
 <iframe src="/$name.html" width="$width" height="$height"></iframe>
@@ -72,11 +77,15 @@ HTML
         for mode in light dark; do
             raw="$shots/raw-$name-$size-$mode.png"
             final="$shots/$name-$size-$mode.png"
-            "$chrome" --headless=new --disable-gpu --hide-scrollbars \
+            if ! "$chrome" --headless=new --disable-gpu --hide-scrollbars \
                 --force-device-scale-factor=2 \
                 --blink-settings="preferredColorScheme=${scheme[$mode]}" \
                 --window-size=1400,1100 --virtual-time-budget=2000 \
-                --screenshot="$raw" "http://127.0.0.1:$port/$wrapper" >/dev/null 2>&1
+                --screenshot="$raw" "http://127.0.0.1:$port/$wrapper" >/dev/null 2>&1 \
+                || [[ ! -s "$raw" ]]; then
+                echo "error: Chrome failed to screenshot page $name at $size ($mode)" >&2
+                exit 1
+            fi
             magick "$raw" -crop "$((width * 2))x$((height * 2))+0+0" +repage "$final"
             rm -f "$raw"
         done
