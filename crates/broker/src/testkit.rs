@@ -146,14 +146,14 @@ impl Notifier for CapturingNotifier {
         "capture"
     }
 
-    async fn ring(&self, d: &Doorbell) -> Result<(), NotifyError> {
+    async fn ring(&self, d: &Doorbell) -> Result<&'static str, NotifyError> {
         self.rung
             .lock()
             .expect("capture lock poisoned")
             .push(d.clone());
         // The receiver lives as long as `self`, so sending cannot fail.
         let _ = self.tx.send(d.clone());
-        Ok(())
+        Ok(self.name())
     }
 }
 
@@ -166,7 +166,7 @@ impl Notifier for FailingNotifier {
         "failing"
     }
 
-    async fn ring(&self, _d: &Doorbell) -> Result<(), NotifyError> {
+    async fn ring(&self, _d: &Doorbell) -> Result<&'static str, NotifyError> {
         Err(NotifyError::Status {
             notifier: "failing",
             status: 503,

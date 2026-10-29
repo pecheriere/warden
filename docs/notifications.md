@@ -6,7 +6,8 @@ a comma-separated list in priority order. Warden tries the first channel; if it
 errors, answers non-2xx, or does not answer within 5 seconds, it tries the next
 one, and so on. The first channel that accepts wins. If every channel fails, the
 request ends in `error`. The worst-case delay before the owner is notified (or
-the request fails) is 5 s times the number of channels.
+the request fails) is 5 s times the number of channels. The audit log's
+`notified` entry names the channel that delivered the notification.
 
 A notification contains the agent, the target and user, the goal (truncated to
 200 characters, with `…` appended when cut) and the approval link. It never
@@ -35,8 +36,9 @@ yours to choose (`ntfy,homeassistant`).
 
 Startup refuses, with a message naming the variable:
 
-- an unset or empty `WARDEN_NOTIFY`, an empty entry, an unknown channel name or
-  a channel listed twice;
+- an unset or empty `WARDEN_NOTIFY`, an empty entry, an unknown channel name, a
+  name with upper-case letters (channel names are lowercase) or a channel
+  listed twice;
 - a listed channel with a missing or invalid setting;
 - a setting for a channel that is not listed (most likely a forgotten list
   entry);
@@ -105,8 +107,9 @@ your phone.
 Channels are a compile-time registry (no plugins are loaded at runtime). A new
 channel is one module plus its registration, in `crates/broker/src/notify/`:
 
-1. Implement `Notifier` (`name()` and `ring()`) in its own module. `name()` is a
-   short stable string used in errors and logs.
+1. Implement `Notifier` (`name()` and `ring()`) in its own module. `name()` is
+   the channel's `ChannelKind` name, used in errors, logs and the audit log;
+   `ring()` returns it on success.
 2. Write a settings parser with validation. Settings come from
    `WARDEN_NOTIFY_<KIND>_*` variables: a missing required one is
    `ConfigError::Missing`, a bad value `ConfigError::Invalid` (never echo the

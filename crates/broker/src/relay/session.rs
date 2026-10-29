@@ -213,9 +213,7 @@ impl Registration {
             None => std::future::pending().await,
         }
     }
-}
 
-impl Registration {
     /// Why the relay was told to end the session, if it was by now.
     pub(crate) fn told(&self) -> Option<&'static str> {
         *self.ended.borrow()

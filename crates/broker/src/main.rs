@@ -16,7 +16,7 @@ use warden_broker::audit::AuditLog;
 use warden_broker::config::{Config, parse_public_url};
 use warden_broker::health;
 use warden_broker::identity::TailscaleServeIdentity;
-use warden_broker::notify::{Fallback, Notifier};
+use warden_broker::notify::{ChannelSettings, Fallback, Notifier};
 use warden_broker::policy::OnePasswordConnect;
 use warden_broker::proxy::CallSlots;
 use warden_broker::relay::host_key::RelayHostKey;
@@ -201,16 +201,19 @@ const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
 /// The configured channels in priority order: the first that accepts the
 /// notification wins and the rest are fallbacks.
 fn build_notifier(config: &Config) -> Result<Arc<dyn Notifier>> {
-    let mut channels = config.notify.iter().map(|settings| {
+    let build = |settings: &ChannelSettings| {
         settings
             .build()
             .with_context(|| format!("configuring the {} notifier", settings.kind().name()))
-    });
-    let Some(primary) = channels.next() else {
-        bail!("no notifier configured");
     };
-    let fallbacks = channels.collect::<Result<Vec<_>>>()?;
-    Ok(Arc::new(Fallback::new(primary?, fallbacks)))
+    let primary = build(config.notify.primary())?;
+    let fallbacks = config
+        .notify
+        .fallbacks()
+        .iter()
+        .map(build)
+        .collect::<Result<Vec<_>>>()?;
+    Ok(Arc::new(Fallback::new(primary, fallbacks)))
 }
 
 /// Where agents reach the relay and the relay's host key (loaded, and

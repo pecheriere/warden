@@ -206,7 +206,8 @@ fn notify_single_channel_works_alone() {
         (HA_URL, ""),
     ]))
     .unwrap();
-    let [ChannelSettings::Ntfy { url, token }] = cfg.notify.as_slice() else {
+    let channels: Vec<&ChannelSettings> = cfg.notify.iter().collect();
+    let [ChannelSettings::Ntfy { url, token }] = channels.as_slice() else {
         panic!("expected only ntfy, got {:?}", cfg.notify);
     };
     assert_eq!(url.as_str(), "https://ntfy.example.com/warden");
@@ -215,7 +216,7 @@ fn notify_single_channel_works_alone() {
 
 #[test]
 fn notify_refuses_bad_channel_lists_with_clear_messages() {
-    let cases: [(&[(&str, &str)], &str); 9] = [
+    let cases: [(&[(&str, &str)], &str); 11] = [
         (&[("WARDEN_NOTIFY", "")], "WARDEN_NOTIFY"),
         (&[("WARDEN_NOTIFY", "pagerduty")], "pagerduty"),
         (
@@ -223,6 +224,14 @@ fn notify_refuses_bad_channel_lists_with_clear_messages() {
             "an unknown channel name",
         ),
         (&[("WARDEN_NOTIFY", "ntfy,ntfy")], "twice"),
+        (
+            &[("WARDEN_NOTIFY", "HomeAssistant")],
+            "channel names are lowercase: homeassistant, ntfy",
+        ),
+        (
+            &[("WARDEN_NOTIFY", "homeassistant,NTFY")],
+            "channel names are lowercase: homeassistant, ntfy",
+        ),
         (&[("WARDEN_NOTIFY", "homeassistant,,ntfy")], "empty"),
         (&[("WARDEN_NOTIFY", "homeassistant"), (HA_URL, "")], HA_URL),
         (&[(HA_URL, "not a url")], HA_URL),

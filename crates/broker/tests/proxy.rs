@@ -1093,9 +1093,26 @@ async fn slot_released_after_error_and_disconnect() {
     assert_eq!(ok.status, 200);
 
     // An agent that hangs up leaves its call running, still holding the
-    // slot, and the slot is free again once that call is over.
-    let gone = tokio::time::timeout(Duration::from_millis(100), get(&s, "/delayed")).await;
-    assert!(gone.is_err(), "the call should still be running");
+    // slot, and the slot is free again once that call is over. The agent
+    // hangs up only once the call has reached the upstream, so the slot is
+    // certainly taken.
+    let mut call = Box::pin(get(&s, "/delayed"));
+    let reached = tokio::time::timeout(Duration::from_secs(5), async {
+        while !s
+            .upstream
+            .received()
+            .iter()
+            .any(|r| r.path_and_query == "/delayed")
+        {
+            tokio::select! {
+                resp = &mut call => panic!("the call ended early: {}", resp.status),
+                () = tokio::time::sleep(Duration::from_millis(10)) => {}
+            }
+        }
+    })
+    .await;
+    assert!(reached.is_ok(), "the upstream never received the call");
+    drop(call);
     let busy = get(&s, "/v1/hello").await;
     assert_eq!(busy.status, StatusCode::TOO_MANY_REQUESTS, "{}", busy.body);
     let deadline = Instant::now() + Duration::from_secs(10);

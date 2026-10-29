@@ -1,7 +1,7 @@
 # warden — design
 
 This document records the intent and design of warden. It describes the full
-v1 design; the current release (0.4.0) implements the SSH certificate mode
+v1 design; the current release (0.5.0) implements the SSH certificate mode
 (§8.1), the SSH relay mode (§8.2) and the HTTP proxy mode (§8.3). Where the
 implementation deviates from this design, the
 [threat model](threat-model.md) says how and why.
@@ -276,7 +276,10 @@ bytes it counts are capped at 64 KiB before the agent has logged in and
 4 MiB after (each chunk counts for at least 128 bytes, covering its
 bookkeeping), so its heap use stays within a small constant factor of that,
 plus a 16 KiB read buffer and at most one partly read 16 KiB chunk per
-connection; memory is freed as the library reads it. 4 MiB is twice the
+connection; memory is freed as the library reads it. These bounds are per
+session: with its two queues a session counts for at most 4 + 2 + 8 =
+14 MiB, so the total scales with `WARDEN_RELAY_MAX_SESSIONS` (224 MiB at the
+default of 16 sessions, 64 MiB of it read-ahead). 4 MiB is twice the
 2 MiB window the agent is granted, so it holds the channel data an agent can
 send once the library stops granting window, in normally sized packets, and
 the agent's close is reached. An agent that sends many tiny packets while
@@ -285,7 +288,10 @@ without the read-ahead, the 60 s stall watchdog ends the session (nothing
 deadlocks). Once an agent has left and its input has been
 held for 2 s with nothing delivered, the session ends with the reason
 `client closed`, its slot freed; the input still held is dropped, as nobody
-is left to see its effect. Messages outside the channel have no window: an
+is left to see its effect. An agent's TCP half-close (sent only by unusual
+`ProxyCommand`s such as `nc -N`) counts as the agent leaving: a session
+whose target then pauses reading for more than 2 s ends with `client
+closed`. Messages outside the channel have no window: an
 agent that keeps sending them (no client does) only fills the read-ahead,
 and its session is ended by the stall watchdog, as before.
 

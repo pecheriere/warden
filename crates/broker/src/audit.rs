@@ -42,7 +42,7 @@ pub enum AuditEvent {
     Notified {
         /// Request id.
         id: Id,
-        /// Channel name.
+        /// Name of the channel that delivered the notification.
         channel: String,
     },
     /// A notification channel failed.

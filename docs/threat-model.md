@@ -248,10 +248,14 @@ These were recorded during implementation and are accepted for this release.
   still seen, through a read-ahead on its connection, and its session ends
   about 2 s later (`client closed`); its input still held is dropped. The
   read-ahead is bounded: the bytes it counts are capped at 64 KiB before
-  login (640 KiB across 10 unauthenticated connections) and 4 MiB after
-  (64 MiB at 16 sessions); heap use stays within a small constant factor
-  of that (each chunk counts for at least 128 bytes), plus a 16 KiB read
-  buffer and at most one partly read 16 KiB chunk per connection. An agent
+  login (640 KiB across 10 unauthenticated connections) and 4 MiB per
+  session after; heap use stays within a small constant factor of that
+  (each chunk counts for at least 128 bytes), plus a 16 KiB read buffer and
+  at most one partly read 16 KiB chunk per connection. With the session's
+  queues (2 MiB towards the target, 8 MiB towards the agent) a session
+  counts for at most 14 MiB, so the total scales with
+  `WARDEN_RELAY_MAX_SESSIONS`: 224 MiB at the default of 16 sessions, 64 MiB
+  of it read-ahead. An agent
   that keeps its connection open and sends past its window, or in many tiny
   packets (no client does), only fills the read-ahead; its session ends by
   the 60 s stall rule.

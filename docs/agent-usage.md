@@ -113,16 +113,18 @@ notification stops being actionable:
 - Press Ctrl-C while `warden request` waits. It cancels the pending request
   (waiting at most about 10 s for the broker), says so on stderr and exits
   130. If the broker cannot be reached in time, it says that too; check
-  `warden status` and revoke any grant it shows.
+  `warden status` and revoke any grant it shows. Press Ctrl-C again to stop
+  waiting for the broker: `warden request` exits 130 at once and the request
+  is left to expire (or, if it was approved, its grant to be revoked by
+  you).
 - Or run `warden request cancel <id>` with the id printed on the
   `request …` line, for example from another terminal. The waiting
   `warden request` then exits 6.
 
 If the owner approves in the instant before the cancel arrives, `warden
 request` revokes the grant that approval produced and says so. Ctrl-C after
-approval, while the CLI installs the grant, is not handled specially (the
-window is short): run `warden status` and `warden revoke <grant>` if a grant
-you do not want was left.
+approval, while the CLI installs the grant, exits 130 at once and names the
+grant: run `warden revoke <grant>` if you do not want it.
 
 You can cancel only your own requests, and only while they are pending. The
 approval link of a cancelled request shows "Cancelled by the agent." and
@@ -234,7 +236,7 @@ stderr and never stops the command.
 | 5 | `warden ssh` or `warden http` found no active grant. Run `warden request ssh …` or `warden request api …` first. For `warden http`, also when no active grant covers the method and path; the message gives the `warden request api <secret> --methods <METHOD> …` command to run. |
 | 6 | The request was cancelled while `warden request` waited for it (`warden request cancel` from another terminal). |
 | 22 | `warden http --fail` got an upstream status of 400 or more. The body is still written to stdout. |
-| 130 | Interrupted with Ctrl-C while `warden request` waited; the pending request was cancelled (or, if the broker did not answer in time, left to expire). |
+| 130 | Interrupted with Ctrl-C while `warden request` waited; the pending request was cancelled (or, if the broker did not answer in time or Ctrl-C was pressed again, left to expire). Also Ctrl-C while an approved grant was being installed; the message names the grant to revoke. |
 
 `warden http` exits 0 for any upstream status unless `--fail` is given. A
 refusal or failure by the broker (policy violation, 409, timeout, size limit)

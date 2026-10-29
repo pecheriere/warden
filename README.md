@@ -21,7 +21,7 @@ Three kinds of access are supported:
   header the policy names, sends them only to the one origin and path prefix
   the policy allows, and returns the response with the secret redacted.
 
-Status: early development. This release (0.4.0) implements SSH certificate
+Status: early development. This release (0.5.0) implements SSH certificate
 mode, SSH relay mode and HTTP proxy mode.
 
 ## Why
