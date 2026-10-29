@@ -19,6 +19,13 @@ const MAX_RELAY_SESSIONS_CAP: usize = 1024;
 /// the cap bounds what one call can make the broker allocate.
 const MAX_PROXY_RESPONSE_CAP: usize = 64 * 1024 * 1024;
 
+/// Largest value accepted for `WARDEN_PROXY_MAX_CALLS_PER_AGENT`.
+const MAX_PROXY_CALLS_PER_AGENT_CAP: usize = 64;
+
+/// Largest value accepted for `WARDEN_PROXY_MAX_CALLS`: each call holds up to
+/// two response-sized buffers while it runs.
+const MAX_PROXY_CALLS_CAP: usize = 256;
+
 /// A configuration variable is missing or invalid. The message names it.
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub enum ConfigError {
@@ -171,10 +178,58 @@ pub struct Config {
     /// `WARDEN_NTFY_TOKEN`.
     pub ntfy_token: Option<SecretString>,
     /// Limits of proxied API calls; `WARDEN_PROXY_MAX_RESPONSE_BYTES` sets
-    /// the response size (default 1 MiB, at most 64 MiB).
+    /// the response size (default 1 MiB, at most 64 MiB),
+    /// `WARDEN_PROXY_MAX_CALLS_PER_AGENT` (default 4, 1 to 64) and
+    /// `WARDEN_PROXY_MAX_CALLS` (default 16, 1 to 256, at least the
+    /// per-agent limit) the calls in flight at once.
     pub proxy: ProxyLimits,
     /// The SSH relay.
     pub relay: RelayConfig,
+}
+
+/// The proxy's limits from the environment, defaults where unset.
+fn proxy_limits(get: &impl Fn(&'static str) -> Option<String>) -> Result<ProxyLimits, ConfigError> {
+    let mut proxy = ProxyLimits::default();
+    if let Some(raw) = get("WARDEN_PROXY_MAX_RESPONSE_BYTES") {
+        proxy.max_response_bytes = raw
+            .trim()
+            .parse::<usize>()
+            .ok()
+            .filter(|n| (1..=MAX_PROXY_RESPONSE_CAP).contains(n))
+            .ok_or(ConfigError::Invalid {
+                var: "WARDEN_PROXY_MAX_RESPONSE_BYTES",
+                reason: "must be a whole number of bytes from 1 to 67108864",
+            })?;
+    }
+    if let Some(raw) = get("WARDEN_PROXY_MAX_CALLS_PER_AGENT") {
+        proxy.max_calls_per_agent = raw
+            .trim()
+            .parse::<usize>()
+            .ok()
+            .filter(|n| (1..=MAX_PROXY_CALLS_PER_AGENT_CAP).contains(n))
+            .ok_or(ConfigError::Invalid {
+                var: "WARDEN_PROXY_MAX_CALLS_PER_AGENT",
+                reason: "must be a whole number from 1 to 64",
+            })?;
+    }
+    if let Some(raw) = get("WARDEN_PROXY_MAX_CALLS") {
+        proxy.max_calls = raw
+            .trim()
+            .parse::<usize>()
+            .ok()
+            .filter(|n| (1..=MAX_PROXY_CALLS_CAP).contains(n))
+            .ok_or(ConfigError::Invalid {
+                var: "WARDEN_PROXY_MAX_CALLS",
+                reason: "must be a whole number from 1 to 256",
+            })?;
+    }
+    if proxy.max_calls_per_agent > proxy.max_calls {
+        return Err(ConfigError::Invalid {
+            var: "WARDEN_PROXY_MAX_CALLS_PER_AGENT",
+            reason: "must not exceed WARDEN_PROXY_MAX_CALLS",
+        });
+    }
+    Ok(proxy)
 }
 
 impl Config {
@@ -232,18 +287,7 @@ impl Config {
             });
         }
 
-        let mut proxy = ProxyLimits::default();
-        if let Some(raw) = get("WARDEN_PROXY_MAX_RESPONSE_BYTES") {
-            proxy.max_response_bytes = raw
-                .trim()
-                .parse::<usize>()
-                .ok()
-                .filter(|n| (1..=MAX_PROXY_RESPONSE_CAP).contains(n))
-                .ok_or(ConfigError::Invalid {
-                    var: "WARDEN_PROXY_MAX_RESPONSE_BYTES",
-                    reason: "must be a whole number of bytes from 1 to 67108864",
-                })?;
-        }
+        let proxy = proxy_limits(&get)?;
 
         let relay = RelayConfig {
             listen: addr("WARDEN_RELAY_LISTEN", "127.0.0.1:2222")?,

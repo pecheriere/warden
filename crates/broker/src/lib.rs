@@ -9,6 +9,7 @@ use crate::audit::AuditLog;
 use crate::config::Config;
 use crate::identity::IdentitySource;
 use crate::policy::SecretBackend;
+use crate::proxy::CallSlots;
 use crate::requests::{Clock, Requests};
 
 pub mod agents;
@@ -47,6 +48,8 @@ pub struct AppState {
     pub requests: Requests,
     /// Passkey enrollment and approval ceremonies.
     pub passkeys: Arc<Passkeys>,
+    /// Proxied calls in flight, held to the limits in [`Config::proxy`].
+    pub proxy_calls: Arc<CallSlots>,
 }
 
 /// The two routers of the broker: the agent API and the approval UI, each

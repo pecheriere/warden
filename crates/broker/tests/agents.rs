@@ -210,6 +210,66 @@ fn config_proxy_response_limit_defaults_and_bounds() {
 }
 
 #[test]
+fn config_proxy_call_limits_defaults_and_bounds() {
+    let cfg = Config::from_lookup(env).unwrap();
+    assert_eq!(cfg.proxy.max_calls_per_agent, 4);
+    assert_eq!(cfg.proxy.max_calls, 16);
+
+    let with = |pairs: &[(&'static str, &'static str)]| {
+        let pairs = pairs.to_vec();
+        move |v: &str| {
+            pairs
+                .iter()
+                .find(|(name, _)| *name == v)
+                .map_or_else(|| env(v), |(_, value)| Some((*value).to_owned()))
+        }
+    };
+    let cfg = Config::from_lookup(with(&[
+        ("WARDEN_PROXY_MAX_CALLS_PER_AGENT", "64"),
+        ("WARDEN_PROXY_MAX_CALLS", "256"),
+    ]))
+    .unwrap();
+    assert_eq!(cfg.proxy.max_calls_per_agent, 64);
+    assert_eq!(cfg.proxy.max_calls, 256);
+    let cfg = Config::from_lookup(with(&[
+        ("WARDEN_PROXY_MAX_CALLS_PER_AGENT", "16"),
+        ("WARDEN_PROXY_MAX_CALLS", "16"),
+    ]))
+    .unwrap();
+    assert_eq!(cfg.proxy.max_calls_per_agent, 16);
+
+    for (var, bad) in [
+        ("WARDEN_PROXY_MAX_CALLS_PER_AGENT", "0"),
+        ("WARDEN_PROXY_MAX_CALLS_PER_AGENT", "65"),
+        ("WARDEN_PROXY_MAX_CALLS_PER_AGENT", "-1"),
+        ("WARDEN_PROXY_MAX_CALLS_PER_AGENT", "four"),
+        ("WARDEN_PROXY_MAX_CALLS", "0"),
+        ("WARDEN_PROXY_MAX_CALLS", "257"),
+        ("WARDEN_PROXY_MAX_CALLS", "many"),
+    ] {
+        let err = Config::from_lookup(with(&[(var, bad)])).unwrap_err();
+        assert!(err.to_string().contains(var), "{var}={bad}: {err}");
+    }
+
+    // The per-agent limit may not exceed the overall one, whether it is set
+    // or comes from the default.
+    for pairs in [
+        &[
+            ("WARDEN_PROXY_MAX_CALLS_PER_AGENT", "8"),
+            ("WARDEN_PROXY_MAX_CALLS", "4"),
+        ][..],
+        &[("WARDEN_PROXY_MAX_CALLS", "3")][..],
+        &[("WARDEN_PROXY_MAX_CALLS_PER_AGENT", "32")][..],
+    ] {
+        let err = Config::from_lookup(with(pairs)).unwrap_err();
+        assert!(
+            err.to_string().contains("WARDEN_PROXY_MAX_CALLS_PER_AGENT"),
+            "{pairs:?}: {err}"
+        );
+    }
+}
+
+#[test]
 fn config_relay_defaults_and_public_address() {
     let cfg = Config::from_lookup(env).unwrap();
     assert_eq!(cfg.relay.listen.to_string(), "127.0.0.1:2222");

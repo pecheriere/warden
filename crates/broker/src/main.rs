@@ -18,6 +18,7 @@ use warden_broker::health;
 use warden_broker::identity::TailscaleServeIdentity;
 use warden_broker::notify::{Fallback, HaWebhook, Notifier, Ntfy};
 use warden_broker::policy::OnePasswordConnect;
+use warden_broker::proxy::CallSlots;
 use warden_broker::relay::host_key::RelayHostKey;
 use warden_broker::relay::{RelayEndpoint, RelayLimits, RelayServer, host_key};
 use warden_broker::requests::{self, Clock as _, Requests, SystemClock};
@@ -329,6 +330,7 @@ async fn build_app(config: &Arc<Config>) -> Result<App> {
         clock,
         requests: requests.clone(),
         passkeys: Arc::new(passkeys),
+        proxy_calls: CallSlots::new(config.proxy.max_calls_per_agent, config.proxy.max_calls),
     };
     let (api, approval) = build_routers(state);
     Ok(App {
