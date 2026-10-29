@@ -39,6 +39,7 @@ target for the approval UI (#33), not code the broker serves.
 | `--on-primary` | `#FFFFFF` | `#0B1530` | Text on `--primary` |
 | `--soft` | `#E3EBFC` | `#1B2D5C` | Chips, segmented control track, read-only badge |
 | `--soft-ink` | `#1D45AB` | `#C9D7FF` | Text on `--soft` |
+| `--raised` | `#FFFFFF` | `#2B4180` | Selected segment, lifted above its `--soft` track |
 | `--accent` | `#F5B800` | `#F5B800` | Mascot plume and keyhole, live dot; never text |
 | `--warn-bg` / `--warn-ink` / `--warn-line` | `#FFF1D6` / `#7A3300` / `#C25100` | `#3A2306` / `#FFD08A` / `#E08A2C` | "Can modify" badge |
 | `--deny` | `#B42318` | `#FF8A80` | Deny and Revoke buttons |
@@ -131,6 +132,7 @@ viewport is not published; the sizes below assume a 3× scale from its panel res
 A pull request that adds or changes a page of the approval UI includes
 screenshots of every page it touches at these sizes, in light and dark:
 
+- Small phone: 320 × 568 (no horizontal scroll)
 - Phone: 390 × 844
 - Foldable: 466 × 678, 678 × 466, 626 × 890, 890 × 626
 - Desktop: 1280 × 800
