@@ -25,7 +25,7 @@ use webauthn_authenticator_rs::softpasskey::SoftPasskey;
 use webauthn_rs::prelude::{Passkey, RequestChallengeResponse};
 use zeroize::Zeroizing;
 
-const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
+const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; \
                    connect-src 'self'; form-action 'self'; frame-ancestors 'none'";
 
 fn bot() -> AgentName {
@@ -73,6 +73,24 @@ async fn stored_credentials(broker: &TestBroker) -> Vec<String> {
 }
 
 // --- enrollment -------------------------------------------------------------
+
+#[tokio::test]
+async fn stylesheet_served_and_csp_forbids_inline_styles() {
+    let (broker, _, _) = pending().await;
+    let css = broker.get("/static/warden.css").await;
+    assert_eq!(css.status, StatusCode::OK, "{css:?}");
+    assert!(css.header("content-type").starts_with("text/css"));
+    assert!(css.body.contains("prefers-color-scheme:dark"));
+    let page = broker.get("/grants").await;
+    let csp = page.header("content-security-policy");
+    assert!(csp.contains("style-src 'self'"), "{csp}");
+    assert!(!csp.contains("unsafe-inline"), "{csp}");
+    assert!(
+        page.body
+            .contains(r#"<link rel="stylesheet" href="/static/warden.css">"#)
+    );
+    assert!(!page.body.contains("<style"));
+}
 
 #[tokio::test]
 async fn enroll_with_code_then_code_is_spent() {
@@ -263,9 +281,12 @@ async fn approve_page_shows_fingerprint_goal_target() {
         "{html}"
     );
     // Window picker: only windows up to the target's 1h max, requested 30m preselected.
-    assert!(html.contains(r#"<option value="15m">"#), "{html}");
-    assert!(html.contains(r#"<option value="30m" selected>"#), "{html}");
-    assert!(html.contains(r#"<option value="1h">"#), "{html}");
+    assert!(html.contains(r#"name="window" value="15m">"#), "{html}");
+    assert!(
+        html.contains(r#"name="window" value="30m" checked>"#),
+        "{html}"
+    );
+    assert!(html.contains(r#"name="window" value="1h">"#), "{html}");
     assert!(!html.contains(r#"value="4h""#), "{html}");
     // Countdown data, external script only.
     assert!(html.contains(r#"data-remaining="600""#), "{html}");
@@ -896,7 +917,9 @@ async fn history_lists_decided_requests_newest_first() {
         "<bdi>second</bdi>",
         "alice@pi",
         "15m",
-        "2027-01-15 08:00:00 UTC",
+        // Date and time in separate spans, so a narrow column breaks only
+        // between them.
+        r#"<span class="nowrap">2027-01-15</span> <span class="nowrap">08:00:00 UTC</span>"#,
     ] {
         at(needle);
     }
@@ -918,6 +941,7 @@ fn every_route(token: &str) -> Vec<(&'static str, String)> {
         ("POST", "/enroll/begin".to_owned()),
         ("POST", "/enroll/finish".to_owned()),
         ("GET", "/static/warden.js".to_owned()),
+        ("GET", "/static/warden.css".to_owned()),
         ("GET", "/no-such-page".to_owned()),
     ]
 }
@@ -1015,6 +1039,7 @@ async fn csp_header_present() {
         broker.get("/history").await,
         broker.get("/enroll").await,
         broker.get("/static/warden.js").await,
+        broker.get("/static/warden.css").await,
         broker.get("/no-such-page").await,
         broker.begin_approval(&token, Window::M15).await,
         broker.deny(&token).await,
@@ -1347,8 +1372,11 @@ async fn api_page_shows_origin_methods_prefix_header_format_and_ca() {
     );
     assert!(!html.contains(API_CREDENTIAL), "{html}");
     // Window picker capped at the secret's 1h max, requested 30m preselected.
-    assert!(html.contains(r#"<option value="30m" selected>"#), "{html}");
-    assert!(html.contains(r#"<option value="1h">"#), "{html}");
+    assert!(
+        html.contains(r#"name="window" value="30m" checked>"#),
+        "{html}"
+    );
+    assert!(html.contains(r#"name="window" value="1h">"#), "{html}");
     assert!(!html.contains(r#"value="4h""#), "{html}");
     // The page binds the policy digest, and begin enforces the max.
     broker.enroll_soft_passkey().await;
@@ -1709,8 +1737,7 @@ async fn grants_page_labels_api_grants() {
     assert_eq!(approved.status, StatusCode::OK, "{}", approved.body);
     let page = broker.get("/grants").await;
     assert!(
-        page.body
-            .contains(r#"<strong class="readonly">Read-only</strong>"#),
+        page.body.contains("</svg> Read-only</strong>"),
         "{}",
         page.body
     );
@@ -1723,8 +1750,7 @@ async fn grants_page_labels_api_grants() {
     assert_eq!(approved.status, StatusCode::OK, "{}", approved.body);
     let page = broker.get("/grants").await;
     assert!(
-        page.body
-            .contains(r#"<strong class="warning">Can modify: POST</strong>"#),
+        page.body.contains("</svg> Can modify: POST</strong>"),
         "{}",
         page.body
     );
@@ -1737,8 +1763,7 @@ async fn page_marks_read_only() {
     let page = broker.get(&format!("/approve/{token}")).await;
     assert_eq!(page.status, StatusCode::OK, "{}", page.body);
     assert!(
-        page.body
-            .contains(r#"<strong class="readonly">Read-only</strong>"#),
+        page.body.contains("</svg> Read-only</strong>"),
         "{}",
         page.body
     );
@@ -1760,8 +1785,7 @@ async fn page_warns_can_modify() {
     let page = broker.get(&format!("/approve/{token}")).await;
     assert_eq!(page.status, StatusCode::OK, "{}", page.body);
     assert!(
-        page.body
-            .contains(r#"<strong class="warning">Can modify: POST, PUT</strong>"#),
+        page.body.contains("</svg> Can modify: POST, PUT</strong>"),
         "{}",
         page.body
     );

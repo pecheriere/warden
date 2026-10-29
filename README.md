@@ -6,6 +6,8 @@ notification on their phone, reviews the goal and exactly what would be
 granted, and approves with a passkey. warden then issues a credential that
 expires on its own. The agent never holds a long-lived secret.
 
+<img src="docs/design/mockups/approve-iphone-light.png" alt="The approve page on a phone: the agent, the access with a read-only badge, the goal, the fingerprint, the grant window and the Approve and Deny buttons" width="320">
+
 Three kinds of access are supported:
 
 - **SSH, certificate mode.** The broker signs a short-lived SSH certificate
