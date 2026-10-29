@@ -21,7 +21,7 @@ base="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$1")"
 home="$(python3 -c 'import os; print(os.path.realpath(os.path.expanduser("~")))')"
 out="$base/warden-pages"
 chrome="${CHROME:-/Applications/Google Chrome.app/Contents/MacOS/Google Chrome}"
-sizes=(390x844 466x678 678x466 626x890 890x626 1280x800)
+sizes=(320x568 390x844 466x678 678x466 626x890 890x626 1280x800)
 shots="$out/shots"
 
 if [[ "$base" == "$root" || "$base" == "$root"/* ]]; then
@@ -64,8 +64,6 @@ for _ in $(seq 1 50); do
     sleep 0.1
 done
 
-# scheme value for --blink-settings=preferredColorScheme: 0 dark, 1 light.
-declare -A scheme=([dark]=0 [light]=1)
 
 for page in "$out"/*.html; do
     name="$(basename "$page" .html)"
@@ -81,11 +79,17 @@ for page in "$out"/*.html; do
 <iframe src="/$name.html" width="$width" height="$height"></iframe>
 HTML
         for mode in light dark; do
+            # --blink-settings=preferredColorScheme: 0 dark, 1 light. A case,
+            # not an associative array, so stock macOS bash 3.2 runs this.
+            case "$mode" in
+                dark) scheme=0 ;;
+                light) scheme=1 ;;
+            esac
             raw="$shots/raw-$name-$size-$mode.png"
             final="$shots/$name-$size-$mode.png"
             if ! "$chrome" --headless=new --disable-gpu --hide-scrollbars \
                 --force-device-scale-factor=2 \
-                --blink-settings="preferredColorScheme=${scheme[$mode]}" \
+                --blink-settings="preferredColorScheme=$scheme" \
                 --window-size=1400,1100 --virtual-time-budget=2000 \
                 --screenshot="$raw" "http://127.0.0.1:$port/$wrapper" >/dev/null 2>&1 \
                 || [[ ! -s "$raw" ]]; then

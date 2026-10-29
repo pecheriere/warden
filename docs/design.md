@@ -539,7 +539,7 @@ with fixture data and fails on inline styles, external origins, images or any
 script and stylesheet other than `/static/warden.js` and `/static/warden.css`.
 `scripts/screenshot-pages.sh <out-dir>` runs it with
 `WARDEN_RENDER_PAGES_DIR` set, serves the pages on `127.0.0.1` and captures
-each at 390x844, 466x678, 678x466, 626x890, 890x626 and 1280x800, light and
+each at 320x568, 390x844, 466x678, 678x466, 626x890, 890x626 and 1280x800, light and
 dark, with headless Chrome (needs ImageMagick). Screenshots are captured at
 viewport height (what is on screen without scrolling) and land in
 `<out-dir>/warden-pages/shots` (the script deletes and recreates only that
