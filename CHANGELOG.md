@@ -4,6 +4,17 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- The approval UI follows the Sky Guard design language
+  (`docs/design-language.md`): every page (approve, the finished and error
+  states, Active grants, History, Enroll a passkey) shares one stylesheet with
+  light and dark themes, the mascot, cards and 44 px touch targets, and works
+  on phones, foldables and desktops. Active grants and History are cards on
+  a phone; History is a table from 720 px.
+
 ## [0.5.0] - unreleased
 
 ### Changed
