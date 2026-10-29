@@ -4,7 +4,7 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.6.0] - 2026-10-29
 
 ### Added
 
@@ -197,7 +197,7 @@ All notable changes to this project are recorded here. The format follows
   after its grant ends (the agent's lifetime limit covers its keys, not the
   process), but that run stops it.
 
-## [0.4.0] - unreleased
+## [0.4.0] - 2026-10-29
 
 ### Added
 
@@ -237,7 +237,7 @@ All notable changes to this project are recorded here. The format follows
 - A requested path prefix may be at most 512 bytes.
 - The active-grants page shows **Read-only** or **Can modify:** for API grants.
 
-## [0.3.0] - unreleased
+## [0.3.0] - 2026-10-27
 
 ### Added
 
@@ -272,7 +272,7 @@ All notable changes to this project are recorded here. The format follows
   agents; reusing one is a 409.
 - The SSH destination digest covers the target's mode.
 
-## [0.2.0] - unreleased
+## [0.2.0] - 2026-10-27
 
 ### Added
 
