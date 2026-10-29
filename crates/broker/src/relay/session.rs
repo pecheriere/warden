@@ -12,10 +12,13 @@ use std::time::Duration;
 use russh::client;
 use russh::server;
 use russh::{Channel, ChannelId, ChannelMsg, ChannelReadHalf, ChannelWriteHalf, Disconnect, Pty};
+use tokio::net::TcpStream;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, watch};
 use warden_broker_proto::{AgentName, Id};
 
 use crate::requests::RelayGrantRecord;
+
+use super::read_ahead::AgentGone;
 
 /// Longest command recorded in the audit log, in characters.
 const COMMAND_AUDIT_CHARS: usize = 200;
@@ -491,8 +494,7 @@ pub(crate) struct Watch {
     /// less is the only way to hold either side back. With both connections
     /// held back each can wait for the other's window forever: an agent
     /// that feeds input to an echoing command and never reads the output
-    /// gets there in seconds. While held back, the agent's connection does
-    /// not notice the agent leaving either; this ends such a session.
+    /// gets there in seconds.
     pub wedge: Duration,
     /// No bytes read from either side for this long.
     pub idle: Duration,
@@ -509,6 +511,10 @@ const CLOSE_WAIT: Duration = Duration::from_secs(2);
 /// gracefully before both connections are cut.
 const FORCED_CLOSE_WAIT: Duration = Duration::from_secs(1);
 
+/// How long a session whose agent left goes on while the agent's input is
+/// held up with nothing delivered to the target (see [`agent_left`]).
+const LEFT_AND_HELD: Duration = Duration::from_secs(2);
+
 /// Cuts a connection off: shuts its socket down under the SSH library,
 /// whose reads then end, whatever state its event loop is in.
 #[derive(Debug)]
@@ -522,12 +528,10 @@ impl Cutoff {
 }
 
 /// `socket`, and a cutoff for it.
-pub(crate) fn with_cutoff(
-    socket: tokio::net::TcpStream,
-) -> std::io::Result<(tokio::net::TcpStream, Cutoff)> {
+pub(crate) fn with_cutoff(socket: TcpStream) -> std::io::Result<(TcpStream, Cutoff)> {
     let socket = socket.into_std()?;
     let cutoff = Cutoff(socket.try_clone()?);
-    Ok((tokio::net::TcpStream::from_std(socket)?, cutoff))
+    Ok((TcpStream::from_std(socket)?, cutoff))
 }
 
 /// Both ends of a started session.
@@ -540,6 +544,8 @@ pub(crate) struct Ends {
     pub newline: &'static str,
     /// Cuts the agent's connection.
     pub agent_cut: Arc<Cutoff>,
+    /// Whether the agent closed its connection.
+    pub agent_gone: AgentGone,
     /// The target's session channel, its command started.
     pub target: Channel<client::Msg>,
     /// Cuts the target's connection.
@@ -657,7 +663,8 @@ impl Queued {
     }
 }
 
-/// Carry the session until either side closes it, it stops making
+/// Carry the session until either side closes it (the agent also when it
+/// leaves with its input held up, see [`agent_left`]), it stops making
 /// progress or sits idle, the relay must end it (`live`: revoked or
 /// expired), or `stop` fires; then close both channels, cutting a
 /// connection that does not take its close in time. A session ended by
@@ -679,6 +686,7 @@ pub(crate) async fn relay(
         agent_handle,
         newline,
         agent_cut,
+        agent_gone,
         target,
         target_cut,
         early,
@@ -690,12 +698,18 @@ pub(crate) async fn relay(
         (Arc::new(Progress::default()), Arc::new(Progress::default()));
     let mut up = Delivered::default();
     let mut down = Delivered::default();
-    let ended = tokio::select! {
-        ended = upstream(&mut from_agent, &to_target, Arc::clone(&up_progress), &mut up) => ended,
-        ended = downstream(&mut from_target, early, &to_agent, &agent_handle, agent_id, Arc::clone(&down_progress), &mut down) => ended,
-        ended = watchdog(&up_progress, &down_progress, limits) => ended,
-        ended = live.ended() => ended,
-        () = super::server::stopping(&mut stop) => reason::SHUTDOWN,
+    let (ended, left) = {
+        let own = async {
+            tokio::select! {
+                ended = upstream(&mut from_agent, &to_target, Arc::clone(&up_progress), &mut up) => (ended, false),
+                ended = downstream(&mut from_target, early, &to_agent, &agent_handle, agent_id, Arc::clone(&down_progress), &mut down) => (ended, false),
+                ended = watchdog(&up_progress, &down_progress, limits) => (ended, false),
+                () = agent_left(agent_gone, &up_progress) => (reason::CLIENT_CLOSED, true),
+            }
+        };
+        // Pinned here, not moved into `first_end`, which would hold it twice.
+        tokio::pin!(own);
+        first_end(live, &mut stop, own).await
     };
     if reason::forced(ended) {
         // Within the grace, a notice and a close for each side, a goodbye
@@ -732,6 +746,17 @@ pub(crate) async fn relay(
         .await;
         agent_cut.now();
         target_cut.now();
+    } else if left {
+        // Nobody is left to take a close on the agent's side, whose event
+        // loop is held up anyway: its connection is cut, the target's
+        // closed.
+        agent_cut.now();
+        if tokio::time::timeout(CLOSE_WAIT, to_target.close())
+            .await
+            .is_err()
+        {
+            target_cut.now();
+        }
     } else {
         let (agent_closed, target_closed) = tokio::join!(
             tokio::time::timeout(CLOSE_WAIT, to_agent.close()),
@@ -754,6 +779,59 @@ pub(crate) async fn relay(
         bytes_to_target: up.bytes,
         bytes_from_target: down.bytes,
         exit_status: down.exit_status,
+    }
+}
+
+/// How a session ended: `(reason, whether the agent left)`. Why the relay
+/// told it to end (it is stopping, or `live` was revoked, expired or failed
+/// closed) when it was told; otherwise `own`, how it ended by itself.
+///
+/// The told cause is looked at first on every poll. Ending a session cuts
+/// its connections (the relay hanging up on the agent when it stops, the
+/// session itself otherwise), and whatever follows from that cut (the
+/// agent's side closing, see [`agent_left`]) comes after the cause was told,
+/// so it is never taken for why the session ended. An agent that leaves by
+/// itself before anything is told still ends the session as it did.
+async fn first_end(
+    live: &mut Registration,
+    stop: &mut watch::Receiver<bool>,
+    own: impl Future<Output = (&'static str, bool)>,
+) -> (&'static str, bool) {
+    tokio::select! {
+        biased;
+        () = super::server::stopping(stop) => (reason::SHUTDOWN, false),
+        ended = live.ended() => (ended, false),
+        own = own => own,
+    }
+}
+
+/// Resolves once the agent's connection is closed and the agent's input
+/// has been held up, nothing of it delivered to the target, for
+/// [`LEFT_AND_HELD`].
+///
+/// While the relay reads the agent's channel, the SSH library sees the
+/// agent leave itself, after what the agent sent before leaving, which is
+/// still delivered. But while the relay waits for room in the input's
+/// queue (the target not reading), the library's whole event loop is held
+/// up and sees nothing; the read-ahead (see [`super::read_ahead`]) still
+/// does. Input still held when the agent leaves is dropped: nobody is left
+/// to see what it would have done.
+/// Only it and the session's counters are looked at: nothing here waits
+/// on either connection.
+async fn agent_left(mut gone: AgentGone, up: &Progress) {
+    gone.wait().await;
+    let mut delivered = up.delivered.load(Ordering::Acquire);
+    let mut held_since = tokio::time::Instant::now();
+    loop {
+        tokio::time::sleep(WATCH_EVERY).await;
+        let now = tokio::time::Instant::now();
+        let count = up.delivered.load(Ordering::Acquire);
+        if count != delivered || !up.waiting.load(Ordering::Acquire) {
+            delivered = count;
+            held_since = now;
+        } else if now.duration_since(held_since) >= LEFT_AND_HELD {
+            return;
+        }
     }
 }
 
@@ -1011,7 +1089,7 @@ mod tests {
 
     use super::{
         LiveSessions, Outcome, PreAuthLimiter, Program, Progress, Queue, Registration,
-        SessionSlots, SlotRefusal, Watch, env_allowed, reason, watchdog,
+        SessionSlots, SlotRefusal, Watch, agent_left, env_allowed, first_end, reason, watchdog,
     };
 
     fn data(len: usize) -> russh::ChannelMsg {
@@ -1043,6 +1121,41 @@ mod tests {
         assert!(queue.push(data(5000)).await);
         drop(rx);
         assert!(!queue.push(data(1)).await, "the other end is gone");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn agent_left_ends_once_input_is_held_without_delivery() {
+        let (told, rx) = tokio::sync::watch::channel(false);
+        let up = Progress::default();
+        up.waiting.store(true, Ordering::Release);
+        up.queued.store(10, Ordering::Release);
+        let left = agent_left(super::AgentGone::new(rx), &up);
+        tokio::pin!(left);
+        // Held up, but the agent is still there: nothing ends.
+        tokio::select! {
+            () = &mut left => panic!("ended with the agent there"),
+            () = tokio::time::sleep(Duration::from_secs(120)) => {}
+        }
+        told.send_replace(true);
+        // Gone, while the target still takes input: the input is delivered.
+        let moving = async {
+            for _ in 0..20 {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                up.delivered.fetch_add(1, Ordering::AcqRel);
+            }
+        };
+        tokio::select! {
+            () = &mut left => panic!("ended while input was delivered"),
+            () = moving => {}
+        }
+        // Then held up with nothing delivered: ended after 2 s, not before.
+        let held = tokio::time::Instant::now();
+        (&mut left).await;
+        let after = held.elapsed();
+        assert!(
+            after >= Duration::from_secs(2) && after < Duration::from_millis(2600),
+            "{after:?}"
+        );
     }
 
     fn limits(stall_secs: u64) -> Watch {
@@ -1096,6 +1209,42 @@ mod tests {
         tokio::time::timeout(Duration::from_millis(10), live.ended())
             .await
             .ok()
+    }
+
+    #[tokio::test]
+    async fn told_end_wins_over_the_session_ending_by_itself() {
+        // The session also ended by itself (the agent's side closed, as it
+        // does once the relay cuts it): the cause the relay told wins.
+        let left = || std::future::ready((reason::CLIENT_CLOSED, true));
+        let sessions = LiveSessions::new();
+        let (stopping, mut stop) = tokio::sync::watch::channel(false);
+        let mut live = sessions.register(&grant("a", 100));
+        stopping.send_replace(true);
+        assert_eq!(
+            first_end(&mut live, &mut stop, left()).await,
+            (reason::SHUTDOWN, false)
+        );
+        let (_running, mut stop) = tokio::sync::watch::channel(false);
+        for why in [
+            reason::REVOKED,
+            reason::EXPIRED,
+            reason::GRANT_STATE_UNAVAILABLE,
+        ] {
+            let g = grant("b", 100);
+            let mut live = sessions.register(&g);
+            match why {
+                reason::REVOKED => sessions.revoke_agent(&g.agent),
+                reason::EXPIRED => sessions.expire_grant(&g.grant_id),
+                _ => sessions.fail_closed(),
+            }
+            assert_eq!(first_end(&mut live, &mut stop, left()).await, (why, false));
+        }
+        // Nothing told: as the session ended.
+        let mut live = sessions.register(&grant("c", 100));
+        assert_eq!(
+            first_end(&mut live, &mut stop, left()).await,
+            (reason::CLIENT_CLOSED, true)
+        );
     }
 
     #[tokio::test]

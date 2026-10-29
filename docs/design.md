@@ -264,9 +264,27 @@ held data for 60 s without delivering any of it (its receiver does not read).
 Both measure only while data is held, so an idle session is not affected. The
 session ends with the audited reason `flow control: both directions held up`
 (wedge), or `flow control: output to the agent not drained` or `flow control:
-input to the target not drained` (stall). Residual: when the
-target stops reading its input, an agent that disconnects is noticed only
-after up to 60 s, so its slot is held that long.
+input to the target not drained` (stall).
+
+The relay reads each agent's connection ahead of the SSH library, so that
+an agent that disconnects is seen even while the library is held up by a
+target that does not read its input. What is read ahead is bounded: the
+bytes it counts are capped at 64 KiB before the agent has logged in and
+4 MiB after (each chunk counts for at least 128 bytes, covering its
+bookkeeping), so its heap use stays within a small constant factor of that,
+plus a 16 KiB read buffer and at most one partly read 16 KiB chunk per
+connection; memory is freed as the library reads it. 4 MiB is twice the
+2 MiB window the agent is granted, so it holds the channel data an agent can
+send once the library stops granting window, in normally sized packets, and
+the agent's close is reached. An agent that sends many tiny packets while
+the session is held up can fill the budget before its window; then, as
+without the read-ahead, the 60 s stall watchdog ends the session (nothing
+deadlocks). Once an agent has left and its input has been
+held for 2 s with nothing delivered, the session ends with the reason
+`client closed`, its slot freed; the input still held is dropped, as nobody
+is left to see its effect. Messages outside the channel have no window: an
+agent that keeps sending them (no client does) only fills the read-ahead,
+and its session is ended by the stall watchdog, as before.
 
 **Teardown.** A running session ends when its grant or agent is revoked, when
 the grant's window ends, after 15 minutes with no bytes in either direction,

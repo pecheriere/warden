@@ -58,6 +58,7 @@ use crate::requests::{GrantEnd, RelayGrantRecord, RequestError, Requests};
 
 use super::host_key::{HostKeyError, RelayHostKey};
 use super::onward;
+use super::read_ahead::{AGENT_WINDOW_BYTES, AgentGone, LoggedIn, read_ahead};
 use super::session::{
     self, Cutoff, Ends, MAX_ENV_VARS, Outcome, PreAuthLimiter, PreAuthPermit, Program, PtyRequest,
     Registration, SessionSlot, SessionSlots, env_allowed, with_cutoff,
@@ -236,6 +237,7 @@ impl RelayServer {
             keepalive_interval: Some(Duration::from_secs(30)),
             keepalive_max: 3,
             nodelay: true,
+            window_size: AGENT_WINDOW_BYTES,
             ..server::Config::default()
         };
         Ok(Self {
@@ -547,12 +549,17 @@ async fn connection(
             return;
         }
     };
+    // Read ahead of the SSH library, so the agent leaving is seen even
+    // while a session holds the library up; stopped with the connection.
+    let (socket, gone, logged_in, _read_ahead) = read_ahead(socket);
     let handler = RelayHandler::new(
         Arc::clone(&shared),
         Arc::clone(&conn),
         permit,
         stop.clone(),
         Arc::clone(&cut),
+        gone,
+        logged_in,
     );
     // The SSH version exchange is part of logging in, and bounded with it.
     let started = tokio::select! {
@@ -744,6 +751,10 @@ struct RelayHandler {
     flooded: bool,
     /// Cuts this connection.
     cut: Arc<Cutoff>,
+    /// Whether the agent closed this connection.
+    gone: AgentGone,
+    /// Raises the connection's read-ahead once the agent logged in.
+    logged_in: LoggedIn,
 }
 
 impl RelayHandler {
@@ -753,6 +764,8 @@ impl RelayHandler {
         permit: PreAuthPermit,
         stop: watch::Receiver<bool>,
         cut: Arc<Cutoff>,
+        gone: AgentGone,
+        logged_in: LoggedIn,
     ) -> Self {
         Self {
             shared,
@@ -771,6 +784,8 @@ impl RelayHandler {
             pre_start_bytes: 0,
             flooded: false,
             cut,
+            gone,
+            logged_in,
         }
     }
 
@@ -891,7 +906,7 @@ impl RelayHandler {
             self.env.clone(),
         );
         let (agent_handle, mut stop) = (session.handle(), self.stop.clone());
-        let agent_cut = Arc::clone(&self.cut);
+        let (agent_cut, agent_gone) = (Arc::clone(&self.cut), self.gone.clone());
         let over = OverOnDrop(self.conn.phase.clone());
         let newline = if pty.is_some() { "\r\n" } else { "\n" };
         let spawn = move || {
@@ -928,6 +943,7 @@ impl RelayHandler {
                     agent_handle,
                     newline,
                     agent_cut,
+                    agent_gone,
                     target,
                     target_cut,
                     early,
@@ -1248,6 +1264,7 @@ impl server::Handler for RelayHandler {
         let Some(login) = &self.login else {
             return session.disconnect(Disconnect::ByApplication, NO_LONGER_VALID, "en");
         };
+        self.logged_in.raise();
         let grant = &login.grant;
         match self.shared.slots.try_acquire(&grant.grant_id) {
             Ok(slot) => {

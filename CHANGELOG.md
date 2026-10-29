@@ -39,6 +39,16 @@ All notable changes to this project are recorded here. The format follows
   resolved again (once, shared by concurrent callers) and the request retried
   once. A vault that is gone, or a missing item in an unchanged vault, still
   fails closed with the same error.
+- A relay session whose target stopped reading its input ends about 2 s
+  after the agent disconnects (reason `client closed`), instead of when the
+  60 s flow-control stall watchdog fires: the relay reads the agent's
+  connection ahead of the SSH library (bounded: 64 KiB counted before
+  login, 4 MiB after, twice the agent's window), so the agent leaving is
+  seen even while that library is held up. Input still held for the target
+  when the agent leaves is dropped. The session still gets exactly one
+  `relay_session_ended` entry, and a session the relay ends (shutdown,
+  revocation, expiry, grant state unavailable) keeps that reason although
+  the agent's side closes as a result.
 
 ### Added
 

@@ -1739,8 +1739,18 @@ async fn agent_that_stays_after_its_session_is_hung_up() {
 /// reads the output, until its input stops being accepted (or 96 MiB).
 /// Returns the ssh child, its unread stdout, and the MiB accepted.
 async fn wedge(ssh: &OpenSsh) -> (tokio::process::Child, tokio::process::ChildStdout, usize) {
+    feed_until_held(ssh, &["cat"]).await
+}
+
+/// An agent running `remote` on the target that feeds it input and never
+/// reads the output, until its input stops being accepted (or 96 MiB).
+/// Returns the ssh child, its unread stdout, and the MiB accepted.
+async fn feed_until_held(
+    ssh: &OpenSsh,
+    remote: &[&str],
+) -> (tokio::process::Child, tokio::process::ChildStdout, usize) {
     let mut child = ssh
-        .command(TARGET, &[], &["cat"])
+        .command(TARGET, &[], remote)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -1780,14 +1790,107 @@ async fn agent_disconnect_ends_wedged_session() {
     )
     .await
     .expect("the session ended within 5 s of the agent leaving");
-    // While wedged, the agent's connection does not see the agent leave;
-    // the wedge itself ends the session (it may have done so already).
+    // Either the agent leaving or the wedge itself ends the session (the
+    // wedge may have done so already).
     let reason = ended[0]["reason"].as_str().unwrap();
     assert!(
         reason == "client closed" || reason == "flow control: both directions held up",
         "{reason} after {:?}",
         gone.elapsed()
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn agent_disconnect_with_stalled_target_ends_quickly() {
+    // Default limits: the stall watchdog would take 60 s, and with nothing
+    // coming back from the target the wedge watchdog never fires.
+    let s = key_target().await;
+    let agent = approved_agent(&s.broker, "bot").await;
+    let ssh = OpenSsh::new(&s.broker, s.relay, &agent.key);
+    // `sleep` never reads its input: the agent's input fills the target's
+    // window, the relay's queue and the agent's window, and stops there.
+    let (mut child, stdout, accepted) = feed_until_held(&ssh, &["sleep", "600"]).await;
+    assert!(accepted < 32, "{accepted} MiB accepted");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(
+        events_of(&s.broker, "relay_session_ended").is_empty(),
+        "{:?}",
+        audit_events(&s.broker)
+    );
+    child.kill().await.unwrap();
+    drop(stdout);
+    let gone = Instant::now();
+    let ended = tokio::time::timeout(
+        Duration::from_secs(5),
+        await_events(&s.broker, "relay_session_ended", 1),
+    )
+    .await
+    .expect("the session ended within 5 s of the agent leaving");
+    assert_eq!(
+        ended[0]["reason"],
+        "client closed",
+        "after {:?}",
+        gone.elapsed()
+    );
+    assert_each_start_ended(&s.broker).await;
+    assert_eq!(events_of(&s.broker, "relay_session_ended").len(), 1);
+}
+
+/// A session whose input has been held for longer than the agent-left
+/// grace (2 s), ended by the relay with `end`: the reason on record is the
+/// one the relay gave, not the agent leaving because the relay cut it.
+async fn held_session_ended_by_relay(end: impl AsyncFnOnce(&Setup, &Agent), reason: &str) {
+    let s = key_target().await;
+    let agent = approved_agent(&s.broker, "bot").await;
+    let ssh = OpenSsh::new(&s.broker, s.relay, &agent.key);
+    let (_child, _stdout, accepted) = feed_until_held(&ssh, &["sleep", "600"]).await;
+    assert!(accepted < 32, "{accepted} MiB accepted");
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    assert!(
+        events_of(&s.broker, "relay_session_ended").is_empty(),
+        "{:?}",
+        audit_events(&s.broker)
+    );
+    end(&s, &agent).await;
+    let ended = tokio::time::timeout(
+        Duration::from_secs(10),
+        await_events(&s.broker, "relay_session_ended", 1),
+    )
+    .await
+    .expect("the session ended");
+    assert_eq!(ended[0]["reason"], reason, "{:?}", audit_events(&s.broker));
+    s.broker.stop_relay().await;
+    assert_eq!(events_of(&s.broker, "relay_session_ended").len(), 1);
+    assert_each_start_ended(&s.broker).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stop_relay_wins_over_the_agent_leaving() {
+    held_session_ended_by_relay(
+        async |s, _| {
+            tokio::time::timeout(Duration::from_secs(10), s.broker.stop_relay())
+                .await
+                .expect("the relay stopped promptly");
+        },
+        "relay shutting down",
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn revoke_wins_over_the_agent_leaving() {
+    held_session_ended_by_relay(
+        async |s, agent| {
+            s.broker
+                .state()
+                .requests
+                .revoke_grant(&agent.grant_id, "owner")
+                .await
+                .unwrap();
+        },
+        "revoked",
+    )
+    .await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
