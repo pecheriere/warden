@@ -40,8 +40,11 @@ pub mod passkeys;
 /// The browser glue, served as `/static/warden.js`.
 const SCRIPT: &str = include_str!("warden.js");
 
+/// The stylesheet, served as `/static/warden.css`.
+const STYLESHEET: &str = include_str!("warden.css");
+
 /// Content Security Policy of every response.
-const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
+const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; \
                    connect-src 'self'; form-action 'self'; frame-ancestors 'none'";
 
 /// Largest accepted request body; `WebAuthn` responses are a few KiB.
@@ -71,6 +74,7 @@ pub fn router(state: AppState) -> Router {
         .route("/enroll/begin", post(enroll_begin))
         .route("/enroll/finish", post(enroll_finish))
         .route("/static/warden.js", get(script))
+        .route("/static/warden.css", get(stylesheet))
         .fallback(not_found)
         .layer(DefaultBodyLimit::max(BODY_LIMIT))
         .layer(middleware::from_fn_with_state(
@@ -315,6 +319,14 @@ async fn script() -> Response {
     (
         [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
         SCRIPT,
+    )
+        .into_response()
+}
+
+async fn stylesheet() -> Response {
+    (
+        [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
+        STYLESHEET,
     )
         .into_response()
 }

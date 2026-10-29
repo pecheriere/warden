@@ -10,19 +10,6 @@ use warden_broker_proto::{Access, ApiGrant, CreateRequest, GrantAccess, Window};
 use crate::policy::{ApiScope, SshMode};
 use crate::requests::{ActiveGrant, Destination, HistoryEntry, PendingView, window_label};
 
-const STYLE: &str = "\
-body{font-family:system-ui,sans-serif;max-width:40rem;margin:0 auto;padding:1rem;line-height:1.4}\
-nav a{margin-right:1rem}\
-dt{font-weight:600;margin-top:.6rem}dd{margin:0}\
-code{word-break:break-all}\
-.fingerprint{font-size:1.4rem;letter-spacing:.05em}\
-button{font-size:1.1rem;padding:.6rem 1.2rem;margin:.4rem .4rem .4rem 0}\
-select,input{font-size:1.1rem;padding:.3rem}\
-table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid #ccc;padding:.3rem;text-align:left;vertical-align:top}\
-#result{font-weight:600}\
-.readonly{color:#0d4f20;background:#dff5e5;border:2px solid #1a6b2f;border-radius:.3rem;padding:.1rem .5rem}\
-.warning{color:#5c2200;background:#fff1d6;border:2px solid #c25100;border-radius:.3rem;padding:.1rem .5rem}";
-
 /// Every window, shortest first.
 const WINDOWS: [Window; 4] = [Window::M15, Window::M30, Window::H1, Window::H4];
 
@@ -34,7 +21,7 @@ fn layout(title: &str, with_script: bool, content: &Markup) -> Markup {
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
                 title { (title) " · warden" }
-                style { (STYLE) }
+                link rel="stylesheet" href="/static/warden.css";
                 @if with_script {
                     script src="/static/warden.js" defer {}
                 }

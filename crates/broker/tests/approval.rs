@@ -25,7 +25,7 @@ use webauthn_authenticator_rs::softpasskey::SoftPasskey;
 use webauthn_rs::prelude::{Passkey, RequestChallengeResponse};
 use zeroize::Zeroizing;
 
-const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
+const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; \
                    connect-src 'self'; form-action 'self'; frame-ancestors 'none'";
 
 fn bot() -> AgentName {
@@ -73,6 +73,24 @@ async fn stored_credentials(broker: &TestBroker) -> Vec<String> {
 }
 
 // --- enrollment -------------------------------------------------------------
+
+#[tokio::test]
+async fn stylesheet_served_and_csp_forbids_inline_styles() {
+    let (broker, _, _) = pending().await;
+    let css = broker.get("/static/warden.css").await;
+    assert_eq!(css.status, StatusCode::OK, "{css:?}");
+    assert!(css.header("content-type").starts_with("text/css"));
+    assert!(css.body.contains("prefers-color-scheme:dark"));
+    let page = broker.get("/grants").await;
+    let csp = page.header("content-security-policy");
+    assert!(csp.contains("style-src 'self'"), "{csp}");
+    assert!(!csp.contains("unsafe-inline"), "{csp}");
+    assert!(
+        page.body
+            .contains(r#"<link rel="stylesheet" href="/static/warden.css">"#)
+    );
+    assert!(!page.body.contains("<style"));
+}
 
 #[tokio::test]
 async fn enroll_with_code_then_code_is_spent() {
@@ -918,6 +936,7 @@ fn every_route(token: &str) -> Vec<(&'static str, String)> {
         ("POST", "/enroll/begin".to_owned()),
         ("POST", "/enroll/finish".to_owned()),
         ("GET", "/static/warden.js".to_owned()),
+        ("GET", "/static/warden.css".to_owned()),
         ("GET", "/no-such-page".to_owned()),
     ]
 }
@@ -1015,6 +1034,7 @@ async fn csp_header_present() {
         broker.get("/history").await,
         broker.get("/enroll").await,
         broker.get("/static/warden.js").await,
+        broker.get("/static/warden.css").await,
         broker.get("/no-such-page").await,
         broker.begin_approval(&token, Window::M15).await,
         broker.deny(&token).await,
