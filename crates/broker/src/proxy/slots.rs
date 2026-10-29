@@ -3,8 +3,8 @@
 //! runs; the slot is released when it is dropped, whatever way the call
 //! ends.
 
-use std::collections::HashMap;
 use std::collections::hash_map::Entry;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use warden_broker_proto::{AgentName, Id};
@@ -30,12 +30,12 @@ impl CallInfo {
     /// A call of `grant_id` to `path` (anything from a `?` or `#` on is
     /// dropped) that started at `started_at` (Unix seconds).
     #[must_use]
-    pub fn new(grant_id: Id, method: String, path: &str, started_at: i64) -> Self {
-        let end = path.find(['?', '#']).unwrap_or(path.len());
+    pub fn new(grant_id: Id, method: String, mut path: String, started_at: i64) -> Self {
+        path.truncate(path.find(['?', '#']).unwrap_or(path.len()));
         Self {
             grant_id,
             method,
-            path: path[..end].to_owned(),
+            path,
             started_at,
         }
     }
@@ -45,7 +45,7 @@ impl CallInfo {
 struct Counts {
     total: usize,
     per_agent: HashMap<AgentName, usize>,
-    calls: HashMap<u64, CallInfo>,
+    calls: BTreeMap<u64, CallInfo>,
     next: u64,
 }
 
@@ -111,7 +111,8 @@ impl CallSlots {
         })
     }
 
-    /// The calls in flight, oldest first (ties by grant).
+    /// The calls in flight, oldest first (ties by grant, then by when they
+    /// were admitted).
     #[must_use]
     pub fn snapshot(&self) -> Vec<CallInfo> {
         let mut calls: Vec<_> = self.lock().calls.values().cloned().collect();
@@ -154,7 +155,7 @@ mod tests {
     }
 
     fn info(path: &str) -> CallInfo {
-        CallInfo::new(Id::random(), "GET".to_owned(), path, 100)
+        CallInfo::new(Id::random(), "GET".to_owned(), path.to_owned(), 100)
     }
 
     #[test]
@@ -214,5 +215,19 @@ mod tests {
         assert_eq!(info("/v1/items?token=abc#top").path, "/v1/items");
         assert_eq!(info("/v1/items#top?x").path, "/v1/items");
         assert_eq!(info("/v1/items").path, "/v1/items");
+    }
+
+    #[test]
+    fn calls_of_one_grant_keep_insertion_order() {
+        let slots = CallSlots::new(10, 10);
+        let grant = Id::random();
+        let call =
+            |path: &str| CallInfo::new(grant.clone(), "GET".to_owned(), path.to_owned(), 100);
+        let _slots: Vec<_> = ["/a", "/b", "/c"]
+            .into_iter()
+            .map(|path| slots.try_acquire(&agent("a"), call(path)).unwrap())
+            .collect();
+        let paths: Vec<_> = slots.snapshot().into_iter().map(|c| c.path).collect();
+        assert_eq!(paths, ["/a", "/b", "/c"]);
     }
 }

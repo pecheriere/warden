@@ -3,7 +3,7 @@
 //! and the loop that carries bytes, EOF, window changes, signals and the
 //! exit status between the agent and the target.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -90,7 +90,7 @@ pub(crate) mod reason {
 /// another process and expiry are found by the relay's periodic check.
 #[derive(Debug, Default)]
 pub(crate) struct LiveSessions {
-    entries: Mutex<HashMap<u64, LiveSession>>,
+    entries: Mutex<BTreeMap<u64, LiveSession>>,
     next: AtomicU64,
 }
 
@@ -201,7 +201,8 @@ impl LiveSessions {
             .collect()
     }
 
-    /// The live sessions as they are now, oldest first (ties by grant).
+    /// The live sessions as they are now, oldest first (ties by grant, then
+    /// by when they were listed).
     #[cfg_attr(
         not(any(test, feature = "testkit")),
         expect(dead_code, reason = "read by GET /grants/live in the next commit")
@@ -229,7 +230,7 @@ impl LiveSessions {
         }
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<u64, LiveSession>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<u64, LiveSession>> {
         // Every update is a single insert or removal: a holder that
         // panicked leaves the map consistent.
         self.entries.lock().unwrap_or_else(PoisonError::into_inner)
@@ -965,7 +966,12 @@ impl Delivered {
 
     /// Count `n` more data bytes delivered.
     fn add(&self, n: u64) {
-        self.bytes.fetch_add(n, Ordering::Relaxed);
+        // Saturating, like the totals recorded in the audit log.
+        let _ = self
+            .bytes
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |b| {
+                Some(b.saturating_add(n))
+            });
     }
 }
 
@@ -1398,6 +1404,14 @@ mod tests {
             ],
             "oldest first, with the shared counters"
         );
+        let twin = sessions.register(&early, 10);
+        let ids: Vec<_> = sessions
+            .snapshot()
+            .iter()
+            .map(|s| (s.started_at, s.grant_id.clone()))
+            .collect();
+        assert_eq!(ids[0], ids[1], "two sessions of one grant, same second");
+        drop(twin);
         drop(first);
         assert_eq!(sessions.snapshot().len(), 1);
         drop(second);

@@ -405,11 +405,13 @@ async fn audited_call(
     let mut record = CallRecord::new(&req);
     // The slot lives in this task, which runs to the end whether or not the
     // agent stays connected, and is released on every way out of it.
-    let path = Url::parse(&req.url).map_or_else(|_| String::new(), |u| u.path().to_owned());
+    // A URL that does not parse is refused by `call`; it is listed meanwhile
+    // under the marker the audit log uses for it.
+    let path = Url::parse(&req.url).map_or_else(|_| "invalid".to_owned(), |u| u.path().to_owned());
     let info = CallInfo::new(
         grant_id.clone(),
         record.method.clone(),
-        &path,
+        path,
         state.clock.now(),
     );
     let result = match state.proxy_calls.try_acquire(&agent, info) {
