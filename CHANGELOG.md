@@ -8,6 +8,12 @@ All notable changes to this project are recorded here. The format follows
 
 ### Fixed
 
+- The relay no longer hangs up 2 s after a session ends on an agent still
+  taking the end of its output: such an agent (on a slow link, or with a busy
+  reader) lost the rest of its output and got exit code 255 instead of the
+  session's exit status. An agent now has the stall timeout (60 s) to take it
+  and leave, and its connection keeps its place in the session limits until
+  it is gone.
 - A 1Password vault that was deleted and recreated under the same name is
   picked up without restarting the broker: on a Connect 404 the vault id is
   resolved again (once, shared by concurrent callers) and the request retried
