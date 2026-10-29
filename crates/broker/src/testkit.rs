@@ -937,6 +937,19 @@ impl TestBroker {
         &self.state
     }
 
+    /// The bytes `(to the target, from the target)` of each live relay
+    /// session, oldest first.
+    #[must_use]
+    pub fn live_relay_bytes(&self) -> Vec<(u64, u64)> {
+        self.state
+            .requests
+            .live_sessions()
+            .snapshot()
+            .into_iter()
+            .map(|s| (s.bytes_to_target, s.bytes_from_target))
+            .collect()
+    }
+
     /// Path of the audit log.
     #[must_use]
     pub fn audit_path(&self) -> &Path {

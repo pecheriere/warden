@@ -1096,6 +1096,33 @@ async fn hold_session(s: &Setup, key: &PrivateKey) -> (Connected, russh::Channel
     (c, channel)
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn snapshot_counts_bytes() {
+    let s = key_target().await;
+    let agent = approved_agent(&s.broker, "bot").await;
+    let c = login(&s.broker, s.relay, TARGET, &agent.key).await;
+    let mut channel = c.handle.channel_open_session().await.unwrap();
+    channel.exec(true, "cat").await.unwrap();
+    assert!(reply(&mut channel).await);
+    assert_eq!(s.broker.live_relay_bytes().len(), 1);
+
+    channel.data(&b"hello"[..]).await.unwrap();
+    let mut echoed = 0;
+    while echoed < 5 {
+        match channel.wait().await {
+            Some(ChannelMsg::Data { data }) => echoed += data.len(),
+            Some(_) => {}
+            None => panic!("the session ended before echoing"),
+        }
+    }
+    // The echo was delivered to the agent, so both counts are final.
+    assert_eq!(s.broker.live_relay_bytes(), vec![(5, 5)]);
+
+    channel.close().await.unwrap();
+    await_events(&s.broker, "relay_session_ended", 1).await;
+    assert!(s.broker.live_relay_bytes().is_empty());
+}
+
 fn too_many(out: &Output, what: &str) {
     assert_eq!(out.status.code(), Some(255), "{}", text(&out.stderr));
     assert!(text(&out.stderr).contains(what), "{}", text(&out.stderr));

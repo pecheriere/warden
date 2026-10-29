@@ -914,7 +914,10 @@ impl RelayHandler {
                 let _over = over;
                 // Listed before the grant is checked again: a revocation
                 // after the check still reaches the session.
-                let mut live = shared.requests.live_sessions().register(&login.grant);
+                let mut live = shared
+                    .requests
+                    .live_sessions()
+                    .register(&login.grant, shared.requests.now());
                 let opened = open_target(
                     &shared,
                     &login,

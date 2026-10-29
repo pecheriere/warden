@@ -23,7 +23,7 @@ use crate::AppState;
 use crate::audit::AuditEvent;
 use crate::identity::AuthedAgent;
 use crate::policy::{ApiScope, PolicyError};
-use crate::proxy::{self, Needles};
+use crate::proxy::{self, CallInfo, Needles};
 use crate::requests::{BACKEND_UNAVAILABLE, RequestError};
 
 /// Largest accepted request body, in bytes.
@@ -405,7 +405,14 @@ async fn audited_call(
     let mut record = CallRecord::new(&req);
     // The slot lives in this task, which runs to the end whether or not the
     // agent stays connected, and is released on every way out of it.
-    let result = match state.proxy_calls.try_acquire(&agent) {
+    let path = Url::parse(&req.url).map_or_else(|_| String::new(), |u| u.path().to_owned());
+    let info = CallInfo::new(
+        grant_id.clone(),
+        record.method.clone(),
+        &path,
+        state.clock.now(),
+    );
+    let result = match state.proxy_calls.try_acquire(&agent, info) {
         Ok(_slot) => call(&state, &agent, &grant_id, &grant, &req, &mut record).await,
         Err(refused) => Err(Failure::Client(
             StatusCode::TOO_MANY_REQUESTS,
