@@ -6,6 +6,15 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- The relay no longer hangs up 2 s after a session ends on an agent still
+  taking the end of its output: such an agent (on a slow link, or with a busy
+  reader) lost the rest of its output and got exit code 255 instead of the
+  session's exit status. An agent now has the stall timeout (60 s) to take it
+  and leave, and its connection keeps its place in the session limits until
+  it is gone.
+
 ### Added
 
 - Proxied API calls in flight are limited per agent

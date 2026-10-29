@@ -227,7 +227,11 @@ message on the session's stderr: port forwarding (local and remote), agent
 forwarding, X11 and subsystems (sftp included). Before the session starts, at
 most 32 messages or 64 KiB of input are accepted; past that the connection is
 hung up. A connection that starts no session within 30 s is hung up, as is
-one whose session is over and that the agent does not leave (2 s). A refused
+one whose session is over and that the agent does not leave within the stall
+timeout (60 s): when the session ends, the end of its output, its exit status
+and its close may still be on their way to the agent, or waiting there for
+its reader, and the agent leaves once it has taken them. A connection holds
+its place in the session limits from login until it is gone. A refused
 start reaches OpenSSH as a session that exited 255 with a message on stderr
 (a failed request would make the client drop the message); the audit trail
 holds the precise reason.
