@@ -15,7 +15,7 @@ All notable changes to this project are recorded here. The format follows
   on phones, foldables and desktops. Active grants and History are cards on
   a phone; History is a table from 720 px.
 
-## [0.5.0] - unreleased
+## [0.5.0] - 2026-10-29
 
 ### Changed
 
