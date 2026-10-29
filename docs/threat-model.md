@@ -15,7 +15,7 @@ rationale is in
 | Agent (for example an AI coding agent on the owner's workstation) | Semi-trusted: well-intentioned but may be prompt-injected. Bounded by its stated goal, the approved window, and the targets and users the vault allows. It can only request access, never approve it. |
 | warden server | Trusted. Holds the SSH CA private key and a read-only 1Password Connect token in memory, and relay login credentials briefly (see below). Compromise of the server is compromise of everything it brokers, so it is hardened accordingly. |
 | 1Password Connect | Trusted secret backend. Reachable only from warden. |
-| Notifiers (Home Assistant Companion, ntfy, push providers) | Untrusted doorbells. They receive the goal text, agent, target and a link, and nothing else. They cannot approve anything. |
+| Notifiers (Home Assistant Companion, ntfy, push providers) | Untrusted doorbells. They receive the goal text, agent, target and a link, and nothing else. They cannot approve anything. Which channels are used is fixed at startup from a compile-time set (`WARDEN_NOTIFY`); agents cannot influence it. |
 | Tailscale | Transport and network-level identity. The tailnet policy is the outer access control. |
 
 ## Anti-goals
@@ -248,10 +248,14 @@ These were recorded during implementation and are accepted for this release.
   still seen, through a read-ahead on its connection, and its session ends
   about 2 s later (`client closed`); its input still held is dropped. The
   read-ahead is bounded: the bytes it counts are capped at 64 KiB before
-  login (640 KiB across 10 unauthenticated connections) and 4 MiB after
-  (64 MiB at 16 sessions); heap use stays within a small constant factor
-  of that (each chunk counts for at least 128 bytes), plus a 16 KiB read
-  buffer and at most one partly read 16 KiB chunk per connection. An agent
+  login (640 KiB across 10 unauthenticated connections) and 4 MiB per
+  session after; heap use stays within a small constant factor of that
+  (each chunk counts for at least 128 bytes), plus a 16 KiB read buffer and
+  at most one partly read 16 KiB chunk per connection. With the session's
+  queues (2 MiB towards the target, 8 MiB towards the agent) a session
+  counts for at most 14 MiB, so the total scales with
+  `WARDEN_RELAY_MAX_SESSIONS`: 224 MiB at the default of 16 sessions, 64 MiB
+  of it read-ahead. An agent
   that keeps its connection open and sends past its window, or in many tiny
   packets (no client does), only fills the read-ahead; its session ends by
   the 60 s stall rule.

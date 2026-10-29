@@ -6,7 +6,10 @@ use base64::engine::general_purpose::STANDARD;
 use secrecy::{ExposeSecret, SecretString};
 use url::Url;
 
-use super::{Doorbell, Notifier, NotifyError, check_status, http_client};
+use super::{ChannelKind, Doorbell, Notifier, NotifyError, check_status, http_client};
+
+/// The notifier's name in logs and errors: its `WARDEN_NOTIFY` name.
+const NAME: &str = ChannelKind::Ntfy.name();
 
 /// Publishes to an ntfy topic: the message is the body, the title and click
 /// target travel as headers, priority is high and the tag is `lock`.
@@ -24,7 +27,7 @@ impl Ntfy {
     /// # Errors
     /// Returns [`NotifyError`] if the HTTP client cannot be built.
     pub fn new(topic_url: Url, token: Option<SecretString>) -> Result<Self, NotifyError> {
-        let client = http_client().map_err(|e| NotifyError::request("ntfy", e))?;
+        let client = http_client().map_err(|e| NotifyError::request(NAME, e))?;
         Ok(Self {
             topic_url,
             token,
@@ -46,10 +49,10 @@ fn header_text(s: &str) -> String {
 #[async_trait]
 impl Notifier for Ntfy {
     fn name(&self) -> &'static str {
-        "ntfy"
+        NAME
     }
 
-    async fn ring(&self, d: &Doorbell) -> Result<(), NotifyError> {
+    async fn ring(&self, d: &Doorbell) -> Result<&'static str, NotifyError> {
         let mut req = self
             .client
             .post(self.topic_url.clone())
@@ -64,7 +67,8 @@ impl Notifier for Ntfy {
         let resp = req
             .send()
             .await
-            .map_err(|e| NotifyError::request("ntfy", e))?;
-        check_status("ntfy", &resp)
+            .map_err(|e| NotifyError::request(NAME, e))?;
+        check_status(NAME, &resp)?;
+        Ok(NAME)
     }
 }

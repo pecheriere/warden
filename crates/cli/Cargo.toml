@@ -43,3 +43,4 @@ keyring-core.workspace = true
 [dev-dependencies]
 warden-broker = { workspace = true, features = ["testkit"] }
 tempfile.workspace = true
+rustix = { workspace = true, features = ["net"] }

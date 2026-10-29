@@ -3,8 +3,11 @@
 use async_trait::async_trait;
 use serde_json::json;
 
-use super::{Doorbell, Notifier, NotifyError, check_status, http_client};
+use super::{ChannelKind, Doorbell, Notifier, NotifyError, check_status, http_client};
 use crate::config::SecretUrl;
+
+/// The notifier's name in logs and errors: its `WARDEN_NOTIFY` name.
+const NAME: &str = ChannelKind::HomeAssistant.name();
 
 /// Posts `{"title","message","url"}` to a Home Assistant webhook trigger.
 /// The webhook id is a secret, so the URL is redacted and redirects are off.
@@ -20,7 +23,7 @@ impl HaWebhook {
     /// # Errors
     /// Returns [`NotifyError`] if the HTTP client cannot be built.
     pub fn new(url: SecretUrl) -> Result<Self, NotifyError> {
-        let client = http_client().map_err(|e| NotifyError::request("ha", e))?;
+        let client = http_client().map_err(|e| NotifyError::request(NAME, e))?;
         Ok(Self { url, client })
     }
 }
@@ -28,10 +31,10 @@ impl HaWebhook {
 #[async_trait]
 impl Notifier for HaWebhook {
     fn name(&self) -> &'static str {
-        "ha"
+        NAME
     }
 
-    async fn ring(&self, d: &Doorbell) -> Result<(), NotifyError> {
+    async fn ring(&self, d: &Doorbell) -> Result<&'static str, NotifyError> {
         let resp = self
             .client
             .post(self.url.expose_url().clone())
@@ -42,7 +45,8 @@ impl Notifier for HaWebhook {
             }))
             .send()
             .await
-            .map_err(|e| NotifyError::request("ha", e))?;
-        check_status("ha", &resp)
+            .map_err(|e| NotifyError::request(NAME, e))?;
+        check_status(NAME, &resp)?;
+        Ok(NAME)
     }
 }

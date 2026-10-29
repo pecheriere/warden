@@ -671,19 +671,19 @@ impl Requests {
 
     /// Ring the owner; on failure end the request in `error`.
     async fn notify(&self, id: &Id, bell: &Doorbell) -> Result<(), RequestError> {
-        let channel = self.notifier.name().to_owned();
         let result = match self.notifier.ring(bell).await {
-            Ok(()) => self
+            Ok(channel) => self
                 .audit
                 .append(AuditEvent::Notified {
                     id: id.clone(),
-                    channel,
+                    channel: channel.to_owned(),
                 })
                 .await
                 .map_err(RequestError::from),
             Err(e) => {
                 tracing::warn!(request = %id, error = %e, "owner notification failed");
-                self.fail_notification(id, channel, e.to_string()).await
+                self.fail_notification(id, self.notifier.name().to_owned(), e.to_string())
+                    .await
             }
         };
         self.bus.publish(id);

@@ -146,14 +146,14 @@ impl Notifier for CapturingNotifier {
         "capture"
     }
 
-    async fn ring(&self, d: &Doorbell) -> Result<(), NotifyError> {
+    async fn ring(&self, d: &Doorbell) -> Result<&'static str, NotifyError> {
         self.rung
             .lock()
             .expect("capture lock poisoned")
             .push(d.clone());
         // The receiver lives as long as `self`, so sending cannot fail.
         let _ = self.tx.send(d.clone());
-        Ok(())
+        Ok(self.name())
     }
 }
 
@@ -166,7 +166,7 @@ impl Notifier for FailingNotifier {
         "failing"
     }
 
-    async fn ring(&self, _d: &Doorbell) -> Result<(), NotifyError> {
+    async fn ring(&self, _d: &Doorbell) -> Result<&'static str, NotifyError> {
         Err(NotifyError::Status {
             notifier: "failing",
             status: 503,
@@ -211,6 +211,7 @@ pub struct FakeBackend {
     ca: PrivateKey,
     target_outage: Mutex<Option<String>>,
     ca_outage: Mutex<Option<String>>,
+    api_outage: Mutex<Option<String>>,
     relay_read_delay: Mutex<Option<Duration>>,
 }
 
@@ -229,6 +230,7 @@ impl FakeBackend {
             ca: PrivateKey::random(&mut OsRng, Algorithm::Ed25519).expect("CA key generation"),
             target_outage: Mutex::new(None),
             ca_outage: Mutex::new(None),
+            api_outage: Mutex::new(None),
             relay_read_delay: Mutex::new(None),
         }
     }
@@ -354,6 +356,26 @@ impl FakeBackend {
             );
     }
 
+    /// Remove API secret `name`, as if its item were deleted in 1Password.
+    ///
+    /// # Panics
+    /// If the lock is poisoned.
+    pub fn remove_api_secret(&self, name: &str) {
+        self.api_secrets
+            .lock()
+            .expect("api secrets lock poisoned")
+            .remove(name);
+    }
+
+    /// Make API secret lookups fail with [`PolicyError::Unavailable`]
+    /// carrying `detail` (`None` restores them).
+    ///
+    /// # Panics
+    /// If the lock is poisoned.
+    pub fn set_api_outage(&self, detail: Option<&str>) {
+        *self.api_outage.lock().expect("outage lock poisoned") = detail.map(str::to_owned);
+    }
+
     /// Add or replace an API secret and its value right after the next API
     /// secret read, as if the item were edited in 1Password between two
     /// reads.
@@ -373,6 +395,7 @@ impl FakeBackend {
         pick: impl FnOnce(&(ApiSecretPolicy, Zeroizing<String>)) -> T,
     ) -> Result<T, PolicyError> {
         let poisoned = || PolicyError::Unavailable("fake backend lock poisoned".to_owned());
+        Self::outage(&self.api_outage)?;
         let mut secrets = self.api_secrets.lock().map_err(|_| poisoned())?;
         let picked = secrets
             .get(name.as_str())
@@ -1337,7 +1360,8 @@ fn test_env(var: &str) -> Option<String> {
         "WARDEN_OWNER_LOGIN" => TEST_OWNER,
         "WARDEN_OP_CONNECT_URL" => "http://connect.invalid:8080",
         "WARDEN_OP_CONNECT_TOKEN" => "unused-test-token",
-        "WARDEN_NTFY_URL" => "https://ntfy.invalid/warden",
+        "WARDEN_NOTIFY" => "ntfy",
+        "WARDEN_NOTIFY_NTFY_URL" => "https://ntfy.invalid/warden",
         _ => return None,
     };
     Some(value.to_owned())

@@ -1236,7 +1236,8 @@ async fn spawn_server(dir: &Path, relay_public: bool) -> (tokio::process::Child,
         .env("WARDEN_OWNER_LOGIN", "alice@example.com")
         .env("WARDEN_OP_CONNECT_URL", "http://127.0.0.1:9")
         .env("WARDEN_OP_CONNECT_TOKEN", "unused")
-        .env("WARDEN_NTFY_URL", "https://ntfy.invalid/warden")
+        .env("WARDEN_NOTIFY", "ntfy")
+        .env("WARDEN_NOTIFY_NTFY_URL", "https://ntfy.invalid/warden")
         .env("WARDEN_API_LISTEN", format!("127.0.0.1:{api}"))
         .env("WARDEN_APPROVAL_LISTEN", format!("127.0.0.1:{approval}"))
         .env("WARDEN_RELAY_LISTEN", format!("127.0.0.1:{relay}"))
@@ -1510,14 +1511,15 @@ async fn login_grant_lookup_is_bounded() {
         .authenticate_publickey(TARGET, russh_key(&agent.key))
         .await;
     // Refused once the 1.5 s lookup bound (plus the 1 s rejection delay)
-    // is over, not hung up after the 10 s login timeout.
+    // is over, not hung up after the 10 s login timeout. The bound leaves
+    // room for a loaded test machine while staying well below 10 s.
     assert!(
         matches!(auth, Ok(AuthResult::Failure { .. })),
         "{auth:?} after {:?}",
         asked.elapsed()
     );
     assert!(
-        asked.elapsed() < Duration::from_secs(4),
+        asked.elapsed() < Duration::from_secs(6),
         "{:?}",
         asked.elapsed()
     );

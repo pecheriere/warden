@@ -372,7 +372,8 @@ impl Passkeys {
 
     /// Verify the assertion for approval `ceremony` and return the id of the
     /// passkey that signed it. The passkey's stored counter is raised, never
-    /// lowered: an assertion whose counter is not above it is refused.
+    /// lowered: an assertion whose counter is not above it (the counter seen
+    /// at `begin`, or the one stored when finishing) is refused and audited.
     ///
     /// # Errors
     /// [`PasskeyError::Verification`], [`PasskeyError::UnknownCredential`],
@@ -383,10 +384,24 @@ impl Passkeys {
         cred: &PublicKeyCredential,
     ) -> Result<String, PasskeyError> {
         let ApprovalCeremony { state, .. } = ceremony;
-        let result = self
-            .webauthn
-            .finish_passkey_authentication(cred, &state)
-            .map_err(PasskeyError::Verification)?;
+        let result = match self.webauthn.finish_passkey_authentication(cred, &state) {
+            Ok(result) => result,
+            // webauthn-rs checks the counter against the snapshot taken at
+            // `begin` (after verifying the signature): a counter at or below
+            // it is the same possible clone as a regression against the
+            // stored counter, and is refused and audited the same way.
+            Err(WebauthnError::CredentialPossibleCompromise) => {
+                let passkey_id = self
+                    .stored()
+                    .await?
+                    .into_iter()
+                    .find(|(_, passkey)| passkey.cred_id().as_ref() == cred.raw_id.as_ref())
+                    .map(|(id, _)| id)
+                    .ok_or(PasskeyError::UnknownCredential)?;
+                return Err(self.counter_regressed(&passkey_id).await);
+            }
+            Err(error) => return Err(PasskeyError::Verification(error)),
+        };
         // Required by the ceremony's policy already; checked again here
         // because approval must never rest on presence alone.
         if !result.user_verified() {
@@ -446,13 +461,23 @@ impl Passkeys {
         if !exists {
             return Err(PasskeyError::UnknownCredential);
         }
-        self.audit
+        Err(self.counter_regressed(passkey_id).await)
+    }
+
+    /// Audit that passkey `passkey_id` signed with a counter that went
+    /// backwards, and return the error that refuses the approval
+    /// ([`PasskeyError::CounterRegressed`], or the audit failure).
+    async fn counter_regressed(&self, passkey_id: &str) -> PasskeyError {
+        match self
+            .audit
             .append(AuditEvent::PasskeyCounterRegressed {
                 passkey_id: passkey_id.to_owned(),
             })
             .await
-            .map_err(PasskeyError::Audit)?;
-        Err(PasskeyError::CounterRegressed)
+        {
+            Ok(()) => PasskeyError::CounterRegressed,
+            Err(error) => PasskeyError::Audit(error),
+        }
     }
 
     /// Every enrolled passkey with its id.

@@ -2,6 +2,7 @@
 //! capturing notifiers.
 
 use std::sync::Arc;
+use std::task::{Context, Waker};
 use std::time::Duration;
 
 use secrecy::SecretString;
@@ -12,7 +13,7 @@ use ssh_key::rand_core::OsRng;
 use ssh_key::{Algorithm, PrivateKey};
 use url::Url;
 use warden_broker::audit::AuditLog;
-use warden_broker::notify::Notifier;
+use warden_broker::notify::{Fallback, Notifier};
 use warden_broker::policy::OnePasswordConnect;
 use warden_broker::relay::RelayEndpoint;
 use warden_broker::requests::{Destination, RequestError, Requests};
@@ -759,13 +760,45 @@ async fn notify_failure_ends_in_error() {
 }
 
 #[tokio::test]
+async fn notified_audit_names_the_channel_that_delivered() {
+    let capture = Arc::new(CapturingNotifier::new());
+    let chain: Arc<dyn Notifier> = Arc::new(Fallback::new(
+        Arc::new(FailingNotifier),
+        vec![capture.clone()],
+    ));
+    let h = harness_with(healthy_connect().await, Some(chain)).await;
+    let mut rx = h.requests.bus().subscribe();
+    let created = h
+        .requests
+        .create(&agent("bot"), pi_request())
+        .await
+        .unwrap();
+    wait_for(&mut rx, &created.id).await;
+    capture.next().await;
+    let channels: Vec<String> = std::fs::read_to_string(&h.audit_path)
+        .unwrap()
+        .lines()
+        .filter_map(|l| {
+            let v: Value = serde_json::from_str(l).unwrap();
+            (v["event"]["type"] == "notified").then(|| v["event"]["channel"].to_string())
+        })
+        .collect();
+    assert_eq!(channels, [r#""capture""#]);
+}
+
+#[tokio::test]
 async fn dropped_deny_future_leaves_log_usable() {
     let h = harness().await;
     let (created, token) = create_notified(&h, "bot", pi_request()).await;
 
-    // Poll deny once, then drop it mid-flight.
-    let dropped = tokio::time::timeout(Duration::ZERO, h.requests.deny(&token)).await;
-    assert!(dropped.is_err(), "deny finished before it could be dropped");
+    // Poll deny exactly once, then drop it mid-flight. A zero timeout is not
+    // one poll: its deadline rounds up to the next timer tick, and until then
+    // it re-polls deny, whose database and audit work runs off the runtime
+    // and can finish in that window.
+    let mut deny = Box::pin(h.requests.deny(&token));
+    let first = deny.as_mut().poll(&mut Context::from_waker(Waker::noop()));
+    assert!(first.is_pending(), "deny finished on its first poll");
+    drop(deny);
 
     // The transition still lands as a whole.
     assert_eq!(

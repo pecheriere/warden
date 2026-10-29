@@ -4,13 +4,77 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.5.0] - unreleased
+
+### Changed
+
+- Breaking: the notification variables `WARDEN_HA_WEBHOOK_URL`,
+  `WARDEN_NTFY_URL` and `WARDEN_NTFY_TOKEN` are replaced by `WARDEN_NOTIFY`
+  and the `WARDEN_NOTIFY_*` settings (see Added). Startup fails, naming the
+  replacement, if an old variable is set; update the broker's environment
+  before upgrading.
+- Schema migrations `0003` (widens the status check of `requests`, rebuilding
+  it and `grants` with all rows preserved) and `0004` (the passkey counter
+  column) run on first start.
+- Upgrade note: the migrations are one-way. A 0.4.0 broker cannot open a
+  database that 0.5.0 has migrated (it does not know migrations `0003` and
+  `0004`), so back up `/data` (database and audit log) before upgrading if
+  you may need to go back.
+
+### Added
+
+- Pluggable notification channels: `WARDEN_NOTIFY` lists the enabled channels
+  (`homeassistant`, `ntfy`) in priority order and the first that accepts wins,
+  the rest are fallbacks. Any single channel works alone. Settings are
+  `WARDEN_NOTIFY_HOMEASSISTANT_WEBHOOK_URL`, `WARDEN_NOTIFY_NTFY_URL` and
+  `WARDEN_NOTIFY_NTFY_TOKEN`. Startup refuses an empty list, unknown,
+  upper-case or repeated names, missing settings, and settings for a channel
+  not listed in `WARDEN_NOTIFY`. Logs, errors and the audit log call each
+  channel by its `WARDEN_NOTIFY` name, and the `notified` audit entry names
+  the channel that delivered the notification (it was always `fallback`).
+  `docs/notifications.md` documents the built-ins and a checklist for adding
+  a channel.
+- An agent can cancel its own pending request: `warden request cancel <id>`
+  (`POST /v1/requests/{id}/cancel`, 404 for another agent's or an unknown
+  request, 409 once it is no longer pending), audited as `request_cancelled`.
+  The approval page of a cancelled request says "Cancelled by the agent." and
+  cannot be approved, and the history lists it as `cancelled`. Ctrl-C while
+  `warden request` waits cancels the pending request (waiting at most about
+  10 s) and exits 130, revoking the grant if the owner approved first; a
+  second Ctrl-C, or one while the approved grant is being installed, exits
+  130 at once and says what may be left behind. A request cancelled from
+  another terminal ends the waiting command with exit 6. `warden request` now prints the request id, which
+  `warden request cancel` takes.
+- Proxied API calls in flight are limited per agent
+  (`WARDEN_PROXY_MAX_CALLS_PER_AGENT`, default 4, 1 to 64) and overall
+  (`WARDEN_PROXY_MAX_CALLS`, default 16, 1 to 256, at least the per-agent
+  limit; the broker refuses to start otherwise). A call over a limit gets a
+  429 `too many concurrent calls`, is audited as a refused `proxy_call`, and
+  never reaches the upstream. A slot is released when the call ends,
+  whatever the outcome, including an agent that disconnects.
+- CI check (`scripts/check-no-reqwest-decompression.sh`) that fails if
+  reqwest's gzip, brotli, zstd or deflate feature is enabled, which secret
+  redaction relies on. Tests cover the proxy's call-time failures (item
+  removed, backend down, connect timeout).
 
 ### Fixed
 
+- `warden http` exits 4 (revoked) with a message telling to request access
+  again when the broker says the grant was revoked, and removes the stale
+  local record, instead of exiting 1 with the broker's raw refusal.
 - Redaction drops a response header whose name carries the secret whatever
   its letter case (names arrive lowercased from the HTTP stack, so a secret
   with uppercase letters was not matched).
+- A relay session whose target stopped reading its input ends about 2 s
+  after the agent disconnects (reason `client closed`), instead of when the
+  60 s flow-control stall watchdog fires: the relay reads the agent's
+  connection ahead of the SSH library (bounded: 64 KiB counted before
+  login, 4 MiB after, twice the agent's window), so the agent leaving is
+  seen even while that library is held up. Input still held for the target
+  when the agent leaves is dropped. The session still gets exactly one
+  `relay_session_ended` entry, and a session the relay ends (shutdown,
+  revocation, expiry, grant state unavailable) keeps that reason although
+  the agent's side closes as a result.
 - The relay's login-time grant lookup is bounded to 1.5 s, like the grant
   checks of live sessions, instead of only by the 10 s login timeout: an
   attempt whose lookup does not answer in time is refused and audited as
@@ -39,36 +103,13 @@ All notable changes to this project are recorded here. The format follows
   resolved again (once, shared by concurrent callers) and the request retried
   once. A vault that is gone, or a missing item in an unchanged vault, still
   fails closed with the same error.
-- A relay session whose target stopped reading its input ends about 2 s
-  after the agent disconnects (reason `client closed`), instead of when the
-  60 s flow-control stall watchdog fires: the relay reads the agent's
-  connection ahead of the SSH library (bounded: 64 KiB counted before
-  login, 4 MiB after, twice the agent's window), so the agent leaving is
-  seen even while that library is held up. Input still held for the target
-  when the agent leaves is dropped. The session still gets exactly one
-  `relay_session_ended` entry, and a session the relay ends (shutdown,
-  revocation, expiry, grant state unavailable) keeps that reason although
-  the agent's side closes as a result.
-
-### Added
-
-- An agent can cancel its own pending request: `warden request cancel <id>`
-  (`POST /v1/requests/{id}/cancel`, 404 for another agent's or an unknown
-  request, 409 once it is no longer pending), audited as `request_cancelled`.
-  The approval page of a cancelled request says "Cancelled by the agent." and
-  cannot be approved, and the history lists it as `cancelled`. Ctrl-C while
-  `warden request` waits cancels the pending request (waiting at most about 10 s) and
-  exits 130; a request cancelled from another terminal ends the waiting
-  command with exit 6. `warden request` now prints the request id, which
-  `warden request cancel` takes. Schema migration `0003` widens the status
-  check of `requests`, rebuilding it and `grants` with all rows preserved.
-- Proxied API calls in flight are limited per agent
-  (`WARDEN_PROXY_MAX_CALLS_PER_AGENT`, default 4, 1 to 64) and overall
-  (`WARDEN_PROXY_MAX_CALLS`, default 16, 1 to 256, at least the per-agent
-  limit; the broker refuses to start otherwise). A call over a limit gets a
-  429 `too many concurrent calls`, is audited as a refused `proxy_call`, and
-  never reaches the upstream. A slot is released when the call ends,
-  whatever the outcome, including an agent that disconnects.
+- The CLI's cleanup on every run also removes leftover grant-record temporary
+  files (`.<name>.<id>.tmp`, from a run that crashed mid-write) once they are
+  over ten minutes old, in the grants and api-grants directories; fresher ones
+  and live grants are never touched. Its failures are reported in a single
+  warning. A per-grant `ssh-agent` still lingers until the next `warden` run
+  after its grant ends (the agent's lifetime limit covers its keys, not the
+  process), but that run stops it.
 
 ## [0.4.0] - unreleased
 
