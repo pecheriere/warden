@@ -97,9 +97,8 @@
   const setupApproval = () => {
     const approve = document.getElementById('approve');
     const deny = document.getElementById('deny');
-    const select = document.getElementById('window');
     const approval = document.getElementById('approval');
-    if (!approve || !deny || !select || !approval) return;
+    if (!approve || !deny || !approval) return;
     const base = window.location.pathname.replace(/\/+$/, '');
 
     approve.addEventListener('click', async () => {
@@ -108,7 +107,7 @@
         // The digest of the destination shown on this page: the server refuses
         // to approve if the policy of the target or secret changed since.
         const begun = await post(`${base}/begin`, {
-          window: select.value,
+          window: document.querySelector('input[name="window"]:checked').value,
           target: approval.dataset.target,
         });
         show('Confirm with your passkey…', true);

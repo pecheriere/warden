@@ -13,13 +13,72 @@ use crate::requests::{ActiveGrant, Destination, HistoryEntry, PendingView, windo
 /// Every window, shortest first.
 const WINDOWS: [Window; 4] = [Window::M15, Window::M30, Window::H1, Window::H4];
 
-fn layout(title: &str, with_script: bool, content: &Markup) -> Markup {
+/// The page of the header navigation a page is, marked `aria-current`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Nav {
+    Grants,
+    History,
+    Enroll,
+}
+
+/// The header navigation links, `current` marked as the current page.
+fn nav_links(current: Option<Nav>) -> Markup {
+    html! {
+        @for (page, href, text) in [
+            (Nav::Grants, "/grants", "Active grants"),
+            (Nav::History, "/history", "History"),
+            (Nav::Enroll, "/enroll", "Enroll a passkey"),
+        ] {
+            a href=(href) aria-current=[(current == Some(page)).then_some("page")] { (text) }
+        }
+    }
+}
+
+/// The warden mascot (master: `docs/design/mascot.svg`), inlined so the page
+/// makes no image request. Decoration: hidden from assistive technology.
+fn mascot() -> Markup {
+    html! {
+        svg.mascot xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" aria-hidden="true" {
+            ellipse cx="60" cy="114" rx="30" ry="4" fill="#0F1E3D" opacity="0.12" {}
+            path d="M62 22 C62 8 78 2 90 8 C80 10 72 14 68 22 Z" fill="#F5B800" {}
+            path d="M66 20 C70 12 80 10 86 14" fill="none" stroke="#0F1E3D" stroke-width="2"
+                stroke-linecap="round" opacity="0.25" {}
+            rect x="34" y="70" width="52" height="38" rx="16" fill="#2557D6" {}
+            rect x="34" y="70" width="52" height="38" rx="16" fill="#0F1E3D" opacity="0.15" {}
+            path d="M22 72 C22 38 38 20 60 20 C82 20 98 38 98 72 Z" fill="#2557D6" {}
+            path d="M60 20 L60 72" stroke="#0F1E3D" stroke-width="3" opacity="0.18" {}
+            rect x="28" y="46" width="64" height="22" rx="11" fill="#0F1E3D" {}
+            circle cx="47" cy="57" r="5.5" fill="#FFFFFF" {}
+            circle cx="73" cy="57" r="5.5" fill="#FFFFFF" {}
+            circle cx="48.5" cy="55.5" r="1.8" fill="#0F1E3D" {}
+            circle cx="74.5" cy="55.5" r="1.8" fill="#0F1E3D" {}
+            rect x="18" y="68" width="84" height="8" rx="4" fill="#DCE6FB" {}
+            circle cx="60" cy="90" r="9" fill="#F5B800" {}
+            circle cx="60" cy="88" r="2.6" fill="#0F1E3D" {}
+            path d="M60 89 L60 94" stroke="#0F1E3D" stroke-width="2.6" stroke-linecap="round" {}
+            rect x="40" y="104" width="14" height="8" rx="4" fill="#0F1E3D" {}
+            rect x="66" y="104" width="14" height="8" rx="4" fill="#0F1E3D" {}
+        }
+    }
+}
+
+/// A 24-unit line icon drawn in the current text colour, `size` px square.
+/// Decoration: the text next to it says the same.
+fn icon(size: u8, stroke_width: &str, shapes: &Markup) -> Markup {
+    html! {
+        svg width=(size) height=(size) viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-width=(stroke_width) stroke-linecap="round" stroke-linejoin="round"
+            aria-hidden="true" { (shapes) }
+    }
+}
+
+fn layout(title: &str, current: Option<Nav>, with_script: bool, content: &Markup) -> Markup {
     html! {
         (DOCTYPE)
         html lang="en" {
             head {
                 meta charset="utf-8";
-                meta name="viewport" content="width=device-width, initial-scale=1";
+                meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover";
                 title { (title) " · warden" }
                 link rel="stylesheet" href="/static/warden.css";
                 @if with_script {
@@ -27,10 +86,18 @@ fn layout(title: &str, with_script: bool, content: &Markup) -> Markup {
                 }
             }
             body {
-                nav {
-                    a href="/grants" { "Active grants" }
-                    a href="/history" { "History" }
-                    a href="/enroll" { "Enroll a passkey" }
+                header {
+                    (mascot())
+                    span.brand { "warden" }
+                    nav.links aria-label="Main" { (nav_links(current)) }
+                    // Under 720 px the links hide behind this disclosure, which
+                    // needs no script.
+                    details.nav-menu {
+                        summary.menu aria-label="Menu" {
+                            (icon(20, "2", &html! { path d="M4 7h16M4 12h16M4 17h16" {} }))
+                        }
+                        nav aria-label="Main" { (nav_links(current)) }
+                    }
                 }
                 (content)
             }
@@ -64,13 +131,29 @@ fn api_access(grant: &ApiGrant) -> Markup {
 /// warning naming every method that can modify.
 fn modify_line(scope: &ApiScope) -> Markup {
     let modifying = scope.modifying_methods();
-    html! {
-        @if modifying.is_empty() {
-            strong.readonly { "Read-only" }
-        } @else {
-            strong.warning { "Can modify: " (modifying.join(", ")) }
-        }
+    if modifying.is_empty() {
+        read_only_badge()
+    } else {
+        can_modify_badge(&modifying.join(", "))
     }
+}
+
+/// The badge for access that cannot change anything upstream.
+fn read_only_badge() -> Markup {
+    let lock = html! {
+        rect x="5" y="11" width="14" height="10" rx="2" {}
+        path d="M8 11V8a4 4 0 0 1 8 0v3" {}
+    };
+    html! { strong.badge.readonly { (icon(14, "2.4", &lock)) " Read-only" } }
+}
+
+/// The badge for access that can change things upstream through `what`.
+fn can_modify_badge(what: &str) -> Markup {
+    let warning = html! {
+        path d="M12 3 2 20h20L12 3z" {}
+        path d="M12 10v4M12 17h.01" {}
+    };
+    html! { strong.badge.modify { (icon(14, "2.4", &warning)) " Can modify: " (what) } }
 }
 
 /// What approving `request` gives access to under `destination`: for a
@@ -80,21 +163,23 @@ fn modify_line(scope: &ApiScope) -> Markup {
 fn destination_access(request: &CreateRequest, destination: &Destination) -> Markup {
     match destination {
         Destination::Ssh(target) => html! {
-            code { (access_line(request, &target.host, target.port)) }
-            @if target.mode == SshMode::Relay { " via the warden relay" }
+            span {
+                code { (access_line(request, &target.host, target.port)) }
+                @if target.mode == SshMode::Relay { " via the warden relay" }
+            }
         },
         Destination::Api(policy) => html! {
             @match super::api_scope(request, policy) {
                 Ok(scope) => {
-                    (api_access(&policy.grant_for(&scope)))
-                    br;
+                    span { (api_access(&policy.grant_for(&scope))) }
                     (modify_line(&scope))
                 }
-                Err(message) => bdi { (message) },
+                Err(message) => span { bdi { (message) } },
             }
-            br;
-            "value " code { bdi { (policy.format.prefix()) "…" (policy.format.suffix()) } }
-            ", pinned CA: " (if policy.ca_pem.is_some() { "yes" } else { "no" })
+            span.detail {
+                "value " code { bdi { (policy.format.prefix()) "…" (policy.format.suffix()) } }
+                ", pinned CA: " (if policy.ca_pem.is_some() { "yes" } else { "no" })
+            }
         },
     }
 }
@@ -111,7 +196,7 @@ fn grant_access(grant: &ActiveGrant) -> Markup {
             @match ApiScope::try_from(api) {
                 Ok(scope) => (modify_line(&scope)),
                 // A damaged record: the label must not claim read-only.
-                Err(_) => strong.warning { "Can modify: unverified scope" },
+                Err(_) => (can_modify_badge("unverified scope")),
             }
         },
         GrantAccess::Relay(relay) => html! {
@@ -121,47 +206,90 @@ fn grant_access(grant: &ActiveGrant) -> Markup {
     }
 }
 
-/// The approval page for a pending request.
+/// A grant window in words for the window picker (`15 min`, `1 h`).
+const fn window_words(window: Window) -> &'static str {
+    match window {
+        Window::M15 => "15 min",
+        Window::M30 => "30 min",
+        Window::H1 => "1 h",
+        Window::H4 => "4 h",
+    }
+}
+
+/// The approval page for a pending request: the details on one side, the
+/// fingerprint and the decision (grant window, Approve, Deny) on the other.
 #[must_use]
 pub fn approve(view: &PendingView, now: i64) -> Markup {
     let max = view.destination.max_window();
     let default = view.request.window.min(max);
     let remaining = (view.expires_at - now).max(0);
+    let clock = html! {
+        circle cx="12" cy="12" r="9" {}
+        path d="M12 7v5l3 2" {}
+    };
+    let key = html! {
+        circle cx="8" cy="15" r="4" {}
+        path d="m10.8 12.2 8.2-8.2M16 7l3 3M14 9l2 2" {}
+    };
+    // The script sends `data-target` back when the approval begins, binding
+    // it to the destination shown here.
     let content = html! {
-        h1 { "Approve access?" }
-        dl {
-            dt { "Requested by" }
-            dd { bdi { (view.agent) } }
-            dt { "Goal" }
-            dd { bdi { (view.request.goal) } }
-            dt { "Access" }
-            dd { (destination_access(&view.request, &view.destination)) }
-            dt { "Requested window" }
-            dd { (window_label(view.request.window)) }
-            dt { "Fingerprint (must match what the agent shows)" }
-            dd { code.fingerprint { (view.fingerprint) } }
-            dt { "Expires" }
-            dd { span #countdown data-remaining=(remaining) { "in " (remaining / 60) " min" } }
-        }
-        // The script sends this back when the approval begins, binding it to
-        // the destination shown above.
-        main #approval data-target=(view.destination.digest()) {
-            label for="window" { "Grant for " }
-            select #window name="window" {
-                @for window in WINDOWS.into_iter().filter(|w| *w <= max) {
-                    option value=(window_label(window)) selected[window == default] {
-                        (window_label(window))
+        main.split #approval data-target=(view.destination.digest()) {
+            div.col {
+                span.chip {
+                    (icon(14, "2.4", &clock))
+                    span {
+                        "Pending · expires "
+                        span #countdown data-remaining=(remaining) { "in " (remaining / 60) " min" }
+                    }
+                }
+                h1 { "Approve access?" }
+                // Access before goal: the decision comes first, and long
+                // agent-written text cannot push it off screen.
+                section.card {
+                    div.field {
+                        span.label { "Requested by" }
+                        span.who { bdi { (view.agent) } }
+                    }
+                    div.field.tight {
+                        span.label { "Access" }
+                        (destination_access(&view.request, &view.destination))
+                    }
+                    div.field {
+                        span.label { "Goal" }
+                        span { bdi { (view.request.goal) } }
                     }
                 }
             }
-            div {
-                button #approve type="button" { "Approve with passkey" }
-                button #deny type="button" { "Deny" }
+            div.col {
+                section.fp {
+                    span.label { "Fingerprint · must match the agent" }
+                    code.fingerprint { (view.fingerprint) }
+                }
+                div.actions {
+                    fieldset {
+                        legend.label { "Grant for" }
+                        div.seg {
+                            @for window in WINDOWS.into_iter().filter(|w| *w <= max) {
+                                @let id = format!("window-{}", window_label(window));
+                                input #(id) type="radio" name="window"
+                                    value=(window_label(window)) checked[window == default];
+                                label for=(id) { (window_words(window)) }
+                            }
+                        }
+                    }
+                    div.btns {
+                        button.btn.approve #approve type="button" {
+                            (icon(20, "2.2", &key)) " Approve with passkey"
+                        }
+                        button.btn.deny #deny type="button" { "Deny" }
+                    }
+                    p.result #result role="status" {}
+                }
             }
-            p #result role="status" {}
         }
     };
-    layout("Approve access", true, &content)
+    layout("Approve access", None, true, &content)
 }
 
 /// The request behind a link is unknown, decided or expired. Says nothing
@@ -172,7 +300,7 @@ pub fn not_pending() -> Markup {
         h1 { "Nothing to approve" }
         p { "This request is no longer pending: it was decided, expired or never existed." }
     };
-    layout("Nothing to approve", false, &content)
+    layout("Nothing to approve", None, false, &content)
 }
 
 /// The agent withdrew the request behind a link. Shown only to the owner,
@@ -183,7 +311,7 @@ pub fn cancelled() -> Markup {
         h1 { "Nothing to approve" }
         p { "Cancelled by the agent." }
     };
-    layout("Nothing to approve", false, &content)
+    layout("Nothing to approve", None, false, &content)
 }
 
 /// No page at this address.
@@ -193,7 +321,7 @@ pub fn not_found() -> Markup {
         h1 { "Not found" }
         p { "There is no page at this address." }
     };
-    layout("Not found", false, &content)
+    layout("Not found", None, false, &content)
 }
 
 /// The policy backend could not answer.
@@ -203,7 +331,7 @@ pub fn unavailable(message: &str) -> Markup {
         h1 { "Policy unavailable" }
         p { "The request cannot be shown right now: " (message) }
     };
-    layout("Policy unavailable", false, &content)
+    layout("Policy unavailable", None, false, &content)
 }
 
 /// Something failed on the server; details are in its log.
@@ -213,7 +341,7 @@ pub fn internal_error() -> Markup {
         h1 { "Something went wrong" }
         p { "The server logged the details." }
     };
-    layout("Error", false, &content)
+    layout("Error", None, false, &content)
 }
 
 /// Active grants with revoke buttons.
@@ -249,7 +377,7 @@ pub fn grants(grants: &[ActiveGrant], now: i64) -> Markup {
         }
         p #result role="status" {}
     };
-    layout("Active grants", true, &content)
+    layout("Active grants", Some(Nav::Grants), true, &content)
 }
 
 /// Read-only list of recent requests, newest first.
@@ -292,7 +420,7 @@ pub fn history(entries: &[HistoryEntry]) -> Markup {
             }
         }
     };
-    layout("History", false, &content)
+    layout("History", Some(Nav::History), false, &content)
 }
 
 /// The passkey enrollment form.
@@ -315,7 +443,7 @@ pub fn enroll() -> Markup {
             p #result role="status" {}
         }
     };
-    layout("Enroll a passkey", true, &content)
+    layout("Enroll a passkey", Some(Nav::Enroll), true, &content)
 }
 
 /// A granted window length in words (`15m`, …), or seconds if unusual.
@@ -707,6 +835,133 @@ mod tests {
         assert_self_contained(
             "svg",
             r#"<svg xmlns="http://www.w3.org/2000/svg"></svg><p>https://api.example.com</p>"#,
+        );
+    }
+
+    #[test]
+    fn marks_the_current_page_in_the_navigation() {
+        let html = grants(&[], NOW).into_string();
+        // Both the inline links and the menu's copy mark it.
+        assert_eq!(
+            html.matches(r#"<a href="/grants" aria-current="page">"#)
+                .count(),
+            2,
+            "{html}"
+        );
+        assert!(
+            !html.contains(r#"<a href="/history" aria-current"#),
+            "{html}"
+        );
+        let html = not_found().into_string();
+        assert!(!html.contains("aria-current"), "{html}");
+        assert!(html.contains("viewport-fit=cover"), "{html}");
+        assert!(
+            html.contains("<summary class=\"menu\" aria-label=\"Menu\">"),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn inline_svg_shapes_are_closed() {
+        // In inline SVG an unclosed `<rect>` would swallow the shapes after it.
+        let html = approve(
+            &pending(
+                agent("build-agent"),
+                api_request(goal("Read device status"), &["GET"]),
+                api_destination(),
+            ),
+            NOW,
+        )
+        .into_string();
+        for shape in ["rect", "circle", "path", "ellipse"] {
+            assert_eq!(
+                html.matches(&format!("<{shape} ")).count(),
+                html.matches(&format!("</{shape}>")).count(),
+                "{shape}: {html}"
+            );
+        }
+        assert!(html.contains(r#"<svg class="mascot" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" aria-hidden="true">"#));
+    }
+
+    #[test]
+    fn window_picker_offers_windows_up_to_the_max_with_the_request_checked() {
+        let html = approve(
+            &pending(
+                agent("build-agent"),
+                ssh_request(goal("Deploy the nightly build"), Window::M30),
+                ssh_destination(SshMode::Cert),
+            ),
+            NOW,
+        )
+        .into_string();
+        assert!(
+            html.contains(r#"<fieldset><legend class="label">Grant for</legend>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(
+                r#"<input id="window-30m" type="radio" name="window" value="30m" checked><label for="window-30m">30 min</label>"#
+            ),
+            "{html}"
+        );
+        assert!(html.contains(r#"value="4h">"#), "{html}");
+        assert_eq!(html.matches(r#"name="window""#).count(), 4, "{html}");
+        assert_eq!(html.matches(" checked").count(), 1, "{html}");
+
+        // The requested 4h is above the secret's 1h max: capped and preselected.
+        let mut request = api_request(goal("Read device status"), &["GET"]);
+        request.window = Window::H4;
+        let html = approve(
+            &pending(agent("build-agent"), request, api_destination()),
+            NOW,
+        )
+        .into_string();
+        assert!(html.contains(r#"value="1h" checked>"#), "{html}");
+        assert!(!html.contains(r#"value="4h""#), "{html}");
+    }
+
+    #[test]
+    fn approve_page_keeps_the_script_hooks() {
+        let html = approve(
+            &pending(
+                agent("build-agent"),
+                ssh_request(goal("Deploy the nightly build"), Window::M30),
+                ssh_destination(SshMode::Cert),
+            ),
+            NOW,
+        )
+        .into_string();
+        for hook in [
+            r#"<main class="split" id="approval" data-target=""#,
+            r#"id="countdown" data-remaining="240">in 4 min</span>"#,
+            r#"<code class="fingerprint">ab01-cd01-ef01</code>"#,
+            r#"<button class="btn approve" id="approve" type="button">"#,
+            r#"<button class="btn deny" id="deny" type="button">Deny</button>"#,
+            r#"<p class="result" id="result" role="status"></p>"#,
+        ] {
+            assert!(html.contains(hook), "{hook}: {html}");
+        }
+    }
+
+    #[test]
+    fn badges_say_read_only_or_what_can_modify() {
+        let read_only = super::read_only_badge().into_string();
+        assert!(
+            read_only.starts_with(r#"<strong class="badge readonly"><svg "#),
+            "{read_only}"
+        );
+        assert!(
+            read_only.ends_with("</svg> Read-only</strong>"),
+            "{read_only}"
+        );
+        let modify = super::can_modify_badge("POST, <PUT>").into_string();
+        assert!(
+            modify.starts_with(r#"<strong class="badge modify"><svg "#),
+            "{modify}"
+        );
+        assert!(
+            modify.ends_with("</svg> Can modify: POST, &lt;PUT&gt;</strong>"),
+            "{modify}"
         );
     }
 

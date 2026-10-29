@@ -281,9 +281,12 @@ async fn approve_page_shows_fingerprint_goal_target() {
         "{html}"
     );
     // Window picker: only windows up to the target's 1h max, requested 30m preselected.
-    assert!(html.contains(r#"<option value="15m">"#), "{html}");
-    assert!(html.contains(r#"<option value="30m" selected>"#), "{html}");
-    assert!(html.contains(r#"<option value="1h">"#), "{html}");
+    assert!(html.contains(r#"name="window" value="15m">"#), "{html}");
+    assert!(
+        html.contains(r#"name="window" value="30m" checked>"#),
+        "{html}"
+    );
+    assert!(html.contains(r#"name="window" value="1h">"#), "{html}");
     assert!(!html.contains(r#"value="4h""#), "{html}");
     // Countdown data, external script only.
     assert!(html.contains(r#"data-remaining="600""#), "{html}");
@@ -1367,8 +1370,11 @@ async fn api_page_shows_origin_methods_prefix_header_format_and_ca() {
     );
     assert!(!html.contains(API_CREDENTIAL), "{html}");
     // Window picker capped at the secret's 1h max, requested 30m preselected.
-    assert!(html.contains(r#"<option value="30m" selected>"#), "{html}");
-    assert!(html.contains(r#"<option value="1h">"#), "{html}");
+    assert!(
+        html.contains(r#"name="window" value="30m" checked>"#),
+        "{html}"
+    );
+    assert!(html.contains(r#"name="window" value="1h">"#), "{html}");
     assert!(!html.contains(r#"value="4h""#), "{html}");
     // The page binds the policy digest, and begin enforces the max.
     broker.enroll_soft_passkey().await;
@@ -1729,8 +1735,7 @@ async fn grants_page_labels_api_grants() {
     assert_eq!(approved.status, StatusCode::OK, "{}", approved.body);
     let page = broker.get("/grants").await;
     assert!(
-        page.body
-            .contains(r#"<strong class="readonly">Read-only</strong>"#),
+        page.body.contains("</svg> Read-only</strong>"),
         "{}",
         page.body
     );
@@ -1743,8 +1748,7 @@ async fn grants_page_labels_api_grants() {
     assert_eq!(approved.status, StatusCode::OK, "{}", approved.body);
     let page = broker.get("/grants").await;
     assert!(
-        page.body
-            .contains(r#"<strong class="warning">Can modify: POST</strong>"#),
+        page.body.contains("</svg> Can modify: POST</strong>"),
         "{}",
         page.body
     );
@@ -1757,8 +1761,7 @@ async fn page_marks_read_only() {
     let page = broker.get(&format!("/approve/{token}")).await;
     assert_eq!(page.status, StatusCode::OK, "{}", page.body);
     assert!(
-        page.body
-            .contains(r#"<strong class="readonly">Read-only</strong>"#),
+        page.body.contains("</svg> Read-only</strong>"),
         "{}",
         page.body
     );
@@ -1780,8 +1783,7 @@ async fn page_warns_can_modify() {
     let page = broker.get(&format!("/approve/{token}")).await;
     assert_eq!(page.status, StatusCode::OK, "{}", page.body);
     assert!(
-        page.body
-            .contains(r#"<strong class="warning">Can modify: POST, PUT</strong>"#),
+        page.body.contains("</svg> Can modify: POST, PUT</strong>"),
         "{}",
         page.body
     );
