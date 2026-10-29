@@ -14,6 +14,11 @@ All notable changes to this project are recorded here. The format follows
   session's exit status. An agent now has the stall timeout (60 s) to take it
   and leave, and its connection keeps its place in the session limits until
   it is gone.
+- A 1Password vault that was deleted and recreated under the same name is
+  picked up without restarting the broker: on a Connect 404 the vault id is
+  resolved again (once, shared by concurrent callers) and the request retried
+  once. A vault that is gone, or a missing item in an unchanged vault, still
+  fails closed with the same error.
 
 ### Added
 
