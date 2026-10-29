@@ -542,7 +542,8 @@ script and stylesheet other than `/static/warden.js` and `/static/warden.css`.
 each at 390x844, 466x678, 678x466, 626x890, 890x626 and 1280x800, light and
 dark, with headless Chrome (needs ImageMagick). Screenshots are captured at
 viewport height (what is on screen without scrolling) and land in
-`<out-dir>/shots`; keep `<out-dir>` outside the repository, as screenshots are
+`<out-dir>/warden-pages/shots` (the script deletes and recreates only that
+subdirectory); keep `<out-dir>` outside the repository, as screenshots are
 never committed.
 
 ## 10. Policy: 1Password as the source of truth

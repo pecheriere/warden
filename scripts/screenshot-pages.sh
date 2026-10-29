@@ -3,9 +3,10 @@
 # phone, tablet and desktop widths in light and dark.
 #
 # Usage: scripts/screenshot-pages.sh <out-dir>
-#   <out-dir> receives the rendered pages (<name>.html, static/warden.css) and
-#   the screenshots (shots/<name>-<WxH>-<light|dark>.png). Keep it outside the
-#   repository.
+#   Everything goes under <out-dir>/warden-pages/, the only directory the
+#   script ever deletes: the rendered pages (<name>.html, static/warden.css)
+#   and the screenshots (shots/<name>-<WxH>-<light|dark>.png). <out-dir> must
+#   be outside the repository and is not <HOME> or /.
 # Screenshots show the viewport only (what is on screen without scrolling).
 # Needs: cargo, python3, Google Chrome (override with CHROME=...), ImageMagick.
 set -euo pipefail
@@ -16,14 +17,19 @@ if [[ $# -ne 1 ]]; then
 fi
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-mkdir -p "$1"
-out="$(cd "$1" && pwd)"
+base="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$1")"
+home="$(python3 -c 'import os; print(os.path.realpath(os.path.expanduser("~")))')"
+out="$base/warden-pages"
 chrome="${CHROME:-/Applications/Google Chrome.app/Contents/MacOS/Google Chrome}"
 sizes=(390x844 466x678 678x466 626x890 890x626 1280x800)
 shots="$out/shots"
 
-if [[ "$out" == "$root" || "$out" == "$root"/* ]]; then
+if [[ "$base" == "$root" || "$base" == "$root"/* ]]; then
     echo "error: <out-dir> must be outside the repository" >&2
+    exit 2
+fi
+if [[ "$base" == "/" || "$base" == "$home" ]]; then
+    echo "error: <out-dir> must not be / or the home directory" >&2
     exit 2
 fi
 for tool in cargo python3 magick; do
@@ -32,8 +38,8 @@ done
 [[ -x "$chrome" ]] || { echo "error: Chrome not found at $chrome (set CHROME)" >&2; exit 1; }
 
 # Start clean so pages from an earlier, failed run cannot leak into the list.
-rm -rf "$shots" "$out/static"
-rm -f "$out"/*.html
+# Only the directory this script owns is ever removed.
+rm -rf "$out"
 mkdir -p "$shots" "$out/wrap"
 WARDEN_RENDER_PAGES_DIR="$out" cargo test --manifest-path "$root/Cargo.toml" \
     -p warden-broker --lib --locked every_page_renders_self_contained
@@ -92,6 +98,8 @@ HTML
         rm -f "$out/$wrapper"
     done
 done
+
+rm -rf "$out/wrap"
 
 # The two schemes must actually differ, or the dark rendering is not working.
 probe="$shots/approve-api-modify-1280x800"
