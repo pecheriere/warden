@@ -2,6 +2,7 @@
 //! capturing notifiers.
 
 use std::sync::Arc;
+use std::task::{Context, Waker};
 use std::time::Duration;
 
 use secrecy::SecretString;
@@ -790,9 +791,14 @@ async fn dropped_deny_future_leaves_log_usable() {
     let h = harness().await;
     let (created, token) = create_notified(&h, "bot", pi_request()).await;
 
-    // Poll deny once, then drop it mid-flight.
-    let dropped = tokio::time::timeout(Duration::ZERO, h.requests.deny(&token)).await;
-    assert!(dropped.is_err(), "deny finished before it could be dropped");
+    // Poll deny exactly once, then drop it mid-flight. A zero timeout is not
+    // one poll: its deadline rounds up to the next timer tick, and until then
+    // it re-polls deny, whose database and audit work runs off the runtime
+    // and can finish in that window.
+    let mut deny = Box::pin(h.requests.deny(&token));
+    let first = deny.as_mut().poll(&mut Context::from_waker(Waker::noop()));
+    assert!(first.is_pending(), "deny finished on its first poll");
+    drop(deny);
 
     // The transition still lands as a whole.
     assert_eq!(
