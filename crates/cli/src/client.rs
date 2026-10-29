@@ -103,6 +103,21 @@ impl Client {
         })
     }
 
+    /// Cancel the agent's pending request `id`.
+    ///
+    /// # Errors
+    /// If the server is unreachable or refuses (unknown, or no longer
+    /// pending).
+    pub async fn cancel(&self, id: &Id) -> Result<(), CallError> {
+        let url = self.url(&format!("v1/requests/{id}/cancel"))?;
+        let resp = self.send(self.http.post(url)).await?;
+        if resp.status() == StatusCode::NO_CONTENT {
+            Ok(())
+        } else {
+            Err(failure(resp).await)
+        }
+    }
+
     /// The agent's live grants.
     ///
     /// # Errors

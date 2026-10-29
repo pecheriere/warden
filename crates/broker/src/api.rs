@@ -52,6 +52,7 @@ pub fn router(state: AppState) -> Router {
         .route("/healthz", get(healthz))
         .route("/v1/requests", post(create_request))
         .route("/v1/requests/{id}", get(request_status))
+        .route("/v1/requests/{id}/cancel", post(cancel_request))
         .route("/v1/grants", get(list_grants))
         .route("/v1/grants/{id}/revoke", post(revoke_grant))
         .route(
@@ -238,12 +239,27 @@ async fn request_status(
     Ok(Json(status))
 }
 
+/// `POST /v1/requests/{id}/cancel`: withdraw the agent's own pending
+/// request. Another agent's or an unknown request is 404, one that is no
+/// longer pending 409.
+async fn cancel_request(
+    State(state): State<AppState>,
+    AuthedAgent(agent): AuthedAgent,
+    Path(id): Path<String>,
+) -> Result<StatusCode, Failure> {
+    let id = parse_id(&id)?;
+    state.requests.cancel(&agent, &id).await?;
+    tracing::info!(agent = %agent, id = %id, "request cancelled by agent");
+    Ok(StatusCode::NO_CONTENT)
+}
+
 const fn status_name(status: &RequestStatus) -> &'static str {
     match status {
         RequestStatus::Pending => "pending",
         RequestStatus::Approved(_) => "approved",
         RequestStatus::Denied => "denied",
         RequestStatus::Expired => "expired",
+        RequestStatus::Cancelled => "cancelled",
         RequestStatus::Revoked => "revoked",
         RequestStatus::Error { .. } => "error",
     }

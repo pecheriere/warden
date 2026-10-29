@@ -47,7 +47,7 @@ defends against it.
   exposed only through that sidecar's Tailscale Serve. It holds a read-only
   Connect token.
 - **Silent failure.** The CLI always receives an explicit terminal state:
-  `approved`, `denied`, `expired` or `error` with a message.
+  `approved`, `denied`, `expired`, `cancelled` or `error` with a message.
 - **An API secret reaches the agent.** In proxy mode the broker reads the
   secret from 1Password only when a call is made, in the same single read of
   the item as the policy it is checked against, builds the header from the

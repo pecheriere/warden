@@ -410,3 +410,92 @@ async fn e2e_read_only_then_write_grant() {
         .run(&["http", SECRET_NAME, "GET", &s.upstream.url("/hello")]);
     assert_eq!(get.status.code(), Some(0), "{}", text(&get.stderr));
 }
+
+/// The id of the only request the broker holds.
+async fn only_request_id(s: &Setup) -> String {
+    let history = s.broker.state().requests.history(10).await.unwrap();
+    assert_eq!(history.len(), 1);
+    history[0].id.to_string()
+}
+
+/// Read the CLI's stderr until the line announcing the request appears.
+fn wait_for_waiting_line(child: &mut Child) -> std::io::BufReader<std::process::ChildStderr> {
+    use std::io::BufRead as _;
+    let mut stderr = std::io::BufReader::new(child.stderr.take().unwrap());
+    let mut line = String::new();
+    while !line.contains("waiting for approval") {
+        line.clear();
+        assert_ne!(stderr.read_line(&mut line).unwrap(), 0, "CLI exited early");
+    }
+    stderr
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn e2e_request_cancel() {
+    use std::io::Read as _;
+
+    let s = setup().await;
+
+    // `warden request cancel <id>` from another terminal ends the waiting one.
+    let mut child = spawn_request(&s.cli, &[]);
+    let token = CapturingNotifier::token(&s.broker.capture.next().await);
+    let mut stderr = wait_for_waiting_line(&mut child);
+    let id = only_request_id(&s).await;
+    let cancel = s.cli.run(&["request", "cancel", &id]);
+    assert_eq!(cancel.status.code(), Some(0), "{}", text(&cancel.stderr));
+    assert_eq!(text(&cancel.stdout), format!("cancelled: request {id}\n"));
+    let out = tokio::task::spawn_blocking(move || child.wait_with_output())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(6), "{}", text(&out.stderr));
+    let mut rest = String::new();
+    stderr.read_to_string(&mut rest).unwrap();
+    assert!(rest.contains("request cancelled"), "{rest}");
+    // A second cancel is refused; the approval link is dead.
+    let again = s.cli.run(&["request", "cancel", &id]);
+    assert_eq!(again.status.code(), Some(1));
+    assert!(text(&again.stderr).contains("already decided"));
+    let page = s.broker.get(&format!("/approve/{token}")).await;
+    assert!(
+        page.body.contains("Cancelled by the agent."),
+        "{}",
+        page.body
+    );
+
+    // Ctrl-C while waiting cancels the pending request and exits 130.
+    let mut child = spawn_request(&s.cli, &["--path", "/echo"]);
+    let token = CapturingNotifier::token(&s.broker.capture.next().await);
+    let mut stderr = wait_for_waiting_line(&mut child);
+    rustix::process::kill_process(
+        rustix::process::Pid::from_child(&child),
+        rustix::process::Signal::INT,
+    )
+    .unwrap();
+    let out = tokio::task::spawn_blocking(move || child.wait_with_output())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(130));
+    let mut rest = String::new();
+    stderr.read_to_string(&mut rest).unwrap();
+    assert!(rest.contains("cancelled"), "{rest}");
+    let page = s.broker.get(&format!("/approve/{token}")).await;
+    assert!(
+        page.body.contains("Cancelled by the agent."),
+        "{}",
+        page.body
+    );
+    let history = s.broker.state().requests.history(10).await.unwrap();
+    let statuses: Vec<&str> = history.iter().map(|e| e.status.as_str()).collect();
+    assert_eq!(statuses, ["cancelled", "cancelled"]);
+    assert!(
+        s.broker
+            .state()
+            .requests
+            .active_grants()
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}

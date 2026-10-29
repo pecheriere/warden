@@ -188,6 +188,17 @@ pub fn not_pending() -> Markup {
     layout("Nothing to approve", false, &content)
 }
 
+/// The agent withdrew the request behind a link. Shown only to the owner,
+/// who holds the link, so it can say what happened.
+#[must_use]
+pub fn cancelled() -> Markup {
+    let content = html! {
+        h1 { "Nothing to approve" }
+        p { "Cancelled by the agent." }
+    };
+    layout("Nothing to approve", false, &content)
+}
+
 /// No page at this address.
 #[must_use]
 pub fn not_found() -> Markup {

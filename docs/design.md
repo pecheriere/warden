@@ -134,6 +134,13 @@ implementations `OnePasswordConnect`, `HomeAssistantNotifier`, `NtfyNotifier`.
    hash of the canonical request **plus the chosen duration**. The server
    verifies the assertion, the challenge binding, the token's single use and
    that the requester identity (see §9) is the owner. Deny needs no passkey.
+   The requesting agent can instead **cancel** its own pending request
+   (`POST /v1/requests/{id}/cancel`, `warden request cancel <id>`, or Ctrl-C
+   in the waiting CLI): the request becomes `cancelled`, audited as
+   `request_cancelled`, and its approval page says "Cancelled by the agent."
+   and cannot be approved. Another agent's or an unknown request is a 404, a
+   request that is no longer pending (decided, cancelled or past its expiry) a
+   409.
 6. **Grant.** A grant record with `not_before/not_after` is created. The CLI,
    which long-polls (or polls) the request, receives the outcome:
    - cert/relay: the signed SSH certificate for the CLI's ephemeral public key;
@@ -144,8 +151,8 @@ implementations `OnePasswordConnect`, `HomeAssistantNotifier`, `NtfyNotifier`.
    active grants). Revoke kills relay sessions and invalidates proxy grants
    immediately; issued certificates stay valid until their (short) expiry.
 
-The CLI always gets a terminal state: `approved`, `denied`, `expired`, or
-`error` with a message.
+The CLI always gets a terminal state: `approved`, `denied`, `expired`,
+`cancelled`, or `error` with a message.
 
 ## 8. Access modes
 
@@ -583,7 +590,8 @@ in-flight requests and enrolled passkeys (re-enroll).
   kind: it cannot use such a grant and fails with an error instead of
   connecting anywhere (broker and CLI should both be 0.3.0).
 - Requests block (with progress on stderr) until a terminal state; exit codes
-  distinguish approved / denied / expired / error.
+  distinguish approved / denied / expired / cancelled / error; Ctrl-C cancels
+  the pending request and exits 130.
 - A short usage doc ([agent-usage.md](agent-usage.md)) tells the agent to
   request with a precise goal and the narrowest scope.
 - CLI config: server URL and agent name only; no secrets in the config file.
