@@ -230,7 +230,7 @@ stderr and never stops the command.
 | 1 | Error. The message on stderr comes from the broker or the CLI. |
 | 2 | The request was denied. Do not retry the same request. Ask the owner what to change. |
 | 3 | The request expired without a decision. The owner may be away. Retry later, not in a loop. |
-| 4 | The grant was revoked. |
+| 4 | The grant was revoked: by `warden request` reporting a revoked grant, or by `warden http` when the broker says the grant it used was revoked (the owner revoked it elsewhere). `warden http` then removes the stale local record; request access again. |
 | 5 | `warden ssh` or `warden http` found no active grant. Run `warden request ssh …` or `warden request api …` first. For `warden http`, also when no active grant covers the method and path; the message gives the `warden request api <secret> --methods <METHOD> …` command to run. |
 | 6 | The request was cancelled while `warden request` waited for it (`warden request cancel` from another terminal). |
 | 22 | `warden http --fail` got an upstream status of 400 or more. The body is still written to stdout. |

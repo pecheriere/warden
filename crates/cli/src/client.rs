@@ -161,12 +161,15 @@ pub enum CallError {
     /// The broker refused the call (4xx) or answered something unusable.
     /// Trying again will not help.
     Refused(String),
+    /// The broker says the grant was revoked (409). Trying again will not
+    /// help: access has to be requested again.
+    Revoked(String),
 }
 
 impl fmt::Display for CallError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Unavailable(m) | Self::Refused(m) => f.write_str(m),
+            Self::Unavailable(m) | Self::Refused(m) | Self::Revoked(m) => f.write_str(m),
         }
     }
 }
@@ -189,6 +192,10 @@ async fn json<T: DeserializeOwned>(resp: Response, expected: StatusCode) -> Resu
     })
 }
 
+/// How the broker's 409 for a revoked grant begins (a call that finds the
+/// grant revoked, or sees it revoked while it was out).
+const GRANT_REVOKED: &str = "grant revoked";
+
 /// The server's error for a failed call, classified by its status, with
 /// the broker's message made safe to print.
 async fn failure(resp: Response) -> CallError {
@@ -198,12 +205,17 @@ async fn failure(resp: Response) -> CallError {
     } else {
         "broker refused"
     };
-    let message = match resp.json::<ApiError>().await {
-        Ok(body) => format!("{what} ({status}): {}", sanitize(&body.error)),
-        Err(_) => format!("{what} ({status})"),
+    let body = resp.json::<ApiError>().await.ok();
+    let message = match &body {
+        Some(body) => format!("{what} ({status}): {}", sanitize(&body.error)),
+        None => format!("{what} ({status})"),
     };
     if status.is_server_error() {
         CallError::Unavailable(message)
+    } else if status == StatusCode::CONFLICT
+        && body.is_some_and(|b| b.error.starts_with(GRANT_REVOKED))
+    {
+        CallError::Revoked(message)
     } else {
         CallError::Refused(message)
     }
@@ -291,6 +303,36 @@ mod tests {
         let garbage = client(&answering(200, r#"{"status":"nope"}"#).await);
         assert!(matches!(
             garbage.status(&id, 0).await,
+            Err(CallError::Refused(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn revoked_grant_is_told_apart_from_other_conflicts() {
+        let call = warden_broker_proto::ProxyRequest {
+            method: "GET".to_owned(),
+            url: "https://api.example.com/".to_owned(),
+            headers: Vec::new(),
+            body_b64: None,
+        };
+        let id = Id::random();
+        for (message, body) in [
+            ("grant revoked", r#"{"error":"grant revoked"}"#),
+            (
+                "grant revoked during the call",
+                r#"{"error":"grant revoked during the call"}"#,
+            ),
+        ] {
+            assert_eq!(
+                client(&answering(409, body).await).proxy(&id, &call).await,
+                Err(CallError::Revoked(format!(
+                    "broker refused (409 Conflict): {message}"
+                )))
+            );
+        }
+        let expired = client(&answering(409, r#"{"error":"grant expired"}"#).await);
+        assert!(matches!(
+            expired.proxy(&id, &call).await,
             Err(CallError::Refused(_))
         ));
     }
