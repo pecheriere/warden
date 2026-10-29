@@ -1,5 +1,5 @@
 :root{--ground:#F3F6FD;--surface:#FFFFFF;--ink:#0F1E3D;--muted:#4A5A7C;--line:#DDE5F5;
---primary:#2557D6;--on-primary:#FFFFFF;--soft:#E3EBFC;--soft-ink:#1D45AB;--accent:#F5B800;
+--primary:#2557D6;--on-primary:#FFFFFF;--soft:#E3EBFC;--soft-ink:#1D45AB;
 --warn-bg:#FFF1D6;--warn-ink:#7A3300;--warn-line:#C25100;--deny:#B42318;--fp-bg:#F7F9FF}
 @media (prefers-color-scheme:dark){:root{--ground:#0B1530;--surface:#142348;--ink:#EAF0FF;--muted:#A5B4D8;--line:#22346A;
 --primary:#8FB0FF;--on-primary:#0B1530;--soft:#1B2D5C;--soft-ink:#C9D7FF;
@@ -95,10 +95,12 @@ background:var(--surface);border:1px solid var(--line);border-radius:18px}
 .history td::before{content:attr(data-label)}
 .history td:nth-child(-n+3){grid-column:1/-1}}
 @media (min-width:720px){.history{background:var(--surface);border:1px solid var(--line);border-radius:18px;overflow:hidden}
-.history th{text-align:left;padding:12px 14px;border-bottom:1px solid var(--line)}
-.history th:nth-child(3){width:36%}
-.history td{padding:12px 14px;vertical-align:top;font-size:15px;overflow-wrap:break-word}
-.history tr+tr td{border-top:1px solid var(--line)}}
+.history th{text-align:left;padding:12px 10px;border-bottom:1px solid var(--line)}
+.history td{padding:12px 10px;vertical-align:top;font-size:15px;overflow-wrap:break-word}
+.history tr+tr td{border-top:1px solid var(--line)}
+.history td.who{min-width:12ch}
+.history td[data-label="Access"]{min-width:16ch}
+.history td[data-label="Access"] code{overflow-wrap:anywhere}}
 /* Open foldable, tablet, desktop: two columns, the gap falls on the hinge. */
 @media (min-width:600px){main.split{max-width:1040px;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));
 column-gap:64px;align-items:start;padding-top:28px}}

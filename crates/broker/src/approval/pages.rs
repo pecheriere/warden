@@ -449,7 +449,7 @@ pub fn grants(grants: &[ActiveGrant], now: i64) -> Markup {
             @for grant in grants {
                 section.card.grant {
                     div.field.tight {
-                        span.who { bdi { (grant.agent) } }
+                        span.who #(format!("agent-{}", grant.grant_id)) { bdi { (grant.agent) } }
                         (grant_access(grant))
                         div.meta {
                             span { "Fingerprint " code { (grant.fingerprint) } }
@@ -457,10 +457,15 @@ pub fn grants(grants: &[ActiveGrant], now: i64) -> Markup {
                                 "Ends " (utc(grant.not_after))
                                 " (in " (((grant.not_after - now).max(0) + 59) / 60) " min)"
                             }
-                            span { "Grant " code { (grant.grant_id) } }
+                            span #(format!("grant-{}", grant.grant_id)) {
+                                "Grant " code { (grant.grant_id) }
+                            }
                         }
                     }
-                    button.revoke type="button" data-grant=(grant.grant_id) { "Revoke" }
+                    // Every button reads "Revoke"; the description says whose
+                    // grant and which one.
+                    button.revoke type="button" data-grant=(grant.grant_id)
+                        aria-describedby=(format!("agent-{0} grant-{0}", grant.grant_id)) { "Revoke" }
                 }
             }
             p.result #result role="status" {}
@@ -545,7 +550,8 @@ pub fn enroll() -> Markup {
                 }
                 div.field {
                     label.label for="label" { "Name for this passkey" }
-                    input.input #label type="text" maxlength="64" placeholder="My phone";
+                    input.input #label type="text" autocomplete="off" maxlength="64"
+                        placeholder="My phone";
                 }
                 button.btn.approve #enroll type="button" { (icon(20, "2.2", &key_icon())) " Create passkey" }
             }
@@ -1110,14 +1116,27 @@ mod tests {
             4,
             "{html}"
         );
+        let grant = id(2);
         assert!(
             html.contains(&format!(
-                r#"<button class="revoke" type="button" data-grant="{}">Revoke</button>"#,
-                id(2)
+                r#"<button class="revoke" type="button" data-grant="{grant}" aria-describedby="agent-{grant} grant-{grant}">Revoke</button>"#
             )),
             "{html}"
         );
-        assert!(html.contains("<span class=\"who\"><bdi>build-agent</bdi></span>"));
+        // The description points at that card's agent and grant id.
+        assert!(
+            html.contains(&format!(
+                r#"<span class="who" id="agent-{grant}"><bdi>build-agent</bdi></span>"#
+            )),
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!(
+                r#"<span id="grant-{grant}">Grant <code>{grant}</code></span>"#
+            )),
+            "{html}"
+        );
+        assert_eq!(html.matches("aria-describedby=").count(), 4, "{html}");
         assert!(html.contains(r#"<p class="result" id="result" role="status"></p>"#));
         assert!(html.contains(r#"<script src="/static/warden.js" defer></script>"#));
     }
@@ -1157,7 +1176,7 @@ mod tests {
             r#"<label class="label" for="code">Enrollment code</label>"#,
             r#"<input class="input" id="code" type="text" autocomplete="one-time-code""#,
             r#"<label class="label" for="label">Name for this passkey</label>"#,
-            r#"<input class="input" id="label" type="text" maxlength="64""#,
+            r#"<input class="input" id="label" type="text" autocomplete="off" maxlength="64""#,
             r#"<button class="btn approve" id="enroll" type="button">"#,
             r#"<p class="result" id="result" role="status"></p>"#,
         ] {
