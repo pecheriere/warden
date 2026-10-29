@@ -3,6 +3,7 @@ use sqlx::{Row as _, SqlitePool};
 use warden_broker::agents::{self, AgentError};
 use warden_broker::audit::{self, AuditLog};
 use warden_broker::config::{Config, ConfigError};
+use warden_broker::notify::{ChannelKind, ChannelSettings};
 use warden_broker::store;
 use warden_broker_proto::AgentName;
 
@@ -22,7 +23,8 @@ fn env(var: &str) -> Option<String> {
         "WARDEN_OWNER_LOGIN" => "owner@example.com",
         "WARDEN_OP_CONNECT_URL" => "http://connect:8080",
         "WARDEN_OP_CONNECT_TOKEN" => "connect-secret-token",
-        "WARDEN_HA_WEBHOOK_URL" => "http://ha.local/api/webhook/secret-hook-id",
+        "WARDEN_NOTIFY" => "homeassistant",
+        "WARDEN_NOTIFY_HOMEASSISTANT_WEBHOOK_URL" => "http://ha.local/api/webhook/secret-hook-id",
         _ => return None,
     };
     Some(value.to_owned())
@@ -151,34 +153,113 @@ fn config_defaults_requires_notifier_and_redacts_secrets() {
     assert!(!shown.contains("connect-secret-token"));
     assert!(!shown.contains("secret-hook-id"));
 
-    let err = Config::from_lookup(|v| env(v).filter(|_| v != "WARDEN_HA_WEBHOOK_URL")).unwrap_err();
-    assert_eq!(err, ConfigError::NoNotifier);
+    let err = Config::from_lookup(|v| env(v).filter(|_| v != "WARDEN_NOTIFY")).unwrap_err();
+    assert_eq!(err, ConfigError::NoChannels);
+}
+
+/// `env` with `overrides` applied on top; an empty value unsets the variable.
+fn env_with(overrides: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
+    let overrides: Vec<(String, String)> = overrides
+        .iter()
+        .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+        .collect();
+    move |v| match overrides.iter().find(|(k, _)| k == v) {
+        Some((_, value)) => Some(value.clone()).filter(|x| !x.is_empty()),
+        None => env(v),
+    }
+}
+
+const HA_URL: &str = "WARDEN_NOTIFY_HOMEASSISTANT_WEBHOOK_URL";
+const NTFY_URL: &str = "WARDEN_NOTIFY_NTFY_URL";
+const NTFY_TOKEN: &str = "WARDEN_NOTIFY_NTFY_TOKEN";
+
+fn kinds(cfg: &Config) -> Vec<ChannelKind> {
+    cfg.notify.iter().map(ChannelSettings::kind).collect()
 }
 
 #[test]
-fn config_rejects_ntfy_token_without_ntfy_url() {
-    let with_token = |v: &str| {
-        if v == "WARDEN_NTFY_TOKEN" {
-            Some("tk_ntfy-secret".to_owned())
-        } else {
-            env(v)
-        }
+fn notify_channels_keep_the_configured_priority_order() {
+    let both = |list| {
+        Config::from_lookup(env_with(&[
+            ("WARDEN_NOTIFY", list),
+            (NTFY_URL, "https://ntfy.example.com/warden"),
+            (NTFY_TOKEN, "tk_ntfy-secret"),
+        ]))
+        .unwrap()
     };
-    let err = Config::from_lookup(with_token).unwrap_err();
-    let shown = err.to_string();
-    assert!(shown.contains("WARDEN_NTFY_TOKEN"), "{shown}");
-    assert!(shown.contains("WARDEN_NTFY_URL"), "{shown}");
+    assert_eq!(
+        kinds(&both("homeassistant, ntfy")),
+        [ChannelKind::HomeAssistant, ChannelKind::Ntfy]
+    );
+    let cfg = both("ntfy,homeassistant");
+    assert_eq!(kinds(&cfg), [ChannelKind::Ntfy, ChannelKind::HomeAssistant]);
+    let shown = format!("{cfg:?}");
     assert!(!shown.contains("tk_ntfy-secret"), "{shown}");
+    assert!(!shown.contains("secret-hook-id"), "{shown}");
+}
 
-    let cfg = Config::from_lookup(|v| {
-        if v == "WARDEN_NTFY_URL" {
-            Some("https://ntfy.sh/warden".to_owned())
-        } else {
-            with_token(v)
-        }
-    })
+#[test]
+fn notify_single_channel_works_alone() {
+    let cfg = Config::from_lookup(env_with(&[
+        ("WARDEN_NOTIFY", "ntfy"),
+        (NTFY_URL, "https://ntfy.example.com/warden"),
+        (HA_URL, ""),
+    ]))
     .unwrap();
-    assert!(cfg.ntfy_token.is_some());
+    let [ChannelSettings::Ntfy { url, token }] = cfg.notify.as_slice() else {
+        panic!("expected only ntfy, got {:?}", cfg.notify);
+    };
+    assert_eq!(url.as_str(), "https://ntfy.example.com/warden");
+    assert!(token.is_none());
+}
+
+#[test]
+fn notify_refuses_bad_channel_lists_with_clear_messages() {
+    let cases: [(&[(&str, &str)], &str); 9] = [
+        (&[("WARDEN_NOTIFY", "")], "WARDEN_NOTIFY"),
+        (&[("WARDEN_NOTIFY", "pagerduty")], "pagerduty"),
+        (
+            &[("WARDEN_NOTIFY", "https://ha.example.com/hook/abc")],
+            "an unknown channel name",
+        ),
+        (&[("WARDEN_NOTIFY", "ntfy,ntfy")], "twice"),
+        (&[("WARDEN_NOTIFY", "homeassistant,,ntfy")], "empty"),
+        (&[("WARDEN_NOTIFY", "homeassistant"), (HA_URL, "")], HA_URL),
+        (&[(HA_URL, "not a url")], HA_URL),
+        (
+            &[("WARDEN_NOTIFY", "ntfy"), (NTFY_URL, ""), (HA_URL, "")],
+            NTFY_URL,
+        ),
+        (
+            &[(NTFY_TOKEN, "tk_ntfy-secret")],
+            "not listed in WARDEN_NOTIFY",
+        ),
+    ];
+    for (overrides, needle) in cases {
+        let err = Config::from_lookup(env_with(overrides)).unwrap_err();
+        let shown = err.to_string();
+        assert!(shown.contains(needle), "{overrides:?}: {shown}");
+        assert!(!shown.contains("tk_ntfy-secret"), "{shown}");
+        assert!(!shown.contains("ha.example.com"), "{shown}");
+    }
+}
+
+#[test]
+fn notify_refuses_removed_variables_naming_the_replacement() {
+    for (old, replacement) in [
+        ("WARDEN_HA_WEBHOOK_URL", HA_URL),
+        ("WARDEN_NTFY_URL", NTFY_URL),
+        ("WARDEN_NTFY_TOKEN", NTFY_TOKEN),
+    ] {
+        let err =
+            Config::from_lookup(env_with(&[(old, "https://ha.example.com/hook")])).unwrap_err();
+        let shown = err.to_string();
+        assert!(
+            shown.contains(old) && shown.contains(replacement),
+            "{shown}"
+        );
+        assert!(!shown.contains("ha.example.com"), "{shown}");
+    }
 }
 
 #[test]

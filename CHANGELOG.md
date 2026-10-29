@@ -6,6 +6,22 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Pluggable notification channels: `WARDEN_NOTIFY` lists the enabled channels
+  (`homeassistant`, `ntfy`) in priority order and the first that accepts wins,
+  the rest are fallbacks. Any single channel works alone. Settings are
+  `WARDEN_NOTIFY_HOMEASSISTANT_WEBHOOK_URL`, `WARDEN_NOTIFY_NTFY_URL` and
+  `WARDEN_NOTIFY_NTFY_TOKEN`. Startup refuses an empty list, unknown or
+  repeated names, and missing settings. `docs/notifications.md` documents the
+  built-ins and a checklist for adding a channel.
+
+### Changed
+
+- `WARDEN_HA_WEBHOOK_URL`, `WARDEN_NTFY_URL` and `WARDEN_NTFY_TOKEN` are
+  replaced by `WARDEN_NOTIFY` and the `WARDEN_NOTIFY_*` settings above.
+  Startup fails, naming the replacement, if an old variable is set.
+
 ### Fixed
 
 - `warden http` exits 4 (revoked) with a message telling to request access

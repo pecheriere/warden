@@ -15,7 +15,7 @@ rationale is in
 | Agent (for example an AI coding agent on the owner's workstation) | Semi-trusted: well-intentioned but may be prompt-injected. Bounded by its stated goal, the approved window, and the targets and users the vault allows. It can only request access, never approve it. |
 | warden server | Trusted. Holds the SSH CA private key and a read-only 1Password Connect token in memory, and relay login credentials briefly (see below). Compromise of the server is compromise of everything it brokers, so it is hardened accordingly. |
 | 1Password Connect | Trusted secret backend. Reachable only from warden. |
-| Notifiers (Home Assistant Companion, ntfy, push providers) | Untrusted doorbells. They receive the goal text, agent, target and a link, and nothing else. They cannot approve anything. |
+| Notifiers (Home Assistant Companion, ntfy, push providers) | Untrusted doorbells. They receive the goal text, agent, target and a link, and nothing else. They cannot approve anything. Which channels are used is fixed at startup from a compile-time set (`WARDEN_NOTIFY`); agents cannot influence it. |
 | Tailscale | Transport and network-level identity. The tailnet policy is the outer access control. |
 
 ## Anti-goals

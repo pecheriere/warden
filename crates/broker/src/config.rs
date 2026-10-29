@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use secrecy::SecretString;
 use url::Url;
 
+use crate::notify::{ChannelKind, ChannelSettings, parse_channels};
 use crate::policy::onepassword::parse_host_port;
 use crate::proxy::ProxyLimits;
 
@@ -40,9 +41,36 @@ pub enum ConfigError {
         /// Why the value was rejected.
         reason: &'static str,
     },
-    /// Neither notifier is configured.
-    #[error("at least one notifier is required: set WARDEN_HA_WEBHOOK_URL or WARDEN_NTFY_URL")]
-    NoNotifier,
+    /// `WARDEN_NOTIFY` is unset or empty.
+    #[error(
+        "WARDEN_NOTIFY must list at least one notification channel in priority order ({}), \
+         for example WARDEN_NOTIFY={}",
+        ChannelKind::known(),
+        ChannelKind::known().replace(", ", ",")
+    )]
+    NoChannels,
+    /// `WARDEN_NOTIFY` names a channel that does not exist.
+    #[error(
+        "WARDEN_NOTIFY names {} (known: {})",
+        .name.as_ref().map_or_else(|| "an unknown channel name".to_owned(), |n| format!("unknown channel {n:?}")),
+        ChannelKind::known()
+    )]
+    UnknownChannel {
+        /// The name, only when it looks like a plain channel name (a pasted
+        /// URL or token is never echoed).
+        name: Option<String>,
+    },
+    /// `WARDEN_NOTIFY` names a channel twice.
+    #[error("WARDEN_NOTIFY lists channel {0} twice")]
+    DuplicateChannel(&'static str),
+    /// A variable of the removed fixed notifier wiring is set.
+    #[error("{var} is no longer supported: {replacement}")]
+    Removed {
+        /// The removed variable.
+        var: &'static str,
+        /// What to set instead.
+        replacement: &'static str,
+    },
 }
 
 /// A URL that embeds a secret (for example a webhook id). Redacted in
@@ -171,12 +199,9 @@ pub struct Config {
     pub connect_token: SecretString,
     /// `WARDEN_OP_VAULT`, default `Warden`.
     pub vault: String,
-    /// `WARDEN_HA_WEBHOOK_URL`.
-    pub ha_webhook_url: Option<SecretUrl>,
-    /// `WARDEN_NTFY_URL`.
-    pub ntfy_url: Option<Url>,
-    /// `WARDEN_NTFY_TOKEN`.
-    pub ntfy_token: Option<SecretString>,
+    /// The enabled notification channels in priority order: `WARDEN_NOTIFY`
+    /// and the `WARDEN_NOTIFY_<KIND>_*` settings. Never empty.
+    pub notify: Vec<ChannelSettings>,
     /// Limits of proxied API calls; `WARDEN_PROXY_MAX_RESPONSE_BYTES` sets
     /// the response size (default 1 MiB, at most 64 MiB),
     /// `WARDEN_PROXY_MAX_CALLS_PER_AGENT` (default 4, 1 to 64) and
@@ -268,24 +293,7 @@ impl Config {
 
         let public_url = parse_public_url(&required("WARDEN_PUBLIC_URL")?)?;
         let connect_url = url("WARDEN_OP_CONNECT_URL", &required("WARDEN_OP_CONNECT_URL")?)?;
-        let ha_webhook_url = get("WARDEN_HA_WEBHOOK_URL")
-            .map(|v| url("WARDEN_HA_WEBHOOK_URL", &v).map(SecretUrl::new))
-            .transpose()?;
-        let ntfy_url = get("WARDEN_NTFY_URL")
-            .map(|v| url("WARDEN_NTFY_URL", &v))
-            .transpose()?;
-        if ha_webhook_url.is_none() && ntfy_url.is_none() {
-            return Err(ConfigError::NoNotifier);
-        }
-        let ntfy_token = get("WARDEN_NTFY_TOKEN").map(SecretString::from);
-        if ntfy_token.is_some() && ntfy_url.is_none() {
-            // A token with nowhere to go is a misconfiguration, most likely a
-            // mistyped or forgotten URL; fail rather than silently ignore it.
-            return Err(ConfigError::Invalid {
-                var: "WARDEN_NTFY_TOKEN",
-                reason: "set while WARDEN_NTFY_URL is unset",
-            });
-        }
+        let notify = parse_channels(&lookup)?;
 
         let proxy = proxy_limits(&get)?;
 
@@ -321,9 +329,7 @@ impl Config {
             connect_url,
             connect_token: SecretString::from(required("WARDEN_OP_CONNECT_TOKEN")?),
             vault: get("WARDEN_OP_VAULT").unwrap_or_else(|| "Warden".to_owned()),
-            ha_webhook_url,
-            ntfy_url,
-            ntfy_token,
+            notify,
             proxy,
             relay,
         })

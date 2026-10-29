@@ -16,7 +16,7 @@ use warden_broker::audit::AuditLog;
 use warden_broker::config::{Config, parse_public_url};
 use warden_broker::health;
 use warden_broker::identity::TailscaleServeIdentity;
-use warden_broker::notify::{Fallback, HaWebhook, Notifier, Ntfy};
+use warden_broker::notify::{Fallback, Notifier};
 use warden_broker::policy::OnePasswordConnect;
 use warden_broker::proxy::CallSlots;
 use warden_broker::relay::host_key::RelayHostKey;
@@ -198,28 +198,19 @@ const SWEEP_EVERY: Duration = Duration::from_secs(15);
 /// How long in-flight requests (long polls) may delay shutdown.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
 
-/// Home Assistant first if configured, with ntfy as the fallback; ntfy alone
-/// is the primary when there is no webhook.
+/// The configured channels in priority order: the first that accepts the
+/// notification wins and the rest are fallbacks.
 fn build_notifier(config: &Config) -> Result<Arc<dyn Notifier>> {
-    let ha: Option<Arc<dyn Notifier>> = match &config.ha_webhook_url {
-        Some(url) => Some(Arc::new(
-            HaWebhook::new(url.clone()).context("configuring the Home Assistant notifier")?,
-        )),
-        None => None,
+    let mut channels = config.notify.iter().map(|settings| {
+        settings
+            .build()
+            .with_context(|| format!("configuring the {} notifier", settings.kind().name()))
+    });
+    let Some(primary) = channels.next() else {
+        bail!("no notifier configured");
     };
-    let ntfy: Option<Arc<dyn Notifier>> = match &config.ntfy_url {
-        Some(url) => Some(Arc::new(
-            Ntfy::new(url.clone(), config.ntfy_token.clone())
-                .context("configuring the ntfy notifier")?,
-        )),
-        None => None,
-    };
-    let (primary, secondary) = match (ha, ntfy) {
-        (Some(ha), ntfy) => (ha, ntfy),
-        (None, Some(ntfy)) => (ntfy, None),
-        (None, None) => bail!("no notifier configured"),
-    };
-    Ok(Arc::new(Fallback::new(primary, secondary)))
+    let fallbacks = channels.collect::<Result<Vec<_>>>()?;
+    Ok(Arc::new(Fallback::new(primary?, fallbacks)))
 }
 
 /// Where agents reach the relay and the relay's host key (loaded, and
