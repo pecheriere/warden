@@ -356,7 +356,359 @@ const fn civil_from_days(days: i64) -> (i64, i64, i64) {
 
 #[cfg(test)]
 mod tests {
-    use super::{secs_label, utc};
+    use std::path::PathBuf;
+
+    use http::{HeaderName, Method};
+    use maud::Markup;
+    use url::Url;
+    use warden_broker_proto::{
+        Access, AgentName, ApiGrant, CreateRequest, Fingerprint, Goal, GrantAccess, Id, RelayGrant,
+        SecretName, SshGrant, TargetName, UnixUser, Window,
+    };
+
+    use super::{
+        super::STYLESHEET, approve, cancelled, enroll, grants, history, internal_error, not_found,
+        not_pending, secs_label, unavailable, utc,
+    };
+    use crate::policy::{ApiSecretPolicy, SshMode, SshTarget, ValueFormat};
+    use crate::requests::{ActiveGrant, Destination, HistoryEntry, PendingView};
+
+    const NOW: i64 = 1_800_000_000;
+
+    fn id(n: u8) -> Id {
+        Id::try_from(format!("{n:032x}")).unwrap()
+    }
+
+    fn agent(name: &str) -> AgentName {
+        AgentName::try_from(name.to_owned()).unwrap()
+    }
+
+    fn fingerprint(n: u8) -> Fingerprint {
+        Fingerprint::try_from(format!("ab{n:02x}-cd{n:02x}-ef{n:02x}")).unwrap()
+    }
+
+    /// 300 characters of goal text, the longest realistic wrapping case.
+    fn long_goal() -> Goal {
+        let text = "Rotate the build cache credentials and verify the nightly pipeline \
+            still reaches the artifact store, then compare the checksum manifest \
+            against the previous release before publishing the signed tarballs to \
+            the mirror and notifying the maintainers in the release channel, as \
+            agreed in the plan, today.";
+        let goal = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert_eq!(
+            goal.chars().count(),
+            300,
+            "fixture must stay 300 characters"
+        );
+        Goal::try_from(goal).unwrap()
+    }
+
+    /// The longest agent name the protocol allows (32 characters).
+    fn long_agent() -> AgentName {
+        let name = format!("a{}", "b-c".repeat(10) + "d");
+        assert_eq!(name.len(), 32);
+        agent(&name)
+    }
+
+    fn goal(text: &str) -> Goal {
+        Goal::try_from(text.to_owned()).unwrap()
+    }
+
+    fn ssh_request(goal: Goal, window: Window) -> CreateRequest {
+        CreateRequest {
+            goal,
+            access: Access::Ssh {
+                target: TargetName::try_from("switch-01".to_owned()).unwrap(),
+                user: UnixUser::try_from("deploy".to_owned()).unwrap(),
+                public_key: "ssh-ed25519 AAAA".to_owned(),
+            },
+            window,
+        }
+    }
+
+    fn api_request(goal: Goal, methods: &[&str]) -> CreateRequest {
+        CreateRequest {
+            goal,
+            access: Access::Api {
+                secret: SecretName::try_from("home-api".to_owned()).unwrap(),
+                methods: Some(methods.iter().map(|m| (*m).to_owned()).collect()),
+                path_prefix: Some("/v1/devices/".to_owned()),
+            },
+            window: Window::H1,
+        }
+    }
+
+    fn ssh_destination(mode: SshMode) -> Destination {
+        Destination::Ssh(SshTarget {
+            name: TargetName::try_from("switch-01".to_owned()).unwrap(),
+            host: "switch-01.lan".to_owned(),
+            port: 22,
+            mode,
+            users: vec![UnixUser::try_from("deploy".to_owned()).unwrap()],
+            max_window: Window::H4,
+            host_keys: Vec::new(),
+        })
+    }
+
+    fn api_destination() -> Destination {
+        Destination::Api(ApiSecretPolicy {
+            name: SecretName::try_from("home-api".to_owned()).unwrap(),
+            origin: Url::parse("https://api.example.com").unwrap().origin(),
+            header: HeaderName::from_static("authorization"),
+            format: ValueFormat::default(),
+            methods: vec![Method::GET, Method::HEAD, Method::POST, Method::DELETE],
+            path_prefix: "/v1/".to_owned(),
+            ca_pem: None,
+            max_window: Window::H1,
+        })
+    }
+
+    fn pending(agent: AgentName, request: CreateRequest, destination: Destination) -> PendingView {
+        PendingView {
+            id: id(1),
+            agent,
+            fingerprint: fingerprint(1),
+            request,
+            destination,
+            expires_at: NOW + 240,
+        }
+    }
+
+    fn api_grant(methods: &[&str]) -> ApiGrant {
+        ApiGrant {
+            secret: SecretName::try_from("home-api".to_owned()).unwrap(),
+            origin: "https://api.example.com".to_owned(),
+            methods: methods.iter().map(|m| (*m).to_owned()).collect(),
+            path_prefix: "/v1/devices/".to_owned(),
+            header: "authorization".to_owned(),
+            digest: "0".repeat(64),
+        }
+    }
+
+    fn active(n: u8, request: CreateRequest, access: GrantAccess) -> ActiveGrant {
+        ActiveGrant {
+            grant_id: id(n),
+            agent: agent("build-agent"),
+            fingerprint: fingerprint(n),
+            request,
+            access,
+            not_after: NOW + 1800,
+        }
+    }
+
+    fn active_grants() -> Vec<ActiveGrant> {
+        let ssh = ssh_request(goal("Deploy the nightly build"), Window::M30);
+        vec![
+            active(
+                2,
+                ssh.clone(),
+                GrantAccess::Ssh(SshGrant {
+                    certificate: "ssh-ed25519-cert-v01@openssh.com AAAA".to_owned(),
+                    host: "switch-01.lan".to_owned(),
+                    port: 22,
+                    user: UnixUser::try_from("deploy".to_owned()).unwrap(),
+                    host_keys: Vec::new(),
+                }),
+            ),
+            active(
+                3,
+                api_request(long_goal(), &["GET"]),
+                GrantAccess::Api(api_grant(&["GET", "HEAD"])),
+            ),
+            active(
+                4,
+                api_request(goal("Update a device"), &["POST"]),
+                GrantAccess::Api(api_grant(&["GET", "POST"])),
+            ),
+            active(
+                5,
+                ssh,
+                GrantAccess::Relay(RelayGrant {
+                    target: TargetName::try_from("switch-01".to_owned()).unwrap(),
+                    user: UnixUser::try_from("deploy".to_owned()).unwrap(),
+                    relay_host: "relay.lan".to_owned(),
+                    relay_port: 2222,
+                    relay_host_key: "ssh-ed25519 AAAA".to_owned(),
+                    digest: "0".repeat(64),
+                }),
+            ),
+        ]
+    }
+
+    fn history_entries() -> Vec<HistoryEntry> {
+        let entry = |n: u8, agent: AgentName, request, status: &str, granted_secs| HistoryEntry {
+            id: id(n),
+            agent,
+            fingerprint: fingerprint(n),
+            request,
+            status: status.to_owned(),
+            created_at: NOW - i64::from(n) * 600,
+            granted_secs,
+        };
+        vec![
+            entry(
+                6,
+                long_agent(),
+                api_request(long_goal(), &["GET"]),
+                "approved",
+                Some(900),
+            ),
+            entry(
+                7,
+                agent("build-agent"),
+                ssh_request(goal("Deploy the nightly build"), Window::H1),
+                "denied",
+                None,
+            ),
+            entry(
+                8,
+                agent("build-agent"),
+                api_request(goal("Update a device"), &["POST"]),
+                "expired",
+                None,
+            ),
+        ]
+    }
+
+    /// Every page with fixture data, named for the screenshot script.
+    fn pages() -> Vec<(&'static str, Markup)> {
+        let long = long_goal();
+        vec![
+            (
+                "approve-ssh-cert",
+                approve(
+                    &pending(
+                        long_agent(),
+                        ssh_request(long.clone(), Window::H1),
+                        ssh_destination(SshMode::Cert),
+                    ),
+                    NOW,
+                ),
+            ),
+            (
+                "approve-ssh-relay",
+                approve(
+                    &pending(
+                        agent("build-agent"),
+                        ssh_request(goal("Deploy the nightly build"), Window::M30),
+                        ssh_destination(SshMode::Relay),
+                    ),
+                    NOW,
+                ),
+            ),
+            (
+                "approve-api-read-only",
+                approve(
+                    &pending(
+                        agent("build-agent"),
+                        api_request(goal("Read device status"), &["GET"]),
+                        api_destination(),
+                    ),
+                    NOW,
+                ),
+            ),
+            (
+                "approve-api-modify",
+                approve(
+                    &pending(
+                        long_agent(),
+                        api_request(long, &["GET", "POST", "DELETE"]),
+                        api_destination(),
+                    ),
+                    NOW,
+                ),
+            ),
+            ("not-pending", not_pending()),
+            ("cancelled", cancelled()),
+            ("not-found", not_found()),
+            ("unavailable", unavailable("The broker is starting up.")),
+            ("internal-error", internal_error()),
+            ("grants-empty", grants(&[], NOW)),
+            ("grants", grants(&active_grants(), NOW)),
+            ("history-empty", history(&[])),
+            ("history", history(&history_entries())),
+            ("enroll", enroll()),
+        ]
+    }
+
+    /// The text of every tag (`<...>`) in `html`. Maud escapes `<` and `>` in
+    /// text and attribute values, so tags split cleanly; text content (such
+    /// as an API origin shown to the owner) is not a resource reference and
+    /// is left out.
+    fn tags(html: &str) -> Vec<&str> {
+        let mut found = Vec::new();
+        let mut rest = html;
+        while let Some(start) = rest.find('<') {
+            let after = &rest[start..];
+            let end = after.find('>').expect("unterminated tag");
+            found.push(&after[..=end]);
+            rest = &after[end + 1..];
+        }
+        found
+    }
+
+    fn assert_self_contained(name: &str, html: &str) {
+        assert!(!html.contains("style="), "{name}: inline style attribute");
+        assert!(!html.contains("<style"), "{name}: style element");
+        assert!(!html.contains("<img"), "{name}: image element");
+        for tag in tags(html) {
+            let without_svg = tag.replace("http://www.w3.org/2000/svg", "");
+            assert!(
+                !without_svg.contains("http://") && !without_svg.contains("https://"),
+                "{name}: external origin in {tag}"
+            );
+            if tag.starts_with("<link") {
+                assert_eq!(
+                    tag, r#"<link rel="stylesheet" href="/static/warden.css">"#,
+                    "{name}: unexpected link"
+                );
+            }
+            if tag.starts_with("<script") {
+                assert_eq!(
+                    tag, r#"<script src="/static/warden.js" defer>"#,
+                    "{name}: unexpected script"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_page_renders_self_contained() {
+        let out = std::env::var_os("WARDEN_RENDER_PAGES_DIR").map(PathBuf::from);
+        if let Some(dir) = &out {
+            std::fs::create_dir_all(dir.join("static")).unwrap();
+            std::fs::write(dir.join("static/warden.css"), STYLESHEET).unwrap();
+        }
+        for (name, page) in pages() {
+            let html = page.into_string();
+            assert_self_contained(name, &html);
+            if let Some(dir) = &out {
+                std::fs::write(dir.join(format!("{name}.html")), &html).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn the_self_contained_check_catches_violations() {
+        for bad in [
+            r#"<p style="color:red">x</p>"#,
+            "<style>p{}</style>",
+            r#"<img src="/x.png">"#,
+            r#"<link rel="stylesheet" href="https://cdn.example.com/a.css">"#,
+            r#"<script src="https://cdn.example.com/a.js"></script>"#,
+            r#"<a href="http://example.com">x</a>"#,
+            r#"<link rel="stylesheet" href="/static/other.css">"#,
+        ] {
+            assert!(
+                std::panic::catch_unwind(|| assert_self_contained("bad", bad)).is_err(),
+                "not caught: {bad}"
+            );
+        }
+        assert_self_contained(
+            "svg",
+            r#"<svg xmlns="http://www.w3.org/2000/svg"></svg><p>https://api.example.com</p>"#,
+        );
+    }
 
     #[test]
     fn formats_utc_timestamps() {
