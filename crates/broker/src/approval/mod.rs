@@ -68,6 +68,7 @@ pub fn router(state: AppState) -> Router {
         .route("/approve/{token}/finish", post(approve_finish))
         .route("/approve/{token}/deny", post(deny))
         .route("/grants", get(grants_page))
+        .route("/grants/live", get(grants_live))
         .route("/grants/{id}/revoke", post(revoke_grant))
         .route("/history", get(history_page))
         .route("/enroll", get(enroll_page))
@@ -188,6 +189,34 @@ struct Enrolled {
     passkey_id: String,
 }
 
+/// Body of `GET /grants/live`: every active grant with its live relay
+/// sessions and in-flight proxy calls.
+#[derive(Serialize)]
+struct LiveActivity<'a> {
+    grants: Vec<LiveGrant<'a>>,
+}
+
+#[derive(Serialize)]
+struct LiveGrant<'a> {
+    grant_id: Id,
+    relay_sessions: Vec<LiveRelaySession>,
+    proxy_calls: Vec<LiveProxyCall<'a>>,
+}
+
+#[derive(Serialize)]
+struct LiveRelaySession {
+    started_at: i64,
+    bytes_to_target: u64,
+    bytes_from_target: u64,
+}
+
+#[derive(Serialize)]
+struct LiveProxyCall<'a> {
+    method: &'a str,
+    path: &'a str,
+    started_at: i64,
+}
+
 fn json_error(status: StatusCode, message: impl Into<String>) -> Response {
     (
         status,
@@ -298,6 +327,44 @@ async fn grants_page(State(state): State<AppState>) -> Response {
         Ok(grants) => pages::grants(&grants, state.clock.now()).into_response(),
         Err(e) => internal_page("grants page", &e),
     }
+}
+
+/// What is going on under the active grants right now, for the grants page
+/// to refresh without reloading.
+async fn grants_live(State(state): State<AppState>) -> Response {
+    let grants = match state.requests.active_grants().await {
+        Ok(grants) => grants,
+        Err(e) => return internal("live activity", &e),
+    };
+    let sessions = state.requests.live_sessions().snapshot();
+    let calls = state.proxy_calls.snapshot();
+    let live = LiveActivity {
+        grants: grants
+            .iter()
+            .map(|grant| LiveGrant {
+                grant_id: grant.grant_id.clone(),
+                relay_sessions: sessions
+                    .iter()
+                    .filter(|s| s.grant_id == grant.grant_id)
+                    .map(|s| LiveRelaySession {
+                        started_at: s.started_at,
+                        bytes_to_target: s.bytes_to_target,
+                        bytes_from_target: s.bytes_from_target,
+                    })
+                    .collect(),
+                proxy_calls: calls
+                    .iter()
+                    .filter(|c| c.grant_id == grant.grant_id)
+                    .map(|c| LiveProxyCall {
+                        method: &c.method,
+                        path: &c.path,
+                        started_at: c.started_at,
+                    })
+                    .collect(),
+            })
+            .collect(),
+    };
+    Json(live).into_response()
 }
 
 async fn history_page(State(state): State<AppState>) -> Response {

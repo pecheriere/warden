@@ -23,7 +23,7 @@ use tokio::task::AbortHandle;
 use tower::ServiceExt as _;
 use url::Url;
 use warden_broker_proto::{
-    Access, AgentName, CreateRequest, CreatedResponse, Goal, SecretName, TargetName, UnixUser,
+    Access, AgentName, CreateRequest, CreatedResponse, Goal, Id, SecretName, TargetName, UnixUser,
     Window,
 };
 use webauthn_authenticator_rs::WebauthnAuthenticator;
@@ -47,10 +47,17 @@ use crate::policy::{
     ApiSecretPolicy, CaKey, PolicyError, RelayCredential, SecretBackend, SecretValue, SshMode,
     SshTarget, ValueFormat, not_a_relay_target,
 };
-use crate::proxy::{CallSlots, ProxyLimits};
+use crate::proxy::{CallInfo, CallSlots, ProxyLimits};
 use crate::relay::{RelayEndpoint, RelayLimits, RelayServer, host_key};
-use crate::requests::{Clock, Requests};
+use crate::requests::{Clock, RelayGrantRecord, Requests};
 use crate::{AppState, agents, store};
+
+/// Keeps a relay session or proxy call listed as live while it is held.
+#[derive(Debug)]
+#[must_use]
+pub struct LiveHold {
+    _held: Box<dyn std::any::Any + Send>,
+}
 
 /// A clock that only moves when told to.
 #[derive(Debug)]
@@ -948,6 +955,53 @@ impl TestBroker {
             .into_iter()
             .map(|s| (s.bytes_to_target, s.bytes_from_target))
             .collect()
+    }
+
+    /// List a relay session of `grant_id` (held by `agent`) as live, from
+    /// now, until the returned hold is dropped.
+    ///
+    /// # Panics
+    /// If the fixed sample target or user is invalid.
+    pub fn hold_live_session(&self, grant_id: &Id, agent: &str) -> LiveHold {
+        let grant = RelayGrantRecord {
+            grant_id: grant_id.clone(),
+            agent: AgentName::try_from(agent.to_owned()).expect("valid agent name"),
+            target: TargetName::try_from("pi".to_owned()).expect("valid target name"),
+            user: UnixUser::try_from("alice".to_owned()).expect("valid user"),
+            destination_digest: String::new(),
+            not_after: i64::MAX,
+        };
+        let registration = self
+            .state
+            .requests
+            .live_sessions()
+            .register(&grant, self.clock.now());
+        LiveHold {
+            _held: Box::new(registration),
+        }
+    }
+
+    /// List an in-flight proxy call (`method` `url`) of `grant_id` (held by
+    /// `agent`) from now, until the returned hold is dropped.
+    ///
+    /// # Panics
+    /// If the agent name is invalid or the proxy call limits are reached.
+    pub fn hold_live_call(&self, grant_id: &Id, agent: &str, method: &str, url: &str) -> LiveHold {
+        let agent = AgentName::try_from(agent.to_owned()).expect("valid agent name");
+        let call = CallInfo::new(
+            grant_id.clone(),
+            method.to_owned(),
+            url.to_owned(),
+            self.clock.now(),
+        );
+        let slot = self
+            .state
+            .proxy_calls
+            .try_acquire(&agent, call)
+            .expect("proxy call slot");
+        LiveHold {
+            _held: Box::new(slot),
+        }
     }
 
     /// Path of the audit log.

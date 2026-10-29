@@ -877,6 +877,101 @@ async fn grants_page_lists_and_revokes() {
     assert_eq!(unknown.status, StatusCode::NOT_FOUND);
 }
 
+/// A broker with one approved grant for `bot`.
+async fn approved_grant() -> (TestBroker, Id) {
+    let (broker, created, token) = pending().await;
+    let approved = broker.approve(&token, Window::M30).await;
+    assert_eq!(approved.status, StatusCode::OK, "{}", approved.body);
+    let RequestStatus::Approved(view) = status(&broker, &created.id).await else {
+        panic!("expected approved");
+    };
+    (broker, view.grant_id)
+}
+
+#[tokio::test]
+async fn live_lists_session_and_call_under_their_grant() {
+    let (broker, grant) = approved_grant().await;
+    let quiet = broker.get("/grants/live").await;
+    assert_eq!(quiet.status, StatusCode::OK, "{}", quiet.body);
+    assert_eq!(
+        quiet.json(),
+        json!({"grants": [{"grant_id": grant.as_str(), "relay_sessions": [], "proxy_calls": []}]})
+    );
+
+    let _session = broker.hold_live_session(&grant, "bot");
+    let _call = broker.hold_live_call(&grant, "bot", "POST", "/v1/jobs");
+    // Entries of a grant that is not active are not listed.
+    let _other = broker.hold_live_call(&Id::random(), "bot", "GET", "/elsewhere");
+
+    let live = broker.get("/grants/live").await;
+    assert_eq!(live.status, StatusCode::OK, "{}", live.body);
+    assert_eq!(live.header("content-type"), "application/json");
+    assert_eq!(live.header("cache-control"), "no-store");
+    assert_eq!(live.header("content-security-policy"), CSP);
+    assert_eq!(
+        live.json(),
+        json!({"grants": [{
+            "grant_id": grant.as_str(),
+            "relay_sessions": [{
+                "started_at": TEST_START,
+                "bytes_to_target": 0,
+                "bytes_from_target": 0,
+            }],
+            "proxy_calls": [{
+                "method": "POST",
+                "path": "/v1/jobs",
+                "started_at": TEST_START,
+            }],
+        }]})
+    );
+}
+
+#[tokio::test]
+async fn live_omits_query_string() {
+    let (broker, grant) = approved_grant().await;
+    let _call = broker.hold_live_call(&grant, "bot", "GET", "/v1/jobs?token=secret#frag");
+    let live = broker.get("/grants/live").await;
+    assert_eq!(live.status, StatusCode::OK, "{}", live.body);
+    assert!(!live.body.contains("secret"), "{}", live.body);
+    assert!(!live.body.contains("frag"), "{}", live.body);
+    assert!(live.body.contains("/v1/jobs"), "{}", live.body);
+}
+
+#[tokio::test]
+async fn live_drops_revoked_grant() {
+    let (broker, grant) = approved_grant().await;
+    let _session = broker.hold_live_session(&grant, "bot");
+    let _call = broker.hold_live_call(&grant, "bot", "GET", "/v1/jobs");
+    let revoke = broker
+        .post_json(&format!("/grants/{}/revoke", grant.as_str()), &json!({}))
+        .await;
+    assert_eq!(revoke.status, StatusCode::OK, "{}", revoke.body);
+
+    let live = broker.get("/grants/live").await;
+    assert_eq!(live.status, StatusCode::OK, "{}", live.body);
+    assert_eq!(live.json(), json!({"grants": []}));
+    assert!(!live.body.contains(grant.as_str()), "{}", live.body);
+}
+
+#[tokio::test]
+async fn live_requires_owner() {
+    let (broker, _grant) = approved_grant().await;
+    for login in [None, Some("mallory@example.com"), Some("OWNER@example.com")] {
+        let mut refusals = Vec::new();
+        for path in ["/grants", "/grants/live"] {
+            let mut req = Request::get(path);
+            if let Some(login) = login {
+                req = req.header("Tailscale-User-Login", login);
+            }
+            let resp = broker.send(req.body(Body::empty()).unwrap()).await;
+            assert_eq!(resp.status, StatusCode::FORBIDDEN, "{path} as {login:?}");
+            let csp = resp.header("content-security-policy").to_owned();
+            refusals.push((resp.body, csp));
+        }
+        assert_eq!(refusals[0], refusals[1], "as {login:?}");
+    }
+}
+
 #[tokio::test]
 async fn history_lists_decided_requests_newest_first() {
     let (broker, denied, token) = pending().await;
@@ -935,6 +1030,7 @@ fn every_route(token: &str) -> Vec<(&'static str, String)> {
         ("POST", format!("/approve/{token}/finish")),
         ("POST", format!("/approve/{token}/deny")),
         ("GET", "/grants".to_owned()),
+        ("GET", "/grants/live".to_owned()),
         ("POST", format!("/grants/{}/revoke", grant.as_str())),
         ("GET", "/history".to_owned()),
         ("GET", "/enroll".to_owned()),

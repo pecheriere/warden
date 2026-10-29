@@ -203,10 +203,6 @@ impl LiveSessions {
 
     /// The live sessions as they are now, oldest first (ties by grant, then
     /// by when they were listed).
-    #[cfg_attr(
-        not(any(test, feature = "testkit")),
-        expect(dead_code, reason = "read by GET /grants/live in the next commit")
-    )]
     pub(crate) fn snapshot(&self) -> Vec<LiveSessionInfo> {
         let mut sessions: Vec<_> = self
             .lock()
