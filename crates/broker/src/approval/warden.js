@@ -141,7 +141,7 @@
         const left = Math.max(0, Math.round((deadline - Date.now()) / 1000));
         const mins = Math.floor(left / 60);
         const secs = String(left % 60).padStart(2, '0');
-        countdown.textContent = left > 0 ? `in ${mins}:${secs}` : 'expired';
+        countdown.textContent = left > 0 ? `expires in ${mins}:${secs}` : 'expired';
         if (left === 0) busy([approve, deny], true);
         else window.setTimeout(tick, 1000);
       };

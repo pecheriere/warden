@@ -89,7 +89,7 @@ fn layout(title: &str, current: Option<Nav>, with_script: bool, content: &Markup
                 header {
                     (mascot())
                     span.brand { "warden" }
-                    nav.links aria-label="Main" { (nav_links(current)) }
+                    nav aria-label="Main" { (nav_links(current)) }
                     // Under 720 px the links hide behind this disclosure, which
                     // needs no script.
                     details.nav-menu {
@@ -249,8 +249,12 @@ pub fn approve(view: &PendingView, now: i64) -> Markup {
                 span.chip {
                     (icon(14, "2.4", &clock))
                     span {
-                        "Pending · expires "
-                        span #countdown data-remaining=(remaining) { "in " (remaining / 60) " min" }
+                        "Pending · "
+                        // The script rewrites the whole phrase: "expires in
+                        // m:ss", then "expired".
+                        span #countdown data-remaining=(remaining) {
+                            "expires in " (remaining / 60) " min"
+                        }
                     }
                 }
                 h1 { "Approve access?" }
@@ -279,6 +283,16 @@ pub fn approve(view: &PendingView, now: i64) -> Markup {
                 div.actions {
                     fieldset {
                         legend.label { "Grant for" }
+                        @if view.request.window > max {
+                            p.detail.capped {
+                                "Asked for " (window_words(view.request.window)) "; at most "
+                                (window_words(max)) " for this "
+                                (match view.destination {
+                                    Destination::Ssh(_) => "target",
+                                    Destination::Api(_) => "secret",
+                                }) "."
+                            }
+                        }
                         div.seg {
                             @for window in WINDOWS.into_iter().filter(|w| *w <= max) {
                                 @let id = format!("window-{}", window_label(window));
@@ -826,6 +840,9 @@ mod tests {
     /// Every page with fixture data, named for the screenshot script.
     fn pages() -> Vec<(&'static str, Markup)> {
         let long = long_goal();
+        // Asks for 4 h of a secret allowed at most 1 h: the capped note shows.
+        let mut modify = api_request(long.clone(), &["GET", "POST", "DELETE"]);
+        modify.window = Window::H4;
         vec![
             (
                 "approve-ssh-cert",
@@ -862,14 +879,7 @@ mod tests {
             ),
             (
                 "approve-api-modify",
-                approve(
-                    &pending(
-                        long_agent(),
-                        api_request(long, &["GET", "POST", "DELETE"]),
-                        api_destination(),
-                    ),
-                    NOW,
-                ),
+                approve(&pending(long_agent(), modify, api_destination()), NOW),
             ),
             ("not-pending", not_pending()),
             ("cancelled", cancelled()),
@@ -1043,6 +1053,12 @@ mod tests {
         .into_string();
         assert!(html.contains(r#"value="1h" checked>"#), "{html}");
         assert!(!html.contains(r#"value="4h""#), "{html}");
+        assert!(
+            html.contains(
+                r#"<p class="detail capped">Asked for 4 h; at most 1 h for this secret.</p>"#
+            ),
+            "{html}"
+        );
     }
 
     #[test]
@@ -1058,7 +1074,7 @@ mod tests {
         .into_string();
         for hook in [
             r#"<main class="split" id="approval" data-target=""#,
-            r#"id="countdown" data-remaining="240">in 4 min</span>"#,
+            r#"<span>Pending · <span id="countdown" data-remaining="240">expires in 4 min</span></span>"#,
             r#"<code class="fingerprint">ab01-cd01-ef01</code>"#,
             r#"<button class="btn approve" id="approve" type="button">"#,
             r#"<button class="btn deny" id="deny" type="button">Deny</button>"#,
