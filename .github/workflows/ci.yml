@@ -43,6 +43,8 @@ jobs:
           echo "$USER:$password" | sudo chpasswd
           echo "WARDEN_TEST_LOGIN_PASSWORD=$password" >> "$GITHUB_ENV"
       - run: cargo fmt --check
+      - name: Refuse reqwest decompression features
+        run: scripts/check-no-reqwest-decompression.sh
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - run: cargo test --workspace --all-features --locked
 
