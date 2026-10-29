@@ -12,7 +12,9 @@
 //! - After login: at most [`RelayLimits::max_sessions_per_grant`] sessions
 //!   per grant and [`RelayLimits::max_sessions`] overall. A connection that
 //!   starts no session within [`RelayLimits::start_timeout`] is hung up, as
-//!   is one whose session is over and that the agent does not leave.
+//!   is one whose session is over and that the agent does not leave within
+//!   [`RelayLimits::stall_timeout`]. A connection takes its place in the
+//!   limits from login until it is gone.
 //! - One session channel per connection. `pty-req`, `env` (`LANG`, `LC_*`,
 //!   `TERM`), `window-change`, `signal`, then `shell` or `exec`. Port
 //!   forwarding, agent forwarding, X11 and subsystems (sftp included) are
@@ -145,6 +147,9 @@ pub struct RelayLimits {
     pub onward_timeout: Duration,
     /// Time a direction of a session may hold data without delivering any
     /// of it (its destination not reading) before the session ends (60 s).
+    /// Also the time an agent has, once its session is over, to take the
+    /// rest of its output (the exit status included) and leave before the
+    /// connection is hung up.
     pub stall_timeout: Duration,
     /// Time both directions of a session may be held up at once with
     /// nothing delivered before the session ends (2 s): the two SSH
@@ -580,7 +585,7 @@ async fn connection(
             tokio::select! {
                 _ = &mut session => None,
                 () = stopping(&mut stop) => Some(SHUTTING_DOWN),
-                message = no_more_use(&mut phase, start_by) => {
+                message = no_more_use(&mut phase, start_by, shared.limits.stall_timeout) => {
                     if message == NOT_STARTED {
                         tracing::info!(peer = %peer.ip(), "relay: no session started in time; hanging up");
                     }
@@ -641,8 +646,20 @@ async fn record_refused_login(audit: &AuditLog, conn: &Conn, peer: SocketAddr) {
 
 /// Resolves, with the goodbye, once a logged-in connection has no more use:
 /// it started no session by `start_by`, or its session is over and the
-/// agent did not leave within [`GOODBYE_WAIT`].
-async fn no_more_use(phase: &mut watch::Receiver<Phase>, start_by: Instant) -> &'static str {
+/// agent did not leave within `leave_within`.
+///
+/// The session being over means the relay handed the end of its output,
+/// the exit status and the close to the SSH library, not that the agent has
+/// them: up to a channel window of output may still be on its way, or wait
+/// in the agent for its reader. The agent closes its end of the channel
+/// only once it has taken all of it, and the SSH library does not report
+/// that close, so the agent's leaving is what is waited for: as long as it
+/// may go without taking any output during the session.
+async fn no_more_use(
+    phase: &mut watch::Receiver<Phase>,
+    start_by: Instant,
+    leave_within: Duration,
+) -> &'static str {
     // The sender lives in the connection's `Conn`, which outlives this.
     let started = tokio::time::timeout_at(start_by, phase.wait_for(|p| *p != Phase::Waiting))
         .await
@@ -656,7 +673,7 @@ async fn no_more_use(phase: &mut watch::Receiver<Phase>, start_by: Instant) -> &
     if !over {
         std::future::pending::<()>().await;
     }
-    tokio::time::sleep(GOODBYE_WAIT).await;
+    tokio::time::sleep(leave_within).await;
     SESSION_OVER
 }
 
@@ -707,7 +724,8 @@ struct RelayHandler {
     preauth: Option<PreAuthPermit>,
     stop: watch::Receiver<bool>,
     login: Option<Login>,
-    /// Held from login until the session ends.
+    /// Held from login until the connection is gone: an agent still taking
+    /// the end of its session counts against the limits.
     slot: Option<SessionSlot>,
     /// The session channel's id, once the agent opened it.
     session_id: Option<ChannelId>,
@@ -856,8 +874,8 @@ impl RelayHandler {
             return session.channel_failure(channel);
         }
         self.started = true;
-        let (Some(login), Some(agent), Some(slot)) =
-            (self.login.as_ref(), self.channel.take(), self.slot.take())
+        let (Some(login), Some(agent), Some(_)) =
+            (self.login.as_ref(), self.channel.take(), self.slot.as_ref())
         else {
             return session.channel_failure(channel);
         };
@@ -925,7 +943,6 @@ impl RelayHandler {
                 } else {
                     hang_up.now().await;
                 }
-                drop(slot);
                 record_end(&shared.audit, &grant.grant_id, &outcome).await;
             })
         };
@@ -1504,8 +1521,8 @@ mod tests {
     use tokio::time::Instant;
 
     use super::{
-        CheckHealth, Conn, GOODBYE_WAIT, NOT_STARTED, OverOnDrop, Phase, Refusals, Relayed,
-        SESSION_OVER, no_more_use,
+        CheckHealth, Conn, NOT_STARTED, OverOnDrop, Phase, Refusals, Relayed, SESSION_OVER,
+        no_more_use,
     };
 
     fn conn() -> Conn {
@@ -1552,15 +1569,22 @@ mod tests {
     async fn connection_without_a_session_or_after_it_has_no_more_use() {
         // No session started in time.
         let (phase, mut rx) = watch::channel(Phase::Waiting);
-        let start_by = Instant::now() + Duration::from_secs(30);
-        assert_eq!(no_more_use(&mut rx, start_by).await, NOT_STARTED);
+        let (start_by, leave_within) = (
+            Instant::now() + Duration::from_secs(30),
+            Duration::from_secs(60),
+        );
+        assert_eq!(
+            no_more_use(&mut rx, start_by, leave_within).await,
+            NOT_STARTED
+        );
         assert_eq!(Instant::now(), start_by);
 
         // A session started in time keeps the connection until it is over,
-        // and the agent then gets a while to leave by itself.
+        // and the agent then gets a while to take the end of its output and
+        // leave by itself.
         let mut rx = phase.subscribe();
         let start_by = Instant::now() + Duration::from_secs(30);
-        let waiting = no_more_use(&mut rx, start_by);
+        let waiting = no_more_use(&mut rx, start_by, leave_within);
         tokio::pin!(waiting);
         tokio::select! {
             why = &mut waiting => panic!("hung up early: {why}"),
@@ -1574,7 +1598,7 @@ mod tests {
         drop(OverOnDrop(phase.clone()));
         let over = Instant::now();
         assert_eq!((&mut waiting).await, SESSION_OVER);
-        assert_eq!(over.elapsed(), GOODBYE_WAIT);
+        assert_eq!(over.elapsed(), leave_within);
     }
 
     #[tokio::test]
