@@ -212,6 +212,13 @@ impl Registration {
     }
 }
 
+impl Registration {
+    /// Why the relay was told to end the session, if it was by now.
+    pub(crate) fn told(&self) -> Option<&'static str> {
+        *self.ended.borrow()
+    }
+}
+
 impl Drop for Registration {
     fn drop(&mut self) {
         self.sessions.lock().remove(&self.key);
@@ -434,6 +441,25 @@ pub(crate) struct Outcome {
     pub bytes_to_target: u64,
     pub bytes_from_target: u64,
     pub exit_status: Option<u32>,
+}
+
+impl Outcome {
+    /// The outcome to record, given why the relay was told to end the
+    /// session (`told`, see [`Registration::told`]) by the time its teardown
+    /// completed. A revocation or expiry told by then is the reason on
+    /// record, even if the session also ended otherwise (the target exited
+    /// in the same instant, say): the owner sees that it was cut off. The
+    /// bytes and exit status stay as they were.
+    #[must_use]
+    pub(crate) fn settled(self, told: Option<&'static str>) -> Self {
+        match told {
+            Some(ending @ (reason::REVOKED | reason::EXPIRED)) => Self {
+                reason: ending,
+                ..self
+            },
+            _ => self,
+        }
+    }
 }
 
 /// Bytes of the agent's input held between the agent's connection and the
@@ -984,8 +1010,8 @@ mod tests {
     use crate::requests::RelayGrantRecord;
 
     use super::{
-        LiveSessions, PreAuthLimiter, Program, Progress, Queue, Registration, SessionSlots,
-        SlotRefusal, Watch, env_allowed, reason, watchdog,
+        LiveSessions, Outcome, PreAuthLimiter, Program, Progress, Queue, Registration,
+        SessionSlots, SlotRefusal, Watch, env_allowed, reason, watchdog,
     };
 
     fn data(len: usize) -> russh::ChannelMsg {
@@ -1121,6 +1147,63 @@ mod tests {
         assert_eq!(sessions.grant_ids(), vec![c.grant_id.clone()]);
         drop(c1);
         assert!(sessions.grant_ids().is_empty());
+    }
+
+    #[test]
+    fn revoke_racing_exit_records_revoked() {
+        let exited = Outcome {
+            reason: reason::EXITED,
+            bytes_to_target: 3,
+            bytes_from_target: 5,
+            exit_status: Some(0),
+        };
+        let sessions = LiveSessions::new();
+        let (a, b, c) = (grant("a", 100), grant("b", 100), grant("c", 100));
+        let (revoked, expired, lost) = (
+            sessions.register(&a),
+            sessions.register(&b),
+            sessions.register(&c),
+        );
+        let untold = sessions.register(&grant("d", 100));
+
+        // The target exited and the relay loop ended on that, but the
+        // revocation (or expiry) reached the session before its teardown
+        // completed: that is the reason on record, the rest is kept.
+        sessions.revoke_grant(&a.grant_id);
+        sessions.expire_grant(&b.grant_id);
+        assert_eq!(
+            exited.clone().settled(revoked.told()),
+            Outcome {
+                reason: reason::REVOKED,
+                ..exited.clone()
+            }
+        );
+        assert_eq!(
+            exited.clone().settled(expired.told()).reason,
+            reason::EXPIRED
+        );
+        // Whatever else ended the session.
+        for other in [
+            reason::TARGET_CLOSED,
+            reason::CLIENT_CLOSED,
+            reason::IDLE,
+            reason::SHUTDOWN,
+        ] {
+            let outcome = Outcome {
+                reason: other,
+                ..exited.clone()
+            };
+            assert_eq!(outcome.settled(revoked.told()).reason, reason::REVOKED);
+        }
+
+        // Nothing told, or told for another reason: as the session ended.
+        assert_eq!(untold.told(), None);
+        assert_eq!(exited.clone().settled(untold.told()), exited);
+        sessions.fail_closed();
+        assert_eq!(lost.told(), Some(reason::GRANT_STATE_UNAVAILABLE));
+        assert_eq!(exited.clone().settled(lost.told()), exited);
+        // The first reason told still stands.
+        assert_eq!(revoked.told(), Some(reason::REVOKED));
     }
 
     #[test]

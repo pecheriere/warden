@@ -8,7 +8,8 @@
 //!   logging in at once; each has [`RelayLimits::auth_timeout`] and
 //!   [`RelayLimits::max_auth_attempts`] public-key attempts. Only public-key
 //!   login exists. An unknown target, a key nobody approved and an inactive
-//!   grant are all refused the same way.
+//!   grant are all refused the same way, as is an attempt whose grant
+//!   lookup takes longer than [`GRANT_QUERY_TIMEOUT`].
 //! - After login: at most [`RelayLimits::max_sessions_per_grant`] sessions
 //!   per grant and [`RelayLimits::max_sessions`] overall. A connection that
 //!   starts no session within [`RelayLimits::start_timeout`] is hung up, as
@@ -943,6 +944,10 @@ impl RelayHandler {
                 } else {
                     hang_up.now().await;
                 }
+                // A revocation or expiry that reached the session while it
+                // ended otherwise (or while it was torn down) is what ended
+                // it, on record. Still listed until here, so none is missed.
+                let outcome = outcome.settled(live.told());
                 record_end(&shared.audit, &grant.grant_id, &outcome).await;
             })
         };
@@ -1210,14 +1215,23 @@ impl server::Handler for RelayHandler {
             return Ok(Auth::reject());
         };
         let key = ours(public_key).filter(|key| key.algorithm() == Algorithm::Ed25519);
+        // Bounded like every grant query, not only by the login timeout: a
+        // lookup that does not answer in time refuses the attempt.
         let grant = match &key {
-            Some(key) => match self.shared.requests.active_relay_grant(&target, key).await {
-                Ok(grant) => grant,
-                Err(e) => {
-                    tracing::error!(error = %e, "relay: login check failed");
-                    None
+            Some(key) => {
+                let lookup = self.shared.requests.active_relay_grant(&target, key);
+                match tokio::time::timeout(GRANT_QUERY_TIMEOUT, lookup).await {
+                    Ok(Ok(grant)) => grant,
+                    Ok(Err(e)) => {
+                        tracing::error!(error = %e, "relay: login check failed");
+                        None
+                    }
+                    Err(_) => {
+                        tracing::error!(timeout = ?GRANT_QUERY_TIMEOUT, "relay: login check timed out");
+                        None
+                    }
                 }
-            },
+            }
             None => None,
         };
         if let (Some(grant), Some(key)) = (grant, key) {
