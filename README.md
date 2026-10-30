@@ -24,6 +24,14 @@ such as an API token, an SSH key or a vault service account token. Those
 work unattended, but they also work for anything at any time, and the
 agent (or whatever compromises it) holds them for good.
 
+Password managers are starting to close this gap. As of late 2026,
+1Password lets some personal agents sign in to websites after you approve
+each request. Its enterprise Privileged Access product grants
+just-in-time access to infrastructure, with approvals in team tools like
+Slack. Neither covers what warden is for: a coding agent in a terminal
+getting SSH and API access to your own servers and devices, approved from
+your phone, on a server you run.
+
 warden takes a different approach: approval moves to your phone. The agent
 asks for one piece of access, for one stated goal and a short window. You
 approve or deny it from wherever you are. The secrets stay in your vault
