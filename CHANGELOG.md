@@ -6,6 +6,25 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- The Active grants page shows what each grant is doing right now. A relay
+  grant lists its open sessions (start time, bytes to and from the target), an
+  API grant its proxied calls in flight (method, path, start time), each under
+  a live indicator ("2 sessions open", "1 call in flight"); a certificate
+  grant says that its logins are not visible to warden. The page renders this
+  server-side, so it works without script, and `warden.js` refreshes it every
+  5 s from the new owner-only `GET /grants/live` while the page is visible,
+  never with two requests at once, and stops when the broker no longer
+  recognizes the viewer as the owner (401/403). A grant that is revoked or
+  expires drops off the page, and one approved meanwhile appears (the page
+  reloads once). Revoking an API grant stops new calls, but a call already in
+  flight runs to completion (at most the proxy timeout) and is no longer
+  listed. Times show in the viewer's local time. A path is shown as the audit
+  log records it: without query string or fragment, and `invalid` when it does
+  not parse or is longer than 512 bytes with its origin. Headers, bodies and
+  secrets are never shown.
+
 ### Changed
 
 - Docs: Secretive (Secure Enclave keys on macOS) is no longer suggested for

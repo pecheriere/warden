@@ -64,7 +64,7 @@ pub struct Received {
 /// - `/huge`, `/huge-chunked`: [`HUGE_BYTES`] bytes, with and without
 ///   `Content-Length`;
 /// - `/slow`: [`SLOW_PREFIX`], then nothing for a minute;
-/// - `/delayed`: `late answer`, after [`DELAY`];
+/// - `/delayed` and any path under it: `late answer`, after [`DELAY`];
 /// - `/gzip`: a body labelled `Content-Encoding: gzip`;
 /// - `/status/<code>`: that status, body `status <code>`;
 /// - `/binary`: [`BINARY_BODY`], which is not UTF-8;
@@ -229,7 +229,7 @@ async fn handle(State(log): State<Log>, req: Request) -> Response {
         "/huge" => respond(StatusCode::OK, &[], Body::from(vec![b'a'; HUGE_BYTES])),
         "/huge-chunked" => respond(StatusCode::OK, &[], huge_chunked()),
         "/slow" => respond(StatusCode::OK, &[], slow()),
-        "/delayed" => {
+        path if path == "/delayed" || path.starts_with("/delayed/") => {
             tokio::time::sleep(DELAY).await;
             respond(StatusCode::OK, &[], Body::from("late answer"))
         }
