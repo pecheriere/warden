@@ -9,6 +9,34 @@ expires on its own. The agent never holds a long-lived secret.
 
 <img src="docs/design/mockups/approve-iphone-light.png" alt="The approve page on a phone: the agent, the access with a read-only badge, the goal, the fingerprint, the grant window and the Approve and Deny buttons" width="320">
 
+## Why warden
+
+Password managers already keep secrets away from agents. With 1Password,
+for example, an agent can use an SSH key through the SSH agent or run a
+command with `op run`, and never see the secret itself. But each use is
+approved on the computer, with the desktop app unlocked. That works while
+you sit next to the agent. It does not work unattended: overnight, while
+you are away, or when the agent runs on another machine. The request waits
+for an unlock or a fingerprint that nobody can give.
+
+The usual way around this is a standing credential on the agent's machine,
+such as an API token, an SSH key or a vault service account token. Those
+work unattended, but they also work for anything at any time, and the
+agent (or whatever compromises it) holds them for good.
+
+Password managers are starting to close this gap. As of late 2026,
+1Password lets some personal agents sign in to websites after you approve
+each request. Its enterprise Privileged Access product grants
+just-in-time access to infrastructure, with approvals in team tools like
+Slack. Neither covers what warden is for: a coding agent in a terminal
+getting SSH and API access to your own servers and devices, approved from
+your phone, on a server you run.
+
+warden takes a different approach: approval moves to your phone. The agent
+asks for one piece of access, for one stated goal and a short window. You
+approve or deny it from wherever you are. The secrets stay in your vault
+and on the warden server, and the agent only gets access that expires.
+
 ## How it works
 
 ```
