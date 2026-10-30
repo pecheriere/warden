@@ -1400,13 +1400,24 @@ mod tests {
             ],
             "oldest first, with the shared counters"
         );
+        // Two sessions of one grant in the same second: the one registered
+        // first is listed first, told apart by its byte count.
         let twin = sessions.register(&early, 10);
-        let ids: Vec<_> = sessions
+        twin.counters().0.fetch_add(7, Ordering::Relaxed);
+        let listed: Vec<_> = sessions
             .snapshot()
             .iter()
-            .map(|s| (s.started_at, s.grant_id.clone()))
+            .map(|s| (s.started_at, s.grant_id.clone(), s.bytes_to_target))
             .collect();
-        assert_eq!(ids[0], ids[1], "two sessions of one grant, same second");
+        assert_eq!(
+            listed,
+            vec![
+                (10, early.grant_id.clone(), 0),
+                (10, early.grant_id.clone(), 7),
+                (20, late.grant_id.clone(), 3),
+            ],
+            "same second: in the order registered"
+        );
         drop(twin);
         drop(first);
         assert_eq!(sessions.snapshot().len(), 1);

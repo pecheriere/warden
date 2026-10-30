@@ -892,6 +892,35 @@ async fn expired_during_call_withholds_response() {
     assert_eq!(calls[0]["status"], 200);
 }
 
+/// A call whose URL is too long to record is listed on the owner's grants
+/// page under the audit's marker while it runs, never with its path.
+#[tokio::test]
+async fn overlong_path_is_listed_as_invalid() {
+    let s = setup().await;
+    let long = format!("/delayed/{}", "a".repeat(4096));
+    let call = get(&s, &long);
+    let live = async {
+        let reached = tokio::time::timeout(Duration::from_secs(5), async {
+            while s.upstream.received().is_empty() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        assert!(reached.is_ok(), "the upstream never received the call");
+        s.broker.get("/grants/live").await
+    };
+    let (resp, live) = tokio::join!(call, live);
+    let (proxied, _) = proxied(&resp);
+    assert_eq!(proxied.status, 200);
+    assert_eq!(live.status, StatusCode::OK, "{}", live.body);
+    let listed = &live.json()["grants"][0]["proxy_calls"];
+    assert_eq!(listed[0]["path"], "invalid", "{}", live.body);
+    assert_eq!(listed.as_array().map(Vec::len), Some(1), "{}", live.body);
+    assert!(!live.body.contains("aaaa"), "{}", live.body);
+    assert!(live.body.len() < 512, "{}", live.body.len());
+    assert_eq!(proxy_calls(&s.broker)[0]["url"], "invalid");
+}
+
 /// A request that names no methods is approved read-only: `GET` and `HEAD`
 /// work, a write the item would allow is refused.
 #[tokio::test]

@@ -391,6 +391,9 @@ async fn usable_api_grant(
 struct CallRecord {
     method: String,
     url: String,
+    /// The path of `url`, as the owner's live view lists the call: bounded
+    /// with `url`, and `invalid` whenever `url` is.
+    path: String,
     status: Option<u16>,
     response_bytes: u64,
     redactions: u32,
@@ -399,21 +402,27 @@ struct CallRecord {
 impl CallRecord {
     /// The method and URL as the agent sent them, reduced to what may be
     /// recorded: a method token, and the URL's origin and path (never the
-    /// query, which may carry the agent's own data). Unparsable or overlong
-    /// values are recorded as `invalid`.
+    /// userinfo, or the query and fragment, which may carry the agent's own
+    /// data). Unparsable or overlong values are recorded as `invalid`; the
+    /// path is a suffix of the URL, so it is never longer than
+    /// [`MAX_AUDIT_URL`] either.
     fn new(req: &ProxyRequest) -> Self {
         let method = http::Method::from_bytes(req.method.as_bytes())
             .ok()
             .filter(|m| m.as_str().len() <= MAX_AUDIT_METHOD)
             .map_or_else(|| "invalid".to_owned(), |m| m.as_str().to_owned());
-        let url = Url::parse(&req.url)
+        let (url, path) = Url::parse(&req.url)
             .ok()
-            .map(|u| format!("{}{}", u.origin().ascii_serialization(), u.path()))
-            .filter(|u| u.len() <= MAX_AUDIT_URL)
-            .unwrap_or_else(|| "invalid".to_owned());
+            .map(|u| {
+                let origin = u.origin().ascii_serialization();
+                (format!("{origin}{}", u.path()), u.path().to_owned())
+            })
+            .filter(|(url, _)| url.len() <= MAX_AUDIT_URL)
+            .unwrap_or_else(|| ("invalid".to_owned(), "invalid".to_owned()));
         Self {
             method,
             url,
+            path,
             status: None,
             response_bytes: 0,
             redactions: 0,
@@ -437,13 +446,13 @@ async fn audited_call(
     let mut record = CallRecord::new(&req);
     // The slot lives in this task, which runs to the end whether or not the
     // agent stays connected, and is released on every way out of it.
-    // A URL that does not parse is refused by `call`; it is listed meanwhile
-    // under the marker the audit log uses for it.
-    let path = Url::parse(&req.url).map_or_else(|_| "invalid".to_owned(), |u| u.path().to_owned());
+    // The call is listed with the method and path the audit records; a URL
+    // that does not parse or is too long is listed as `invalid`, and one
+    // that does not parse is refused by `call`.
     let info = CallInfo::new(
         grant_id.clone(),
         record.method.clone(),
-        path,
+        record.path.clone(),
         state.clock.now(),
     );
     let result = match state.proxy_calls.try_acquire(&agent, info) {
@@ -572,6 +581,35 @@ fn policy_changed() -> Failure {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn record(url: &str) -> CallRecord {
+        CallRecord::new(&ProxyRequest {
+            method: "GET".to_owned(),
+            url: url.to_owned(),
+            headers: Vec::new(),
+            body_b64: None,
+        })
+    }
+
+    #[test]
+    fn records_origin_and_path_without_userinfo_query_or_fragment() {
+        let r = record("https://u:p@api.example.com/v1/x?token=secret#frag");
+        assert_eq!(r.url, "https://api.example.com/v1/x");
+        assert_eq!(r.path, "/v1/x");
+        let r = record("not a url");
+        assert_eq!((r.url.as_str(), r.path.as_str()), ("invalid", "invalid"));
+    }
+
+    #[test]
+    fn overlong_url_is_recorded_and_listed_as_invalid() {
+        let origin = "https://api.example.com";
+        let fits = format!("/{}", "a".repeat(MAX_AUDIT_URL - origin.len() - 1));
+        let r = record(&format!("{origin}{fits}"));
+        assert_eq!(r.url.len(), MAX_AUDIT_URL);
+        assert_eq!(r.path, fits);
+        let r = record(&format!("{origin}{fits}a"));
+        assert_eq!((r.url.as_str(), r.path.as_str()), ("invalid", "invalid"));
+    }
 
     #[test]
     fn backend_trouble_is_503_and_storage_trouble_is_internal() {

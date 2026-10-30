@@ -240,27 +240,27 @@
   /** Session storage key: the grants a reload was last made to show. */
   const RELOADED_FOR = 'warden.live.reloadedFor';
 
-  /** The nearest grant card before or after `card`, by `step`. */
-  const siblingCard = (card, step) => {
-    let node = card[step];
-    while (node && !node.matches('section.grant')) node = node[step];
-    return node;
-  };
-
-  /** Removes `card`; focus inside it moves to the next card's Revoke
-   *  button, else the previous one's, else the page heading. */
-  const removeCard = (card) => {
-    if (!card.contains(document.activeElement)) {
-      card.remove();
-      return;
+  /** Removes the grant cards `cards`. Focus inside one of them moves to
+   *  the Revoke button of the nearest card that stays, after it, else
+   *  before it, else to the page heading. */
+  const removeCards = (cards) => {
+    const focused = cards.find((card) => card.contains(document.activeElement));
+    let target = null;
+    if (focused) {
+      const gone = new Set(cards);
+      const staying = (step) => {
+        let node = focused[step];
+        while (node && (!node.matches('section.grant') || gone.has(node))) node = node[step];
+        return node;
+      };
+      const near = staying('nextElementSibling') || staying('previousElementSibling');
+      target = near && near.querySelector('button.revoke');
+      if (!target) {
+        target = document.querySelector('main h1');
+        if (target && !target.hasAttribute('tabindex')) target.setAttribute('tabindex', '-1');
+      }
     }
-    const near = siblingCard(card, 'nextElementSibling') || siblingCard(card, 'previousElementSibling');
-    let target = near && near.querySelector('button.revoke');
-    if (!target) {
-      target = document.querySelector('main h1');
-      if (target && !target.hasAttribute('tabindex')) target.setAttribute('tabindex', '-1');
-    }
-    card.remove();
+    for (const card of cards) card.remove();
     if (target) target.focus();
   };
 
@@ -289,11 +289,12 @@
 
     const apply = (data) => {
       const byGrant = new Map((data.grants || []).map((live) => [live.grant_id, live]));
+      const ended = [];
       for (const area of document.querySelectorAll('.live-area[data-grant]')) {
         const live = byGrant.get(area.dataset.grant);
         if (!live) {
           // Revoked or expired: never show its last activity as live.
-          removeCard(area.closest('section.grant'));
+          ended.push(area.closest('section.grant'));
           continue;
         }
         if (area.dataset.kind === 'cert') continue;
@@ -302,6 +303,7 @@
         shown.set(area.dataset.grant, key);
         renderLive(area, live);
       }
+      removeCards(ended);
       // The last card went: reload for the server's empty state, which
       // has no live area and so no polling.
       if (!document.querySelector('.live-area[data-grant]')) {

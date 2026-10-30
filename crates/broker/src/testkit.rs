@@ -1004,6 +1004,11 @@ impl TestBroker {
     /// List a relay session of `grant_id` (held by `agent`) as live, from
     /// now, until the returned hold is dropped.
     ///
+    /// The target `pi`, user `alice` and empty destination digest are
+    /// placeholders: the live listing never reads them. `not_after` is
+    /// `i64::MAX` so that the expiry check never ends the hold; the grant
+    /// itself expires as usual, which is what drops it from the listing.
+    ///
     /// # Panics
     /// If the fixed sample target or user is invalid.
     pub fn hold_live_session(&self, grant_id: &Id, agent: &str) -> LiveHold {
@@ -1025,17 +1030,18 @@ impl TestBroker {
         }
     }
 
-    /// List an in-flight proxy call (`method` `url`) of `grant_id` (held by
-    /// `agent`) from now, until the returned hold is dropped.
+    /// List an in-flight proxy call of `method` to `path` of `grant_id`
+    /// (held by `agent`) from now, until the returned hold is dropped. Like
+    /// the proxy, [`CallInfo::new`] drops anything from a `?` or `#` on.
     ///
     /// # Panics
     /// If the agent name is invalid or the proxy call limits are reached.
-    pub fn hold_live_call(&self, grant_id: &Id, agent: &str, method: &str, url: &str) -> LiveHold {
+    pub fn hold_live_call(&self, grant_id: &Id, agent: &str, method: &str, path: &str) -> LiveHold {
         let agent = AgentName::try_from(agent.to_owned()).expect("valid agent name");
         let call = CallInfo::new(
             grant_id.clone(),
             method.to_owned(),
-            url.to_owned(),
+            path.to_owned(),
             self.clock.now(),
         );
         let slot = self

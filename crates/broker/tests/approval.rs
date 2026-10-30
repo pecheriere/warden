@@ -954,6 +954,19 @@ async fn live_drops_revoked_grant() {
 }
 
 #[tokio::test]
+async fn live_drops_expired_grant() {
+    let (broker, grant) = approved_grant().await;
+    let _session = broker.hold_live_session(&grant, "bot");
+    let _call = broker.hold_live_call(&grant, "bot", "GET", "/v1/jobs");
+    broker.clock.advance(30 * 60);
+
+    let live = broker.get("/grants/live").await;
+    assert_eq!(live.status, StatusCode::OK, "{}", live.body);
+    assert_eq!(live.json(), json!({"grants": []}));
+    assert!(!live.body.contains(grant.as_str()), "{}", live.body);
+}
+
+#[tokio::test]
 async fn live_requires_owner() {
     let (broker, _grant) = approved_grant().await;
     for login in [None, Some("mallory@example.com"), Some("OWNER@example.com")] {

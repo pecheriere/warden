@@ -572,14 +572,22 @@ renders this server-side; `warden.js` refreshes it every 5 s from `GET
 /grants/live` (owner only, `Cache-Control: no-store`) while the page is
 visible, with at most one request in flight, and stops polling on a 401 or
 403. A failed request keeps what is shown. A grant missing from the answer
-(revoked or expired) loses its card, so ended activity is never shown as
-live; keyboard focus inside it moves to the next card's Revoke button, else
-the previous one's, else the heading. A grant in the answer without a card
-(approved since the page loaded) reloads the page, unless a revoke is in
-progress, and only once for a given set of grants (remembered in session
-storage), so a reload cannot loop. The script builds the area with DOM text nodes only, never HTML from
-the answer; the path is the agent's, without query string or fragment.
-Times are rendered as UTC and shown in the viewer's local time by the script.
+(revoked or expired) loses its card, so ended activity is never shown as live;
+keyboard focus inside a removed card moves to the Revoke button of the nearest
+card that stays, after it, else before it, else to the heading. A grant in the
+answer without a card (approved since the page loaded) reloads the page,
+unless a revoke is in progress, and only once for a given set of grants
+(remembered in session storage), so a reload cannot loop. The script builds
+the area with DOM text nodes only, never HTML from the answer.
+
+A call is listed with the method and path its `proxy_call` audit entry
+records, from one sanitization: the path never carries userinfo, query string
+or fragment, and is `invalid` when the URL does not parse or is longer than
+512 bytes with its origin, so the agent cannot put an unbounded string on the
+owner's page. Revoking an API grant refuses its new calls and withholds the
+response of a call in flight, but that call runs on upstream until it answers
+or times out; it is no longer listed once the grant has ended. Times are
+rendered as UTC and shown in the viewer's local time by the script.
 
 ### Screenshots
 

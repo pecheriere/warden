@@ -8,6 +8,8 @@ Usage: scripts/check-grants-live.py <out-dir>
 
   - a 401 or 403 answer stops polling after the first request;
   - a grant missing from the answer loses its card, and polling goes on;
+  - when two cards end in one poll, focus on the first one's Revoke button
+    moves to the Revoke button of the card that stays;
   - a grant with no card makes the page reload exactly once, even when the
     answer keeps listing it (no reload loop).
 
@@ -34,6 +36,28 @@ PAGE = "/grants-live.html"
 # Grant ids of the "grants-live" fixture (crates/broker/src/approval/pages.rs).
 RELAY, API, CERT = (f"{n:032x}" for n in (5, 4, 2))
 NEW = f"{9:032x}"
+FOCUS_PAGE = "/focus.html"
+# Test harness only, never served by the broker: frames the fixture, focuses
+# the first card's Revoke button, and reports what has focus 8 s later.
+FOCUS_HARNESS = f"""<!doctype html><meta charset="utf-8">
+<iframe id="page" src="{PAGE}" width="400" height="900"></iframe><pre id="out"></pre>
+<script>
+const frame = document.getElementById('page');
+frame.addEventListener('load', () => {{
+  const doc = frame.contentDocument;
+  doc.querySelector('button.revoke[data-grant="{RELAY}"]').focus();
+  setTimeout(() => {{
+    const active = doc.activeElement;
+    document.getElementById('out').textContent =
+      'focused:' + (active.dataset.grant || active.tagName.toLowerCase());
+  }}, 8000);
+}}, {{ once: true }});
+</script>
+"""
+
+
+class CheckError(Exception):
+    """A step of the check itself failed (not a behaviour under test)."""
 
 
 def live_body(*grant_ids):
@@ -104,6 +128,9 @@ def load(url, budget_ms):
             )
         except subprocess.TimeoutExpired:
             return ""
+        except subprocess.CalledProcessError as e:
+            detail = e.stderr.strip().splitlines()[-1:] or [f"exit status {e.returncode}"]
+            raise CheckError(f"Chrome failed on {url}: {detail[0]}") from e
     return result.stdout
 
 
@@ -112,6 +139,14 @@ def cards(dom):
 
 
 def main():
+    try:
+        return run()
+    except CheckError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+
+
+def run():
     if len(sys.argv) != 2:
         print(f"usage: {sys.argv[0]} <out-dir>", file=sys.stderr)
         return 2
@@ -129,20 +164,24 @@ def main():
     out = base / "warden-live-check"
     shutil.rmtree(out, ignore_errors=True)
     out.mkdir(parents=True)
-    subprocess.run(
+    rendered = subprocess.run(
         ["cargo", "test", "--manifest-path", str(ROOT / "Cargo.toml"), "-p",
          "warden-broker", "--lib", "--locked", "every_page_renders_self_contained"],
         env={**os.environ, "WARDEN_RENDER_PAGES_DIR": str(out)},
-        check=True,
+        check=False,
     )
+    if rendered.returncode != 0:
+        raise CheckError(f"rendering the page fixtures failed (cargo exit {rendered.returncode})")
     shutil.copy(ROOT / "crates/broker/src/approval/warden.js", out / "static/warden.js")
+    (out / FOCUS_PAGE.lstrip("/")).write_text(FOCUS_HARNESS)
 
     mock = Mock()
     server = ThreadingHTTPServer(
         ("127.0.0.1", 0), partial(Handler, mock=mock, directory=str(out))
     )
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    url = f"http://127.0.0.1:{server.server_address[1]}{PAGE}"
+    origin = f"http://127.0.0.1:{server.server_address[1]}"
+    url = f"{origin}{PAGE}"
     failures = []
 
     def check(name, ok, detail):
@@ -162,6 +201,12 @@ def main():
         check("an ended grant loses its card", cards(dom) == [RELAY, CERT], cards(dom))
         polls = mock.count("/grants/live")
         check("polling goes on after a removal", polls >= 2, f"{polls} requests")
+
+        mock.set(200, live_body(CERT))
+        dom = load(f"{origin}{FOCUS_PAGE}", 12_000)
+        focused = re.search(r"focused:(\w+)", dom)
+        focused = focused.group(1) if focused else "nothing reported"
+        check("focus skips the cards removed with its own", focused == CERT, focused)
 
         mock.set(200, live_body(RELAY, API, CERT, NEW))
         load(url, 30_000)
