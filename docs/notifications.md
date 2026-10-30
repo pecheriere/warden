@@ -2,12 +2,12 @@
 
 When an agent asks for access, warden tells the owner with a link to the
 approval page. The channels to use are chosen at startup with `WARDEN_NOTIFY`,
-a comma-separated list in priority order. Warden tries the first channel; if it
-errors, answers non-2xx, or does not answer within 5 seconds, it tries the next
-one, and so on. The first channel that accepts wins. If every channel fails, the
-request ends in `error`. The worst-case delay before the owner is notified (or
-the request fails) is 5 s times the number of channels. The audit log's
-`notified` entry names the channel that delivered the notification.
+a comma-separated list in priority order. warden tries the first channel; if
+it errors, answers non-2xx, or does not answer within 5 seconds, it tries the
+next one, and so on. The first channel that accepts wins. If every channel
+fails, the request ends in `error`. The worst-case delay before the owner is
+notified (or the request fails) is 5 s times the number of channels. The audit
+log's `notified` entry names the channel that delivered the notification.
 
 A notification contains the agent, the target and user, the goal (truncated to
 200 characters, with `…` appended when cut) and the approval link. It never
@@ -36,8 +36,8 @@ yours to choose (`ntfy,homeassistant`).
 
 Startup refuses, with a message naming the variable:
 
-- an unset or empty `WARDEN_NOTIFY`, an empty entry, an unknown channel name, a
-  name with upper-case letters (channel names are lowercase) or a channel
+- an unset or empty `WARDEN_NOTIFY`, an empty entry, an unknown channel name,
+  a name with upper-case letters (channel names are lowercase) or a channel
   listed twice;
 - a listed channel with a missing or invalid setting;
 - a setting for a channel that is not listed (most likely a forgotten list
@@ -54,8 +54,8 @@ Name the channel `homeassistant` and set
 secret: warden redacts the URL in logs and errors and does not follow
 redirects.
 
-Warden POSTs JSON `{"title": "...", "message": "...", "url": "..."}`. Create an
-automation that triggers on the webhook and forwards it to the phone:
+warden POSTs JSON `{"title": "...", "message": "...", "url": "..."}`. Create
+an automation that triggers on the webhook and forwards it to the phone:
 
 ```yaml
 alias: Warden approval request
@@ -65,7 +65,8 @@ triggers:
     webhook_id: "<webhook_id>"
     allowed_methods:
       - POST
-    local_only: true
+    # false when warden reaches Home Assistant over the tailnet (see below).
+    local_only: false
 actions:
   - action: notify.mobile_app_<phone>
     data:
@@ -80,10 +81,25 @@ actions:
           interruption-level: time-sensitive
 ```
 
-`local_only: true` restricts the webhook to requests from the local network, so
-the warden host must reach Home Assistant directly. Replace `<phone>` with your
-device name as shown under `notify.` in Developer Tools, and `<webhook_id>` with
-a long random value (for example `openssl rand -hex 24`).
+Replace `<phone>` with your device name as shown under `notify.` in
+Developer Tools, and `<webhook_id>` with a long random value (for example
+`openssl rand -hex 24`).
+
+**`local_only`.** With `local_only: true`, Home Assistant accepts the webhook
+only from addresses it considers local (its LAN). A tailnet address is not
+one of them, so if warden reaches Home Assistant over Tailscale, Home
+Assistant refuses the call and the owner is never notified. Use
+`local_only: true` only when warden reaches Home Assistant on its local
+network; otherwise set it to `false`. Either way, anyone who can reach Home
+Assistant and knows the webhook id can trigger the automation (to send a
+fake notification, never to approve anything), so keep the id long, random
+and secret, and keep Home Assistant off the internet.
+
+Test the automation once, from the warden host and with the URL warden will
+use, before relying on it. Home Assistant answers a webhook it refuses (or
+does not know) as if it had accepted it, and only logs a warning in its own
+log. warden then records the notification as delivered and does not try the
+next channel: the owner simply never hears of the request.
 
 ## ntfy
 
@@ -92,11 +108,10 @@ example `https://ntfy.example.com/warden-<random>`, and optionally
 `WARDEN_NOTIFY_NTFY_TOKEN` for an access token (sent as
 `Authorization: Bearer ...`). The token is redacted in logs and debug output.
 
-Warden POSTs the message as the body with the headers `Title`, `Click` (the
+warden POSTs the message as the body with the headers `Title`, `Click` (the
 approval link), `Priority: high` and `Tags: lock`. A title containing
-non-ASCII characters is sent as an RFC 2047 encoded word
-(`=?UTF-8?B?...?=`), which ntfy decodes. The message body is UTF-8 and needs no
-encoding.
+non-ASCII characters is sent as an RFC 2047 encoded word (`=?UTF-8?B?...?=`),
+which ntfy decodes. The message body is UTF-8 and needs no encoding.
 
 Use a hard-to-guess topic name, or a server with access control and a token
 that can only publish to the topic. Subscribe to the topic in the ntfy app on
@@ -124,9 +139,9 @@ channel is one module plus its registration, in `crates/broker/src/notify/`:
 5. Use the shared HTTP client (`http_client()`): fixed connect and request
    timeouts, no redirects. Never add a configurable timeout; the chain also
    enforces 5 s per channel.
-6. Never put a URL or response body in a `NotifyError`; use `NotifyError::request`
-   and `check_status`. Error text reaches the audit log and must not leak
-   webhook ids, and it is never echoed to agents.
-7. Test it against a fake endpoint (wiremock) in `crates/broker/tests/notify.rs`,
-   plus config parsing tests in `crates/broker/tests/agents.rs`, and document the
-   channel on this page.
+6. Never put a URL or response body in a `NotifyError`; use
+   `NotifyError::request` and `check_status`. Error text reaches the audit log
+   and must not leak webhook ids, and it is never echoed to agents.
+7. Test it against a fake endpoint (wiremock) in
+   `crates/broker/tests/notify.rs`, plus config parsing tests in
+   `crates/broker/tests/agents.rs`, and document the channel on this page.

@@ -4,6 +4,25 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- Docs overhaul. The README is now a short introduction with a quick start.
+  New guides: `docs/deployment.md` (the recommended deployment: Tailscale
+  Services with policy grants and tests, the phone-only approval UI, a
+  dedicated 1Password vault with a read-only Connect token, Connect run
+  non-root on its own network with an explicit bus, egress and network
+  rules, Home Assistant over the tailnet without `local_only`, backups and
+  attested, pinned upgrades), `docs/configuration.md` (every server and CLI
+  setting and command) and `docs/ssh-targets.md` (one certificate-only user
+  per agent, login alerts by CA fingerprint, relay targets). The threat
+  model says what warden does not protect (the host is the root of trust;
+  grants shared by one agent's sessions, #49; revoke and calls in flight,
+  #44). Corrected: the certificate key id, the Ctrl-C cancel wait (5 s),
+  the published image, the losses when the database is lost, warden's
+  egress (relay targets) and the Linux bearer-key setup.
+
 ## [0.7.0] - 2026-10-29
 
 ### Added

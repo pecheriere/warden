@@ -17,8 +17,8 @@ sitting at it. When the operator is away, the agent is stuck.
 
 warden is a small, self-hosted **approval broker**. The agent asks for access
 with a stated goal; the owner gets a notification on their phone that shows
-*why* (the goal) and *exactly what* is being granted; the owner approves with a
-passkey for a time window; the agent then gets the access **without ever
+*why* (the goal) and *exactly what* is being granted; the owner approves with
+a passkey for a time window; the agent then gets the access **without ever
 holding a long-lived secret in clear**.
 
 It is an open-source project, so it must be clean, generic in its interfaces,
@@ -118,18 +118,19 @@ enabled ones in priority order in `WARDEN_NOTIFY`.
 
 ## 7. Request lifecycle
 
-1. **Request.** The CLI sends `{goal, kind, target, principal/secret, requested_duration}`.
-   The server validates it against policy (target exists, mode/user/secret
-   allowed, duration ≤ target max) and rejects invalid requests immediately
-   with a clear error.
+1. **Request.** The CLI sends
+   `{goal, kind, target, principal/secret, requested_duration}`. The server
+   validates it against policy (target exists, mode/user/secret allowed,
+   duration ≤ target max) and rejects invalid requests immediately with a
+   clear error.
 2. **Pending.** Stored with a random request id and a single-use approval
    token. One pending request per (agent, target, kind) at a time; duplicates
    return the existing pending id. Pending requests expire after **10 min**.
 3. **Notify.** Doorbell via the first configured channel (for example Home
    Assistant Companion); if it does not accept within a short timeout (≈5 s)
    or errors, the same doorbell goes through the next channel in the
-   `WARDEN_NOTIFY` order (for example ntfy). Content: goal (truncated), target summary, link
-   to `/approve/<token>`. Never secret values.
+   `WARDEN_NOTIFY` order (for example ntfy). Content: goal (truncated), target
+   summary, link to `/approve/<token>`. Never secret values.
 4. **Review.** The approval page (HTTPS on the tailnet name) shows goal, kind,
    target, user/secret, destination rules, requested duration, and a duration
    picker (15 m / 30 m / 1 h / 4 h, capped by the target's max).
@@ -146,7 +147,9 @@ enabled ones in priority order in `WARDEN_NOTIFY`.
    409.
 6. **Grant.** A grant record with `not_before/not_after` is created. The CLI,
    which long-polls (or polls) the request, receives the outcome:
-   - cert/relay: the signed SSH certificate for the CLI's ephemeral public key;
+   - cert: the signed SSH certificate for the CLI's ephemeral public key;
+   - relay: the relay's address and host key (the agent logs in with the
+     approved ephemeral key);
    - proxy: a grant id usable for proxied calls until expiry.
 7. **Use.** Every use (SSH cert issuance, relay session start/end, proxied
    call: method, URL, status, bytes) is audited against the grant.
@@ -167,9 +170,9 @@ The CLI always gets a terminal state: `approved`, `denied`, `expired`,
 - warden signs the public key: principal = `warden:<target>:<user>`; targets
   map it via AuthorizedPrincipalsFile or a cert-authority principals= option
   (so an approval is valid only on the approved target), validity
-  = approved window (+ small clock skew allowance), key id = grant id,
-  critical options/extensions from policy (default: no agent forwarding, no
-  port forwarding, no X11; pty allowed).
+  = approved window (backdated 60 s for clock skew), key id =
+  `warden:<agent>:<grant id>`, a random serial, no critical options, and
+  the single extension `permit-pty` (no agent, port or X11 forwarding).
 - Targets trust the CA either via `TrustedUserCAKeys` plus an
   `AuthorizedPrincipalsFile` listing `warden:<target>:<user>` for each allowed
   user, or via a `cert-authority,principals="warden:<target>:<user>"` line in
@@ -337,13 +340,13 @@ material.
 targets; when unset, requests for relay targets are refused) is the address
 agents connect to; `WARDEN_RELAY_LISTEN` (default `127.0.0.1:2222`) is the
 local listener; `WARDEN_RELAY_HOST_KEY_PATH` (default
-`/data/relay_host_ed25519`) is the relay's Ed25519 host key, generated on first
-use. The file is created atomically with mode 0600 and never overwritten. An
-existing file must be a regular file (not a symbolic link) owned by the broker
-user, not accessible to group or others, and hold an unencrypted OpenSSH
-Ed25519 key; anything else stops the server at startup. Its public half is
-returned in every relay grant, and the CLI pins it (and only it) for the
-relay. The relay address is public information.
+`/data/relay_host_ed25519`) is the relay's Ed25519 host key, generated on
+first use. The file is created atomically with mode 0600 and never
+overwritten. An existing file must be a regular file (not a symbolic link)
+owned by the broker user, not accessible to group or others, and hold an
+unencrypted OpenSSH Ed25519 key; anything else stops the server at startup.
+Its public half is returned in every relay grant, and the CLI pins it (and
+only it) for the relay. The relay address is public information.
 
 ### 8.3 HTTP proxy mode (secret injection)
 
@@ -382,9 +385,9 @@ wiped memory and never logged or audited.
 **Checks before anything is sent.** The request must satisfy the policy as it
 stands now (see "Changes during approval and use" below):
 
-- *Origin:* scheme `https`, host and port equal to the item's website, exactly.
-  Userinfo and fragments are refused. The URL must be printable ASCII with no
-  spaces.
+- *Origin:* scheme `https`, host and port equal to the item's website,
+  exactly. Userinfo and fragments are refused. The URL must be printable ASCII
+  with no spaces.
 - *Path:* under `path_prefix` (the narrower of the item's and the grant's),
   matched on a segment boundary (`/api` covers `/api` and `/api/x`, not
   `/apiary`; a prefix ending in `/` covers what is below it). The path is
@@ -393,8 +396,8 @@ stands now (see "Changes during approval and use" below):
   `%25`, `%c0`, `%c1` and `%u` (any case). A path the URL parser would rewrite
   is refused too, so the path that was checked is the path that is sent. The
   query string is not restricted.
-- *Method:* one of the item's `methods` (default `GET`) and, since 0.4, one
-  of the methods of the grant. `CONNECT` and `TRACE` are always refused, even
+- *Method:* one of the item's `methods` (default `GET`) and one of the
+  methods of the grant. `CONNECT` and `TRACE` are always refused, even
   if listed.
 - *Request headers:* the agent may not set hop-by-hop or framing headers
   (`Host`, `Content-Length`, `Transfer-Encoding`, `Connection`, `Keep-Alive`,
@@ -411,22 +414,23 @@ stands now (see "Changes during approval and use" below):
 A refusal is a 400 whose message names the rule, never the secret.
 
 **The outbound call.** warden sends `Accept-Encoding: identity` and refuses a
-response with any other `Content-Encoding` or a `Transfer-Encoding` other
-than `chunked` or `identity` (502), because redaction cannot see inside compressed data.
-Redirects are **not followed** (a redirect to another origin would carry the
-header); the 3xx is returned to the agent. No outbound proxy is used and
+response with any other `Content-Encoding` or a `Transfer-Encoding` other than
+`chunked` or `identity` (502), because redaction cannot see inside compressed
+data. Redirects are **not followed** (a redirect to another origin would carry
+the header); the 3xx is returned to the agent. No outbound proxy is used and
 nothing is retried. Limits: request body 1 MiB, response body 1 MiB
 (`WARDEN_PROXY_MAX_RESPONSE_BYTES`, at most 64 MiB), 30 s for the whole call,
-10 s to connect. At most 4 calls per agent and 16 overall may be in flight
-at once (`WARDEN_PROXY_MAX_CALLS_PER_AGENT`, 1 to 64, and
+10 s to connect. At most 4 calls per agent and 16 overall may be in flight at
+once (`WARDEN_PROXY_MAX_CALLS_PER_AGENT`, 1 to 64, and
 `WARDEN_PROXY_MAX_CALLS`, 1 to 256, never below the per-agent limit; the
-broker refuses to start otherwise). A call over either limit is refused with
-a 429 (`too many concurrent calls`) before anything is sent upstream, and
-audited as a `proxy_call` with no status. A call holds its slot until the upstream
-call has finished, even if the agent hangs up, and always gives it back. Over the response limit the agent gets a 502 and nothing
-partial. Upstream trouble is a 502 or 504 with a fixed message that never
-quotes upstream text. A secret that cannot be written into a header, or an
-HTTP client that cannot be built, is a 500.
+broker refuses to start otherwise). A call over either limit is refused with a
+429 (`too many concurrent calls`) before anything is sent upstream, and
+audited as a `proxy_call` with no status. A call holds its slot until the
+upstream call has finished, even if the agent hangs up, and always gives it
+back. Over the response limit the agent gets a 502 and nothing partial.
+Upstream trouble is a 502 or 504 with a fixed message that never quotes
+upstream text. A secret that cannot be written into a header, or an HTTP
+client that cannot be built, is a 500.
 
 **TLS.** Strict verification with hostname checking always on, and no leaf
 pinning. By default the system roots are used. If the item has `ca_pem`,
@@ -434,50 +438,50 @@ pinning. By default the system roots are used. If the item has `ca_pem`,
 they are not added to them), for private-CA targets. A fresh client is built
 for each call, so no trust decision is shared between secrets.
 
-**Redaction.** In the response headers (values) and body, warden replaces
-with `[REDACTED]` every occurrence of the secret and of the full injected
-header value, in these forms: raw; base64 (standard and URL-safe, padded and
+**Redaction.** In the response headers (values) and body, warden replaces with
+`[REDACTED]` every occurrence of the secret and of the full injected header
+value, in these forms: raw; base64 (standard and URL-safe, padded and
 unpadded), including base64 inside a larger base64 blob at any of the three
 byte alignments; and, per character, the percent-encoded form (either hex
-case), `+` for a space, JSON `\/`, `\"`, `\\` and `\u00hh`, and HTML
-`&amp;`, `&quot;`, `&lt;`, `&gt;`, `&apos;`, `&#NN;` and `&#xHH;`, mixed
-freely within one occurrence. Overlapping matches merge into one marker. A
-header whose name contains the secret is dropped (the name cannot be
-redacted into a valid one) and counted; names are matched
-ASCII-case-insensitively, because the HTTP stack lowercases them. Hop-by-hop response
-headers and `Content-Length` are dropped. The number of redactions is
-audited and returned. Boundary residual: for a secret embedded in a larger
-base64 blob, the one base64 character on each side that mixes secret bits
-with neighbouring bytes is not matched, so at most 4 bits of the secret per
-side can survive; a base64 run shorter than 8 characters is not matched on
-its own. Redaction is defence in depth against services that echo input. The
-destination rules are the real control.
+case), `+` for a space, JSON `\/`, `\"`, `\\` and `\u00hh`, and HTML `&amp;`,
+`&quot;`, `&lt;`, `&gt;`, `&apos;`, `&#NN;` and `&#xHH;`, mixed freely within
+one occurrence. Overlapping matches merge into one marker. A header whose name
+contains the secret is dropped (the name cannot be redacted into a valid one)
+and counted; names are matched ASCII-case-insensitively, because the HTTP
+stack lowercases them. Hop-by-hop response headers and `Content-Length` are
+dropped. The number of redactions is audited and returned. Boundary residual:
+for a secret embedded in a larger base64 blob, the one base64 character on
+each side that mixes secret bits with neighbouring bytes is not matched, so at
+most 4 bits of the secret per side can survive; a base64 run shorter than 8
+characters is not matched on its own. Redaction is defence in depth against
+services that echo input. The destination rules are the real control.
 
 **Changes during approval and use.** The approval binds a digest of the
 destination: origin, path prefix, header name, value format, pinned CA and the
-set of methods. The digest is the item's, not the narrowed scope's, so it still
-detects item edits: if the owner removes a method from the item after approval,
-calls are refused as below. If the item changes between the request and the
-approval, the approval is refused with a 409 and the owner reloads and reviews.
-The approval page shows the value format with the secret as `…` (for example
-`Bearer …`) and whether a CA is pinned. At call time warden re-reads the item
-once and takes both the policy and the secret value from that single read, so
-an item edited in between can never pair the old destination with a new
-credential. If the digest no longer matches (including the format and the CA),
-or the secret is gone or invalid, the call is a 409 (`policy changed; request
-access again`) and the agent must request again. A grant that is revoked or
-expires while a call is in flight yields a 409 (`grant revoked during the call`
-or `grant expired during the call`) and the response is discarded. The window
-and the secret value are not part of the digest.
+set of methods. The digest is the item's, not the narrowed scope's, so it
+still detects item edits: if the owner removes a method from the item after
+approval, calls are refused as below. If the item changes between the request
+and the approval, the approval is refused with a 409 and the owner reloads and
+reviews. The approval page shows the value format with the secret as `…` (for
+example `Bearer …`) and whether a CA is pinned. At call time warden re-reads
+the item once and takes both the policy and the secret value from that single
+read, so an item edited in between can never pair the old destination with a
+new credential. If the digest no longer matches (including the format and the
+CA), or the secret is gone or invalid, the call is a 409
+(`policy changed; request access again`) and the agent must request again. A
+grant that is revoked or expires while a call is in flight yields a 409
+(`grant revoked during the call` or `grant expired during the call`) and the
+response is discarded. The window and the secret value are not part of the
+digest.
 
 **Audit.** `proxy_call_started` is written **before** the request is sent; if
 it cannot be written, the call is refused and nothing is sent. `proxy_call` is
 written after the call ends, whatever the outcome; if that write fails, the
-agent gets a 500 and no response. It records: grant, method, origin and path (never the query
-string, which may carry the agent's own data), status, response size,
-redaction count and outcome. The secret never appears. The call runs on its
-own task, so an agent that disconnects can neither stop it halfway nor keep
-it out of the log.
+agent gets a 500 and no response. It records: grant, method, origin and path
+(never the query string, which may carry the agent's own data), status,
+response size, redaction count and outcome. The secret never appears. The call
+runs on its own task, so an agent that disconnects can neither stop it halfway
+nor keep it out of the log.
 
 - **Request/response HTTPS only in v1** (decision). WebSocket and streaming
   APIs are out of scope for v1; diagnostics that need them go through SSH.
@@ -595,14 +599,13 @@ rendered as UTC and shown in the viewer's local time by the script.
 The unit test `every_page_renders_self_contained` renders every approval page
 with fixture data and fails on inline styles, external origins, images or any
 script and stylesheet other than `/static/warden.js` and `/static/warden.css`.
-`scripts/screenshot-pages.sh <out-dir>` runs it with
-`WARDEN_RENDER_PAGES_DIR` set, serves the pages on `127.0.0.1` and captures
-each at 320x568, 390x844, 466x678, 678x466, 626x890, 890x626 and 1280x800, light and
-dark, with headless Chrome (needs ImageMagick). Screenshots are captured at
-viewport height (what is on screen without scrolling) and land in
-`<out-dir>/warden-pages/shots` (the script deletes and recreates only that
-subdirectory); keep `<out-dir>` outside the repository, as screenshots are
-never committed.
+`scripts/screenshot-pages.sh <out-dir>` runs it with `WARDEN_RENDER_PAGES_DIR`
+set, serves the pages on `127.0.0.1` and captures each at 320x568, 390x844,
+466x678, 678x466, 626x890, 890x626 and 1280x800, light and dark, with headless
+Chrome (needs ImageMagick). Screenshots are captured at viewport height (what
+is on screen without scrolling) and land in `<out-dir>/warden-pages/shots`
+(the script deletes and recreates only that subdirectory); keep `<out-dir>`
+outside the repository, as screenshots are never committed.
 
 `scripts/check-grants-live.py <out-dir>` checks the live refresh of the
 grants page the same way: it serves the `grants-live` fixture with a mocked
@@ -648,18 +651,22 @@ no longer resolves, or a second 404 is reported as unavailable: no retry loop.
 
 ## 12. State
 
-SQLite for pending requests, grants, passkey credentials and enrollment codes.
-It lives on the data volume, which should be backed up. Losing it loses only
-in-flight requests and enrolled passkeys (re-enroll).
+SQLite (in WAL mode) for requests, grants, agents, passkey credentials,
+enrollment codes and request nonces. It lives on the data volume with the
+audit log, the audience file and the relay host key; the volume should be
+backed up, with warden stopped. Losing the database loses requests, grants,
+enrolled passkeys and agents (re-enroll them).
 
 ## 13. Deployment model
 
-- warden runs as a container built from this repository (multi-arch,
-  distroless base), as a non-root user with all capabilities dropped and a
-  read-only root filesystem. The data volume (database and audit log) is the
+- warden runs as a container (multi-arch, distroless base), published as
+  `ghcr.io/pecheriere/warden` with a build provenance attestation or built
+  from this repository, as a non-root user with all capabilities dropped and
+  a read-only root filesystem. The data volume (database and audit log) is the
   only writable path and is backed up.
 - **Two supported ways to publish** the listeners: a dedicated node (below)
-  or Tailscale Services (after it). Both keep the rule that only Serve may
+  or Tailscale Services (after it; the recommended one, see
+  [deployment.md](deployment.md)). Both keep the rule that only Serve may
   reach the listeners.
 - **Dedicated tailnet node** (decision): a Tailscale sidecar container shares
   its network namespace with warden only, so (a) the WebAuthn RP ID/origin is
@@ -677,7 +684,7 @@ in-flight requests and enrolled passkeys (re-enroll).
   does not add identity to a raw TCP stream and every peer appears as
   `127.0.0.1`, so the relay authenticates the agent itself (by key) and the
   tailnet policy is the only network-level restriction on who reaches it.
-- **Tailscale Services** (alternative, tested on Tailscale 1.104): a tagged
+- **Tailscale Services** (tested on Tailscale 1.104): a tagged
   host that already runs Tailscale publishes each endpoint as its own Service
   (`svc:warden` for the approval UI, `svc:warden-api` for the agent API) with
   `tailscale serve --service=svc:<name> --https=443`. Each Service has its own
@@ -696,10 +703,11 @@ in-flight requests and enrolled passkeys (re-enroll).
 - **Tailscale is a hard requirement in v1** (decision). Caller identity sits
   behind an internal trait so other identity sources (mTLS, OIDC) can be
   added later, but only the Tailscale implementation ships.
-- 1Password Connect runs on an internal network reachable only from warden,
-  with a read-only token scoped to the `Warden` vault.
-- Egress is limited to what warden needs: Connect, the notifiers and
-  Tailscale.
+- 1Password Connect runs on a network of its own that only warden joins, so
+  it cannot reach warden's listeners, with a read-only token scoped to the
+  `Warden` vault.
+- Egress is limited to what warden needs: Connect, the notifiers, the
+  origins of the API secrets and the relay targets.
 - Secrets for warden itself (Connect token, notifier URLs and tokens) are
   passed from a secret manager, never written into the image or a repository.
 
@@ -709,30 +717,30 @@ in-flight requests and enrolled passkeys (re-enroll).
   `warden request api <secret> [--methods GET,POST] [--path /prefix] --for
   30m --goal "…"`, `warden status`,
   `warden ssh …`, `warden http …`, `warden revoke <grant>`.
-- `warden http <secret> <METHOD> <url> [-H 'Name: value']… [-d <body> |
-  --data-file <path|->] [-i] [--fail]` calls an API through the `api` grant for
-  the secret that covers the method and the path (the one that stays valid
-  longest, if several do). The response body goes to stdout unchanged, and
-  with `-i` the status line and headers go to stderr. The CLI records an `api` grant locally (secret name, origin, grant
-  id, end time, methods and path prefix; never a secret; records from 0.3 read
-  as `GET` and `/`) and exits 5 when no active grant covers the call, with a
-  hint naming `warden request api --methods`. `--fail` exits 22 on an upstream
-  status of 400 or more, as `curl --fail` does, and still writes the body. The
-  CLI refuses non-https URLs and bodies over 1 MiB before sending.
+- `warden http <secret> <METHOD> <url> [-H 'Name: value']… [-d <body> | --data-file <path|->] [-i] [--fail]`
+  calls an API through the `api` grant for the secret that covers the method
+  and the path (the one that stays valid longest, if several do). The response
+  body goes to stdout unchanged, and with `-i` the status line and headers go
+  to stderr. The CLI records an `api` grant locally (secret name, origin,
+  grant id, end time, methods and path prefix; never a secret; an older
+  record without methods reads as `GET` and `/`) and exits 5 when no active grant covers the call,
+  with a hint naming `warden request api --methods`. `--fail` exits 22 on an
+  upstream status of 400 or more, as `curl --fail` does, and still writes the
+  body. The CLI refuses non-https URLs and bodies over 1 MiB before sending.
 - Relay targets need no different commands: `warden request ssh` and
   `warden ssh` work as for certificate targets. The grant tells the CLI to
   connect to the relay's address and log in as the target name, with the
   relay's host key pinned and the same per-grant `ssh-agent` holding the key
   (no certificate). The CLI records the route in the local `grant.json`;
-  records without one are direct. A 0.2.x CLI does not know the relay grant
-  kind: it cannot use such a grant and fails with an error instead of
-  connecting anywhere (broker and CLI should both be 0.3.0).
+  records without one are direct.
 - Requests block (with progress on stderr) until a terminal state; exit codes
   distinguish approved / denied / expired / cancelled / error; Ctrl-C cancels
   the pending request and exits 130.
 - A short usage doc ([agent-usage.md](agent-usage.md)) tells the agent to
   request with a precise goal and the narrowest scope.
-- CLI config: server URL and agent name only; no secrets in the config file.
+- CLI config: server URL, agent name and, for a key-signed agent, the
+  signing key's public half, its `ssh-agent` socket and the pinned audience;
+  no secrets in the config file.
 
 ## 15. Quality bar
 

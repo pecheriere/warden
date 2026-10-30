@@ -1,357 +1,208 @@
 # warden
 
-warden is a self-hosted approval broker. An AI coding agent (or any script)
-asks for temporary access to a resource and says why. The owner gets a
-notification on their phone, reviews the goal and exactly what would be
-granted, and approves with a passkey. warden then issues a credential that
+warden is a self-hosted **approval broker** for AI agents and scripts.
+
+An agent asks for temporary access to a server or an API and says why. You
+get a notification on your phone, read the goal and exactly what would be
+granted, and approve with a passkey. warden then hands out access that
 expires on its own. The agent never holds a long-lived secret.
 
 <img src="docs/design/mockups/approve-iphone-light.png" alt="The approve page on a phone: the agent, the access with a read-only badge, the goal, the fingerprint, the grant window and the Approve and Deny buttons" width="320">
 
-Three kinds of access are supported:
-
-- **SSH, certificate mode.** The broker signs a short-lived SSH certificate
-  for an ephemeral Ed25519 key that exists only in memory on the requesting
-  machine, and only for the approved window.
-- **SSH, relay mode.** For hosts that cannot trust a CA (appliances, Dropbear,
-  password-only logins), the agent connects to the broker's SSH relay with the
-  approved ephemeral key, and the broker logs in to the target with a key or
-  password that never leaves it. The agent's commands are the same as in
-  certificate mode.
-- **HTTP API secrets.** The agent never sees the secret. For the approved
-  window the broker makes HTTPS calls for the agent, adds the secret to the
-  header the policy names, sends them only to the one origin and path prefix
-  the policy allows, and returns the response with the secret redacted.
-
-Status: early development. This release (0.7.0) implements SSH certificate
-mode, SSH relay mode and HTTP proxy mode.
-
-## Why
-
-Agents regularly need privileged access to diagnose or operate infrastructure,
-but handing them standing credentials is unsafe, and approving each access
-through a desktop prompt only works when you are at that desktop. warden lets
-you approve remotely, from a phone, with a hardware-backed passkey, for a
-bounded window and a stated goal.
-
-## Architecture
+## How it works
 
 ```
-workstation                           server (container)                      targets
------------                           ------------------                      -------
-warden CLI --- HTTPS (tailnet) -----> warden-server --- Connect API --> 1Password Connect
-  |  ephemeral key in a per-grant       |  approval web UI (passkey)               |
-  |  ssh-agent, never on disk           |  SSH CA (key held in memory)             v
-  |                                     |  notifier --> Home Assistant / ntfy   1Password vault
-  |                                     |                       |               (policy and CA key)
-  |                                     |                       v
-  |                                     |                     phone
-  +--- ssh with the signed certificate ---------------------------------------> hosts that trust the CA
-  |
-  +--- ssh (approved key) --> relay (tailnet TCP) --- ssh (key/password) -----> appliances
+ agent machine                  warden (your server)              your phone
+ ─────────────                  ────────────────────              ──────────
+ warden request ssh web-01 ──▶  checks the policy in 1Password
+   --goal "restart the …"       notifies you ───────────────────▶ notification
+                                                                  approval page
+                                approval ◀─────────────────────── passkey ✓
+ ◀── grant (15 min) ─────────── issues the access
 
-phone --- HTTPS (tailnet) ------------> approval page (WebAuthn passkey)
+ warden ssh web-01 ───────────────────────────────────────────▶  web-01
+   (short-lived certificate, or a session through warden's relay)
+ warden http home-api GET … ──▶ adds the secret, calls the API,
+                                redacts the answer
 ```
 
-## Components
+1. **Request.** The agent runs `warden request` with a target, a goal and a
+   window (15 minutes to 4 hours). warden checks it against the policy in a
+   1Password vault.
+2. **Approve.** You get a notification (Home Assistant or ntfy). The link
+   opens the approval page, reachable only from your phone over Tailscale,
+   and you approve with a passkey, or deny.
+3. **Use.** The agent gets exactly what you approved, for the window you
+   chose, and every step is written to a tamper-evident audit log.
 
-- `warden-server` (crate `warden-broker`): the agent API, the approval web UI,
-  the SSH CA, the SSH relay, the HTTP proxy, notifier dispatch, the
-  hash-chained audit log and SQLite state.
-  It runs as a container.
-- `warden` (crate `warden-broker-cli`): the command-line client. It requests
-  access, waits for the decision, keeps the ephemeral key in a per-grant
-  `ssh-agent`, wraps `ssh` and makes brokered API calls (`warden http`).
-- `warden-broker-proto`: the wire types shared by both.
+What warden can grant:
 
-Policy lives in a 1Password vault read through 1Password Connect. See
-[docs/1password-items.md](docs/1password-items.md). Notifications go to the
-channels you choose (Home Assistant, ntfy) in the order you choose; see
-[docs/notifications.md](docs/notifications.md).
+| Access | How the agent gets it | What the agent never sees |
+|--------|-----------------------|---------------------------|
+| **SSH, certificate mode** | A certificate signed by warden's SSH CA, valid for the window, for a key that exists only in memory. | Any reusable key. |
+| **SSH, relay mode** (appliances, password-only hosts) | A session through warden's SSH relay; warden logs in to the target. | The target's key or password. |
+| **HTTP API calls** | warden makes each call, adds the secret, and returns the answer with the secret redacted. | The API secret. |
 
-## Quickstart
+Status: early development, for one owner. The current release is
+**0.7.0**; see the [changelog](CHANGELOG.md).
 
-1. **Create the 1Password items** (the SSH CA key and one item per target) and
-   a read-only Connect token for that vault, as described in
-   [docs/1password-items.md](docs/1password-items.md). Set up each target to
-   trust the CA for that target only (below).
+## Requirements
 
-   Certificates carry a single principal, `warden:<target>:<user>`, so a host
-   must map that exact string to the account. In `sshd_config`:
+- A Linux server with Docker, on a [Tailscale](https://tailscale.com)
+  tailnet. warden is reachable only over the tailnet.
+- A 1Password account that can run a
+  [1Password Connect](https://developer.1password.com/docs/connect/) server.
+- A phone with a passkey (and on the tailnet).
+- On each agent machine: the `warden` CLI and OpenSSH.
 
-   ```
-   TrustedUserCAKeys /etc/ssh/warden_ca.pub
-   AuthorizedPrincipalsFile /etc/ssh/auth_principals/%u
-   ```
+## Quick start
 
-   and in `/etc/ssh/auth_principals/<user>` one line per allowed user of this
-   host, for example `warden:pi:deploy`. A host that only reads
-   `authorized_keys` (for example the Home Assistant SSH add-on) uses one line
-   instead:
+This is the short path. [Deployment](docs/deployment.md) explains each step
+and the reasons behind it; follow it for a real setup.
 
-   ```
-   cert-authority,principals="warden:<target>:<user>" ssh-ed25519 AAAA…
-   ```
+1. **Tailscale.** Tag the server `tag:warden-host`, and publish warden as
+   two [Tailscale Services][svc]: `svc:warden` (the approval UI) granted to
+   your phone only, and `svc:warden-api` (the agent API) granted to the
+   agent machines only. Add policy tests so the agent machines can never
+   reach the approval UI.
+   [The policy and commands](docs/deployment.md#2-tailscale).
 
-   With this setup an approval for one target cannot be used on any other host
-   that trusts the same CA. `TrustedUserCAKeys` without
-   `AuthorizedPrincipalsFile` would not accept the certificate at all.
-
-   A host that cannot trust a CA is a **relay target** instead: set its item's
-   `mode` to `relay`, pin its `host_keys`, and put the account's Ed25519
-   private key or password in the item (see
-   [docs/1password-items.md](docs/1password-items.md)). Nothing is installed
-   on the target except an ordinary login for that account. Set
-   `WARDEN_RELAY_PUBLIC_ADDR` (below) so agents know where the relay is.
-
-2. **Build and run the server.** The image is built from this repository; no
-   image is published.
+2. **1Password.** Create a dedicated `Warden` vault, a Connect server for
+   that vault only, a read-only token, and the SSH CA key:
 
    ```sh
-   docker buildx build -t warden:dev --load .
-   docker run -d --name warden --read-only --cap-drop ALL \
-     --network container:warden-tailscale \
-     -v warden-data:/data \
-     -e WARDEN_DB_PATH=/data/warden.db \
-     -e WARDEN_AUDIT_PATH=/data/audit.jsonl \
-     -e WARDEN_PUBLIC_URL=https://warden.example.ts.net \
-     -e WARDEN_OWNER_LOGIN=you@example.com \
-     -e WARDEN_OP_CONNECT_URL=http://connect-api:8080 \
-     -e WARDEN_OP_CONNECT_TOKEN \
-     -e WARDEN_NOTIFY=homeassistant,ntfy \
-     -e WARDEN_NOTIFY_HOMEASSISTANT_WEBHOOK_URL \
-     -e WARDEN_NOTIFY_NTFY_URL \
-     warden:dev
+   op vault create Warden
+   op connect server create warden-connect --vaults Warden
+   op connect token create warden-read --server warden-connect --vault Warden,r
+   op item create --vault Warden --category "SSH Key" \
+     --title warden-ssh-ca --tags warden:ssh-ca --ssh-generate-key ed25519
    ```
 
-   Pass the secrets (`WARDEN_OP_CONNECT_TOKEN`, the webhook and ntfy settings)
-   from your secret manager rather than writing them on the command line. The
-   container runs as uid 65532 with no shell; `/data` is the only writable
-   path.
+   [Details](docs/deployment.md#3-1password).
 
-   `warden-tailscale` is the dedicated Tailscale sidecar container (see
-   "Deployment notes"). `--network container:warden-tailscale` puts warden in
-   the sidecar's network namespace, so the listeners stay on their loopback
-   defaults (`127.0.0.1:8080` and `127.0.0.1:8081`) and only the sidecar's
-   Tailscale Serve can reach them. Do not bind them to `0.0.0.0` and do not
-   run warden on a shared bridge network: warden trusts the
-   `Tailscale-User-Login` header, and any process or container that can reach
-   a listener directly can forge it. The sidecar must also be attached to the
-   internal network where Connect runs, since warden uses its network.
-
-   The image has no `HEALTHCHECK` because it has no shell. Configure your
-   orchestrator to run `/warden-server healthcheck`, which requests `/healthz`
-   on `WARDEN_API_LISTEN` and exits 0 when healthy and 1 otherwise.
-
-   Relay mode adds three variables. `WARDEN_RELAY_PUBLIC_ADDR` (`host:port`)
-   is the address agents connect to; it is required for relay targets, and
-   without it requests for them are refused. `WARDEN_RELAY_LISTEN` (default
-   `127.0.0.1:2222`) is the local listener, which the sidecar publishes as a
-   Tailscale Serve TCP forward (granted to the workstation only, like the API
-   port). `WARDEN_RELAY_HOST_KEY_PATH` (default `/data/relay_host_ed25519`) is
-   the relay's Ed25519 host key: it is generated on first use with mode 0600
-   and must stay on the data volume so the key does not change between
-   restarts. `WARDEN_RELAY_MAX_SESSIONS` (default 16, at most 1024) limits
-   relayed sessions open at once; each grant may hold 4.
-
-   All variables: `WARDEN_DB_PATH`, `WARDEN_AUDIT_PATH`, `WARDEN_API_LISTEN`
-   (default `127.0.0.1:8080`), `WARDEN_APPROVAL_LISTEN` (default
-   `127.0.0.1:8081`), `WARDEN_PUBLIC_URL` (https), `WARDEN_OWNER_LOGIN`,
-   `WARDEN_OP_CONNECT_URL`, `WARDEN_OP_CONNECT_TOKEN`, `WARDEN_OP_VAULT`
-   (default `Warden`), `WARDEN_NOTIFY` (channels in priority
-   order, required), `WARDEN_NOTIFY_HOMEASSISTANT_WEBHOOK_URL`,
-   `WARDEN_NOTIFY_NTFY_URL`, `WARDEN_NOTIFY_NTFY_TOKEN`,
-   `WARDEN_PROXY_MAX_RESPONSE_BYTES` (largest response a proxied API call may
-   return, default `1048576`, at most `67108864`),
-   `WARDEN_PROXY_MAX_CALLS_PER_AGENT` (proxied calls in flight per agent,
-   default `4`, 1 to 64), `WARDEN_PROXY_MAX_CALLS` (in flight overall,
-   default `16`, 1 to 256, at least the per-agent limit),
-   `WARDEN_RELAY_LISTEN`, `WARDEN_RELAY_PUBLIC_ADDR`,
-   `WARDEN_RELAY_HOST_KEY_PATH` and `WARDEN_RELAY_MAX_SESSIONS`. See
-   [docs/notifications.md](docs/notifications.md) for the channel settings.
-
-3. **Enroll your phone's passkey.**
+3. **Run Connect and warden** with Docker Compose: hardened containers, no
+   published ports, Connect on its own network. Verify the image first:
 
    ```sh
-   docker exec warden /warden-server enroll
+   gh attestation verify oci://ghcr.io/pecheriere/warden:0.7.0 --owner pecheriere
    ```
 
-   Open the printed URL on your phone and enter the code. It works once, for
-   10 minutes. List or remove passkeys with `warden-server passkey list|remove`.
+   [The Compose file](docs/deployment.md#5-run-warden), and
+   [every setting](docs/configuration.md).
 
-4. **Create an agent key.**
+4. **Publish the Services** on the server:
 
    ```sh
-   docker exec warden /warden-server agent add laptop
+   tailscale serve --service=svc:warden     --https=443 --bg http://172.31.250.10:8081
+   tailscale serve --service=svc:warden-api --https=443 --bg http://172.31.250.10:8080
    ```
 
-   The key is printed once. Store it in 1Password. `agent list` and `agent
-   revoke <name>` manage agents.
-
-   An agent can instead sign its requests with an SSH key (Ed25519 or ECDSA
-   P-256; see [docs/agent-protocol.md](docs/agent-protocol.md)):
-   `agent add <name> --public-key '<line of the .pub file>'` creates one with
-   no bearer key, and `agent set-key <name> '<line>'` switches an existing
-   agent (its bearer key stops working at once). `agent list` shows each
-   agent's kind of authentication and key fingerprint. The broker's audience
-   id, which signatures name, is created on first start in the file
-   `WARDEN_AUDIENCE_PATH` (default `/data/audience`; keep it on the data
-   volume) and is published at `GET /v1/info`.
-
-5. **Log in from the agent's machine.** With a signing key, held by an
-   `ssh-agent` (`ssh-tpm-agent` on Linux, a YubiKey PIV slot, or a plain key
-   file; it must sign while the machine is locked and unattended, see
-   `docs/agent-usage.md`):
+5. **Enroll your passkey.** Run this, then open the printed URL on your
+   phone and enter the code:
 
    ```sh
-   warden login --server https://warden.example.ts.net --agent laptop \
-     --ssh-key ~/.ssh/warden-laptop.pub
+   docker compose exec warden /warden-server enroll
    ```
 
-   It pins the broker's audience, checks that the `ssh-agent` (at
-   `$SSH_AUTH_SOCK`, or `--ssh-agent-socket`) holds the key and makes one
-   signed call. Nothing secret is stored. See
-   [docs/agent-usage.md](docs/agent-usage.md#with-a-signing-key) for how to
-   make the key and migrate an existing agent.
+6. **Add a target.** Create its item in the vault and let the host trust
+   the CA for that target only. [SSH targets](docs/ssh-targets.md),
+   [API secrets](docs/1password-items.md#api-secret).
 
-   With a bearer key instead (macOS; the key goes into the Keychain):
+7. **Enroll an agent** and log in from its machine. With a signing key:
 
    ```sh
-   op read "op://Private/warden agent laptop/key" \
-     | warden login --server https://warden.example.ts.net --agent laptop
+   # on the server
+   docker compose exec warden /warden-server agent add build-agent \
+     --public-key "ssh-ed25519 AAAA… build-agent"
+   # on the agent machine
+   cargo install --locked --git https://github.com/pecheriere/warden --tag v0.7.0 warden-broker-cli
+   warden login --server https://warden-api.example.ts.net --agent build-agent \
+     --ssh-key ~/.ssh/build-agent.pub
    ```
 
-6. **Request access and use it.**
+   Which key to use (and when a bearer key is the right choice) is in
+   [Agent usage](docs/agent-usage.md#one-time-setup).
+
+8. **Request and use access:**
 
    ```sh
-   warden request ssh pi --user deploy --for 30m --goal "restart the backup job"
-   warden ssh pi
+   warden request ssh web-01 --user build-agent --for 15m \
+     --goal "restart the web container after the config change in PR #42"
+   warden ssh web-01 -- docker restart web
+   warden revoke <grant-id>
    ```
-
-   `warden request` blocks until the owner approves, denies, or the request
-   expires, and prints a fingerprint the approval page also shows. A relay
-   target is requested and used with the same two commands; the session is
-   relayed by the broker, and forwarding and sftp are refused. See
-   [docs/agent-usage.md](docs/agent-usage.md) for how an agent should use it.
-
-   To call an API with a stored secret, add an API secret item to the vault
-   (see [docs/1password-items.md](docs/1password-items.md)), then:
-
-   ```sh
-   warden request api github --for 30m --goal "list my repos to find the stale fork"
-   warden http github GET https://api.github.com/user
-   ```
-
-   Without `--methods` the grant is read-only (`GET` and `HEAD`). To change
-   something, ask for it by name, and optionally under a narrower path:
-
-   ```sh
-   warden request api github --methods POST --path /repos/alice/ --for 15m \
-     --goal "open an issue on alice/widgets about the stale fork"
-   ```
-
-   The approval page and the notification say **Read-only** or **Can modify:
-   POST**. A request can only narrow what the item allows.
-
-   The secret is added by the broker and never reaches the workstation. It goes
-   only to the item's origin, under its path prefix, with the methods the owner
-   approved. `warden http` writes the response body to stdout; `-i` shows the
-   status and headers on stderr and `--fail` exits 22 on a status of 400 or
-   more.
-
-## Deployment notes
-
-warden supports two ways to publish its listeners on the tailnet. In both,
-Tailscale Serve sets the `Tailscale-User-Login` header that warden checks, so
-nothing but Serve may reach the listeners, and the approval endpoint is granted
-to the owner's phone only.
-
-**Dedicated sidecar node.** warden runs behind a dedicated Tailscale node (a
-sidecar container) whose network namespace it shares
-(`--network container:<sidecar>`), with both listeners on loopback. The sidecar
-publishes the agent API and the approval UI as two Tailscale Serve ports
-(proxying to `127.0.0.1:8080` and `127.0.0.1:8081`) with separate tailnet
-grants. Nothing else can reach the listeners to forge the header. Grant the
-approval port to the owner's phone only, and the API and relay ports to the
-machine the agent runs on (the relay is a raw TCP forward, so the tailnet
-policy is its only network-level restriction). Choose this when you want the
-namespace to hold warden alone.
-
-**Tailscale Services.** warden runs on a host that already runs Tailscale, and
-each endpoint is its own [Tailscale Service][svc]. A Service (`svc:<name>`) has
-its own MagicDNS name (`<name>.<tailnet>.ts.net`) and virtual IP, on port 443
-with a Tailscale-issued certificate. For example, `svc:warden` serves the
-approval UI and `svc:warden-api` the agent API, so the WebAuthn RP ID and
-origin belong to warden alone without a dedicated node. Set
-`WARDEN_PUBLIC_URL=https://warden.example.ts.net`. Define each Service once in
-the admin console, then publish it on the host:
-
-```sh
-tailscale serve --service=svc:warden --https=443 --bg http://127.0.0.1:8081
-tailscale serve --service=svc:warden-api --https=443 --bg http://127.0.0.1:8080
-```
-
-The per-Service network grants already decide which device sees which
-endpoint. warden itself does not read app capabilities; add
-`--accept-app-caps=<cap>` only when a reverse proxy in front of warden checks
-them (for example a gateway that refuses requests without
-`example.com/cap/warden-approve`).
-
-Requirements and behaviour (tested on Tailscale 1.104):
-
-- Only a device with a tag identity (for example `tag:warden-host`) can host
-  Services; clients stay user devices.
-- The tailnet policy needs `autoApprovers.services` (or a manual approval of
-  the host in the admin console) and, for network access, a grant with
-  `dst: ["svc:warden"]` and `ip: ["tcp:443"]` for each Service. A device
-  without a grant cannot resolve or reach the name at all: the agent's machine
-  cannot see the approval Service.
-- `Tailscale-User-Login` is forwarded to the backend as with plain Serve.
-  `Tailscale-App-Capabilities` is forwarded only when the capability grant
-  targets the host (`dst: tag:warden-host` or the host's IP alias), not the
-  `svc:` name: a grant with `dst: svc:<name>` gives network access, but its
-  `app` capabilities never reach the host. Serve strips any
-  `Tailscale-App-Capabilities` the client sends.
-- `tailscale serve get-config` omits `AcceptAppCaps` (`tailscale serve status
-  --json` shows it), so set up a Service that needs capabilities with the CLI
-  commands above, not `set-config`.
-- The listeners must be reachable only from the host's Serve (or from a
-  reverse proxy that the host's Serve targets), never from other containers or
-  the LAN: anything that can reach a listener directly can forge
-  `Tailscale-User-Login`. Unlike the sidecar, the host's other local processes
-  and containers are inside the trust boundary unless you isolate them.
-- The RP ID is the Service name. Moving an existing deployment to Services
-  changes it, so re-enroll the passkeys; agents run `warden login` again with
-  the API Service URL (a bearer key can be reused).
 
 [svc]: https://tailscale.com/kb/1552/tailscale-services
 
-In both deployments keep
-the Connect server on an internal network that only warden can reach, run
-warden with all capabilities dropped and a read-only root filesystem, and back
-up the `/data` volume. Details and the reasons are in the threat model.
+## Documentation
 
-## Security model
+| Document | For |
+|----------|-----|
+| [Deployment](docs/deployment.md) | Running warden safely: Tailscale, 1Password Connect, networks, notifications, backups, upgrades. |
+| [Configuration](docs/configuration.md) | Every environment variable and command of the server and the CLI. |
+| [SSH targets](docs/ssh-targets.md) | Setting up hosts: one user per agent, certificate-only logins, relay targets. |
+| [1Password items](docs/1password-items.md) | The exact tags and fields of targets, API secrets and the CA. |
+| [Notifications](docs/notifications.md) | Home Assistant and ntfy. |
+| [Agent usage](docs/agent-usage.md) | Setting up an agent and how it should ask for access. |
+| [Agent protocol](docs/agent-protocol.md) | The agent API, for writing another client. |
+| [Threat model](docs/threat-model.md) | What warden protects, what it does not, and what it assumes. |
+| [Design](docs/design.md) | The design and its decisions. |
+| [Design language](docs/design-language.md) | The approval UI's visual design. |
 
-An agent can only request; a passkey approval from the owner's enrolled device,
-reachable only over the tailnet, is required for every grant; certificates are
-valid for at most four hours for one ephemeral key; relayed sessions end at
-revocation or expiry and the target's credential never leaves the broker; API
-secrets never leave the broker except toward their approved origin; secrets
-never reach notifiers; and every step is written to a tamper-evident audit log.
-The actors, anti-goals, accepted residual risks and deployment assumptions are
-in [docs/threat-model.md](docs/threat-model.md).
+## Security
+
+- **An agent can only ask.** Every grant needs a passkey approval from your
+  enrolled device, on an approval page that only your phone can reach.
+- **Bounded grants.** At most four hours, one target or secret, the account
+  or methods you approved. API requests are read-only unless the agent asks
+  for more, and the page says so.
+- **No standing secrets on the agent machine.** SSH keys are made per
+  request and live only in memory; API and relay credentials never leave
+  warden; a key-signed agent stores nothing secret.
+- **Nothing on the internet.** warden is reachable only over your tailnet,
+  never through Funnel.
+- **Audited.** Every request, decision and use goes to a hash-chained audit
+  log. Secrets never reach the log or the notifications.
+
+warden does not protect against whoever controls the warden host (it is the
+root of trust), against an approved agent misusing its window, or against a
+misleading goal you approve. Grants are not yet tied to a task, so one
+agent's sessions can share them
+([#49](https://github.com/pecheriere/warden/issues/49)), and a revoke does
+not cancel an API call already in flight
+([#44](https://github.com/pecheriere/warden/issues/44)) or an issued
+certificate ([#35](https://github.com/pecheriere/warden/issues/35)). The
+[threat model](docs/threat-model.md) has the full picture.
+
+## Components
+
+| Component | Crate | What it is |
+|-----------|-------|------------|
+| `warden-server` | `warden-broker` | The broker: agent API, approval UI, SSH CA, SSH relay, HTTP proxy, notifications, audit log, SQLite state. Runs as a container. |
+| `warden` | `warden-broker-cli` | The agent's CLI: requests access, waits for the decision, keeps the per-grant key in an `ssh-agent`, wraps `ssh` and makes API calls (`warden http`). |
+| | `warden-broker-proto` | The wire types and the request-signing protocol shared by both. |
 
 ## Development
 
+The checks CI runs:
+
 ```sh
 cargo fmt --check
+scripts/check-no-reqwest-decompression.sh
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo test --workspace --all-features --locked
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps --locked
 cargo deny check
 ```
 
+The relay tests start an unprivileged OpenSSH server, so they need
+`/usr/sbin/sshd`. On Linux the password-target tests also need the current
+user's password in `WARDEN_TEST_LOGIN_PASSWORD` (CI sets a random one). Pull
+requests
+follow [the template](.github/pull_request_template.md); approval UI changes
+follow the [design language](docs/design-language.md).
+
 ## License
 
-Licensed under either of [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at
-your option.
+Licensed under either of [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE),
+at your option.

@@ -5,10 +5,14 @@ warden reads its policy from a 1Password vault through a
 Nothing is cached: every request reads the items afresh, so an edit in
 1Password takes effect on the next request.
 
-- The vault is named by `WARDEN_OP_VAULT` (default `Warden`).
+- The vault is named by `WARDEN_OP_VAULT` (default `Warden`). Keep it for
+  warden's items only.
 - Items are matched by **tag**.
 - Fields are matched by **label** (case-sensitive).
-- The Connect token needs read access to this vault only.
+- The Connect token needs read access to this vault only, and nothing more.
+
+How to create the vault, the Connect server and its token is in
+[Deployment](deployment.md#3-1password).
 
 A missing or malformed field makes the request fail with an error naming the
 item and the field. A required field never falls back to a default.
@@ -58,26 +62,28 @@ the rest of the item, holds it zeroized, drops it right after logging in to
 the target, and never logs it, returns it to the agent or writes it to the
 audit log.
 
-Example (category Server, tag `warden:ssh-target`, title `nas`):
+Example (category Server, tag `warden:ssh-target`, title `switch-01`):
 
 ```
-address     nas.example.com:2222
+address     switch-01.example.com:2222
 mode        relay
-users       backup
+users       admin
 max_window  1h
-host_keys   ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... root@nas
+host_keys   ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQ... root@switch-01
 password    ••••••••••••
 ```
 
-Example (category Server, tag `warden:ssh-target`, title `pi`):
+Example (category Server, tag `warden:ssh-target`, title `web-01`):
 
 ```
-address     192.0.2.10
+address     web-01.example.com
 mode        cert
-users       alice, admin
+users       build-agent
 max_window  1h
-host_keys   ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... root@pi
+host_keys   ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... root@web-01
 ```
+
+How to set up the target host itself is in [SSH targets](ssh-targets.md).
 
 ## API secret
 
@@ -111,18 +117,19 @@ The secret value is read from 1Password only when a call is made, held in
 memory that is wiped after use, and never logged, returned to the agent or
 written to the audit log.
 
-Example (category API Credential, tag `warden:api-secret`, title `github`):
+Example (category API Credential, tag `warden:api-secret`, title
+`home-api`):
 
 ```
-website      https://api.example.com
+website      https://home.example.com
 credential   ••••••••••••••••
 max_window   30m
 methods      GET, POST
-path_prefix  /repos/alice/
+path_prefix  /api/
 ```
 
 This lets an approved agent call `GET` and `POST` on
-`https://api.example.com/repos/alice/…`, with the header
+`https://home.example.com/api/…`, with the header
 `Authorization: Bearer <credential>` added by warden.
 
 The item is the **ceiling**: an agent's request can only narrow it. A request
@@ -138,10 +145,10 @@ whether each request can modify.
 Tag: `warden:ssh-ca`. Exactly one item in the vault carries this tag; zero or
 more than one is an error.
 
-The item is a 1Password **SSH Key** item. warden reads the private key from the
-field whose id is `private_key`, in OpenSSH or PKCS#8 PEM format. The key must
-be an **unencrypted Ed25519** key. RSA, ECDSA and passphrase-protected keys are
-rejected.
+The item is a 1Password **SSH Key** item. warden reads the private key from
+the field whose id is `private_key`, in OpenSSH or PKCS#8 PEM format. The key
+must be an **unencrypted Ed25519** key. RSA, ECDSA and passphrase-protected
+keys are rejected.
 
 Example (category SSH Key, tag `warden:ssh-ca`, title `warden-ssh-ca`):
 
@@ -151,24 +158,12 @@ private key   -----BEGIN OPENSSH PRIVATE KEY-----
               -----END OPENSSH PRIVATE KEY-----
 ```
 
-Publish the matching public key to targets (the `public key` field of the
-item, or `ssh-keygen -y`). Certificates carry a single principal,
-`warden:<target>:<user>`, where `<target>` is the target item's title, so each
-host must accept the CA only for its own target name:
+Publish the matching public key to the certificate targets (the item's
+`public key` field, or `ssh-keygen -y`). Each target must accept the CA only
+for its own principal, `warden:<target>:<user>`, where `<target>` is the
+target item's title; [SSH targets](ssh-targets.md) shows how. Without that
+mapping an approval for one target would be usable on every host that
+trusts the CA.
 
-```
-# sshd_config
-TrustedUserCAKeys /etc/ssh/warden_ca.pub
-AuthorizedPrincipalsFile /etc/ssh/auth_principals/%u
-```
-
-`/etc/ssh/auth_principals/<user>` holds one line per allowed user, for example
-`warden:pi:alice` on the host of target `pi`. A host that only reads
-`authorized_keys` (for example the Home Assistant SSH add-on) uses:
-
-```
-cert-authority,principals="warden:<target>:<user>" ssh-ed25519 AAAA…
-```
-
-Without this mapping an approval for one target would be usable on every host
-that trusts the CA.
+To create the item with the 1Password CLI, see
+[Deployment](deployment.md#3-1password).
