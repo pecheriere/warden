@@ -6,6 +6,12 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `AGENTS.md`: contributor rules for coding agents and humans (the CI
+  checks to run, public-repo hygiene, changelog, docs and UI screenshot
+  expectations, the release steps). `CLAUDE.md` imports it.
+
 ### Changed
 
 - Docs overhaul. The README is now a short introduction with a quick start.
