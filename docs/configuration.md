@@ -38,7 +38,7 @@ Values are never echoed in errors.
 | `WARDEN_PROXY_MAX_CALLS` | `16` | Proxied calls in flight overall, 1 to 256, at least the per-agent limit. |
 | `WARDEN_RELAY_PUBLIC_ADDR` | unset | Where agents reach the SSH relay, `host:port`. Unset turns the relay off: requests for relay targets are refused. |
 | `WARDEN_RELAY_LISTEN` | `127.0.0.1:2222` | The SSH relay listener. Used only when `WARDEN_RELAY_PUBLIC_ADDR` is set. |
-| `WARDEN_RELAY_HOST_KEY_PATH` | `/data/relay_host_ed25519` | The relay's Ed25519 host key, created on first use (mode 0600) and never overwritten. An existing file must be a regular file owned by the broker's user, not readable by others. Keep it on the data volume. |
+| `WARDEN_RELAY_HOST_KEY_PATH` | `/data/relay_host_ed25519` | The relay's Ed25519 host key, created on first use (mode 0600) and never overwritten. An existing file must be a regular file owned by the broker's user, with no group or other permissions (0600). Keep it on the data volume. |
 | `WARDEN_RELAY_MAX_SESSIONS` | `16` | Relayed sessions open at once, 1 to 1024. Each grant may hold 4. |
 | `RUST_LOG` | `info` | Log filter, in [`tracing` `EnvFilter`](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html) syntax. |
 

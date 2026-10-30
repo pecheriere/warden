@@ -723,10 +723,11 @@ enrolled passkeys and agents (re-enroll them).
   body goes to stdout unchanged, and with `-i` the status line and headers go
   to stderr. The CLI records an `api` grant locally (secret name, origin,
   grant id, end time, methods and path prefix; never a secret; an older
-  record without methods reads as `GET` and `/`) and exits 5 when no active grant covers the call,
-  with a hint naming `warden request api --methods`. `--fail` exits 22 on an
-  upstream status of 400 or more, as `curl --fail` does, and still writes the
-  body. The CLI refuses non-https URLs and bodies over 1 MiB before sending.
+  record without methods reads as `GET` and `/`) and exits 5 when no active
+  grant covers the call, with a hint naming `warden request api --methods`.
+  `--fail` exits 22 on an upstream status of 400 or more, as `curl --fail`
+  does, and still writes the body. The CLI refuses non-https URLs and bodies
+  over 1 MiB before sending.
 - Relay targets need no different commands: `warden request ssh` and
   `warden ssh` work as for certificate targets. The grant tells the CLI to
   connect to the relay's address and log in as the target name, with the

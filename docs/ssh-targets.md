@@ -86,6 +86,21 @@ On `web-01`, for the agent `build-agent`:
    sudo sshd -t && sudo systemctl reload ssh   # or sshd, by distribution
    ```
 
+   sshd uses the **first** value it reads for each of these keywords. If
+   the host already sets `TrustedUserCAKeys`, `AuthorizedPrincipalsFile` or
+   `AuthorizedKeysFile` earlier (in `sshd_config` before its `Include`, or
+   in a drop-in that sorts first), the file above is silently ignored. Check
+   the effective values for the account:
+
+   ```sh
+   sudo sshd -T -C user=build-agent,host=localhost,addr=127.0.0.1 \
+     | grep -iE 'trustedusercakeys|authorizedprincipalsfile|authorizedkeysfile'
+   ```
+
+   It must print `/etc/ssh/warden_ca.pub`,
+   `/etc/ssh/auth_principals/%u` and `none`. If the host already trusts
+   another CA, list both keys in one `TrustedUserCAKeys` file instead.
+
 6. **Create the target item** in the `Warden` vault: title `web-01`, tag
    `warden:ssh-target`, `mode` `cert`, `users` `build-agent`, the host's
    `address` and pinned `host_keys`, and a `max_window`. The host keys are
@@ -148,10 +163,12 @@ login for the account, with an Ed25519 key or a password. Set up the item
   `password`. Give it a credential that works only on this target and for
   this account.
 
-warden must be able to reach the target's address, and the relay endpoint
-must be published (see
-[Deployment](deployment.md#the-ssh-relay-endpoint)) with
-`WARDEN_RELAY_PUBLIC_ADDR` set.
+warden must be able to reach the target's address (allow it in
+[warden's egress rules](deployment.md#lock-wardens-egress)), and the relay
+endpoint must be published with `WARDEN_RELAY_PUBLIC_ADDR` set. Relay
+targets currently need
+[the sidecar layout](deployment.md#10-the-sidecar-layout-for-relay-targets):
+publishing the relay through Tailscale Services has not been tested.
 
 Through the relay, port, agent and X11 forwarding and subsystems (`sftp`,
 and so `scp` in its default mode) are refused, and the environment is

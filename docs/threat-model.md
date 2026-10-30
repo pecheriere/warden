@@ -188,7 +188,8 @@ guarantee because the server is the trusted party:
   login, so the broker does not require `Tailscale-User-Login` for signed
   requests and ignores whatever login Serve reports for them. The signature
   is the authentication; who may reach the API port at all is decided by the
-  tailnet policy (Serve and the gateway app capability). The consequence:
+  tailnet policy (and, if you run one, a gateway's app capability). The
+  consequence:
   any tailnet device the policy lets reach the API can send signed requests,
   and only possession of an enrolled signing key separates it from an
   agent. Keep the API port's grant as narrow as the agents that need it.
@@ -224,8 +225,8 @@ These were recorded during implementation and are accepted for this release.
   are on the machine, with nothing to take away; a plain key file can be
   copied and used from anywhere that can reach the API. Because key-signed
   agents are exempt from the owner-login check (above), the tailnet policy
-  and the gateway capability are the only network gate besides the
-  signature.
+  (and a gateway's app capability, if you run one) is the only network gate
+  besides the signature.
 - **Bearer agent keys are bearer credentials.** Anyone who obtains a bearer
   agent key can replay it from a host that can reach the API with the
   owner's login (key-signed agents do not have this problem; switch an agent
@@ -395,12 +396,12 @@ These were recorded during implementation and are accepted for this release.
   the 60 s stall rule.
 - **The per-address pre-login limit is global behind Tailscale Serve.** The
   relay allows 5 connections per source address and 10 overall that have not
-  logged in. Serve forwards the TCP stream from `127.0.0.1`, so every peer has
-  the same address and the per-address limit acts as a global one: a peer that
-  can reach the relay port can fill the login slots for a few seconds at a
-  time (10 s login timeout, 3 attempts). It does not let anyone in. The
-  tailnet policy decides who can reach the port; grant it to the agent
-  machines only.
+  logged in. Serve forwards every TCP stream from one address (the node's
+  loopback in the sidecar layout), so every peer has the same address and the
+  per-address limit acts as a global one: a peer that can reach the relay port
+  can fill the login slots for a few seconds at a time (10 s login timeout, 3
+  attempts). It does not let anyone in. The tailnet policy decides who can
+  reach the port; grant it to the agent machines only.
 - **Fail closed when state cannot be read.** The relay checks the grants of
   its live sessions every second, each check bounded to 1.5 s. If none
   succeeds for 10 s, every relayed session ends (reason
@@ -425,8 +426,14 @@ warden's guarantees depend on its environment being set up as follows.
   so the relying party is the approval Service's name and is not shared.
   The listeners are bound to warden's address on a network that holds
   warden alone (and its reverse proxy, if any), never to `0.0.0.0`, and no
-  port is published. Unlike the sidecar, the host's other local processes
-  are inside the trust boundary unless isolated. Network access is a grant
+  port is published. Unlike the sidecar, every process on the host and
+  every container with host networking can connect to the listeners and
+  forge the header, so the whole host is inside the trust boundary: it runs
+  nothing untrusted and no host-network container, and local access to the
+  listeners can be limited to tailscaled (see
+  [deployment.md](deployment.md#who-can-reach-the-listeners)). The Docker
+  Engine is 28 or later, which stops other LAN machines from routing to
+  unpublished container ports. Network access is a grant
   with `dst: svc:<name>`; an application capability reaches warden (or a
   gateway in front of it) only when its grant targets the host (`tag:` or IP
   alias), because `app` capabilities on a `svc:` destination are not

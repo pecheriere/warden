@@ -65,8 +65,9 @@ triggers:
     webhook_id: "<webhook_id>"
     allowed_methods:
       - POST
-    # false when warden reaches Home Assistant over the tailnet (see below).
-    local_only: false
+    # Set to false when warden reaches Home Assistant over the tailnet
+    # (see below).
+    local_only: true
 actions:
   - action: notify.mobile_app_<phone>
     data:

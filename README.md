@@ -48,8 +48,13 @@ Status: early development, for one owner. The current release is
 
 ## Requirements
 
-- A Linux server with Docker, on a [Tailscale](https://tailscale.com)
-  tailnet. warden is reachable only over the tailnet.
+- A Linux server dedicated to warden, on a
+  [Tailscale](https://tailscale.com) tailnet. warden is reachable only over
+  the tailnet.
+- **Docker Engine 28 or later and Docker Compose 2.33 or later.** Older
+  engines let other LAN machines reach unpublished container ports, which
+  would expose warden's listeners
+  ([why](docs/deployment.md#deploying-warden)).
 - A 1Password account that can run a
   [1Password Connect](https://developer.1password.com/docs/connect/) server.
 - A phone with a passkey (and on the tailnet).
@@ -66,9 +71,15 @@ and the reasons behind it; follow it for a real setup.
    agent machines only. Add policy tests so the agent machines can never
    reach the approval UI.
    [The policy and commands](docs/deployment.md#2-tailscale).
+   SSH **relay** targets (appliances that cannot trust a CA) need the
+   [sidecar layout](docs/deployment.md#10-the-sidecar-layout-for-relay-targets)
+   instead.
 
 2. **1Password.** Create a dedicated `Warden` vault, a Connect server for
-   that vault only, a read-only token, and the SSH CA key:
+   that vault only, a read-only token, and the SSH CA key. Run this in a
+   private directory: `op connect server create` writes the credentials
+   file `1password-credentials.json` there, and the token is printed once
+   ([how to move both safely](docs/deployment.md#3-1password)):
 
    ```sh
    op vault create Warden
@@ -77,8 +88,6 @@ and the reasons behind it; follow it for a real setup.
    op item create --vault Warden --category "SSH Key" \
      --title warden-ssh-ca --tags warden:ssh-ca --ssh-generate-key ed25519
    ```
-
-   [Details](docs/deployment.md#3-1password).
 
 3. **Run Connect and warden** with Docker Compose: hardened containers, no
    published ports, Connect on its own network. Verify the image first:
@@ -111,7 +120,7 @@ and the reasons behind it; follow it for a real setup.
 7. **Enroll an agent** and log in from its machine. With a signing key:
 
    ```sh
-   # on the server
+   # on the server, with the agent's public key line
    docker compose exec warden /warden-server agent add build-agent \
      --public-key "ssh-ed25519 AAAA… build-agent"
    # on the agent machine
@@ -197,10 +206,10 @@ cargo deny check
 
 The relay tests start an unprivileged OpenSSH server, so they need
 `/usr/sbin/sshd`. On Linux the password-target tests also need the current
-user's password in `WARDEN_TEST_LOGIN_PASSWORD` (CI sets a random one). Pull
-requests
-follow [the template](.github/pull_request_template.md); approval UI changes
-follow the [design language](docs/design-language.md).
+user's password in `WARDEN_TEST_LOGIN_PASSWORD` (CI sets a random one).
+
+Pull requests follow [the template](.github/pull_request_template.md);
+approval UI changes follow the [design language](docs/design-language.md).
 
 ## License
 

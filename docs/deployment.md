@@ -1,9 +1,24 @@
 # Deploying warden
 
 This guide is the recommended way to run warden: what to set up, in which
-order, and why each step matters for safety. It assumes a Linux host with
-Docker and Tailscale, a 1Password account, and a phone that can hold a
-passkey.
+order, and why each step matters for safety.
+
+Requirements:
+
+- **A Linux host dedicated to warden** (see
+  [who can reach the listeners](#who-can-reach-the-listeners)), with
+  Tailscale installed, and MagicDNS and HTTPS certificates enabled for the
+  tailnet.
+- **Docker Engine 28 or later and Docker Compose 2.33 or later.** This is a
+  security requirement, not only a feature one. Before Engine 28, another
+  machine on the LAN that adds a route to a container network through the
+  host can reach a container's ports even when they are not published. That
+  would let it reach warden's listeners and forge the owner's identity
+  header. Engine 28 blocks such direct access, and the Compose file below
+  also uses `gw_priority`, which needs Engine 28 and Compose 2.33. Check
+  with `docker version` and `docker compose version`.
+- A 1Password account that can create Connect servers.
+- A phone that can hold a passkey, on the tailnet.
 
 warden's guarantees depend on its surroundings as much as on its code. The
 [threat model](threat-model.md#deployment-assumptions) lists the assumptions;
@@ -20,7 +35,8 @@ Contents:
 7. [Notifications](#7-notifications)
 8. [First start](#8-first-start)
 9. [Backups and upgrades](#9-backups-and-upgrades)
-10. [Checklist](#10-checklist)
+10. [The sidecar layout, for relay targets](#10-the-sidecar-layout-for-relay-targets)
+11. [Checklist](#11-checklist)
 
 The examples use these placeholder names. Replace them with your own.
 
@@ -68,6 +84,49 @@ that Tailscale Serve adds. Anything that can open a connection to a warden
 listener directly can forge that header. So the only things that may reach
 the listeners are Tailscale Serve and, if you use one, a reverse proxy that
 Serve targets.
+
+This layout does not support SSH relay targets yet: they need
+[the sidecar layout](#10-the-sidecar-layout-for-relay-targets).
+
+### Who can reach the listeners
+
+In this layout the host's Tailscale Serve connects to warden's address on
+the `front` network. **Every other process on the host can connect to that
+address too, and so can every container with host networking.** Any of them
+can send a forged `Tailscale-User-Login` with the owner's login. A forged
+login cannot approve anything (that needs the passkey), but it can read
+`/grants` and `/history` (every goal, agent and target), revoke grants,
+deny requests whose link it learns, and use a stolen bearer agent key.
+
+So in this layout **the whole host is inside the trust boundary**, not only
+its root. Contain it:
+
+- **Dedicate the host to warden** (and its Connect), with no untrusted local
+  users and no other services that run untrusted code.
+- **Run no container with host networking** (`network_mode: host`) on it.
+- **Bind the listeners to warden's address on a network no other service
+  shares** (`front` below holds warden alone), never to `0.0.0.0`, and
+  publish no port.
+- **Put a gateway in front of warden** if you want a second check: a
+  reverse proxy on `front` that Serve targets instead of warden, which
+  requires a Tailscale app capability per endpoint (see
+  [app capabilities](#publish-the-services)). A local process can forge a
+  capability header to the gateway as easily as a login to warden, so
+  this helps only together with the next point.
+- **Optionally, refuse local connections that do not come from
+  tailscaled.** tailscaled runs as root, so a rule like the following
+  rejects every other user's connections to the listeners (add the
+  gateway's ports if you run one). It does not stop root, which is the root
+  of trust anyway:
+
+  ```sh
+  iptables -I OUTPUT -d 172.31.250.0/24 -p tcp -m multiport --dports 8080,8081 \
+    -m owner ! --uid-owner 0 -j REJECT
+  ```
+
+The [sidecar layout](#10-the-sidecar-layout-for-relay-targets) avoids this:
+there, warden shares a network namespace with its own Tailscale node only,
+and nothing on the host reaches its loopback listeners.
 
 ## 2. Tailscale
 
@@ -164,8 +223,11 @@ The policy needs four pieces, plus tests. In HuJSON:
 }
 ```
 
-Merge these into your existing policy. The tests are the important part:
-they make sure no later edit lets the agent machine reach the approval UI.
+Merge these into your existing policy. **Remove or narrow the default
+allow-all grant** (`"src": ["*"], "dst": ["*"], "ip": ["*"]`): with it, the
+agent machine can reach `svc:warden` and the deny tests fail. The tests are
+the important part: they make sure no later edit lets the agent machine
+reach the approval UI.
 
 **Never grant the approval UI to an agent machine.** An agent can be
 prompt-injected. If it could open the approval page, it could put an
@@ -226,44 +288,19 @@ the public internet. warden refuses every agent API request that came
 through Funnel (`401`), and the approval UI needs the owner's login, which a
 Funnel request never carries. Do not rely on those refusals: keep Funnel off.
 
+- In the tailnet policy, give no `nodeAttrs` entry with the `funnel`
+  attribute to `tag:warden-host` (or to `tag:warden` in the sidecar layout).
+  Without it, the node cannot enable Funnel at all.
+- On the host, `tailscale funnel status` must list nothing.
+
 ### Alternative: a dedicated sidecar node
 
-If you prefer not to tag the host, or you need the SSH relay (see below),
-run a Tailscale container as a dedicated node for warden. warden shares its
-network namespace (`--network container:warden-tailscale`), so the listeners
-stay on their loopback defaults and nothing but that node's Serve can reach
-them. The namespace holds warden alone, which is the main advantage.
-
-Publish each endpoint as its own port on the node (here the node is called
-`warden`):
-
-```sh
-docker exec warden-tailscale tailscale serve --bg --https=443  http://127.0.0.1:8081
-docker exec warden-tailscale tailscale serve --bg --https=8443 http://127.0.0.1:8080
-docker exec warden-tailscale tailscale serve --bg --tcp=2222   tcp://127.0.0.1:2222
-```
-
-`WARDEN_PUBLIC_URL` is then `https://warden.example.ts.net` (the approval
-UI on 443), agents use `https://warden.example.ts.net:8443`, and
-`WARDEN_RELAY_PUBLIC_ADDR` is `warden.example.ts.net:2222`. Grant the ports
-per device, with tests, as above:
-
-```jsonc
-"grants": [
-  {"src": ["owner-phone"],   "dst": ["tag:warden"], "ip": ["tcp:443"]},
-  {"src": ["agent-machine"], "dst": ["tag:warden"], "ip": ["tcp:8443", "tcp:2222"]},
-],
-"tests": [
-  {"src": "owner-phone",   "accept": ["tag:warden:443"],
-                           "deny":   ["tag:warden:8443", "tag:warden:2222"]},
-  {"src": "agent-machine", "accept": ["tag:warden:8443", "tag:warden:2222"],
-                           "deny":   ["tag:warden:443"]},
-],
-```
-
-The sidecar must also join Connect's network, since warden uses the
-sidecar's network. Bind no listener to `0.0.0.0`, and never run warden on a
-shared bridge network.
+A Tailscale container can instead be a dedicated tailnet node for warden.
+warden shares its network namespace, so its listeners stay on loopback and
+nothing but that node's Serve can reach them, not even other processes on
+the host. It is also, for now, the only layout that supports SSH relay
+targets. [Section 10](#10-the-sidecar-layout-for-relay-targets) is the full
+recipe.
 
 ### The SSH relay endpoint
 
@@ -274,9 +311,9 @@ peer appears to come from the same address, so the relay authenticates the
 agent by its approved key, and the tailnet policy is the only network-level
 control. Grant the relay port to the agent machines only.
 
-The sidecar layout above publishes it with `--tcp`. With Tailscale Services,
-publishing the relay has not been tested; if you need relay targets, prefer
-the sidecar node.
+**Publishing the relay through Tailscale Services has not been tested.** Use
+[the sidecar layout](#10-the-sidecar-layout-for-relay-targets), which
+publishes it as a Serve TCP forward, if you have relay targets.
 
 ## 3. 1Password
 
@@ -307,11 +344,19 @@ cached: an edit in 1Password takes effect on the next request.
    warden never writes to 1Password.
 
    ```sh
-   op connect token create warden-read --server warden-connect --vault Warden,r
+   op connect token create warden-read --server warden-connect --vault Warden,r \
+     | ssh root@<warden host> \
+         'umask 077; sed "s/^/WARDEN_OP_CONNECT_TOKEN=/" >> /srv/warden/warden.env'
    ```
 
-   The token is printed once. Store it as `WARDEN_OP_CONNECT_TOKEN` in
-   warden's environment file (mode 0600), never on a command line.
+   The token is printed once. The command above writes it straight into
+   warden's environment file on the host (mode 0600, in the directory
+   prepared in [section 4](#4-1password-connect-hardened); create that
+   first), so it is never on a command line or in your terminal's
+   scrollback. Use any account on the host that can write the file without
+   a password prompt (a prompt would read the token). Otherwise run the
+   command alone, paste the token into the file with an editor, and clear
+   the terminal.
    **Never reuse a token or a Connect server that serves other vaults or
    other applications**: a token that can read more than the `Warden`
    vault turns a warden compromise into a compromise of those secrets too.
@@ -531,24 +576,37 @@ networks:
 
 The addresses are examples: pick subnets that are free on your host.
 
-Prepare the data directory and the environment file:
+**1. Prepare the data directory:**
 
 ```sh
 cd /srv/warden
 install -d -o 65532 -g 65532 -m 0700 data
-install -m 0600 /dev/null warden.env   # then fill it from your secret manager
-docker compose config -q && docker compose up -d
 ```
 
-`warden.env` holds the secrets:
+**2. Complete `warden.env`**, which holds the secrets. It already has the
+Connect token from [section 3](#3-1password); add the notification settings
+from your secret manager, and keep the file mode 0600, owned by root:
 
 ```sh
-WARDEN_OP_CONNECT_TOKEN=<the token from step 3 of section 3>
+WARDEN_OP_CONNECT_TOKEN=<written there in section 3>
 WARDEN_NOTIFY_HOMEASSISTANT_WEBHOOK_URL=https://ha.example.com/api/webhook/<id>
 WARDEN_NOTIFY_NTFY_URL=https://ntfy.example.com/warden-<random>
 ```
 
 Every variable is described in [Configuration](configuration.md).
+
+About secrets on disk: Connect needs its credentials file on disk anyway,
+so a root-only environment file next to it adds no new kind of exposure.
+But anyone in the `docker` group can read the container's environment
+(`docker inspect`), including the Connect token and the webhook URL: treat
+`docker` group membership on this host as root.
+
+**3. Start the stack:**
+
+```sh
+cd /srv/warden
+docker compose config -q && docker compose up -d
+```
 
 The image has no `HEALTHCHECK` of its own (it has no shell): the Compose
 file runs `/warden-server healthcheck`, which requests `/healthz` on
@@ -556,11 +614,9 @@ file runs `/warden-server healthcheck`, which requests `/healthz` on
 
 ### Relay targets
 
-If you have relay targets, also set `WARDEN_RELAY_PUBLIC_ADDR` (the address
-agents connect to, see [the SSH relay endpoint](#the-ssh-relay-endpoint))
-and keep the relay host key on the data volume
-(`WARDEN_RELAY_HOST_KEY_PATH`, default `/data/relay_host_ed25519`). Without
-`WARDEN_RELAY_PUBLIC_ADDR`, requests for relay targets are refused.
+This layout leaves `WARDEN_RELAY_PUBLIC_ADDR` unset, so requests for relay
+targets are refused. For relay targets, use
+[the sidecar layout](#10-the-sidecar-layout-for-relay-targets).
 
 ## 6. Network rules
 
@@ -574,19 +630,69 @@ and keep the relay host key on the data volume
   <container>` prints nothing).
 - **No listener on `0.0.0.0`.** Bind warden's listeners to its `front`
   address (or to loopback in the sidecar layout).
+- **No other host-local access.** Nothing else on the host may connect to
+  the listeners (see
+  [who can reach the listeners](#who-can-reach-the-listeners)).
 - **Certificate targets need no warden egress.** The agent connects to
   them directly with its certificate.
 
-Check the rules from a throwaway container in the same network namespace
-(warden's image has no shell or HTTP client):
+### Lock warden's egress
+
+`front` is an ordinary bridge with the default route, so out of the box
+warden can reach anything. Limit it with rules in Docker's `DOCKER-USER`
+chain for the `br-warden` bridge, which sees every connection warden opens
+to the outside (its traffic to Connect stays on `br-warden-op` and is not
+affected). warden calls its upstreams directly and does not use an HTTP
+proxy, so filter by address:
+
+```sh
+iptables -N WARDEN-EGRESS
+iptables -A WARDEN-EGRESS -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+iptables -A WARDEN-EGRESS -p tcp -d <home assistant address> --dport 443 -j RETURN
+iptables -A WARDEN-EGRESS -p tcp -d <ntfy server address> --dport 443 -j RETURN
+iptables -A WARDEN-EGRESS -p tcp -d <API secret origin address> --dport 443 -j RETURN
+iptables -A WARDEN-EGRESS -p tcp -d <relay target address> --dport 22 -j RETURN
+iptables -A WARDEN-EGRESS -j REJECT
+iptables -I DOCKER-USER -i br-warden -j WARDEN-EGRESS
+```
+
+- One line per notification endpoint, API secret origin and relay target,
+  with the port it uses. Name resolution needs no rule: Docker's embedded
+  DNS resolver answers inside the container and queries upstream from the
+  host.
+- An address rule pins an IP, not a name. If an origin's addresses change
+  (a CDN, for example), allow its published ranges, or reach it through a
+  fixed address.
+- The Compose networks are IPv4 only. If you enable IPv6 on them, add the
+  same rules with `ip6tables`.
+- Docker does not flush `DOCKER-USER`, but the rules are lost at reboot:
+  load them from your firewall configuration or a systemd unit ordered
+  after `docker.service`.
+- Lock Connect's egress as described in
+  [section 4](#4-1password-connect-hardened).
+
+### Check the rules
+
+From throwaway containers in the same network namespaces (warden's image
+has no shell or HTTP client):
 
 ```sh
 # warden's listeners are not reachable from Connect's network (must fail):
 docker run --rm --network warden_connect curlimages/curl:<version> \
   -sS -m 5 http://172.31.250.10:8080/healthz
-# warden cannot reach an arbitrary host (must fail once egress is locked):
+# warden cannot reach an address you did not allow (must fail):
 docker run --rm --network container:warden-warden-1 curlimages/curl:<version> \
   -sS -m 5 -o /dev/null https://www.example.org/
+```
+
+And from **another machine on the LAN**, with a route to the container
+network through the warden host (this must fail; it succeeds on Docker
+Engine versions before 28):
+
+```sh
+sudo ip route add 172.31.250.0/24 via <warden host LAN address>
+curl -sS -m 5 http://172.31.250.10:8080/healthz
+sudo ip route del 172.31.250.0/24
 ```
 
 ## 7. Notifications
@@ -603,9 +709,12 @@ secret, so make it long and random. Details and the automation are in
 
 ## 8. First start
 
+Run these on the warden host, in `/srv/warden`.
+
 1. **Enroll the owner's passkey**, on the phone:
 
    ```sh
+   cd /srv/warden
    docker compose exec warden /warden-server enroll
    ```
 
@@ -620,9 +729,10 @@ secret, so make it long and random. Details and the automation are in
 3. **Enroll each agent**, as described in [Agent usage](agent-usage.md):
 
    ```sh
-   # A key-signed agent, with the public key of its signing key:
+   # A key-signed agent: paste the public key line (the content of its .pub
+   # file) that the agent machine's user sent you:
    docker compose exec warden /warden-server agent add build-agent \
-     --public-key "$(cat build-agent.pub)"
+     --public-key 'ssh-ed25519 AAAA… build-agent'
    # Or a bearer-key agent; the key is printed once:
    docker compose exec warden /warden-server agent add build-agent
    ```
@@ -688,13 +798,205 @@ database without a backup.
 
 Upgrade the broker before the agents' `warden` CLIs when a release says so.
 
-## 10. Checklist
+## 10. The sidecar layout, for relay targets
 
-- [ ] The host is tagged `tag:warden-host`; the tailnet policy has the
-      grants and the tests above, and they pass.
-- [ ] The approval Service is granted to the owner's phone only, never to
-      an agent machine.
-- [ ] Funnel is off for both Services.
+In this layout a Tailscale container is a dedicated tailnet node for warden
+(here named `warden`, tagged `tag:warden`). warden runs in that container's
+network namespace, so its listeners stay on loopback: only that node's
+Serve can reach them, not other processes on the host. It publishes the
+approval UI, the agent API and the SSH relay as three ports of the node.
+Everything else in this guide (1Password, Connect, backups) is the same.
+
+The Tailscale container settings below (`TS_*`) follow Tailscale's
+documentation for its container image. This Compose file has not been run
+end to end in exactly this form: check `tailscale serve status` and a test
+request after the first start.
+
+### The tailnet policy
+
+```jsonc
+{
+  "hosts": {
+    "owner-phone":   "<tailnet IP of the owner's phone>",
+    "agent-machine": "<tailnet IP of the agent machine>",
+  },
+  "tagOwners": {
+    "tag:warden": ["autogroup:admin"],
+  },
+  "grants": [
+    // The approval UI (443) to the owner's phone only.
+    {"src": ["owner-phone"],   "dst": ["tag:warden"], "ip": ["tcp:443"]},
+    // The agent API (8443) and the SSH relay (2222) to the agent machines.
+    {"src": ["agent-machine"], "dst": ["tag:warden"], "ip": ["tcp:8443", "tcp:2222"]},
+  ],
+  "tests": [
+    {"src": "owner-phone",   "accept": ["tag:warden:443"],
+                             "deny":   ["tag:warden:8443", "tag:warden:2222"]},
+    {"src": "agent-machine", "accept": ["tag:warden:8443", "tag:warden:2222"],
+                             "deny":   ["tag:warden:443"]},
+  ],
+}
+```
+
+As with Services: remove or narrow the default allow-all grant, and give
+`tag:warden` no `funnel` node attribute. MagicDNS and HTTPS certificates
+must be enabled for the tailnet.
+
+### The auth key
+
+In the admin console, generate an auth key that is **tagged** `tag:warden`,
+**pre-approved**, **not reusable** and **not ephemeral** (the node keeps its
+identity in its state directory). Write it to `/srv/warden/ts-authkey`, mode
+0600. After the first successful start the node no longer needs it: delete
+the file and remove the `secrets` entry.
+
+### Serve configuration
+
+`/srv/warden/serve.json`, applied by the container at every start, so the
+configuration survives restarts. `${TS_CERT_DOMAIN}` is replaced with the
+node's name (`warden.example.ts.net`):
+
+```json
+{
+  "TCP": {
+    "443":  {"HTTPS": true},
+    "8443": {"HTTPS": true},
+    "2222": {"TCPForward": "127.0.0.1:2222"}
+  },
+  "Web": {
+    "${TS_CERT_DOMAIN}:443":  {"Handlers": {"/": {"Proxy": "http://127.0.0.1:8081"}}},
+    "${TS_CERT_DOMAIN}:8443": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:8080"}}}
+  }
+}
+```
+
+### The Compose file
+
+The Connect services of [section 4](#4-1password-connect-hardened) stay as
+they are. warden and the sidecar become:
+
+```yaml
+name: warden
+
+services:
+  tailscale:
+    image: tailscale/tailscale:<version>@sha256:<digest>
+    hostname: warden
+    environment:
+      TS_AUTHKEY: file:/run/secrets/ts-authkey
+      TS_EXTRA_ARGS: --advertise-tags=tag:warden
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_SERVE_CONFIG: /config/serve.json
+      TS_USERSPACE: "true"
+    secrets: [ts-authkey]
+    volumes:
+      - ./tailscale-state:/var/lib/tailscale
+      - ./serve.json:/config/serve.json:ro
+    networks:
+      front:
+        ipv4_address: 172.31.250.10
+        gw_priority: 100
+      connect:
+        ipv4_address: 172.31.251.10
+
+  warden:
+    image: ghcr.io/pecheriere/warden:0.7.0@sha256:<digest>
+    # warden's network is the sidecar's: no networks of its own, and the
+    # listeners stay on their loopback defaults (127.0.0.1:8080, :8081,
+    # and the relay on :2222).
+    network_mode: service:tailscale
+    depends_on: [tailscale]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    stop_grace_period: 15s
+    environment:
+      WARDEN_DB_PATH: /data/warden.db
+      WARDEN_AUDIT_PATH: /data/audit.jsonl
+      WARDEN_AUDIENCE_PATH: /data/audience
+      WARDEN_PUBLIC_URL: https://warden.example.ts.net
+      WARDEN_OWNER_LOGIN: owner@example.com
+      WARDEN_OP_CONNECT_URL: http://172.31.251.11:8080
+      WARDEN_OP_VAULT: Warden
+      WARDEN_NOTIFY: homeassistant,ntfy
+      WARDEN_RELAY_PUBLIC_ADDR: warden.example.ts.net:2222
+      WARDEN_RELAY_HOST_KEY_PATH: /data/relay_host_ed25519
+    env_file: ./warden.env
+    volumes:
+      - ./data:/data
+    healthcheck:
+      test: ["CMD", "/warden-server", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # connect-api and connect-sync: see section 4.
+
+secrets:
+  ts-authkey:
+    file: ./ts-authkey
+
+networks:
+  front:
+    driver_opts:
+      com.docker.network.bridge.name: br-warden
+    ipam:
+      config: [{subnet: 172.31.250.0/24}]
+  connect:
+    driver_opts:
+      com.docker.network.bridge.name: br-warden-op
+    ipam:
+      config: [{subnet: 172.31.251.0/24}]
+```
+
+Prepare and start:
+
+```sh
+cd /srv/warden
+install -d -m 0700 tailscale-state
+install -d -o 65532 -g 65532 -m 0700 data
+docker compose config -q && docker compose up -d
+docker compose exec tailscale tailscale serve status   # the three ports
+```
+
+Then:
+
+- `WARDEN_PUBLIC_URL` is `https://warden.example.ts.net` (the approval UI
+  on 443), agents log in with `https://warden.example.ts.net:8443`, and the
+  relay is at `warden.example.ts.net:2222`, which every relay grant tells
+  the agent.
+- The relay's host key is created on first use at
+  `/data/relay_host_ed25519` and must stay on the data volume, so that it
+  does not change between restarts. Agents receive it pinned in each grant.
+- Each relay target needs its item in the vault (`mode` `relay`, its pinned
+  `host_keys` and one credential): see
+  [SSH targets](ssh-targets.md#relay-targets).
+- In userspace mode (`TS_USERSPACE: "true"`, which needs no capabilities
+  or `/dev/net/tun`), warden's own connections leave through `front`, not
+  through the tailnet. If warden must reach a notifier, an API origin or a
+  relay target **over the tailnet**, run the sidecar in kernel mode
+  instead (`TS_USERSPACE: "false"`, with `cap_add: [NET_ADMIN]` and
+  `devices: [/dev/net/tun]`).
+- The egress rules of [section 6](#lock-wardens-egress) apply to
+  `br-warden` here too, but that bridge now also carries the sidecar's own
+  Tailscale traffic (to Tailscale's coordination and relay servers, and to
+  peers directly over UDP). Allow that traffic, or the node goes offline;
+  the rules can no longer tell warden's connections from tailscaled's.
+- Further hardening of the Tailscale container (a read-only root
+  filesystem, dropped capabilities) has not been tested with this setup.
+
+## 11. Checklist
+
+- [ ] Docker Engine is 28 or later and Compose 2.33 or later.
+- [ ] The host is tagged `tag:warden-host` (or the sidecar `tag:warden`);
+      the tailnet policy has the grants and the tests above, the default
+      allow-all grant is removed or narrowed, and the tests pass.
+- [ ] The approval UI is granted to the owner's phone only, never to an
+      agent machine.
+- [ ] Funnel is off: no `funnel` node attribute for warden's tag, and
+      `tailscale funnel status` lists nothing.
+- [ ] The host runs nothing untrusted and no container with host networking
+      (Services layout).
 - [ ] The `Warden` vault holds only warden's items; the Connect server and
       its token cover that vault only, and the token is read-only.
 - [ ] Connect runs as a dedicated uid with a passwd entry, a read-only root
@@ -702,7 +1004,8 @@ Upgrade the broker before the agents' `warden` CLIs when a release says so.
 - [ ] Connect is on its own network and cannot reach warden's listeners.
 - [ ] Connect's egress is limited to your 1Password servers; warden's to
       Connect, the notifiers, the API origins and the relay targets.
-- [ ] No container publishes a port; no listener binds to `0.0.0.0`.
+- [ ] No container publishes a port; no listener binds to `0.0.0.0`; a LAN
+      machine with a route to the container network cannot reach warden.
 - [ ] The image is pinned by a digest whose attestation you verified.
 - [ ] `/data` is backed up with warden stopped, and before every upgrade.
 - [ ] The audit log is shipped somewhere the host cannot modify.

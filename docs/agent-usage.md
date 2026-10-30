@@ -63,7 +63,8 @@ warden. Check your options against that:
   network.
 - **FIDO security keys** (`sk-ssh-ed25519@openssh.com`,
   `sk-ecdsa-sha2-nistp256@openssh.com`) need a touch for every signature and
-  are refused.
+  are refused, as are RSA keys, ECDSA keys on curves other than P-256, and
+  certificates.
 
 Whatever you pick, lock the screen once and check that signing still works
 (`ssh-keygen -Y sign` through the agent) before relying on it.
@@ -92,14 +93,19 @@ Whatever you pick, lock the screen once and check that signing still works
    - **A key file:** `ssh-keygen -t ed25519 -f ~/.ssh/build-agent`, used for
      nothing else, loaded with `ssh-add ~/.ssh/build-agent`.
 
-2. **Have the owner enroll the public key**, on the broker:
+2. **Have the owner enroll the public key.** Send the owner the one line of
+   `~/.ssh/build-agent.pub` (it is not secret). The owner runs, on the
+   warden host (in `/srv/warden` with the Compose file of
+   [Deployment](deployment.md#5-run-warden)):
 
    ```sh
-   warden-server agent add build-agent --public-key "$(cat ~/.ssh/build-agent.pub)"
+   docker compose exec warden /warden-server agent add build-agent \
+     --public-key 'ecdsa-sha2-nistp256 AAAA… build-agent'
    ```
 
-   `warden-server agent list` shows the key's `SHA256:` fingerprint; compare
-   it with `ssh-keygen -lf ~/.ssh/build-agent.pub`.
+   `docker compose exec warden /warden-server agent list` shows the key's
+   `SHA256:` fingerprint; compare it with
+   `ssh-keygen -lf ~/.ssh/build-agent.pub` on the agent machine.
 
    A key is enrolled for one agent only, and stays with it after the agent
    is revoked: a revoked agent's key can never be enrolled again. If the
@@ -141,9 +147,14 @@ says a request is already pending, cancel the old one or let it expire.
 
 Clients other than `warden` follow [the agent protocol](agent-protocol.md).
 
-**Migrating from a bearer key:** make the key, have the owner run
-`warden-server agent set-key build-agent "$(cat ~/.ssh/build-agent.pub)"`
-(the bearer key stops working at once), then run `warden login --ssh-key …`
+**Migrating from a bearer key:** make the key and send its `.pub` line to
+the owner, who runs, on the warden host:
+
+```sh
+docker compose exec warden /warden-server agent set-key build-agent '<the line>'
+```
+
+The bearer key stops working at once. Then run `warden login --ssh-key …`
 as above. On macOS, that login prints the command that deletes the old key
 from the Keychain (`security delete-generic-password -s warden-broker -a
 '<server>|<agent>'`); it deletes nothing itself. Run it, and delete the key
@@ -151,10 +162,10 @@ from your password manager too.
 
 ### With a bearer key
 
-The owner creates the agent and gets its key once:
+The owner creates the agent on the warden host and gets its key once:
 
 ```sh
-warden-server agent add build-agent
+docker compose exec warden /warden-server agent add build-agent
 ```
 
 Store the key in a password manager. On macOS, log in with it:
@@ -301,8 +312,10 @@ If the owner approves in the instant before the cancel arrives,
 Ctrl-C after approval, while the CLI installs the grant, exits 130 at once
 and names the grant: run `warden revoke <grant>` if you do not want it.
 
-The approval link of a cancelled request shows "Cancelled by the agent." and
-cannot be approved.
+You can cancel only your own requests, and only while they are pending. The
+approval link of a cancelled request shows "Cancelled by the agent." and
+cannot be approved; the request appears as `cancelled` in the owner's
+history and the audit log.
 
 ## Using a grant
 
