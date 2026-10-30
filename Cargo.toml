@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/proto", "crates/broker", "crates/cli"]
 
 [workspace.package]
-version = "0.6.0"
+version = "0.7.0"
 edition = "2024"
 rust-version = "1.94"
 license = "MIT OR Apache-2.0"
@@ -18,8 +18,8 @@ pedantic = { level = "deny", priority = -1 }
 
 [workspace.dependencies]
 # Internal crates
-warden-broker-proto = { path = "crates/proto", version = "0.6.0" }
-warden-broker = { path = "crates/broker", version = "0.6.0" }
+warden-broker-proto = { path = "crates/proto", version = "0.7.0" }
+warden-broker = { path = "crates/broker", version = "0.7.0" }
 
 # Async runtime and web
 tokio = { version = "1.54", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time", "process", "fs", "io-util"] }

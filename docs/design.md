@@ -1,7 +1,7 @@
 # warden — design
 
 This document records the intent and design of warden. It describes the full
-v1 design; the current release (0.6.0) implements the SSH certificate mode
+v1 design; the current release (0.7.0) implements the SSH certificate mode
 (§8.1), the SSH relay mode (§8.2) and the HTTP proxy mode (§8.3). Where the
 implementation deviates from this design, the
 [threat model](threat-model.md) says how and why.
