@@ -11,6 +11,9 @@ All notable changes to this project are recorded here. The format follows
 - `AGENTS.md`: contributor rules for coding agents and humans (the CI
   checks to run, public-repo hygiene, changelog, docs and UI screenshot
   expectations, the release steps). `CLAUDE.md` imports it.
+- README: a "Why warden" section. Password managers keep secrets from
+  agents, but only while someone approves each use on an unlocked computer.
+  warden moves that approval to the phone, per goal and time window.
 
 ### Changed
 
