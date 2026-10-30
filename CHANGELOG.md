@@ -11,6 +11,13 @@ All notable changes to this project are recorded here. The format follows
 - `AGENTS.md`: contributor rules for coding agents and humans (the CI
   checks to run, public-repo hygiene, changelog, docs and UI screenshot
   expectations, the release steps). `CLAUDE.md` imports it.
+- `SECURITY.md`: report vulnerabilities through private GitHub security
+  advisories.
+- CI: a dependency age check refuses crate versions published less than 14
+  days before a pull request or release adds them; zizmor audits the
+  workflows on every pull request; `cargo deny check advisories` runs
+  nightly; OpenSSF Scorecard runs weekly; Dependabot proposes cargo,
+  action and base image updates once they are 14 days old.
 - README: a "Why warden" section. Password managers keep secrets from
   agents, but only while someone approves each use on an unlocked computer.
   warden moves that approval to the phone, per goal and time window.

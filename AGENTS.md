@@ -45,8 +45,8 @@ Commit messages and PR descriptions carry no AI attribution lines
 
 ## Before you push
 
-CI (`.github/workflows/ci.yml`) runs exactly these, and every one must
-pass:
+CI (`.github/workflows/ci.yml` and `zizmor.yml`) runs exactly these, and
+every one must pass:
 
 ```sh
 cargo fmt --check
@@ -55,6 +55,8 @@ cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo test --workspace --all-features --locked
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps --locked
 cargo deny check
+python3 -I .github/scripts/crate_age.py --base main
+uvx zizmor@1.31.1 .   # when a workflow or the Dependabot config changes
 ```
 
 - The toolchain is pinned in `rust-toolchain.toml`. Clippy `all` and
@@ -67,7 +69,12 @@ cargo deny check
 - Dependencies: add them to `[workspace.dependencies]` with a comment when
   the reason is not obvious, keep default features off where practical,
   and make sure `cargo deny check` passes. reqwest must never gain a
-  decompression feature (a CI script enforces it).
+  decompression feature (a CI script enforces it). A crate version must
+  have been published at least 14 days before it lands in `Cargo.lock`,
+  except the oldest release that fixes a RUSTSEC advisory, listed in
+  `.github/crate-age-allow.toml` (see "Dependency age" in the README).
+- GitHub Actions are pinned to the full commit SHA of a release at least
+  14 days old.
 
 ## Changes and pull requests
 
