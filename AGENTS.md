@@ -70,11 +70,11 @@ uvx zizmor@1.31.1 .   # when a workflow or the Dependabot config changes
   the reason is not obvious, keep default features off where practical,
   and make sure `cargo deny check` passes. reqwest must never gain a
   decompression feature (a CI script enforces it). A crate version must
-  have been published at least 14 days before it lands in `Cargo.lock`,
-  except the oldest release that fixes a RUSTSEC advisory, listed in
+  have been published at least 7 days before it lands in `Cargo.lock`,
+  except the oldest release that fixes a security advisory (RUSTSEC or GHSA), listed in
   `.github/crate-age-allow.toml` (see "Dependency age" in the README).
 - GitHub Actions are pinned to the full commit SHA of a release at least
-  14 days old.
+  7 days old.
 
 ## Changes and pull requests
 
