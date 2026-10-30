@@ -286,11 +286,15 @@ origin belong to warden alone without a dedicated node. Set
 the admin console, then publish it on the host:
 
 ```sh
-tailscale serve --service=svc:warden --https=443 \
-  --accept-app-caps=example.com/cap/warden-approve \
-  --bg http://127.0.0.1:8081
+tailscale serve --service=svc:warden --https=443 --bg http://127.0.0.1:8081
 tailscale serve --service=svc:warden-api --https=443 --bg http://127.0.0.1:8080
 ```
+
+The per-Service network grants already decide which device sees which
+endpoint. warden itself does not read app capabilities; add
+`--accept-app-caps=<cap>` only when a reverse proxy in front of warden checks
+them (for example a gateway that refuses requests without
+`example.com/cap/warden-approve`).
 
 Requirements and behaviour (tested on Tailscale 1.104):
 
