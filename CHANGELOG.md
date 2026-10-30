@@ -4,6 +4,14 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- Docs: Tailscale Services (tested on Tailscale 1.104) is documented as a
+  second deployment beside the dedicated sidecar node, with its policy,
+  header-forwarding and trust-boundary differences.
+
 ## [0.6.0] - 2026-10-29
 
 ### Added
