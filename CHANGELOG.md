@@ -21,7 +21,7 @@ All notable changes to this project are recorded here. The format follows
     - egress rules for warden and Connect, with checks;
     - Home Assistant over the tailnet without `local_only`;
     - backups, and attested, pinned upgrades;
-    - a complete sidecar layout for SSH relay targets.
+    - a sidecar layout for SSH relay targets (not yet tested end to end).
   - `docs/configuration.md` lists every server and CLI setting and command.
   - `docs/ssh-targets.md` covers one certificate-only user per agent,
     checking sshd's effective settings, login alerts by CA fingerprint,

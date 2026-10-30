@@ -116,13 +116,19 @@ its root. Contain it:
 - **Optionally, refuse local connections that do not come from
   tailscaled.** tailscaled runs as root, so a rule like the following
   rejects every other user's connections to the listeners (add the
-  gateway's ports if you run one). It does not stop root, which is the root
-  of trust anyway:
+  gateway's ports if you run one):
 
   ```sh
   iptables -I OUTPUT -d 172.31.250.0/24 -p tcp -m multiport --dports 8080,8081 \
     -m owner ! --uid-owner 0 -j REJECT
   ```
+
+  It does not stop root, which is the root of trust anyway, and that
+  includes **a host-network container whose process runs as root (uid 0)**:
+  the rule lets it through. That is one more reason to run no host-network
+  container. Like any iptables rule, it is lost at reboot: load it with the
+  egress rules, from the boot-time unit in
+  [Lock warden's egress](#lock-wardens-egress).
 
 The [sidecar layout](#10-the-sidecar-layout-for-relay-targets) avoids this:
 there, warden shares a network namespace with its own Tailscale node only,
@@ -430,6 +436,7 @@ The Compose services (part of the file in [Run warden](#5-run-warden)):
 ```yaml
   connect-api:
     image: 1password/connect-api:<version>@sha256:<digest>
+    restart: unless-stopped
     user: "64001:64001"
     read_only: true
     tmpfs: [/tmp]
@@ -451,6 +458,7 @@ The Compose services (part of the file in [Run warden](#5-run-warden)):
 
   connect-sync:
     image: 1password/connect-sync:<version>@sha256:<digest>
+    restart: unless-stopped
     user: "64001:64001"
     read_only: true
     tmpfs: [/tmp]
@@ -527,6 +535,7 @@ name: warden
 services:
   warden:
     image: ghcr.io/pecheriere/warden:0.7.0@sha256:<digest>
+    restart: unless-stopped
     read_only: true
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
@@ -645,16 +654,65 @@ to the outside (its traffic to Connect stays on `br-warden-op` and is not
 affected). warden calls its upstreams directly and does not use an HTTP
 proxy, so filter by address:
 
+`/usr/local/sbin/warden-firewall`, mode 0755. It can be run again at any
+time: it empties and refills its own chain, and adds each jump only once.
+It also holds the local-access rule of
+[Who can reach the listeners](#who-can-reach-the-listeners), if you use it.
+
 ```sh
-iptables -N WARDEN-EGRESS
+#!/bin/sh
+set -eu
+
+# Docker keeps an existing DOCKER-USER chain, so create it before Docker
+# starts if it does not exist yet.
+iptables -N DOCKER-USER 2>/dev/null || true
+
+# warden's egress: only what it needs.
+iptables -N WARDEN-EGRESS 2>/dev/null || iptables -F WARDEN-EGRESS
 iptables -A WARDEN-EGRESS -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
 iptables -A WARDEN-EGRESS -p tcp -d <home assistant address> --dport 443 -j RETURN
 iptables -A WARDEN-EGRESS -p tcp -d <ntfy server address> --dport 443 -j RETURN
 iptables -A WARDEN-EGRESS -p tcp -d <API secret origin address> --dport 443 -j RETURN
 iptables -A WARDEN-EGRESS -p tcp -d <relay target address> --dport 22 -j RETURN
 iptables -A WARDEN-EGRESS -j REJECT
-iptables -I DOCKER-USER -i br-warden -j WARDEN-EGRESS
+iptables -C DOCKER-USER -i br-warden -j WARDEN-EGRESS 2>/dev/null \
+  || iptables -I DOCKER-USER -i br-warden -j WARDEN-EGRESS
+
+# Optional: only root (tailscaled) may connect to the listeners.
+iptables -C OUTPUT -d 172.31.250.0/24 -p tcp -m multiport --dports 8080,8081 \
+    -m owner ! --uid-owner 0 -j REJECT 2>/dev/null \
+  || iptables -I OUTPUT -d 172.31.250.0/24 -p tcp -m multiport --dports 8080,8081 \
+    -m owner ! --uid-owner 0 -j REJECT
 ```
+
+Load it at boot **before Docker starts any container**, and make Docker
+depend on it, so that a failure keeps the containers down rather than
+running them with open egress.
+`/etc/systemd/system/warden-firewall.service`:
+
+```ini
+[Unit]
+Description=warden firewall rules
+Before=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/warden-firewall
+
+[Install]
+WantedBy=multi-user.target
+RequiredBy=docker.service
+```
+
+```sh
+sudo systemctl daemon-reload
+sudo systemctl enable --now warden-firewall.service
+```
+
+`RequiredBy=docker.service` makes `docker.service` require this unit when
+it is enabled: if the rules fail to load, Docker does not start. Run the
+script again (or `systemctl restart warden-firewall`) after you edit it.
 
 - One line per notification endpoint, API secret origin and relay target,
   with the port it uses. Name resolution needs no rule: Docker's embedded
@@ -665,9 +723,15 @@ iptables -I DOCKER-USER -i br-warden -j WARDEN-EGRESS
   fixed address.
 - The Compose networks are IPv4 only. If you enable IPv6 on them, add the
   same rules with `ip6tables`.
-- Docker does not flush `DOCKER-USER`, but the rules are lost at reboot:
-  load them from your firewall configuration or a systemd unit ordered
-  after `docker.service`.
+- **Tailnet addresses are not covered.** tailscaled installs its own
+  `ts-forward` chain in `FORWARD`, which accepts traffic leaving through
+  `tailscale0`, and it may come before Docker's jump to `DOCKER-USER`
+  (check the order with `iptables -L FORWARD -v --line-numbers` and
+  `iptables -L ts-forward -v`). So warden's connections to tailnet
+  addresses (for example Home Assistant over the tailnet) may bypass
+  `WARDEN-EGRESS`. There, the tailnet policy is the control: give
+  `tag:warden-host` outgoing grants only to the notifier and API hosts it
+  needs, and nothing else.
 - Lock Connect's egress as described in
   [section 4](#4-1password-connect-hardened).
 
@@ -847,8 +911,17 @@ must be enabled for the tailnet.
 In the admin console, generate an auth key that is **tagged** `tag:warden`,
 **pre-approved**, **not reusable** and **not ephemeral** (the node keeps its
 identity in its state directory). Write it to `/srv/warden/ts-authkey`, mode
-0600. After the first successful start the node no longer needs it: delete
-the file and remove the `secrets` entry.
+0600.
+
+Keep the file, the `secrets` entry and `TS_AUTHKEY` in place after the
+first login. With `TS_AUTH_ONCE: "true"`, the container logs in with the
+key only when its state directory holds no identity yet; on later starts it
+reuses the stored identity and does not use the key. Removing the file
+while `TS_AUTHKEY` still points at it may stop the container from starting.
+The key is single-use and then spent, so leaving it on disk gives nothing
+away. (`TS_AUTHKEY: file:…` reads the key from that path, as `tailscale up
+--auth-key=file:…` does.) This follows Tailscale's container documentation
+and has not been tested with warden.
 
 ### Serve configuration
 
@@ -881,9 +954,11 @@ name: warden
 services:
   tailscale:
     image: tailscale/tailscale:<version>@sha256:<digest>
+    restart: unless-stopped
     hostname: warden
     environment:
       TS_AUTHKEY: file:/run/secrets/ts-authkey
+      TS_AUTH_ONCE: "true"
       TS_EXTRA_ARGS: --advertise-tags=tag:warden
       TS_STATE_DIR: /var/lib/tailscale
       TS_SERVE_CONFIG: /config/serve.json
@@ -901,6 +976,7 @@ services:
 
   warden:
     image: ghcr.io/pecheriere/warden:0.7.0@sha256:<digest>
+    restart: unless-stopped
     # warden's network is the sidecar's: no networks of its own, and the
     # listeners stay on their loopback defaults (127.0.0.1:8080, :8081,
     # and the relay on :2222).

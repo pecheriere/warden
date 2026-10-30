@@ -73,7 +73,7 @@ and the reasons behind it; follow it for a real setup.
    [The policy and commands](docs/deployment.md#2-tailscale).
    SSH **relay** targets (appliances that cannot trust a CA) need the
    [sidecar layout](docs/deployment.md#10-the-sidecar-layout-for-relay-targets)
-   instead.
+   instead; that recipe has not yet been tested end to end.
 
 2. **1Password.** Create a dedicated `Warden` vault, a Connect server for
    that vault only, a read-only token, and the SSH CA key. Run this in a

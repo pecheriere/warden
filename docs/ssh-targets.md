@@ -98,8 +98,30 @@ On `web-01`, for the agent `build-agent`:
    ```
 
    It must print `/etc/ssh/warden_ca.pub`,
-   `/etc/ssh/auth_principals/%u` and `none`. If the host already trusts
-   another CA, list both keys in one `TrustedUserCAKeys` file instead.
+   `/etc/ssh/auth_principals/%u` and `none`.
+
+   **If the host already trusts another CA**, do not simply add warden's
+   key to a shared `TrustedUserCAKeys` file: the global
+   `AuthorizedPrincipalsFile /etc/ssh/auth_principals/%u` then applies to
+   the other CA's certificates too. Those usually carry the user name as
+   their principal, and they stop working for any account unless its
+   principals file also lists that name. Scope warden to the agent's
+   account instead, and leave the global settings as they were:
+
+   ```
+   # /etc/ssh/sshd_config.d/50-warden.conf: warden for build-agent only.
+   Match User build-agent
+       TrustedUserCAKeys /etc/ssh/warden_ca.pub
+       AuthorizedPrincipalsFile /etc/ssh/auth_principals/%u
+       AuthorizedKeysFile none
+       PasswordAuthentication no
+       KbdInteractiveAuthentication no
+   ```
+
+   For `build-agent`, only warden's CA is trusted, and only for the
+   principals in its file; other accounts keep the host's existing CA setup.
+   Run the `sshd -T -C user=…` check again for `build-agent` and for one
+   other account.
 
 6. **Create the target item** in the `Warden` vault: title `web-01`, tag
    `warden:ssh-target`, `mode` `cert`, `users` `build-agent`, the host's
@@ -168,7 +190,8 @@ warden must be able to reach the target's address (allow it in
 endpoint must be published with `WARDEN_RELAY_PUBLIC_ADDR` set. Relay
 targets currently need
 [the sidecar layout](deployment.md#10-the-sidecar-layout-for-relay-targets):
-publishing the relay through Tailscale Services has not been tested.
+publishing the relay through Tailscale Services has not been tested, and
+the sidecar recipe has not yet been tested end to end either.
 
 Through the relay, port, agent and X11 forwarding and subsystems (`sftp`,
 and so `scp` in its default mode) are refused, and the environment is
