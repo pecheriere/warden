@@ -17,7 +17,7 @@ mod server;
 mod session;
 
 pub use server::{RelayLimits, RelayServer};
-pub(crate) use session::LiveSessions;
+pub(crate) use session::{LiveSessionInfo, LiveSessions};
 
 /// What a relay grant tells the agent: where the relay listens for it and
 /// the relay's host key to pin. Public information only.

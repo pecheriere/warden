@@ -1,5 +1,6 @@
 // warden approval UI: WebAuthn glue for the enrollment, approval and grants
-// pages. Served as /static/warden.js; the pages carry no inline script.
+// pages, and the live activity of the grants page. Served as
+// /static/warden.js; the pages carry no inline script.
 'use strict';
 
 (() => {
@@ -167,6 +168,147 @@
     }
   };
 
+  // --- live activity on the grants page --------------------------------------------
+  // Mirrors `live_area` in pages.rs, which renders the same markup for the
+  // first paint and for viewers without script.
+
+  const LIVE_PERIOD_MS = 5000;
+
+  /** `bytes` in pages.rs: powers of 1000, rounded down to a tenth. */
+  const bytes = (n) => {
+    if (n < 1000) return `${n} B`;
+    const [divisor, unit] = n < 1000000 ? [100, 'KB'] : [100000, 'MB'];
+    const tenths = Math.floor(n / divisor);
+    return `${Math.floor(tenths / 10)}.${tenths % 10} ${unit}`;
+  };
+
+  const count = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+
+  const el = (tag, className, ...children) => {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    for (const child of children) {
+      node.append(typeof child === 'string' ? document.createTextNode(child) : child);
+    }
+    return node;
+  };
+
+  /** Shows a <time> in the viewer's local time, from its `datetime`. */
+  const localTime = (node) => {
+    const date = new Date(node.dateTime);
+    if (Number.isNaN(date.getTime())) return;
+    node.textContent = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  };
+
+  /** `clock` in pages.rs: a <time> for Unix seconds `ts`, in local time. */
+  const clock = (ts) => {
+    const node = el('time', '');
+    node.dateTime = new Date(ts * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
+    localTime(node);
+    return node;
+  };
+
+  const renderLive = (area, live) => {
+    const sessions = live.relay_sessions;
+    const calls = live.proxy_calls;
+    const parts = [];
+    if (sessions.length) parts.push(`${count(sessions.length, 'session', 'sessions')} open`);
+    if (calls.length) parts.push(`${count(calls.length, 'call', 'calls')} in flight`);
+    if (!parts.length) {
+      const idle = area.dataset.kind === 'relay' ? 'No sessions open' : 'No calls in flight';
+      area.replaceChildren(el('p', 'detail', idle));
+      return;
+    }
+    const list = el('ul', 'live-list');
+    list.setAttribute('role', 'list');
+    for (const session of sessions) {
+      list.append(el('li', '',
+        el('span', '', 'Session since ', clock(session.started_at)),
+        el('span', '', `${bytes(session.bytes_to_target)} to target`),
+        el('span', '', `${bytes(session.bytes_from_target)} from target`)));
+    }
+    for (const call of calls) {
+      list.append(el('li', '',
+        el('code', '', el('bdi', '', `${call.method} ${call.path}`)),
+        el('span', '', 'since ', clock(call.started_at))));
+    }
+    area.replaceChildren(el('p', 'live', parts.join(' · ')), list);
+  };
+
+  const setupLive = () => {
+    if (!document.querySelector('.live-area[data-grant]')) return;
+    for (const node of document.querySelectorAll('main time[datetime]')) localTime(node);
+
+    const shown = new Map();
+    let timer = null;
+    let inFlight = false;
+    let stopped = false;
+
+    const apply = (data) => {
+      const byGrant = new Map((data.grants || []).map((live) => [live.grant_id, live]));
+      for (const area of document.querySelectorAll('.live-area[data-grant]')) {
+        const live = byGrant.get(area.dataset.grant);
+        if (!live) {
+          // Revoked or expired: never show its last activity as live.
+          area.closest('section.grant').remove();
+          continue;
+        }
+        if (area.dataset.kind === 'cert') continue;
+        const key = JSON.stringify(live);
+        if (shown.get(area.dataset.grant) === key) continue;
+        shown.set(area.dataset.grant, key);
+        renderLive(area, live);
+      }
+      // The last card went: reload for the server's empty state.
+      if (!document.querySelector('.live-area[data-grant]')) {
+        stopped = true;
+        window.location.reload();
+      }
+    };
+
+    const schedule = () => {
+      window.clearTimeout(timer);
+      timer = null;
+      if (!stopped && document.visibilityState === 'visible') {
+        timer = window.setTimeout(poll, LIVE_PERIOD_MS);
+      }
+    };
+
+    async function poll() {
+      if (inFlight || stopped) return;
+      inFlight = true;
+      try {
+        const response = await fetch('/grants/live', {
+          credentials: 'same-origin',
+          cache: 'no-store',
+          headers: { Accept: 'application/json' },
+        });
+        if (response.status === 401 || response.status === 403) {
+          stopped = true;
+        } else if (response.ok) {
+          apply(await response.json());
+        }
+      } catch (_) {
+        // Offline or a bad answer: keep what is shown and try again later.
+      } finally {
+        inFlight = false;
+        schedule();
+      }
+    }
+
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') {
+        window.clearTimeout(timer);
+        timer = null;
+        poll();
+      } else {
+        window.clearTimeout(timer);
+        timer = null;
+      }
+    });
+    schedule();
+  };
+
   // --- enrollment page ------------------------------------------------------------
 
   const setupEnrollment = () => {
@@ -192,6 +334,7 @@
   document.addEventListener('DOMContentLoaded', () => {
     setupApproval();
     setupGrants();
+    setupLive();
     setupEnrollment();
   });
 })();

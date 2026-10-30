@@ -559,6 +559,24 @@ warning, together with the methods and the path prefix of the narrowed scope.
 The notification and the audit summary show `api github (read-only)` or `api
 github (CAN MODIFY: POST, PUT)`.
 
+### Active grants and live activity
+
+The Active grants page lists a card per active grant with its Revoke button,
+and under each what the grant is doing right now, from the relay's live
+sessions and the proxy's calls in flight: for a relay grant each open session
+(start time, bytes to and from the target), for an API grant each call in
+flight (method and path, start time), under a live indicator ("2 sessions
+open", "1 call in flight"). A certificate grant shows "Certificate logins are
+not visible to warden.": the logins go straight to the target. The page
+renders this server-side; `warden.js` refreshes it every 5 s from `GET
+/grants/live` (owner only, `Cache-Control: no-store`) while the page is
+visible, with at most one request in flight, and stops polling on a 401 or
+403. A failed request keeps what is shown. A grant missing from the answer
+(revoked or expired) loses its card, so ended activity is never shown as
+live. The script builds the area with DOM text nodes only, never HTML from
+the answer; the path is the agent's, without query string or fragment.
+Times are rendered as UTC and shown in the viewer's local time by the script.
+
 ### Screenshots
 
 The unit test `every_page_renders_self_contained` renders every approval page

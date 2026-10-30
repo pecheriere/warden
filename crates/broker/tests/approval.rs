@@ -1606,6 +1606,67 @@ async fn relay_request_approves_without_certificate() {
 }
 
 #[tokio::test]
+async fn grants_page_lists_live_session_under_its_grant() {
+    let (broker, created, token, _) = relay_pending(TestBroker::new().await).await;
+    let approved = broker.approve(&token, Window::M15).await;
+    assert_eq!(approved.status, StatusCode::OK, "{}", approved.body);
+    let RequestStatus::Approved(view) = status(&broker, &created.id).await else {
+        panic!("expected approved");
+    };
+    let grant = view.grant_id;
+    let area = format!(r#"<div class="live-area" data-grant="{grant}" data-kind="relay">"#);
+
+    let page = broker.get("/grants").await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    assert!(
+        page.body.contains(&format!(
+            r#"{area}<p class="detail">No sessions open</p></div>"#
+        )),
+        "{}",
+        page.body
+    );
+
+    let _session = broker.hold_live_session(&grant, "bot");
+    // Another grant's session is not listed under this one.
+    let _other = broker.hold_live_session(&Id::random(), "bot");
+    let page = broker.get("/grants").await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    assert!(
+        page.body.contains(&format!(
+            r#"{area}<p class="live">1 session open</p><ul class="live-list" role="list"><li><span>Session since <time datetime=""#
+        )),
+        "{}",
+        page.body
+    );
+    assert!(
+        page.body
+            .contains("<span>0 B to target</span><span>0 B from target</span>"),
+        "{}",
+        page.body
+    );
+    assert_eq!(
+        page.body.matches("<li><span>Session since").count(),
+        1,
+        "{}",
+        page.body
+    );
+}
+
+#[tokio::test]
+async fn grants_page_says_certificate_logins_are_not_visible() {
+    let (broker, _grant) = approved_grant().await;
+    let page = broker.get("/grants").await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    assert!(
+        page.body.contains(
+            r#"data-kind="cert"><p class="detail">Certificate logins are not visible to warden.</p></div>"#
+        ),
+        "{}",
+        page.body
+    );
+}
+
+#[tokio::test]
 async fn relay_page_says_via_relay() {
     let (broker, created, token, _) = relay_pending(TestBroker::new().await).await;
     let page = broker.get(&format!("/approve/{token}")).await;

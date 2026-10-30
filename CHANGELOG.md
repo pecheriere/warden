@@ -4,6 +4,22 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- The Active grants page shows what each grant is doing right now. A relay
+  grant lists its open sessions (start time, bytes to and from the target),
+  an API grant its proxied calls in flight (method, path, start time), each
+  under a live indicator ("2 sessions open", "1 call in flight"); a
+  certificate grant says that its logins are not visible to warden. The page
+  renders this server-side, so it works without script, and `warden.js`
+  refreshes it every 5 s from the new owner-only `GET /grants/live` while the
+  page is visible, never with two requests at once, and stops when the session
+  is gone. A grant that is revoked or expires drops off the page. Times show
+  in the viewer's local time. Query strings, fragments, headers, bodies and
+  secrets are never shown.
+
 ## [0.6.0] - 2026-10-29
 
 ### Added

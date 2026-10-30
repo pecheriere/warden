@@ -7,6 +7,7 @@
 use maud::{DOCTYPE, Markup, html};
 use warden_broker_proto::{Access, ApiGrant, CreateRequest, GrantAccess, Window};
 
+use super::LiveGrant;
 use crate::policy::{ApiScope, SshMode};
 use crate::requests::{ActiveGrant, Destination, HistoryEntry, PendingView, window_label};
 
@@ -442,9 +443,116 @@ pub fn internal_error() -> Markup {
     layout("Error", None, false, &content)
 }
 
-/// Active grants, one card each, with revoke buttons.
+/// What warden can see of a grant's use, by its kind.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LiveKind {
+    /// SSH certificate: the logins go straight to the target.
+    Cert,
+    /// SSH through the relay: sessions.
+    Relay,
+    /// API secret through the proxy: calls.
+    Api,
+}
+
+impl LiveKind {
+    const fn of(access: &GrantAccess) -> Self {
+        match access {
+            GrantAccess::Ssh(_) => Self::Cert,
+            GrantAccess::Relay(_) => Self::Relay,
+            GrantAccess::Api(_) => Self::Api,
+        }
+    }
+
+    /// The `data-kind` of the live area, read by `warden.js`.
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Cert => "cert",
+            Self::Relay => "relay",
+            Self::Api => "api",
+        }
+    }
+}
+
+/// `n` and `one`, or `n` and `many` unless `n` is 1 (`1 session`, `2 sessions`).
+fn count(n: usize, one: &str, many: &str) -> String {
+    format!("{n} {}", if n == 1 { one } else { many })
+}
+
+/// A time of day for Unix seconds `ts`: `HH:MM UTC`, which `warden.js`
+/// replaces with the viewer's local time from `datetime`.
+fn clock(ts: i64) -> Markup {
+    let [year, month, day, hour, minute, second] = utc_fields(ts);
+    html! {
+        time datetime=(format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")) {
+            (format!("{hour:02}:{minute:02} UTC"))
+        }
+    }
+}
+
+/// A byte count for people: `999 B`, `1.2 KB`, `3.4 MB` (powers of 1000,
+/// rounded down to a tenth). `bytes` in `warden.js` is the same function.
+fn bytes(n: u64) -> String {
+    match n {
+        0..1_000 => format!("{n} B"),
+        1_000..1_000_000 => {
+            let tenths = n / 100;
+            format!("{}.{} KB", tenths / 10, tenths % 10)
+        }
+        _ => {
+            let tenths = n / 100_000;
+            format!("{}.{} MB", tenths / 10, tenths % 10)
+        }
+    }
+}
+
+/// The live area of a grant card: what the grant is doing right now
+/// (`live`), refreshed by `warden.js` from `GET /grants/live`, which builds
+/// the same markup.
+fn live_area(grant: &ActiveGrant, live: Option<&LiveGrant<'_>>) -> Markup {
+    let kind = LiveKind::of(&grant.access);
+    let (sessions, calls) = live.map_or((&[][..], &[][..]), |l| {
+        (&l.relay_sessions[..], &l.proxy_calls[..])
+    });
+    let summary = [
+        (!sessions.is_empty()).then(|| count(sessions.len(), "session", "sessions") + " open"),
+        (!calls.is_empty()).then(|| count(calls.len(), "call", "calls") + " in flight"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(" · ");
+    html! {
+        div.live-area data-grant=(grant.grant_id) data-kind=(kind.name()) {
+            @if kind == LiveKind::Cert {
+                p.detail { "Certificate logins are not visible to warden." }
+            } @else if summary.is_empty() {
+                p.detail { (if kind == LiveKind::Relay { "No sessions open" } else { "No calls in flight" }) }
+            } @else {
+                p.live { (summary) }
+                ul.live-list role="list" {
+                    @for session in sessions {
+                        li {
+                            span { "Session since " (clock(session.started_at)) }
+                            span { (bytes(session.bytes_to_target)) " to target" }
+                            span { (bytes(session.bytes_from_target)) " from target" }
+                        }
+                    }
+                    @for call in calls {
+                        li {
+                            code { bdi { (call.method) " " (call.path) } }
+                            span { "since " (clock(call.started_at)) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Active grants, one card each, with what each is doing now (`live`, one
+/// entry per grant) and revoke buttons.
 #[must_use]
-pub fn grants(grants: &[ActiveGrant], now: i64) -> Markup {
+pub fn grants(grants: &[ActiveGrant], live: &[LiveGrant<'_>], now: i64) -> Markup {
     if grants.is_empty() {
         let content = end_state(
             &Chip {
@@ -468,7 +576,7 @@ pub fn grants(grants: &[ActiveGrant], now: i64) -> Markup {
                         div.meta {
                             span { "Fingerprint " code { (grant.fingerprint) } }
                             span {
-                                "Ends " (utc(grant.not_after))
+                                "Ends " (clock(grant.not_after))
                                 " (in " (((grant.not_after - now).max(0) + 59) / 60) " min)"
                             }
                             span #(format!("grant-{}", grant.grant_id)) {
@@ -480,6 +588,8 @@ pub fn grants(grants: &[ActiveGrant], now: i64) -> Markup {
                     // grant and which one.
                     button.revoke type="button" data-grant=(grant.grant_id)
                         aria-describedby=(format!("agent-{0} grant-{0}", grant.grant_id)) { "Revoke" }
+                    // Under the details and the button, across the card.
+                    (live_area(grant, live.iter().find(|l| l.grant_id == grant.grant_id)))
                 }
             }
             p.result #result role="status" {}
@@ -583,27 +693,21 @@ fn secs_label(secs: i64) -> String {
         .map_or_else(|| format!("{secs}s"), |w| window_label(w).to_owned())
 }
 
-/// `YYYY-MM-DD HH:MM:SS UTC` for Unix seconds `ts`.
-fn utc(ts: i64) -> String {
-    let (date, time) = utc_parts(ts);
-    format!("{date} {time}")
-}
-
 /// `YYYY-MM-DD` and `HH:MM:SS UTC` for Unix seconds `ts`, so a narrow
 /// column can break between them and nowhere else.
 fn utc_parts(ts: i64) -> (String, String) {
-    let days = ts.div_euclid(86_400);
-    let secs = ts.rem_euclid(86_400);
-    let (year, month, day) = civil_from_days(days);
+    let [year, month, day, hour, minute, second] = utc_fields(ts);
     (
         format!("{year:04}-{month:02}-{day:02}"),
-        format!(
-            "{:02}:{:02}:{:02} UTC",
-            secs / 3600,
-            secs % 3600 / 60,
-            secs % 60
-        ),
+        format!("{hour:02}:{minute:02}:{second:02} UTC"),
     )
+}
+
+/// Year, month, day, hour, minute and second (UTC) of Unix seconds `ts`.
+const fn utc_fields(ts: i64) -> [i64; 6] {
+    let secs = ts.rem_euclid(86_400);
+    let (year, month, day) = civil_from_days(ts.div_euclid(86_400));
+    [year, month, day, secs / 3600, secs % 3600 / 60, secs % 60]
 }
 
 /// Proleptic Gregorian date of the day `days` after 1970-01-01 (Howard
@@ -633,9 +737,10 @@ mod tests {
         SecretName, SshGrant, TargetName, UnixUser, Window,
     };
 
+    use super::super::{LiveGrant, LiveProxyCall, LiveRelaySession, STYLESHEET};
     use super::{
-        super::STYLESHEET, approve, cancelled, enroll, grants, history, internal_error, not_found,
-        not_pending, secs_label, unavailable, utc,
+        approve, bytes, cancelled, clock, enroll, grants, history, internal_error, not_found,
+        not_pending, secs_label, unavailable, utc_parts,
     };
     use crate::policy::{ApiSecretPolicy, SshMode, SshTarget, ValueFormat};
     use crate::requests::{ActiveGrant, Destination, HistoryEntry, PendingView};
@@ -802,6 +907,58 @@ mod tests {
         ]
     }
 
+    /// No activity under any of `grants`.
+    fn idle(grants: &[ActiveGrant]) -> Vec<LiveGrant<'static>> {
+        grants
+            .iter()
+            .map(|grant| LiveGrant {
+                grant_id: grant.grant_id.clone(),
+                relay_sessions: Vec::new(),
+                proxy_calls: Vec::new(),
+            })
+            .collect()
+    }
+
+    /// A relay grant with two sessions open, an API grant with a call in
+    /// flight (a long path, the wrapping case) and a certificate grant.
+    fn live_grants_fixture() -> (Vec<ActiveGrant>, Vec<LiveGrant<'static>>) {
+        let mut all = active_grants();
+        let grants = vec![all.remove(3), all.remove(2), all.remove(0)];
+        let live = vec![
+            LiveGrant {
+                grant_id: grants[0].grant_id.clone(),
+                relay_sessions: vec![
+                    LiveRelaySession {
+                        started_at: NOW - 1260,
+                        bytes_to_target: 1_234,
+                        bytes_from_target: 3_456_789,
+                    },
+                    LiveRelaySession {
+                        started_at: NOW - 95,
+                        bytes_to_target: 512,
+                        bytes_from_target: 48_200,
+                    },
+                ],
+                proxy_calls: Vec::new(),
+            },
+            LiveGrant {
+                grant_id: grants[1].grant_id.clone(),
+                relay_sessions: Vec::new(),
+                proxy_calls: vec![LiveProxyCall {
+                    method: "POST",
+                    path: "/v1/devices/switch-01/interfaces/port-24/statistics/history/daily-summary",
+                    started_at: NOW - 4,
+                }],
+            },
+            LiveGrant {
+                grant_id: grants[2].grant_id.clone(),
+                relay_sessions: Vec::new(),
+                proxy_calls: Vec::new(),
+            },
+        ];
+        (grants, live)
+    }
+
     fn history_entries() -> Vec<HistoryEntry> {
         let entry = |n: u8, agent: AgentName, request, status: &str, granted_secs| HistoryEntry {
             id: id(n),
@@ -843,6 +1000,8 @@ mod tests {
         // Asks for 4 h of a secret allowed at most 1 h: the capped note shows.
         let mut modify = api_request(long.clone(), &["GET", "POST", "DELETE"]);
         modify.window = Window::H4;
+        let active = active_grants();
+        let (live_grants, live) = live_grants_fixture();
         vec![
             (
                 "approve-ssh-cert",
@@ -886,8 +1045,9 @@ mod tests {
             ("not-found", not_found()),
             ("unavailable", unavailable("The broker is starting up.")),
             ("internal-error", internal_error()),
-            ("grants-empty", grants(&[], NOW)),
-            ("grants", grants(&active_grants(), NOW)),
+            ("grants-empty", grants(&[], &[], NOW)),
+            ("grants", grants(&active, &idle(&active), NOW)),
+            ("grants-live", grants(&live_grants, &live, NOW)),
             ("history-empty", history(&[])),
             ("history", history(&history_entries())),
             ("enroll", enroll()),
@@ -975,7 +1135,7 @@ mod tests {
 
     #[test]
     fn marks_the_current_page_in_the_navigation() {
-        let html = grants(&[], NOW).into_string();
+        let html = grants(&[], &[], NOW).into_string();
         // Both the inline links and the menu's copy mark it.
         assert_eq!(
             html.matches(r#"<a href="/grants" aria-current="page">"#)
@@ -1092,7 +1252,7 @@ mod tests {
             ("not_found", not_found()),
             ("unavailable", unavailable("x")),
             ("internal_error", internal_error()),
-            ("grants_empty", grants(&[], NOW)),
+            ("grants_empty", grants(&[], &[], NOW)),
             ("history_empty", history(&[])),
         ] {
             let html = page.into_string();
@@ -1126,7 +1286,8 @@ mod tests {
 
     #[test]
     fn grants_are_cards_with_the_revoke_hook() {
-        let html = grants(&active_grants(), NOW).into_string();
+        let active = active_grants();
+        let html = grants(&active, &idle(&active), NOW).into_string();
         assert_eq!(
             html.matches(r#"<section class="card grant">"#).count(),
             4,
@@ -1155,6 +1316,95 @@ mod tests {
         assert_eq!(html.matches("aria-describedby=").count(), 4, "{html}");
         assert!(html.contains(r#"<p class="result" id="result" role="status"></p>"#));
         assert!(html.contains(r#"<script src="/static/warden.js" defer></script>"#));
+    }
+
+    #[test]
+    fn grants_show_live_activity_under_each_grant() {
+        let (active, live) = live_grants_fixture();
+        let html = grants(&active, &live, NOW).into_string();
+        let (relay, api, cert) = (id(5), id(4), id(2));
+        assert!(
+            html.contains(&format!(
+                r#"<div class="live-area" data-grant="{relay}" data-kind="relay"><p class="live">2 sessions open</p><ul class="live-list" role="list"><li><span>Session since <time datetime="2027-01-15T07:39:00Z">07:39 UTC</time></span><span>1.2 KB to target</span><span>3.4 MB from target</span></li><li><span>Session since <time datetime="2027-01-15T07:58:25Z">07:58 UTC</time></span><span>512 B to target</span><span>48.2 KB from target</span></li></ul></div>"#
+            )),
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!(
+                r#"<div class="live-area" data-grant="{api}" data-kind="api"><p class="live">1 call in flight</p><ul class="live-list" role="list"><li><code><bdi>POST /v1/devices/switch-01/interfaces/port-24/statistics/history/daily-summary</bdi></code><span>since <time datetime="2027-01-15T07:59:56Z">07:59 UTC</time></span></li></ul></div>"#
+            )),
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!(
+                r#"<div class="live-area" data-grant="{cert}" data-kind="cert"><p class="detail">Certificate logins are not visible to warden.</p></div>"#
+            )),
+            "{html}"
+        );
+        // The end of each grant is a time the script can localize.
+        assert!(
+            html.contains(
+                r#"Ends <time datetime="2027-01-15T08:30:00Z">08:30 UTC</time> (in 30 min)"#
+            ),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn idle_grants_say_nothing_is_live() {
+        let active = active_grants();
+        let html = grants(&active, &idle(&active), NOW).into_string();
+        assert_eq!(
+            html.matches(r#"<div class="live-area""#).count(),
+            4,
+            "{html}"
+        );
+        assert!(!html.contains(r#"class="live""#), "{html}");
+        assert!(
+            html.contains(&format!(
+                r#"<div class="live-area" data-grant="{}" data-kind="relay"><p class="detail">No sessions open</p></div>"#,
+                id(5)
+            )),
+            "{html}"
+        );
+        assert_eq!(html.matches("No calls in flight").count(), 2, "{html}");
+        // A grant missing from the live entries renders as idle.
+        let html = grants(&active, &[], NOW).into_string();
+        assert_eq!(html.matches("No calls in flight").count(), 2, "{html}");
+    }
+
+    #[test]
+    fn live_activity_shows_both_counts_and_escapes_the_path() {
+        let active = active_grants();
+        let live = [LiveGrant {
+            grant_id: id(4),
+            relay_sessions: vec![LiveRelaySession {
+                started_at: NOW,
+                bytes_to_target: 0,
+                bytes_from_target: 0,
+            }],
+            proxy_calls: vec![
+                LiveProxyCall {
+                    method: "GET",
+                    path: "/v1/<b>\u{202e}x",
+                    started_at: NOW,
+                },
+                LiveProxyCall {
+                    method: "GET",
+                    path: "/v1/a",
+                    started_at: NOW,
+                },
+            ],
+        }];
+        let html = grants(&active, &live, NOW).into_string();
+        assert!(
+            html.contains(r#"<p class="live">1 session open · 2 calls in flight</p>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains("<code><bdi>GET /v1/&lt;b&gt;\u{202e}x</bdi></code>"),
+            "{html}"
+        );
     }
 
     #[test]
@@ -1224,12 +1474,45 @@ mod tests {
 
     #[test]
     fn formats_utc_timestamps() {
+        let utc = |ts| {
+            let (date, time) = utc_parts(ts);
+            format!("{date} {time}")
+        };
         assert_eq!(utc(0), "1970-01-01 00:00:00 UTC");
         assert_eq!(utc(1_800_000_000), "2027-01-15 08:00:00 UTC");
         assert_eq!(utc(951_825_600), "2000-02-29 12:00:00 UTC");
         assert_eq!(utc(1_709_208_000), "2024-02-29 12:00:00 UTC");
         assert_eq!(utc(4_102_444_799), "2099-12-31 23:59:59 UTC");
         assert_eq!(utc(-1), "1969-12-31 23:59:59 UTC");
+    }
+
+    #[test]
+    fn clock_is_utc_with_a_machine_readable_time() {
+        assert_eq!(
+            clock(1_800_000_065).into_string(),
+            r#"<time datetime="2027-01-15T08:01:05Z">08:01 UTC</time>"#
+        );
+        assert_eq!(
+            clock(-1).into_string(),
+            r#"<time datetime="1969-12-31T23:59:59Z">23:59 UTC</time>"#
+        );
+    }
+
+    #[test]
+    fn formats_byte_counts() {
+        for (n, text) in [
+            (0, "0 B"),
+            (999, "999 B"),
+            (1_000, "1.0 KB"),
+            (1_299, "1.2 KB"),
+            (999_999, "999.9 KB"),
+            (1_000_000, "1.0 MB"),
+            (3_456_789, "3.4 MB"),
+            (12_345_678_901, "12345.6 MB"),
+            (u64::MAX, "18446744073709.5 MB"),
+        ] {
+            assert_eq!(bytes(n), text, "{n}");
+        }
     }
 
     #[test]
