@@ -4,17 +4,51 @@ This describes what warden protects, who it trusts, what it must never allow,
 and the risks that are accepted. It covers the SSH certificate mode, the SSH
 relay mode (sessions the broker relays to targets that cannot trust a CA) and
 the HTTP proxy mode (brokered API calls that use a stored secret). The design
-rationale is in
-[design.md](design.md).
+rationale is in [design.md](design.md), and how to deploy warden so that the
+assumptions at the end of this page hold is in [deployment.md](deployment.md).
+
+## In short
+
+warden protects against an agent that holds standing credentials, against
+an agent that approves its own access, and against secrets leaking to the
+agent or to notification services. Every grant needs the owner's passkey on
+the owner's phone, is bounded in time and scope, and is audited.
+
+warden does **not** protect against:
+
+- **Whoever controls the warden host.** Root on that host (or on the
+  container runtime) can read the CA key, the Connect token and relay
+  credentials from memory, rewrite the database and the audit log, and
+  issue grants. The host is the root of trust: keep it as locked down as
+  the most sensitive target warden reaches.
+- **Whoever controls the 1Password vault**, who decides what warden may hand
+  out and where secrets may go.
+- **A compromised agent machine, within its approvals.** Code running as the
+  agent's OS user can make requests and use that agent's grants while they
+  last. Each request still needs the owner's approval.
+- **Use of a grant for another task by the same agent.** Grants are not tied
+  to a task: everything that runs as the agent's OS user can use any of the
+  agent's active grants (issue
+  [#49](https://github.com/pecheriere/warden/issues/49)).
+- **The owner approving a misleading goal.** warden shows the goal, the
+  scope and a fingerprint; it cannot judge whether the goal is honest.
+- **What happens on the target or API during the window.** An approved
+  shell or API scope can do anything it permits until the grant ends.
+- **Instant revocation everywhere.** An issued certificate stays valid on
+  its target until it expires (issue
+  [#35](https://github.com/pecheriere/warden/issues/35)), and a proxied API
+  call already in flight runs to completion (issue
+  [#44](https://github.com/pecheriere/warden/issues/44)).
 
 ## Actors and trust
 
 | Actor | Trust |
 |---|---|
 | Owner (phone, workstation) | Root of trust. Holds the passkey. Edits the 1Password vault. |
+| The warden host (its root, its container runtime) | Root of trust. Can read everything warden holds and act as warden. |
 | Agent (for example an AI coding agent on the owner's workstation) | Semi-trusted: well-intentioned but may be prompt-injected. Bounded by its stated goal, the approved window, and the targets and users the vault allows. It can only request access, never approve it. |
 | warden server | Trusted. Holds the SSH CA private key and a read-only 1Password Connect token in memory, and relay login credentials briefly (see below). Compromise of the server is compromise of everything it brokers, so it is hardened accordingly. |
-| 1Password Connect | Trusted secret backend. Reachable only from warden. |
+| 1Password Connect | Trusted secret backend. Reachable only from warden, on its own network, and unable to reach warden's listeners. |
 | Notifiers (Home Assistant Companion, ntfy, push providers) | Untrusted doorbells. They receive the goal text, agent, target and a link, and nothing else. They cannot approve anything. Which channels are used is fixed at startup from a compile-time set (`WARDEN_NOTIFY`); agents cannot influence it. |
 | Tailscale | Transport and network-level identity. The tailnet policy is the outer access control. |
 
@@ -38,15 +72,18 @@ defends against it.
   requires a passkey.
 - **Private keys are written to disk on the workstation.** The CLI keeps the
   ephemeral Ed25519 key in memory and hands it to a dedicated per-grant
-  `ssh-agent`. The agent key lives in the macOS Keychain. The CLI stores only
-  the server URL, agent name, socket and pid files and `known_hosts` files, in
-  0700 directories with 0600 files.
+  `ssh-agent`. A key-signed agent stores no secret at all; a bearer key
+  lives in the macOS Keychain (or in `WARDEN_AGENT_KEY`). Otherwise the CLI
+  stores only its configuration (server URL, agent name, the signing key's
+  public half, the `ssh-agent` socket and the pinned audience), grant
+  records, sockets and `known_hosts` files, in 0700 directories with 0600
+  files.
 - **warden becomes the easiest way into the network.** It runs as a non-root
-  user in a distroless image with no shell, listens on loopback (in the
-  network namespace it shares with its Tailscale sidecar, or on a host whose
-  Tailscale Serve publishes it as Tailscale Services), and is exposed only
-  through that Serve. It holds a read-only
-  Connect token.
+  user in a distroless image with no shell, listens only where Tailscale
+  Serve can reach it (on a network of its own behind a host whose Serve
+  publishes it as Tailscale Services, or on loopback in the network
+  namespace of its Tailscale sidecar), and is exposed only through that
+  Serve. It holds a read-only Connect token.
 - **Silent failure.** The CLI always receives an explicit terminal state:
   `approved`, `denied`, `expired`, `cancelled` or `error` with a message.
 - **An API secret reaches the agent.** In proxy mode the broker reads the
@@ -66,16 +103,16 @@ challenge itself, so warden binds the approval differently, with an equivalent
 guarantee because the server is the trusted party:
 
 - The server starts the passkey ceremony for one specific request and window.
-  The ceremony state, including the challenge, is kept server-side and keyed to
-  that request, the chosen window and the approval token. It is consumed by the
-  first completion attempt.
-- The assertion is verified against that stored state, so it cannot be used for
-  another request or another window, and a replay finds no state.
+  The ceremony state, including the challenge, is kept server-side and keyed
+  to that request, the chosen window and the approval token. It is consumed by
+  the first completion attempt.
+- The assertion is verified against that stored state, so it cannot be used
+  for another request or another window, and a replay finds no state.
 - The approval page and the CLI both show a short fingerprint of the request
-  (a hash of the agent name and the whole request: target, user, requested window, goal and public key). If the owner is talking to
-  the person or agent that made the request, they can compare the two before
-  approving. A mismatch means the owner is looking at a different request and
-  should deny it.
+  (a hash of the agent name and the whole request: target, user, requested
+  window, goal and public key). If the owner is talking to the person or agent
+  that made the request, they can compare the two before approving. A mismatch
+  means the owner is looking at a different request and should deny it.
 - The destination the page shows (host, port and the target's host keys; for
   an API secret its origin, path prefix, methods, header, value format and
   whether a CA is pinned) is bound too. The page embeds a digest of it, the
@@ -151,7 +188,8 @@ guarantee because the server is the trusted party:
   login, so the broker does not require `Tailscale-User-Login` for signed
   requests and ignores whatever login Serve reports for them. The signature
   is the authentication; who may reach the API port at all is decided by the
-  tailnet policy (Serve and the gateway app capability). The consequence:
+  tailnet policy (and, if you run one, a gateway's app capability). The
+  consequence:
   any tailnet device the policy lets reach the API can send signed requests,
   and only possession of an enrolled signing key separates it from an
   agent. Keep the API port's grant as narrow as the agents that need it.
@@ -160,7 +198,7 @@ guarantee because the server is the trusted party:
   disables its key at once, ends its pending requests and grants, and wakes
   its waiting CLI calls.
 - The approval endpoints are meant to be reachable from the owner's phone and
-  not from the workstation the agent runs on (see "Deployment assumptions").
+  not from a machine an agent runs on (see "Deployment assumptions").
 
 ## Accepted residual risks
 
@@ -169,9 +207,9 @@ These were recorded during implementation and are accepted for this release.
 - **The CA key is copied into HTTP client buffers.** The CA private key PEM is
   read from 1Password Connect over HTTP. Parts of it can sit in reqwest and
   hyper buffers that warden does not control and cannot zeroize. The parsed
-  key warden holds is zeroized on drop. The mitigation is the
-  container hardening described under "Deployment assumptions": an unprivileged
-  process, no capabilities and no other container on its network.
+  key warden holds is zeroized on drop. The mitigation is the container
+  hardening described under "Deployment assumptions": an unprivileged process,
+  no capabilities and no other container on its network.
 - **Signing protects the key, not the machine.** A key-signed agent's
   signature stops credential theft (nothing reusable is stored or sent; a
   key in the Secure Enclave, a TPM or a PIV token cannot be copied off the
@@ -187,8 +225,8 @@ These were recorded during implementation and are accepted for this release.
   are on the machine, with nothing to take away; a plain key file can be
   copied and used from anywhere that can reach the API. Because key-signed
   agents are exempt from the owner-login check (above), the tailnet policy
-  and the gateway capability are the only network gate besides the
-  signature.
+  (and a gateway's app capability, if you run one) is the only network gate
+  besides the signature.
 - **Bearer agent keys are bearer credentials.** Anyone who obtains a bearer
   agent key can replay it from a host that can reach the API with the
   owner's login (key-signed agents do not have this problem; switch an agent
@@ -219,11 +257,21 @@ These were recorded during implementation and are accepted for this release.
   them is approved. Passkeys that always
   report a counter of 0 (most platform passkeys) cannot be checked this way: a
   cloned one of those is not detected.
+- **Grants are not tied to a task** (issue
+  [#49](https://github.com/pecheriere/warden/issues/49)). `warden ssh` and
+  `warden http` use any active grant of the agent for the target or secret
+  (the one that stays valid longest), and the broker accepts any grant of
+  the calling agent. Two sessions of one agent, or one session across
+  tasks, can therefore use a grant whose goal the owner approved for
+  something else. The audit log still names the grant and the agent. The
+  mitigations today: one request per task, revoking each grant when its task
+  ends, and separate agents (separate OS users and keys) for work that must
+  not share grants.
 - **Goals are free text.** The goal is a single line of at most 500 characters
-  without control characters or invisible format characters (bidi
-  overrides, zero-width characters). The owner decides on the goal alone, and a
-  prompt-injected agent can write a misleading goal. The fingerprint check, the
-  narrow user and the short window limit the damage.
+  without control characters or invisible format characters (bidi overrides,
+  zero-width characters). The owner decides on the goal alone, and a
+  prompt-injected agent can write a misleading goal. The fingerprint check,
+  the narrow user and the short window limit the damage.
 
 ## Proxy mode residual risks
 
@@ -244,6 +292,11 @@ These were recorded during implementation and are accepted for this release.
   across calls) and, inside a larger base64 blob, at most 4 bits of the secret
   per side can remain at the boundary. Compressed responses are refused
   because they cannot be inspected. The real control is the destination rule.
+- **Revoking does not stop a call in flight** (issue
+  [#44](https://github.com/pecheriere/warden/issues/44)). A revoke refuses
+  new calls and withholds the response of a call already sent (409), but the
+  upstream request runs to completion (at most 30 s), so a state-changing
+  call sent just before the revoke still takes effect.
 - **Within the window, the agent can make any allowed call.** Approval is
   bound to an origin, prefix, method set and window, not to individual
   requests. A prompt-injected agent can issue any call the grant permits
@@ -282,11 +335,11 @@ These were recorded during implementation and are accepted for this release.
   read (at request, at approval and at session start), and used only at
   session start, where it is held zeroized and dropped right after the onward
   login. A compromise of the running broker can therefore expose the
-  credentials of relay targets it reads, in the same way it exposes the CA key.
-  The relay is for targets that cannot trust a CA; prefer certificate mode where
-  it is possible. The credential never reaches the agent, the notifiers or the
-  audit log. Give each relay item a credential that is valid only for that
-  target and account.
+  credentials of relay targets it reads, in the same way it exposes the CA
+  key. The relay is for targets that cannot trust a CA; prefer certificate
+  mode where it is possible. The credential never reaches the agent, the
+  notifiers or the audit log. Give each relay item a credential that is valid
+  only for that target and account.
 - **Parts of a password are copied beyond warden's reach.** The SSH library
   takes a password as a `String`, which warden cannot zeroize, and the
   credential also passes through HTTP client buffers (as the CA key does). A
@@ -296,13 +349,14 @@ These were recorded during implementation and are accepted for this release.
 - **Approval binds to the key, and the key to one access.** The relay accepts
   an agent only by the ephemeral public key bound into the approved request. A
   public key can be bound to one live request or grant at a time across all
-  agents, so one agent cannot use another's approval. The ephemeral private key
-  exists only in the agent's `ssh-agent`, as in certificate mode.
+  agents, so one agent cannot use another's approval. The ephemeral private
+  key exists only in the agent's `ssh-agent`, as in certificate mode.
 - **Pinned host keys are required.** There is no trust on first use. Key
   exchange negotiates only the algorithms of the pinned keys. RSA and ECDSA
   host keys are accepted (verification only); SHA-1 signatures are never
-  negotiated, but a holder of the pinned private key could still sign with one.
-  An attacker who holds a target's host key can impersonate it to the broker.
+  negotiated, but a holder of the pinned private key could still sign with
+  one. An attacker who holds a target's host key can impersonate it to the
+  broker.
 - **Everything inside the window passes through the target.** Once logged in,
   the agent has the approved account's shell for the window. The relay forbids
   port, agent and X11 forwarding and subsystems such as sftp, and filters the
@@ -342,16 +396,17 @@ These were recorded during implementation and are accepted for this release.
   the 60 s stall rule.
 - **The per-address pre-login limit is global behind Tailscale Serve.** The
   relay allows 5 connections per source address and 10 overall that have not
-  logged in. Serve forwards the TCP stream from `127.0.0.1`, so every peer has
-  the same address and the per-address limit acts as a global one: a peer that
-  can reach the relay port can fill the login slots for a few seconds at a
-  time (10 s login timeout, 3 attempts). It does not let anyone in. The tailnet
-  policy decides who can reach the port; grant it to the workstation only.
+  logged in. Serve forwards every TCP stream from one address (the node's
+  loopback in the sidecar layout), so every peer has the same address and the
+  per-address limit acts as a global one: a peer that can reach the relay port
+  can fill the login slots for a few seconds at a time (10 s login timeout, 3
+  attempts). It does not let anyone in. The tailnet policy decides who can
+  reach the port; grant it to the agent machines only.
 - **Fail closed when state cannot be read.** The relay checks the grants of
-  its live sessions every second, each check bounded to 1.5 s. If none succeeds
-  for 10 s, every relayed session ends (reason `grant state unavailable`) and no
-  session starts until a check succeeds. A database outage longer than 10 s
-  therefore ends relay sessions, by design.
+  its live sessions every second, each check bounded to 1.5 s. If none
+  succeeds for 10 s, every relayed session ends (reason
+  `grant state unavailable`) and no session starts until a check succeeds. A
+  database outage longer than 10 s therefore ends relay sessions, by design.
 - **A session start is recorded first.** `relay_session_started` is written
   before the first byte reaches the target; if it cannot be written, the
   session does not start.
@@ -361,48 +416,59 @@ These were recorded during implementation and are accepted for this release.
 warden's guarantees depend on its environment being set up as follows.
 
 - **Publishing through Tailscale.** One of the two deployments below.
-  Either way, only Tailscale Serve may reach the listeners.
-- **Tailscale sidecar.** warden runs in the network namespace of a dedicated
-  Tailscale node (`--network container:<sidecar>`) with both listeners on
-  loopback (the defaults), and the node exposes the API and approval UI through
-  Tailscale Serve and, for relay targets, the SSH relay port as a Serve TCP
-  forward (granted to the workstation only). No other container can reach
-  warden, so none can forge `Tailscale-User-Login`. Binding a listener to
-  `0.0.0.0` or running warden on a shared bridge network breaks this: anything
-  that can reach the listener directly can forge the header. (Signed agent
-  requests do not rely on the header, but the approval UI and bearer-key
-  agents do.) The WebAuthn
-  relying party is the node's name, so it is not shared with other services.
-  Nothing is published on the LAN.
-- **Tailscale Services (alternative).** The host, which must carry a tag
+  Either way, only Tailscale Serve (or a reverse proxy that Serve targets)
+  may reach the listeners: anything that can reach a listener directly can
+  forge `Tailscale-User-Login`. (Signed agent requests do not rely on the
+  header, but the approval UI and bearer-key agents do.)
+- **Tailscale Services (recommended).** The host, which must carry a tag
   identity, publishes the approval UI and the agent API as separate Services
-  (`tailscale serve --service=svc:<name>`); each has its own MagicDNS name, so
-  the relying party is the approval Service's name and is not shared. The
-  listeners stay on loopback or on a network that only the host's Serve (or a
-  reverse proxy it targets) can reach; any process or container that can
-  reach a listener can forge `Tailscale-User-Login`. Unlike the sidecar, the
-  host's other local processes and containers are inside the trust boundary
-  unless isolated. Network access is a grant with `dst: svc:<name>`; an
-  application capability reaches warden (or a gateway in front of it) only
-  when its grant targets the host (`tag:` or IP alias), because `app`
-  capabilities on a `svc:` destination are not forwarded. Serve strips a
-  client-supplied `Tailscale-App-Capabilities`. A device without a grant
-  cannot resolve a Service name, so the agent's machine cannot see the
-  approval Service.
+  (`tailscale serve --service=svc:<name>`); each has its own MagicDNS name,
+  so the relying party is the approval Service's name and is not shared.
+  The listeners are bound to warden's address on a network that holds
+  warden alone (and its reverse proxy, if any), never to `0.0.0.0`, and no
+  port is published. Unlike the sidecar, every process on the host and
+  every container with host networking can connect to the listeners and
+  forge the header, so the whole host is inside the trust boundary: it runs
+  nothing untrusted and no host-network container, and local access to the
+  listeners can be limited to tailscaled (see
+  [deployment.md](deployment.md#who-can-reach-the-listeners)). The Docker
+  Engine is 28 or later, which stops other LAN machines from routing to
+  unpublished container ports. Network access is a grant
+  with `dst: svc:<name>`; an application capability reaches warden (or a
+  gateway in front of it) only when its grant targets the host (`tag:` or IP
+  alias), because `app` capabilities on a `svc:` destination are not
+  forwarded. Serve strips a client-supplied `Tailscale-App-Capabilities`. A
+  device without a grant cannot resolve a Service name, so the agent's
+  machine cannot see the approval Service. Publishing the SSH relay as a
+  Service has not been tested.
+- **Tailscale sidecar (alternative).** warden runs in the network namespace
+  of a dedicated Tailscale node (`--network container:<sidecar>`) with both
+  listeners on loopback (the defaults), and the node exposes the API and
+  approval UI through Tailscale Serve and, for relay targets, the SSH relay
+  port as a Serve TCP forward (granted to the agent machines only). No other
+  container can reach warden. Binding a listener to `0.0.0.0` or running
+  warden on a shared bridge network breaks this. The WebAuthn relying party
+  is the node's name, so it is not shared with other services. Nothing is
+  published on the LAN.
 - **Phone-only approval port.** The tailnet policy grants the approval UI port
-  to the owner's phone only, never to the workstation the agent runs on. An
+  to the owner's phone only, never to a machine an agent runs on. An
   agent that is prompt-injected must not be able to put an approval prompt in
   front of the owner on the machine it controls. warden checks only that the
   caller is the owner; this separation is enforced by the tailnet policy, and
   the policy should have tests that assert it.
-- **Connect read-only and internal.** The Connect token can read only the
-  `Warden` vault and is read-only. The Connect server is reachable from warden
-  alone, on an internal network.
+- **Connect read-only and isolated.** The Connect server serves only the
+  `Warden` vault, which holds only warden's items, and the token is
+  read-only. Connect runs on a network of its own that warden joins, so
+  warden can reach Connect but Connect cannot reach warden's listeners (a
+  compromised Connect could otherwise forge `Tailscale-User-Login`). Its
+  egress is limited to the account's 1Password servers.
 - **Hardened container.** Run as the image's non-root user, with all
   capabilities dropped, a read-only root filesystem and a writable `/data`
-  volume for the database and audit log. Egress is limited to what warden
-  needs: Connect, the notifiers, Tailscale and, for proxy mode, the origins
-  of the API secrets.
+  volume for the database and audit log. No port is published. Egress is
+  limited to what warden needs: Connect, the notifiers, the origins of the
+  API secrets (proxy mode) and the addresses of the relay targets (relay
+  mode). The image is pinned by a digest whose build attestation was
+  verified.
 - **Targets trust the CA, per target.** Each target host must trust the SSH
   CA only for its own target name. With OpenSSH: `TrustedUserCAKeys
   /etc/ssh/warden_ca.pub` and `AuthorizedPrincipalsFile
@@ -415,9 +481,12 @@ warden's guarantees depend on its environment being set up as follows.
   listed another target's principal, would accept certificates approved for
   other targets. A target that cannot be set up this way is outside this
   release.
-- **Backups.** The SQLite database and the audit log live on `/data`. Losing
-  the database loses only in-flight requests and enrolled passkeys, which are
-  enrolled again. The audit log is a hash chain; `warden-server audit verify`
-  detects an edited, reordered or removed entry before the last one, but
-  whoever can rewrite the whole file can rewrite the chain, so ship the log somewhere
-  the server cannot modify.
+- **Backups.** The SQLite database, the audit log, the audience and the relay
+  host key live on `/data`. Losing the database loses requests, grants,
+  enrolled passkeys and agents, which are all enrolled again; losing the
+  audience makes key-signed agents log in again. Migrations are one-way, so
+  `/data` is backed up (with warden stopped) before every upgrade. The audit
+  log is a hash chain; `warden-server audit verify` detects an edited,
+  reordered or removed entry before the last one, but whoever can rewrite the
+  whole file can rewrite the chain, so ship the log somewhere the server
+  cannot modify.

@@ -16,7 +16,7 @@ the agent never sees.
 
 Agents authenticate every API call by **signing it with an SSH key** whose
 public half the owner enrolled on the broker (the *signing key*). The key
-can live in hardware (Secure Enclave, TPM, YubiKey) behind an `ssh-agent`, so
+can live in hardware (a TPM, a YubiKey) behind an `ssh-agent`, so
 no reusable secret is stored on the agent's machine and a captured request
 cannot be replayed. Older agents authenticate with a bearer key instead (see
 [Bearer keys](#bearer-keys-legacy)); a new client should sign.
@@ -43,8 +43,10 @@ needs:
   owner's tailnet. It may be a user's device or a tagged device (for example
   a server tagged as an agent host); signed requests work from both.
 - **Access to the broker's API.** The broker's API is published with
-  Tailscale Serve over HTTPS on the broker node's tailnet name, for example
-  `https://warden.example.ts.net`, at the root of that origin. The tailnet
+  Tailscale Serve over HTTPS at the root of its own origin: the broker
+  node's tailnet name, for example `https://warden.example.ts.net`, or a
+  Tailscale Service of its own, for example
+  `https://warden-api.example.ts.net`. The tailnet
   policy must allow the agent machine to reach that port. When the deployment
   puts a gateway in front of the broker that admits callers by a Tailscale
   application capability, the tailnet policy must also grant that capability
@@ -53,8 +55,9 @@ needs:
   broker's SSH relay: the relay's TCP port (a Tailscale Serve TCP forward on
   the same node, announced in each relay grant) must be allowed for the agent
   machine too.
-- **Never the approval UI.** The approval pages live on another port that
-  the tailnet policy grants to the owner's phone only. An agent machine must
+- **Never the approval UI.** The approval pages live on another port (or
+  another Tailscale Service) that the tailnet policy grants to the owner's
+  phone only. An agent machine must
   not be able to reach it, so that a compromised agent can never put an
   approval prompt in front of the owner.
 - **A clock within 60 seconds of the broker's** (use NTP), because signed
@@ -680,7 +683,7 @@ which is why windows are short.
 ### `POST /v1/grants/{id}/http`
 
 Have the broker make one HTTPS call with an `api` grant's secret; see
-[section 7](#api-grants) for the body and the rules.
+[section 7](#api-grants-kindapi) for the body and the rules.
 
 ## 7. Using a grant
 
@@ -703,7 +706,7 @@ revoke it. Drop it when it expires; `GET /v1/grants` is the broker's view.
 
 The broker's SSH CA signed the request's `public_key` into `certificate`
 (principal `warden:<target>:<user>`, valid for the approved window, key id
-the grant id). To use it:
+`warden:<agent>:<grant id>`). To use it:
 
 1. Check that `user` is the account you asked for and that `host` is a
    plain host name (letters, digits, `.`, `-`; not starting with `-`).

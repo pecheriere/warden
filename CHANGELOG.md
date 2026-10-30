@@ -4,6 +4,35 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- Docs overhaul. The README is now a short introduction with a quick start.
+  New guides: `docs/deployment.md`, `docs/configuration.md` and
+  `docs/ssh-targets.md`.
+  - `docs/deployment.md` is the recommended deployment:
+    - Tailscale Services, with the policy grants and tests, Funnel kept
+      off, and the approval UI reachable from the phone only;
+    - who on the host can reach the listeners, and how to contain it;
+    - Docker Engine 28 and Compose 2.33 as a security requirement;
+    - a dedicated 1Password vault with a read-only Connect token;
+    - Connect run non-root, with an explicit bus, on its own network;
+    - egress rules for warden and Connect, with checks;
+    - Home Assistant over the tailnet without `local_only`;
+    - backups, and attested, pinned upgrades;
+    - a sidecar layout for SSH relay targets (not yet tested end to end).
+  - `docs/configuration.md` lists every server and CLI setting and command.
+  - `docs/ssh-targets.md` covers one certificate-only user per agent,
+    checking sshd's effective settings, login alerts by CA fingerprint,
+    and relay targets.
+  - The threat model says what warden does not protect: the host is the
+    root of trust; grants shared by one agent's sessions (#49); revoke and
+    calls in flight (#44).
+  - Corrected: the certificate key id, the Ctrl-C cancel wait (5 s), the
+    published image, what losing the database loses, warden's egress
+    (relay targets) and the Linux bearer-key setup.
+
 ## [0.7.0] - 2026-10-29
 
 ### Added
