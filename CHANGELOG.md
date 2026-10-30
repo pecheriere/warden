@@ -33,6 +33,9 @@ All notable changes to this project are recorded here. The format follows
   warden. The docs now require a signer that works unattended with the
   screen locked (TPM, YubiKey PIV) and point an unattended Mac at a bearer
   key in the login Keychain.
+- Docs: Tailscale Services (tested on Tailscale 1.104) is documented as a
+  second deployment beside the dedicated sidecar node, with its policy,
+  header-forwarding and trust-boundary differences.
 
 ## [0.6.0] - 2026-10-29
 

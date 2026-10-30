@@ -261,15 +261,72 @@ channels you choose (Home Assistant, ntfy) in the order you choose; see
 
 ## Deployment notes
 
-warden expects to run behind a dedicated Tailscale node (a sidecar container)
-whose network namespace it shares (`--network container:<sidecar>`), with both
-listeners on loopback. The sidecar publishes the agent API and the approval UI
-as two Tailscale Serve ports (proxying to `127.0.0.1:8080` and
-`127.0.0.1:8081`) with separate tailnet grants. Serve sets the
-`Tailscale-User-Login` header that warden checks; nothing else can reach the
-listeners to forge it. Grant the approval port to the owner's phone only, and
-the API and relay ports to the machine the agent runs on (the relay is a raw
-TCP forward, so the tailnet policy is its only network-level restriction). Keep
+warden supports two ways to publish its listeners on the tailnet. In both,
+Tailscale Serve sets the `Tailscale-User-Login` header that warden checks, so
+nothing but Serve may reach the listeners, and the approval endpoint is granted
+to the owner's phone only.
+
+**Dedicated sidecar node.** warden runs behind a dedicated Tailscale node (a
+sidecar container) whose network namespace it shares
+(`--network container:<sidecar>`), with both listeners on loopback. The sidecar
+publishes the agent API and the approval UI as two Tailscale Serve ports
+(proxying to `127.0.0.1:8080` and `127.0.0.1:8081`) with separate tailnet
+grants. Nothing else can reach the listeners to forge the header. Grant the
+approval port to the owner's phone only, and the API and relay ports to the
+machine the agent runs on (the relay is a raw TCP forward, so the tailnet
+policy is its only network-level restriction). Choose this when you want the
+namespace to hold warden alone.
+
+**Tailscale Services.** warden runs on a host that already runs Tailscale, and
+each endpoint is its own [Tailscale Service][svc]. A Service (`svc:<name>`) has
+its own MagicDNS name (`<name>.<tailnet>.ts.net`) and virtual IP, on port 443
+with a Tailscale-issued certificate. For example, `svc:warden` serves the
+approval UI and `svc:warden-api` the agent API, so the WebAuthn RP ID and
+origin belong to warden alone without a dedicated node. Set
+`WARDEN_PUBLIC_URL=https://warden.example.ts.net`. Define each Service once in
+the admin console, then publish it on the host:
+
+```sh
+tailscale serve --service=svc:warden --https=443 --bg http://127.0.0.1:8081
+tailscale serve --service=svc:warden-api --https=443 --bg http://127.0.0.1:8080
+```
+
+The per-Service network grants already decide which device sees which
+endpoint. warden itself does not read app capabilities; add
+`--accept-app-caps=<cap>` only when a reverse proxy in front of warden checks
+them (for example a gateway that refuses requests without
+`example.com/cap/warden-approve`).
+
+Requirements and behaviour (tested on Tailscale 1.104):
+
+- Only a device with a tag identity (for example `tag:warden-host`) can host
+  Services; clients stay user devices.
+- The tailnet policy needs `autoApprovers.services` (or a manual approval of
+  the host in the admin console) and, for network access, a grant with
+  `dst: ["svc:warden"]` and `ip: ["tcp:443"]` for each Service. A device
+  without a grant cannot resolve or reach the name at all: the agent's machine
+  cannot see the approval Service.
+- `Tailscale-User-Login` is forwarded to the backend as with plain Serve.
+  `Tailscale-App-Capabilities` is forwarded only when the capability grant
+  targets the host (`dst: tag:warden-host` or the host's IP alias), not the
+  `svc:` name: a grant with `dst: svc:<name>` gives network access, but its
+  `app` capabilities never reach the host. Serve strips any
+  `Tailscale-App-Capabilities` the client sends.
+- `tailscale serve get-config` omits `AcceptAppCaps` (`tailscale serve status
+  --json` shows it), so set up a Service that needs capabilities with the CLI
+  commands above, not `set-config`.
+- The listeners must be reachable only from the host's Serve (or from a
+  reverse proxy that the host's Serve targets), never from other containers or
+  the LAN: anything that can reach a listener directly can forge
+  `Tailscale-User-Login`. Unlike the sidecar, the host's other local processes
+  and containers are inside the trust boundary unless you isolate them.
+- The RP ID is the Service name. Moving an existing deployment to Services
+  changes it, so re-enroll the passkeys; agents run `warden login` again with
+  the API Service URL (a bearer key can be reused).
+
+[svc]: https://tailscale.com/kb/1552/tailscale-services
+
+In both deployments keep
 the Connect server on an internal network that only warden can reach, run
 warden with all capabilities dropped and a read-only root filesystem, and back
 up the `/data` volume. Details and the reasons are in the threat model.

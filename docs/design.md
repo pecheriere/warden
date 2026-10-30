@@ -490,7 +490,8 @@ it out of the log.
 
 - The web UI is served by warden over HTTPS on its tailnet name (Tailscale
   Serve terminates TLS with the ts.net certificate). The WebAuthn RP ID is
-  that name.
+  that name: the dedicated node's name, or the approval Tailscale Service's
+  (`WARDEN_PUBLIC_URL`). Changing it invalidates enrolled passkeys.
 - **Passkey** (`webauthn-rs`): one-time enrollment via a code printed by
   `warden-server enroll` (CLI inside the container), valid 10 min, single use.
   Multiple passkeys may be enrolled (for example a phone and a synced
@@ -657,6 +658,9 @@ in-flight requests and enrolled passkeys (re-enroll).
   distroless base), as a non-root user with all capabilities dropped and a
   read-only root filesystem. The data volume (database and audit log) is the
   only writable path and is backed up.
+- **Two supported ways to publish** the listeners: a dedicated node (below)
+  or Tailscale Services (after it). Both keep the rule that only Serve may
+  reach the listeners.
 - **Dedicated tailnet node** (decision): a Tailscale sidecar container shares
   its network namespace with warden only, so (a) the WebAuthn RP ID/origin is
   not shared with other services and (b) no other container can reach warden
@@ -673,6 +677,22 @@ in-flight requests and enrolled passkeys (re-enroll).
   does not add identity to a raw TCP stream and every peer appears as
   `127.0.0.1`, so the relay authenticates the agent itself (by key) and the
   tailnet policy is the only network-level restriction on who reaches it.
+- **Tailscale Services** (alternative, tested on Tailscale 1.104): a tagged
+  host that already runs Tailscale publishes each endpoint as its own Service
+  (`svc:warden` for the approval UI, `svc:warden-api` for the agent API) with
+  `tailscale serve --service=svc:<name> --https=443`. Each Service has its own
+  MagicDNS name, virtual IP and certificate on port 443, so the RP ID and
+  origin belong to warden alone without a dedicated node. Network access is a
+  grant with `dst: svc:<name>` and `ip: ["tcp:443"]`; a device without one
+  cannot resolve the name, so the agent's machine cannot see the approval
+  Service. `Tailscale-User-Login` reaches the backend as with plain Serve, but
+  `Tailscale-App-Capabilities` only when the capability grant targets the
+  host (`tag:` or its IP alias), not the `svc:` name; Serve strips a
+  client-supplied value. The listeners must be reachable only from the host's
+  Serve (or a reverse proxy it targets). The trade-off against the sidecar:
+  the host's other local processes and containers are in the trust boundary
+  unless isolated, where the sidecar keeps the namespace to warden alone. The
+  relay is a raw TCP forward and is not covered here.
 - **Tailscale is a hard requirement in v1** (decision). Caller identity sits
   behind an internal trait so other identity sources (mTLS, OIDC) can be
   added later, but only the Tailscale implementation ships.

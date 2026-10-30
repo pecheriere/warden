@@ -42,9 +42,10 @@ defends against it.
   the server URL, agent name, socket and pid files and `known_hosts` files, in
   0700 directories with 0600 files.
 - **warden becomes the easiest way into the network.** It runs as a non-root
-  user in a distroless image with no shell, listens on the loopback interface
-  of the network namespace it shares with its Tailscale sidecar, and is
-  exposed only through that sidecar's Tailscale Serve. It holds a read-only
+  user in a distroless image with no shell, listens on loopback (in the
+  network namespace it shares with its Tailscale sidecar, or on a host whose
+  Tailscale Serve publishes it as Tailscale Services), and is exposed only
+  through that Serve. It holds a read-only
   Connect token.
 - **Silent failure.** The CLI always receives an explicit terminal state:
   `approved`, `denied`, `expired`, `cancelled` or `error` with a message.
@@ -359,6 +360,8 @@ These were recorded during implementation and are accepted for this release.
 
 warden's guarantees depend on its environment being set up as follows.
 
+- **Publishing through Tailscale.** One of the two deployments below.
+  Either way, only Tailscale Serve may reach the listeners.
 - **Tailscale sidecar.** warden runs in the network namespace of a dedicated
   Tailscale node (`--network container:<sidecar>`) with both listeners on
   loopback (the defaults), and the node exposes the API and approval UI through
@@ -371,6 +374,21 @@ warden's guarantees depend on its environment being set up as follows.
   agents do.) The WebAuthn
   relying party is the node's name, so it is not shared with other services.
   Nothing is published on the LAN.
+- **Tailscale Services (alternative).** The host, which must carry a tag
+  identity, publishes the approval UI and the agent API as separate Services
+  (`tailscale serve --service=svc:<name>`); each has its own MagicDNS name, so
+  the relying party is the approval Service's name and is not shared. The
+  listeners stay on loopback or on a network that only the host's Serve (or a
+  reverse proxy it targets) can reach; any process or container that can
+  reach a listener can forge `Tailscale-User-Login`. Unlike the sidecar, the
+  host's other local processes and containers are inside the trust boundary
+  unless isolated. Network access is a grant with `dst: svc:<name>`; an
+  application capability reaches warden (or a gateway in front of it) only
+  when its grant targets the host (`tag:` or IP alias), because `app`
+  capabilities on a `svc:` destination are not forwarded. Serve strips a
+  client-supplied `Tailscale-App-Capabilities`. A device without a grant
+  cannot resolve a Service name, so the agent's machine cannot see the
+  approval Service.
 - **Phone-only approval port.** The tailnet policy grants the approval UI port
   to the owner's phone only, never to the workstation the agent runs on. An
   agent that is prompt-injected must not be able to put an approval prompt in
