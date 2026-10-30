@@ -4,6 +4,17 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- Docs: Secretive (Secure Enclave keys on macOS) is no longer suggested for
+  signed requests. Such keys, like those in the 1Password SSH agent, refuse
+  to sign while the Mac is locked, which is exactly when an agent needs
+  warden. The docs now require a signer that works unattended with the
+  screen locked (TPM, YubiKey PIV) and point an unattended Mac at a bearer
+  key in the login Keychain.
+
 ## [0.6.0] - 2026-10-29
 
 ### Added
