@@ -41,6 +41,7 @@ target for the approval UI (#33), not code the broker serves.
 | `--soft-ink` | `#1D45AB` | `#C9D7FF` | Text on `--soft` |
 | `--raised` | `#FFFFFF` | `#2B4180` | Selected segment, lifted above its `--soft` track |
 | `--accent` | `#F5B800` | `#F5B800` | Mascot plume and keyhole, live dot; never text |
+| `--accent-edge` | `#9A6B00` | `#F5B800` | Edge of the live dot, so it keeps 3:1 against a light card |
 | `--warn-bg` / `--warn-ink` / `--warn-line` | `#FFF1D6` / `#7A3300` / `#C25100` | `#3A2306` / `#FFD08A` / `#E08A2C` | "Can modify" badge |
 | `--deny` | `#B42318` | `#FF8A80` | Deny and Revoke buttons |
 | `--fp-bg` | `#F7F9FF` | `#101D40` | Fingerprint box |
@@ -78,7 +79,9 @@ WCAG AA contrast in both modes.
 - **Buttons**: Approve filled `--primary`; Deny and Revoke with a 2 px
   `--deny` outline and `--deny` text; secondary actions with a 2 px `--line`
   outline.
-- **Live indicator**: `--accent` dot plus text ("1 session open").
+- **Live indicator**: `--accent` dot with a 2 px `--accent-edge` ring, plus
+  `--soft-ink` text ("1 session open"). Under it, the live area of a grant
+  card lists what is open, across the card below a `--line` divider.
 
 ## Mascot
 

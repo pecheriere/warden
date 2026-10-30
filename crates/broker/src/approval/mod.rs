@@ -25,10 +25,11 @@ use crate::AppState;
 use crate::audit::AuditEvent;
 use crate::identity::Owner;
 use crate::policy::{ApiScope, ApiSecretPolicy, CaKey, SshMode, SshTarget};
-use crate::relay::RelayEndpoint;
+use crate::proxy::CallInfo;
+use crate::relay::{LiveSessionInfo, RelayEndpoint};
 use crate::requests::{
-    BACKEND_UNAVAILABLE, Destination, PendingView, RELAY_NOT_CONFIGURED, RequestError, sha256_hex,
-    window_label,
+    ActiveGrant, BACKEND_UNAVAILABLE, Destination, PendingView, RELAY_NOT_CONFIGURED, RequestError,
+    sha256_hex, window_label,
 };
 use crate::ssh_ca::{self, IssueInput};
 
@@ -68,6 +69,7 @@ pub fn router(state: AppState) -> Router {
         .route("/approve/{token}/finish", post(approve_finish))
         .route("/approve/{token}/deny", post(deny))
         .route("/grants", get(grants_page))
+        .route("/grants/live", get(grants_live))
         .route("/grants/{id}/revoke", post(revoke_grant))
         .route("/history", get(history_page))
         .route("/enroll", get(enroll_page))
@@ -188,6 +190,80 @@ struct Enrolled {
     passkey_id: String,
 }
 
+/// Body of `GET /grants/live`: every active grant with its live relay
+/// sessions and in-flight proxy calls.
+#[derive(Serialize)]
+struct LiveActivity<'a> {
+    grants: Vec<LiveGrant<'a>>,
+}
+
+/// What an active grant is doing right now.
+#[derive(Debug, Serialize)]
+pub struct LiveGrant<'a> {
+    /// The grant.
+    pub grant_id: Id,
+    /// Its open relay sessions, oldest first.
+    pub relay_sessions: Vec<LiveRelaySession>,
+    /// Its proxied calls in flight, oldest first.
+    pub proxy_calls: Vec<LiveProxyCall<'a>>,
+}
+
+/// An open relay session.
+#[derive(Debug, Serialize)]
+pub struct LiveRelaySession {
+    /// Unix seconds.
+    pub started_at: i64,
+    /// Bytes relayed to the target so far.
+    pub bytes_to_target: u64,
+    /// Bytes relayed from the target so far.
+    pub bytes_from_target: u64,
+}
+
+/// A proxied call in flight.
+#[derive(Debug, Serialize)]
+pub struct LiveProxyCall<'a> {
+    /// HTTP method.
+    pub method: &'a str,
+    /// URL path, without query string or fragment.
+    pub path: &'a str,
+    /// Unix seconds.
+    pub started_at: i64,
+}
+
+/// `sessions` and `calls` grouped under the grant of `grants` they belong
+/// to, one entry per grant in `grants` order; entries of any other grant are
+/// left out.
+fn live_grants<'a>(
+    grants: &[ActiveGrant],
+    sessions: &[LiveSessionInfo],
+    calls: &'a [CallInfo],
+) -> Vec<LiveGrant<'a>> {
+    grants
+        .iter()
+        .map(|grant| LiveGrant {
+            grant_id: grant.grant_id.clone(),
+            relay_sessions: sessions
+                .iter()
+                .filter(|s| s.grant_id == grant.grant_id)
+                .map(|s| LiveRelaySession {
+                    started_at: s.started_at,
+                    bytes_to_target: s.bytes_to_target,
+                    bytes_from_target: s.bytes_from_target,
+                })
+                .collect(),
+            proxy_calls: calls
+                .iter()
+                .filter(|c| c.grant_id == grant.grant_id)
+                .map(|c| LiveProxyCall {
+                    method: &c.method,
+                    path: &c.path,
+                    started_at: c.started_at,
+                })
+                .collect(),
+        })
+        .collect()
+}
+
 fn json_error(status: StatusCode, message: impl Into<String>) -> Response {
     (
         status,
@@ -295,9 +371,29 @@ async fn approve_page(State(state): State<AppState>, Path(token): Path<String>) 
 
 async fn grants_page(State(state): State<AppState>) -> Response {
     match state.requests.active_grants().await {
-        Ok(grants) => pages::grants(&grants, state.clock.now()).into_response(),
+        Ok(grants) => {
+            let sessions = state.requests.live_sessions().snapshot();
+            let calls = state.proxy_calls.snapshot();
+            let live = live_grants(&grants, &sessions, &calls);
+            pages::grants(&grants, &live, state.clock.now()).into_response()
+        }
         Err(e) => internal_page("grants page", &e),
     }
+}
+
+/// What is going on under the active grants right now, for the grants page
+/// to refresh without reloading.
+async fn grants_live(State(state): State<AppState>) -> Response {
+    let grants = match state.requests.active_grants().await {
+        Ok(grants) => grants,
+        Err(e) => return internal("live activity", &e),
+    };
+    let sessions = state.requests.live_sessions().snapshot();
+    let calls = state.proxy_calls.snapshot();
+    let live = LiveActivity {
+        grants: live_grants(&grants, &sessions, &calls),
+    };
+    Json(live).into_response()
 }
 
 async fn history_page(State(state): State<AppState>) -> Response {

@@ -1,5 +1,6 @@
 // warden approval UI: WebAuthn glue for the enrollment, approval and grants
-// pages. Served as /static/warden.js; the pages carry no inline script.
+// pages, and the live activity of the grants page. Served as
+// /static/warden.js; the pages carry no inline script.
 'use strict';
 
 (() => {
@@ -167,6 +168,203 @@
     }
   };
 
+  // --- live activity on the grants page --------------------------------------------
+  // Mirrors `live_area` in pages.rs, which renders the same markup for the
+  // first paint and for viewers without script.
+
+  const LIVE_PERIOD_MS = 5000;
+
+  /** `bytes` in pages.rs: powers of 1000, rounded down to a tenth. */
+  const bytes = (n) => {
+    if (n < 1000) return `${n} B`;
+    const [divisor, unit] = n < 1000000 ? [100, 'KB'] : [100000, 'MB'];
+    const tenths = Math.floor(n / divisor);
+    return `${Math.floor(tenths / 10)}.${tenths % 10} ${unit}`;
+  };
+
+  const count = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+
+  const el = (tag, className, ...children) => {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    for (const child of children) {
+      node.append(typeof child === 'string' ? document.createTextNode(child) : child);
+    }
+    return node;
+  };
+
+  /** Shows a <time> in the viewer's local time, from its `datetime`. */
+  const localTime = (node) => {
+    const date = new Date(node.dateTime);
+    if (Number.isNaN(date.getTime())) return;
+    node.textContent = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  };
+
+  /** `clock` in pages.rs: a <time> for Unix seconds `ts`, in local time. */
+  const clock = (ts) => {
+    const node = el('time', '');
+    node.dateTime = new Date(ts * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
+    localTime(node);
+    return node;
+  };
+
+  const renderLive = (area, live) => {
+    const sessions = live.relay_sessions;
+    const calls = live.proxy_calls;
+    const parts = [];
+    if (sessions.length) parts.push(`${count(sessions.length, 'session', 'sessions')} open`);
+    if (calls.length) parts.push(`${count(calls.length, 'call', 'calls')} in flight`);
+    if (!parts.length) {
+      const idle = area.dataset.kind === 'relay' ? 'No sessions open' : 'No calls in flight';
+      area.replaceChildren(el('p', 'detail', idle));
+      return;
+    }
+    const list = el('ul', 'live-list');
+    list.setAttribute('role', 'list');
+    for (const session of sessions) {
+      list.append(el('li', '',
+        el('span', '', 'Session since ', clock(session.started_at)),
+        el('span', '',
+          el('span', 'nowrap', `${bytes(session.bytes_to_target)} to target`),
+          ' · ',
+          el('span', 'nowrap', `${bytes(session.bytes_from_target)} from target`))));
+    }
+    for (const call of calls) {
+      list.append(el('li', '',
+        el('code', '', el('bdi', '', `${call.method} ${call.path}`)),
+        el('span', '', 'since ', clock(call.started_at))));
+    }
+    area.replaceChildren(el('p', 'live', parts.join(' · ')), list);
+  };
+
+  /** Session storage key: the grants a reload was last made to show. */
+  const RELOADED_FOR = 'warden.live.reloadedFor';
+
+  /** Removes the grant cards `cards`. Focus inside one of them moves to
+   *  the Revoke button of the nearest card that stays, after it, else
+   *  before it, else to the page heading. */
+  const removeCards = (cards) => {
+    const focused = cards.find((card) => card.contains(document.activeElement));
+    let target = null;
+    if (focused) {
+      const gone = new Set(cards);
+      const staying = (step) => {
+        let node = focused[step];
+        while (node && (!node.matches('section.grant') || gone.has(node))) node = node[step];
+        return node;
+      };
+      const near = staying('nextElementSibling') || staying('previousElementSibling');
+      target = near && near.querySelector('button.revoke');
+      if (!target) {
+        target = document.querySelector('main h1');
+        if (target && !target.hasAttribute('tabindex')) target.setAttribute('tabindex', '-1');
+      }
+    }
+    for (const card of cards) card.remove();
+    if (target) target.focus();
+  };
+
+  /** Whether to reload to show the grants `ids`, which have no card: once
+   *  for a given set, so a page that still lacks them cannot loop. Without
+   *  session storage there is no such guard, so no reload. */
+  const reloadOnceFor = (ids) => {
+    const key = [...ids].sort().join(' ');
+    try {
+      if (window.sessionStorage.getItem(RELOADED_FOR) === key) return false;
+      window.sessionStorage.setItem(RELOADED_FOR, key);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  };
+
+  const setupLive = () => {
+    if (!document.querySelector('.live-area[data-grant]')) return;
+    for (const node of document.querySelectorAll('main time[datetime]')) localTime(node);
+
+    const shown = new Map();
+    let timer = null;
+    let inFlight = false;
+    let stopped = false;
+
+    const apply = (data) => {
+      const byGrant = new Map((data.grants || []).map((live) => [live.grant_id, live]));
+      const ended = [];
+      for (const area of document.querySelectorAll('.live-area[data-grant]')) {
+        const live = byGrant.get(area.dataset.grant);
+        if (!live) {
+          // Revoked or expired: never show its last activity as live.
+          ended.push(area.closest('section.grant'));
+          continue;
+        }
+        if (area.dataset.kind === 'cert') continue;
+        const key = JSON.stringify(live);
+        if (shown.get(area.dataset.grant) === key) continue;
+        shown.set(area.dataset.grant, key);
+        renderLive(area, live);
+      }
+      removeCards(ended);
+      // The last card went: reload for the server's empty state, which
+      // has no live area and so no polling.
+      if (!document.querySelector('.live-area[data-grant]')) {
+        stopped = true;
+        window.location.reload();
+        return;
+      }
+      // A grant approved since the page loaded: reload to show its card,
+      // but never under a revoke in progress (that one reloads itself).
+      const onPage = new Set(
+        [...document.querySelectorAll('.live-area[data-grant]')].map((area) => area.dataset.grant));
+      const added = [...byGrant.keys()].filter((id) => !onPage.has(id));
+      if (added.length && !document.querySelector('button.revoke:disabled') && reloadOnceFor(added)) {
+        stopped = true;
+        window.location.reload();
+      }
+    };
+
+    const schedule = () => {
+      window.clearTimeout(timer);
+      timer = null;
+      if (!stopped && document.visibilityState === 'visible') {
+        timer = window.setTimeout(poll, LIVE_PERIOD_MS);
+      }
+    };
+
+    async function poll() {
+      if (inFlight || stopped) return;
+      inFlight = true;
+      try {
+        const response = await fetch('/grants/live', {
+          credentials: 'same-origin',
+          cache: 'no-store',
+          headers: { Accept: 'application/json' },
+        });
+        if (response.status === 401 || response.status === 403) {
+          stopped = true;
+        } else if (response.ok) {
+          apply(await response.json());
+        }
+      } catch (_) {
+        // Offline or a bad answer: keep what is shown and try again later.
+      } finally {
+        inFlight = false;
+        schedule();
+      }
+    }
+
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') {
+        window.clearTimeout(timer);
+        timer = null;
+        poll();
+      } else {
+        window.clearTimeout(timer);
+        timer = null;
+      }
+    });
+    schedule();
+  };
+
   // --- enrollment page ------------------------------------------------------------
 
   const setupEnrollment = () => {
@@ -192,6 +390,7 @@
   document.addEventListener('DOMContentLoaded', () => {
     setupApproval();
     setupGrants();
+    setupLive();
     setupEnrollment();
   });
 })();

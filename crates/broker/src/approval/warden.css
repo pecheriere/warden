@@ -1,9 +1,9 @@
 :root{--ground:#F3F6FD;--surface:#FFFFFF;--ink:#0F1E3D;--muted:#4A5A7C;--line:#DDE5F5;
 --primary:#2557D6;--on-primary:#FFFFFF;--soft:#E3EBFC;--soft-ink:#1D45AB;--raised:#FFFFFF;
---warn-bg:#FFF1D6;--warn-ink:#7A3300;--warn-line:#C25100;--deny:#B42318;--fp-bg:#F7F9FF}
+--accent:#F5B800;--accent-edge:#9A6B00;--warn-bg:#FFF1D6;--warn-ink:#7A3300;--warn-line:#C25100;--deny:#B42318;--fp-bg:#F7F9FF}
 @media (prefers-color-scheme:dark){:root{--ground:#0B1530;--surface:#142348;--ink:#EAF0FF;--muted:#A5B4D8;--line:#22346A;
 --primary:#8FB0FF;--on-primary:#0B1530;--soft:#1B2D5C;--soft-ink:#C9D7FF;--raised:#2B4180;
---warn-bg:#3A2306;--warn-ink:#FFD08A;--warn-line:#E08A2C;--deny:#FF8A80;--fp-bg:#101D40}}
+--accent:#F5B800;--accent-edge:#F5B800;--warn-bg:#3A2306;--warn-ink:#FFD08A;--warn-line:#E08A2C;--deny:#FF8A80;--fp-bg:#101D40}}
 *{box-sizing:border-box}
 body{margin:0;background:var(--ground);color:var(--ink);
 font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;line-height:1.45;min-height:100vh}
@@ -79,6 +79,15 @@ gap:10px;text-decoration:none;font-family:inherit;cursor:pointer}
 font-weight:700;font-size:15px;font-family:inherit;cursor:pointer}
 .revoke:disabled{opacity:.55;cursor:default}
 .lead{margin:0;color:var(--muted)}
+/* Live activity of a grant. The dot's edge keeps it at 3:1 on a light card, where the sunflower alone is not. */
+.live-area{grid-column:1/-1;display:flex;flex-direction:column;gap:6px;min-width:0;padding-top:12px;border-top:1px solid var(--line)}
+.live-area p{margin:0}
+.live{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:700;color:var(--soft-ink)}
+.live::before{content:"";flex:none;width:10px;height:10px;border-radius:50%;background:var(--accent);border:2px solid var(--accent-edge)}
+.live-list{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:8px;color:var(--muted);font-size:14px}
+.live-list li{display:flex;flex-wrap:wrap;gap:0 14px;min-width:0;overflow-wrap:anywhere}
+.live-list .nowrap{white-space:nowrap}
+.live-list code{color:var(--ink);word-break:normal;overflow-wrap:anywhere;min-width:0}
 /* Form inputs: 48 px high, a boundary with 3:1 contrast, 17 px text (no zoom on focus on phones). */
 .input{width:100%;height:48px;padding:0 14px;border:1px solid var(--muted);border-radius:12px;
 background:var(--ground);color:var(--ink);font:inherit;font-size:17px}

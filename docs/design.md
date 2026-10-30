@@ -560,6 +560,36 @@ warning, together with the methods and the path prefix of the narrowed scope.
 The notification and the audit summary show `api github (read-only)` or `api
 github (CAN MODIFY: POST, PUT)`.
 
+### Active grants and live activity
+
+The Active grants page lists a card per active grant with its Revoke button,
+and under each what the grant is doing right now, from the relay's live
+sessions and the proxy's calls in flight: for a relay grant each open session
+(start time, bytes to and from the target), for an API grant each call in
+flight (method and path, start time), under a live indicator ("2 sessions
+open", "1 call in flight"). A certificate grant shows "Certificate logins are
+not visible to warden.": the logins go straight to the target. The page
+renders this server-side; `warden.js` refreshes it every 5 s from `GET
+/grants/live` (owner only, `Cache-Control: no-store`) while the page is
+visible, with at most one request in flight, and stops polling on a 401 or
+403. A failed request keeps what is shown. A grant missing from the answer
+(revoked or expired) loses its card, so ended activity is never shown as live;
+keyboard focus inside a removed card moves to the Revoke button of the nearest
+card that stays, after it, else before it, else to the heading. A grant in the
+answer without a card (approved since the page loaded) reloads the page,
+unless a revoke is in progress, and only once for a given set of grants
+(remembered in session storage), so a reload cannot loop. The script builds
+the area with DOM text nodes only, never HTML from the answer.
+
+A call is listed with the method and path its `proxy_call` audit entry
+records, from one sanitization: the path never carries userinfo, query string
+or fragment, and is `invalid` when the URL does not parse or is longer than
+512 bytes with its origin, so the agent cannot put an unbounded string on the
+owner's page. Revoking an API grant refuses its new calls and withholds the
+response of a call in flight, but that call runs on upstream until it answers
+or times out; it is no longer listed once the grant has ended. Times are
+rendered as UTC and shown in the viewer's local time by the script.
+
 ### Screenshots
 
 The unit test `every_page_renders_self_contained` renders every approval page
@@ -573,6 +603,12 @@ viewport height (what is on screen without scrolling) and land in
 `<out-dir>/warden-pages/shots` (the script deletes and recreates only that
 subdirectory); keep `<out-dir>` outside the repository, as screenshots are
 never committed.
+
+`scripts/check-grants-live.py <out-dir>` checks the live refresh of the
+grants page the same way: it serves the `grants-live` fixture with a mocked
+`GET /grants/live` and asserts, in headless Chrome on virtual time, that a
+401 or 403 stops polling, that a grant missing from the answer loses its
+card, and that a grant with no card reloads the page exactly once.
 
 ## 10. Policy: 1Password as the source of truth
 

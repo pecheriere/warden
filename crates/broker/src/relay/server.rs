@@ -914,7 +914,10 @@ impl RelayHandler {
                 let _over = over;
                 // Listed before the grant is checked again: a revocation
                 // after the check still reaches the session.
-                let mut live = shared.requests.live_sessions().register(&login.grant);
+                let mut live = shared
+                    .requests
+                    .live_sessions()
+                    .register(&login.grant, shared.requests.now());
                 let opened = open_target(
                     &shared,
                     &login,
@@ -962,8 +965,11 @@ impl RelayHandler {
                 }
                 // A revocation or expiry that reached the session while it
                 // ended otherwise (or while it was torn down) is what ended
-                // it, on record. Still listed until here, so none is missed.
+                // it, on record. Still listed until here, so none is missed;
+                // unlisted before the end is recorded, so the owner's view
+                // never shows a session whose end is on record.
                 let outcome = outcome.settled(live.told());
+                drop(live);
                 record_end(&shared.audit, &grant.grant_id, &outcome).await;
             })
         };

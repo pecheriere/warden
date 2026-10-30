@@ -3,7 +3,7 @@
 //! and the loop that carries bytes, EOF, window changes, signals and the
 //! exit status between the agent and the target.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -90,7 +90,7 @@ pub(crate) mod reason {
 /// another process and expiry are found by the relay's periodic check.
 #[derive(Debug, Default)]
 pub(crate) struct LiveSessions {
-    entries: Mutex<HashMap<u64, LiveSession>>,
+    entries: Mutex<BTreeMap<u64, LiveSession>>,
     next: AtomicU64,
 }
 
@@ -99,6 +99,12 @@ struct LiveSession {
     grant_id: Id,
     agent: AgentName,
     not_after: i64,
+    /// Unix seconds when the session was listed.
+    started_at: i64,
+    /// Data bytes delivered to the target and to the agent so far, shared
+    /// with the relay loop that counts them.
+    bytes_to_target: Arc<AtomicU64>,
+    bytes_from_target: Arc<AtomicU64>,
     /// Why the relay must end the session, once it must.
     end: watch::Sender<Option<&'static str>>,
 }
@@ -116,15 +122,27 @@ impl LiveSession {
     }
 }
 
+/// What a live session looks like from outside: for display only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LiveSessionInfo {
+    pub grant_id: Id,
+    /// Unix seconds.
+    pub started_at: i64,
+    pub bytes_to_target: u64,
+    pub bytes_from_target: u64,
+}
+
 impl LiveSessions {
     pub(crate) fn new() -> Arc<Self> {
         Arc::new(Self::default())
     }
 
-    /// Add a session of `grant`; it is listed until the registration is
-    /// dropped.
-    pub(crate) fn register(self: &Arc<Self>, grant: &RelayGrantRecord) -> Registration {
+    /// Add a session of `grant` that started at `now` (Unix seconds); it is
+    /// listed until the registration is dropped.
+    pub(crate) fn register(self: &Arc<Self>, grant: &RelayGrantRecord, now: i64) -> Registration {
         let (end, ended) = watch::channel(None);
+        let (bytes_to_target, bytes_from_target) =
+            (Arc::new(AtomicU64::new(0)), Arc::new(AtomicU64::new(0)));
         let key = self.next.fetch_add(1, Ordering::Relaxed);
         self.lock().insert(
             key,
@@ -132,6 +150,9 @@ impl LiveSessions {
                 grant_id: grant.grant_id.clone(),
                 agent: grant.agent.clone(),
                 not_after: grant.not_after,
+                started_at: now,
+                bytes_to_target: Arc::clone(&bytes_to_target),
+                bytes_from_target: Arc::clone(&bytes_from_target),
                 end,
             },
         );
@@ -139,6 +160,8 @@ impl LiveSessions {
             sessions: Arc::clone(self),
             key,
             ended,
+            bytes_to_target,
+            bytes_from_target,
         }
     }
 
@@ -178,13 +201,32 @@ impl LiveSessions {
             .collect()
     }
 
+    /// The live sessions as they are now, oldest first (ties by grant, then
+    /// by when they were listed).
+    pub(crate) fn snapshot(&self) -> Vec<LiveSessionInfo> {
+        let mut sessions: Vec<_> = self
+            .lock()
+            .values()
+            .map(|s| LiveSessionInfo {
+                grant_id: s.grant_id.clone(),
+                started_at: s.started_at,
+                bytes_to_target: s.bytes_to_target.load(Ordering::Relaxed),
+                bytes_from_target: s.bytes_from_target.load(Ordering::Relaxed),
+            })
+            .collect();
+        sessions.sort_by(|a, b| {
+            (a.started_at, a.grant_id.as_str()).cmp(&(b.started_at, b.grant_id.as_str()))
+        });
+        sessions
+    }
+
     fn end_where(&self, matches: impl Fn(&LiveSession) -> bool, reason: &'static str) {
         for session in self.lock().values().filter(|s| matches(s)) {
             session.end(reason);
         }
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<u64, LiveSession>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<u64, LiveSession>> {
         // Every update is a single insert or removal: a holder that
         // panicked leaves the map consistent.
         self.entries.lock().unwrap_or_else(PoisonError::into_inner)
@@ -197,6 +239,8 @@ pub(crate) struct Registration {
     sessions: Arc<LiveSessions>,
     key: u64,
     ended: watch::Receiver<Option<&'static str>>,
+    bytes_to_target: Arc<AtomicU64>,
+    bytes_from_target: Arc<AtomicU64>,
 }
 
 impl Registration {
@@ -212,6 +256,15 @@ impl Registration {
             Some(reason) => reason,
             None => std::future::pending().await,
         }
+    }
+
+    /// The session's byte counters, to the target and from it, which the
+    /// relay loop keeps current.
+    fn counters(&self) -> (Arc<AtomicU64>, Arc<AtomicU64>) {
+        (
+            Arc::clone(&self.bytes_to_target),
+            Arc::clone(&self.bytes_from_target),
+        )
     }
 
     /// Why the relay was told to end the session, if it was by now.
@@ -694,8 +747,9 @@ pub(crate) async fn relay(
     let (mut from_target, to_target) = target.split();
     let (up_progress, down_progress) =
         (Arc::new(Progress::default()), Arc::new(Progress::default()));
-    let mut up = Delivered::default();
-    let mut down = Delivered::default();
+    let (to_target_bytes, from_target_bytes) = live.counters();
+    let mut up = Delivered::new(to_target_bytes);
+    let mut down = Delivered::new(from_target_bytes);
     let (ended, left) = {
         let own = async {
             tokio::select! {
@@ -774,8 +828,8 @@ pub(crate) async fn relay(
         } else {
             ended
         },
-        bytes_to_target: up.bytes,
-        bytes_from_target: down.bytes,
+        bytes_to_target: up.bytes.load(Ordering::Relaxed),
+        bytes_from_target: down.bytes.load(Ordering::Relaxed),
         exit_status: down.exit_status,
     }
 }
@@ -887,13 +941,34 @@ async fn watchdog(up: &Progress, down: &Progress, limits: Watch) -> &'static str
 }
 
 /// What one direction delivered.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct Delivered {
-    /// Data bytes (stdout and stderr downstream).
-    bytes: u64,
+    /// Data bytes (stdout and stderr downstream), shared with the live
+    /// session's listing.
+    bytes: Arc<AtomicU64>,
     exit_status: Option<u32>,
     /// Whether an exit status or signal came back.
     exited: bool,
+}
+
+impl Delivered {
+    fn new(bytes: Arc<AtomicU64>) -> Self {
+        Self {
+            bytes,
+            exit_status: None,
+            exited: false,
+        }
+    }
+
+    /// Count `n` more data bytes delivered.
+    fn add(&self, n: u64) {
+        // Saturating, like the totals recorded in the audit log.
+        let _ = self
+            .bytes
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |b| {
+                Some(b.saturating_add(n))
+            });
+    }
 }
 
 /// Read the agent's side into its queue until the agent closes, while
@@ -934,7 +1009,7 @@ async fn upstream(
                     let n = len64(data.len());
                     let sent = to_target.data_bytes(data.clone()).await;
                     if sent.is_ok() {
-                        delivered.bytes = delivered.bytes.saturating_add(n);
+                        delivered.add(n);
                     }
                     sent
                 }
@@ -1004,11 +1079,11 @@ async fn downstream(
         while let Some(queued_msg) = queued.recv().await {
             let sent = match &queued_msg.msg {
                 ChannelMsg::Data { data } => {
-                    delivered.bytes = delivered.bytes.saturating_add(len64(data.len()));
+                    delivered.add(len64(data.len()));
                     to_agent.data_bytes(data.clone()).await.is_ok()
                 }
                 ChannelMsg::ExtendedData { data, ext } => {
-                    delivered.bytes = delivered.bytes.saturating_add(len64(data.len()));
+                    delivered.add(len64(data.len()));
                     to_agent
                         .extended_data_bytes(*ext, data.clone())
                         .await
@@ -1086,8 +1161,9 @@ mod tests {
     use crate::requests::RelayGrantRecord;
 
     use super::{
-        LiveSessions, Outcome, PreAuthLimiter, Program, Progress, Queue, Registration,
-        SessionSlots, SlotRefusal, Watch, agent_left, env_allowed, first_end, reason, watchdog,
+        LiveSessionInfo, LiveSessions, Outcome, PreAuthLimiter, Program, Progress, Queue,
+        Registration, SessionSlots, SlotRefusal, Watch, agent_left, env_allowed, first_end, reason,
+        watchdog,
     };
 
     fn data(len: usize) -> russh::ChannelMsg {
@@ -1216,7 +1292,7 @@ mod tests {
         let left = || std::future::ready((reason::CLIENT_CLOSED, true));
         let sessions = LiveSessions::new();
         let (stopping, mut stop) = tokio::sync::watch::channel(false);
-        let mut live = sessions.register(&grant("a", 100));
+        let mut live = sessions.register(&grant("a", 100), 0);
         stopping.send_replace(true);
         assert_eq!(
             first_end(&mut live, &mut stop, left()).await,
@@ -1229,7 +1305,7 @@ mod tests {
             reason::GRANT_STATE_UNAVAILABLE,
         ] {
             let g = grant("b", 100);
-            let mut live = sessions.register(&g);
+            let mut live = sessions.register(&g, 0);
             match why {
                 reason::REVOKED => sessions.revoke_agent(&g.agent),
                 reason::EXPIRED => sessions.expire_grant(&g.grant_id),
@@ -1238,7 +1314,7 @@ mod tests {
             assert_eq!(first_end(&mut live, &mut stop, left()).await, (why, false));
         }
         // Nothing told: as the session ended.
-        let mut live = sessions.register(&grant("c", 100));
+        let mut live = sessions.register(&grant("c", 100), 0);
         assert_eq!(
             first_end(&mut live, &mut stop, left()).await,
             (reason::CLIENT_CLOSED, true)
@@ -1249,10 +1325,10 @@ mod tests {
     async fn live_sessions_end_by_grant_agent_or_expiry() {
         let sessions = LiveSessions::new();
         let (a, b, c) = (grant("a", 100), grant("a", 200), grant("c", 300));
-        let mut a1 = sessions.register(&a);
-        let mut a2 = sessions.register(&a);
-        let mut b1 = sessions.register(&b);
-        let mut c1 = sessions.register(&c);
+        let mut a1 = sessions.register(&a, 0);
+        let mut a2 = sessions.register(&a, 0);
+        let mut b1 = sessions.register(&b, 0);
+        let mut c1 = sessions.register(&c, 0);
         let mut ids = sessions.grant_ids();
         ids.sort_by(|x, y| x.as_str().cmp(y.as_str()));
         let mut want = vec![a.grant_id.clone(), b.grant_id.clone(), c.grant_id.clone()];
@@ -1276,7 +1352,7 @@ mod tests {
         assert_eq!(told(&mut c1).await, Some(reason::REVOKED));
         sessions.expire_grant(&c.grant_id);
         assert_eq!(told(&mut c1).await, Some(reason::REVOKED));
-        let mut fresh = sessions.register(&grant("d", 400));
+        let mut fresh = sessions.register(&grant("d", 400), 0);
         sessions.fail_closed();
         assert_eq!(
             told(&mut fresh).await,
@@ -1297,6 +1373,59 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_lists_live_session_until_dropped() {
+        let sessions = LiveSessions::new();
+        assert!(sessions.snapshot().is_empty());
+        let (late, early) = (grant("a", 100), grant("b", 100));
+        let first = sessions.register(&late, 20);
+        let second = sessions.register(&early, 10);
+        let (to_target, from_target) = first.counters();
+        to_target.fetch_add(3, Ordering::Relaxed);
+        from_target.fetch_add(5, Ordering::Relaxed);
+        assert_eq!(
+            sessions.snapshot(),
+            vec![
+                LiveSessionInfo {
+                    grant_id: early.grant_id.clone(),
+                    started_at: 10,
+                    bytes_to_target: 0,
+                    bytes_from_target: 0,
+                },
+                LiveSessionInfo {
+                    grant_id: late.grant_id.clone(),
+                    started_at: 20,
+                    bytes_to_target: 3,
+                    bytes_from_target: 5,
+                },
+            ],
+            "oldest first, with the shared counters"
+        );
+        // Two sessions of one grant in the same second: the one registered
+        // first is listed first, told apart by its byte count.
+        let twin = sessions.register(&early, 10);
+        twin.counters().0.fetch_add(7, Ordering::Relaxed);
+        let listed: Vec<_> = sessions
+            .snapshot()
+            .iter()
+            .map(|s| (s.started_at, s.grant_id.clone(), s.bytes_to_target))
+            .collect();
+        assert_eq!(
+            listed,
+            vec![
+                (10, early.grant_id.clone(), 0),
+                (10, early.grant_id.clone(), 7),
+                (20, late.grant_id.clone(), 3),
+            ],
+            "same second: in the order registered"
+        );
+        drop(twin);
+        drop(first);
+        assert_eq!(sessions.snapshot().len(), 1);
+        drop(second);
+        assert!(sessions.snapshot().is_empty());
+    }
+
+    #[test]
     fn revoke_racing_exit_records_revoked() {
         let exited = Outcome {
             reason: reason::EXITED,
@@ -1307,11 +1436,11 @@ mod tests {
         let sessions = LiveSessions::new();
         let (a, b, c) = (grant("a", 100), grant("b", 100), grant("c", 100));
         let (revoked, expired, lost) = (
-            sessions.register(&a),
-            sessions.register(&b),
-            sessions.register(&c),
+            sessions.register(&a, 0),
+            sessions.register(&b, 0),
+            sessions.register(&c, 0),
         );
-        let untold = sessions.register(&grant("d", 100));
+        let untold = sessions.register(&grant("d", 100), 0);
 
         // The target exited and the relay loop ended on that, but the
         // revocation (or expiry) reached the session before its teardown
