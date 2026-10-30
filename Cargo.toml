@@ -44,7 +44,7 @@ ssh-key = { version = "0.6.7", default-features = false, features = ["alloc", "e
 # the broker decodes a `Warden-Signature` blob with them. Must stay the
 # version `ssh-key` itself uses, or the traits would not match.
 ssh-encoding = "0.2.0"
-ed25519-dalek = { version = "2.2.0", default-features = false, features = ["pkcs8", "pem", "zeroize"] }
+ed25519-dalek = { version = "3.0.0", default-features = false, features = ["pkcs8", "pem", "zeroize"] }
 ssh-agent-lib = "0.6.0"
 # SSH relay: server for agents, client to targets. The aws-lc-rs crypto
 # backend (already in the tree through rustls). `rsa` lets the relay verify
