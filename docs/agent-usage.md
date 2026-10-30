@@ -10,28 +10,29 @@ to a dedicated `ssh-agent` and is never written to disk.
 
 An agent authenticates every call to the broker in one of two ways:
 
-- **A signing key (recommended).** Every request is signed with an SSH key
-  held by an `ssh-agent`, ideally in hardware. Nothing secret is stored on
-  the machine, and a captured request cannot be replayed. Works on macOS and
-  Linux; no Keychain is involved.
-- **A bearer key (legacy).** A `wdn_…` key kept in the macOS Keychain or in
-  `WARDEN_AGENT_KEY`. Whoever copies it can use it.
+- **A signing key**, when the machine has one that signs unattended, even
+  with the screen locked (a TPM, a YubiKey PIV slot). Every request is
+  signed with an SSH key held by an `ssh-agent`. Nothing secret is stored on
+  the machine, and a captured request cannot be replayed.
+- **A bearer key** otherwise, for example on an unattended Mac. A `wdn_…`
+  key kept in the macOS Keychain or in `WARDEN_AGENT_KEY`. Whoever copies
+  it can use it until the agent is revoked.
 
 ### With a signing key
 
 1. **Make a key** the agent can sign with unattended: no touch, PIN or
    biometric prompt per signature, since every call is signed (a long poll
-   every 30 seconds while a request waits). Pick the strongest option the
-   machine has:
+   every 30 seconds while a request waits). It must also sign while nobody
+   is at the machine, including with the screen locked: that is when warden
+   is needed. On macOS, keys in the Secure Enclave and in the 1Password SSH
+   agent refuse to sign while the Mac is locked, so they do not fit; on a
+   Mac that runs unattended, use a bearer key, which the login Keychain
+   still serves while locked. Whatever you pick, lock the screen once and
+   check that `ssh-keygen -Y sign` through the agent still works before
+   relying on it.
 
-   - **macOS, Secure Enclave, with
-     [Secretive](https://github.com/maxgoedjen/secretive).** Create a key
-     with authentication set to *none* (no Touch ID per signature). It is an
-     `ecdsa-sha2-nistp256` key that cannot leave the Secure Enclave. Its
-     agent socket is
-     `~/Library/Containers/com.maxgoedjen.Secretive.SecretAgent/Data/socket.ssh`;
-     save the public key Secretive shows to a file such as
-     `~/.ssh/warden-laptop.pub`.
+   Pick the strongest option the machine has:
+
    - **Linux, TPM, with
      [ssh-tpm-agent](https://github.com/Foxboron/ssh-tpm-agent).** Create a
      P-256 key sealed to the TPM with `ssh-tpm-keygen` (no PIN, or one the
@@ -75,12 +76,11 @@ An agent authenticates every call to the broker in one of two ways:
 
    ```sh
    warden login --server https://warden.example.ts.net --agent laptop \
-     --ssh-key ~/.ssh/warden-laptop.pub \
-     --ssh-agent-socket ~/Library/Containers/com.maxgoedjen.Secretive.SecretAgent/Data/socket.ssh
+     --ssh-key ~/.ssh/warden-laptop.pub
    ```
 
-   Without `--ssh-agent-socket` the CLI uses `$SSH_AUTH_SOCK` each time it
-   runs. `warden login` fetches the broker's audience from `GET /v1/info`
+   Add `--ssh-agent-socket <path>` to use an agent other than the one at
+   `$SSH_AUTH_SOCK`, which the CLI otherwise reads each time it runs. `warden login` fetches the broker's audience from `GET /v1/info`
    and pins it, checks that the `ssh-agent` holds the key, makes one signed
    call to confirm the enrollment, and writes the server URL, agent name,
    public key, socket and audience to `~/.config/warden/config.toml` (or
@@ -118,7 +118,7 @@ bearer key from the Keychain
 for example `-a 'https://warden.example.ts.net/|laptop'`); it deletes
 nothing itself. Run it, and delete the key from the password manager too.
 
-### With a bearer key (legacy)
+### With a bearer key
 
 ```sh
 op read "op://Private/warden agent laptop/key" \

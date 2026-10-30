@@ -199,8 +199,9 @@ channels you choose (Home Assistant, ntfy) in the order you choose; see
    volume) and is published at `GET /v1/info`.
 
 5. **Log in from the agent's machine.** With a signing key, held by an
-   `ssh-agent` (Secretive's Secure Enclave key on macOS, `ssh-tpm-agent` on
-   Linux, or a plain key file):
+   `ssh-agent` (`ssh-tpm-agent` on Linux, a YubiKey PIV slot, or a plain key
+   file; it must sign while the machine is locked and unattended, see
+   `docs/agent-usage.md`):
 
    ```sh
    warden login --server https://warden.example.ts.net --agent laptop \

@@ -25,6 +25,15 @@ All notable changes to this project are recorded here. The format follows
   not parse or is longer than 512 bytes with its origin. Headers, bodies and
   secrets are never shown.
 
+### Changed
+
+- Docs: Secretive (Secure Enclave keys on macOS) is no longer suggested for
+  signed requests. Such keys, like those in the 1Password SSH agent, refuse
+  to sign while the Mac is locked, which is exactly when an agent needs
+  warden. The docs now require a signer that works unattended with the
+  screen locked (TPM, YubiKey PIV) and point an unattended Mac at a bearer
+  key in the login Keychain.
+
 ## [0.6.0] - 2026-10-29
 
 ### Added

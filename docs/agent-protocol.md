@@ -85,7 +85,7 @@ The signing key must be one of:
 | Key type | Typical source |
 |----------|----------------|
 | `ssh-ed25519` | a key file, or an `ssh-agent` holding one |
-| `ecdsa-sha2-nistp256` | Secure Enclave (Secretive), TPM (`ssh-tpm-agent`), YubiKey PIV |
+| `ecdsa-sha2-nistp256` | TPM (`ssh-tpm-agent`), YubiKey PIV |
 
 The broker refuses at enrollment RSA keys, ECDSA keys on other curves,
 security keys (`sk-ssh-ed25519@openssh.com`,
@@ -920,12 +920,13 @@ settings that need no touch or biometric prompt per signature. A hardware
 key cannot be copied off the machine, which is the point: an attacker who
 gets in can use it only while they are in, and revoking the agent ends that.
 
-- **macOS: Secure Enclave via [Secretive](https://github.com/maxgoedjen/secretive).**
-  Create a key with authentication set to none (no Touch ID per signature).
-  It is an `ecdsa-sha2-nistp256` key that never leaves the Secure Enclave.
-  Point `SSH_AUTH_SOCK` at Secretive's agent socket
-  (`~/Library/Containers/com.maxgoedjen.Secretive.SecretAgent/Data/socket.ssh`)
-  and use the public key file Secretive exports as `WARDEN_PUBKEY`.
+The key must also sign while nobody is at the machine, including with the
+screen locked: that is when an agent needs warden. On macOS, keys in the
+Secure Enclave and in the 1Password SSH agent refuse to sign while the Mac is
+locked, so they do not fit; an unattended Mac agent uses a bearer key, which
+the login Keychain still serves while locked. Whatever you pick, lock the
+screen once and check that signing still works before relying on it.
+
 - **Linux: TPM via [ssh-tpm-agent](https://github.com/Foxboron/ssh-tpm-agent).**
   Create a P-256 key sealed to the machine's TPM with `ssh-tpm-keygen`
   (without a PIN, or with one the agent can unlock unattended), run
@@ -945,8 +946,8 @@ gets in can use it only while they are in, and revoking the agent ends that.
 `sk-ecdsa-sha2-nistp256@openssh.com` key requires a physical touch for every
 signature, and an agent signs every call, including every 30-second long
 poll; an unattended agent cannot do that. Such keys are refused at
-enrollment. Use a PIV, TPM or Secure Enclave key instead: they are equally
-non-exportable and need no touch.
+enrollment. Use a PIV or TPM key instead: they are equally non-exportable
+and need no touch.
 
 Never use the signing key for anything else, and never use it as the
 `public_key` of an SSH request: those keys are fresh per request.
