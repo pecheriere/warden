@@ -573,7 +573,11 @@ renders this server-side; `warden.js` refreshes it every 5 s from `GET
 visible, with at most one request in flight, and stops polling on a 401 or
 403. A failed request keeps what is shown. A grant missing from the answer
 (revoked or expired) loses its card, so ended activity is never shown as
-live. The script builds the area with DOM text nodes only, never HTML from
+live; keyboard focus inside it moves to the next card's Revoke button, else
+the previous one's, else the heading. A grant in the answer without a card
+(approved since the page loaded) reloads the page, unless a revoke is in
+progress, and only once for a given set of grants (remembered in session
+storage), so a reload cannot loop. The script builds the area with DOM text nodes only, never HTML from
 the answer; the path is the agent's, without query string or fragment.
 Times are rendered as UTC and shown in the viewer's local time by the script.
 
@@ -590,6 +594,12 @@ viewport height (what is on screen without scrolling) and land in
 `<out-dir>/warden-pages/shots` (the script deletes and recreates only that
 subdirectory); keep `<out-dir>` outside the repository, as screenshots are
 never committed.
+
+`scripts/check-grants-live.py <out-dir>` checks the live refresh of the
+grants page the same way: it serves the `grants-live` fixture with a mocked
+`GET /grants/live` and asserts, in headless Chrome on virtual time, that a
+401 or 403 stops polling, that a grant missing from the answer loses its
+card, and that a grant with no card reloads the page exactly once.
 
 ## 10. Policy: 1Password as the source of truth
 

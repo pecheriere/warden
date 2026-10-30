@@ -224,8 +224,10 @@
     for (const session of sessions) {
       list.append(el('li', '',
         el('span', '', 'Session since ', clock(session.started_at)),
-        el('span', '', `${bytes(session.bytes_to_target)} to target`),
-        el('span', '', `${bytes(session.bytes_from_target)} from target`)));
+        el('span', '',
+          el('span', 'nowrap', `${bytes(session.bytes_to_target)} to target`),
+          ' · ',
+          el('span', 'nowrap', `${bytes(session.bytes_from_target)} from target`))));
     }
     for (const call of calls) {
       list.append(el('li', '',
@@ -233,6 +235,47 @@
         el('span', '', 'since ', clock(call.started_at))));
     }
     area.replaceChildren(el('p', 'live', parts.join(' · ')), list);
+  };
+
+  /** Session storage key: the grants a reload was last made to show. */
+  const RELOADED_FOR = 'warden.live.reloadedFor';
+
+  /** The nearest grant card before or after `card`, by `step`. */
+  const siblingCard = (card, step) => {
+    let node = card[step];
+    while (node && !node.matches('section.grant')) node = node[step];
+    return node;
+  };
+
+  /** Removes `card`; focus inside it moves to the next card's Revoke
+   *  button, else the previous one's, else the page heading. */
+  const removeCard = (card) => {
+    if (!card.contains(document.activeElement)) {
+      card.remove();
+      return;
+    }
+    const near = siblingCard(card, 'nextElementSibling') || siblingCard(card, 'previousElementSibling');
+    let target = near && near.querySelector('button.revoke');
+    if (!target) {
+      target = document.querySelector('main h1');
+      if (target && !target.hasAttribute('tabindex')) target.setAttribute('tabindex', '-1');
+    }
+    card.remove();
+    if (target) target.focus();
+  };
+
+  /** Whether to reload to show the grants `ids`, which have no card: once
+   *  for a given set, so a page that still lacks them cannot loop. Without
+   *  session storage there is no such guard, so no reload. */
+  const reloadOnceFor = (ids) => {
+    const key = [...ids].sort().join(' ');
+    try {
+      if (window.sessionStorage.getItem(RELOADED_FOR) === key) return false;
+      window.sessionStorage.setItem(RELOADED_FOR, key);
+      return true;
+    } catch (_) {
+      return false;
+    }
   };
 
   const setupLive = () => {
@@ -250,7 +293,7 @@
         const live = byGrant.get(area.dataset.grant);
         if (!live) {
           // Revoked or expired: never show its last activity as live.
-          area.closest('section.grant').remove();
+          removeCard(area.closest('section.grant'));
           continue;
         }
         if (area.dataset.kind === 'cert') continue;
@@ -259,8 +302,19 @@
         shown.set(area.dataset.grant, key);
         renderLive(area, live);
       }
-      // The last card went: reload for the server's empty state.
+      // The last card went: reload for the server's empty state, which
+      // has no live area and so no polling.
       if (!document.querySelector('.live-area[data-grant]')) {
+        stopped = true;
+        window.location.reload();
+        return;
+      }
+      // A grant approved since the page loaded: reload to show its card,
+      // but never under a revoke in progress (that one reloads itself).
+      const onPage = new Set(
+        [...document.querySelectorAll('.live-area[data-grant]')].map((area) => area.dataset.grant));
+      const added = [...byGrant.keys()].filter((id) => !onPage.has(id));
+      if (added.length && !document.querySelector('button.revoke:disabled') && reloadOnceFor(added)) {
         stopped = true;
         window.location.reload();
       }

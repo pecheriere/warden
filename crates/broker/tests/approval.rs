@@ -1640,7 +1640,7 @@ async fn grants_page_lists_live_session_under_its_grant() {
     );
     assert!(
         page.body
-            .contains("<span>0 B to target</span><span>0 B from target</span>"),
+            .contains(r#"<span><span class="nowrap">0 B to target</span> · <span class="nowrap">0 B from target</span></span>"#),
         "{}",
         page.body
     );

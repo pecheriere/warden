@@ -16,7 +16,8 @@ All notable changes to this project are recorded here. The format follows
   renders this server-side, so it works without script, and `warden.js`
   refreshes it every 5 s from the new owner-only `GET /grants/live` while the
   page is visible, never with two requests at once, and stops when the session
-  is gone. A grant that is revoked or expires drops off the page. Times show
+  is gone. A grant that is revoked or expires drops off the page, and one
+  approved meanwhile appears (the page reloads once). Times show
   in the viewer's local time. Query strings, fragments, headers, bodies and
   secrets are never shown.
 

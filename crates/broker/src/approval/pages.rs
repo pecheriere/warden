@@ -533,8 +533,12 @@ fn live_area(grant: &ActiveGrant, live: Option<&LiveGrant<'_>>) -> Markup {
                     @for session in sessions {
                         li {
                             span { "Session since " (clock(session.started_at)) }
-                            span { (bytes(session.bytes_to_target)) " to target" }
-                            span { (bytes(session.bytes_from_target)) " from target" }
+                            // The two counts break apart only between them.
+                            span {
+                                span.nowrap { (bytes(session.bytes_to_target)) " to target" }
+                                " · "
+                                span.nowrap { (bytes(session.bytes_from_target)) " from target" }
+                            }
                         }
                     }
                     @for call in calls {
@@ -1325,7 +1329,7 @@ mod tests {
         let (relay, api, cert) = (id(5), id(4), id(2));
         assert!(
             html.contains(&format!(
-                r#"<div class="live-area" data-grant="{relay}" data-kind="relay"><p class="live">2 sessions open</p><ul class="live-list" role="list"><li><span>Session since <time datetime="2027-01-15T07:39:00Z">07:39 UTC</time></span><span>1.2 KB to target</span><span>3.4 MB from target</span></li><li><span>Session since <time datetime="2027-01-15T07:58:25Z">07:58 UTC</time></span><span>512 B to target</span><span>48.2 KB from target</span></li></ul></div>"#
+                r#"<div class="live-area" data-grant="{relay}" data-kind="relay"><p class="live">2 sessions open</p><ul class="live-list" role="list"><li><span>Session since <time datetime="2027-01-15T07:39:00Z">07:39 UTC</time></span><span><span class="nowrap">1.2 KB to target</span> · <span class="nowrap">3.4 MB from target</span></span></li><li><span>Session since <time datetime="2027-01-15T07:58:25Z">07:58 UTC</time></span><span><span class="nowrap">512 B to target</span> · <span class="nowrap">48.2 KB from target</span></span></li></ul></div>"#
             )),
             "{html}"
         );
