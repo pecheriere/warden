@@ -1,9 +1,10 @@
 name: release
 
 # Publishes ghcr.io/pecheriere/warden:<version> for a `v*` tag on main, after the
-# full CI passes. Each platform builds on a native runner (the Dockerfile compiles
-# in the target architecture) and pushes by digest; `merge` joins the two into
-# one multi-arch image and attaches a build-provenance attestation, verifiable with
+# full CI and the dependency age check pass. Each platform builds on a native
+# runner (the Dockerfile compiles in the target architecture) and pushes by
+# digest; `merge` joins the two into one multi-arch image and attaches a
+# build-provenance attestation, verifiable with
 #   gh attestation verify oci://ghcr.io/pecheriere/warden:<version> --owner pecheriere
 
 on:
@@ -27,14 +28,34 @@ jobs:
       - name: Require the tagged commit to be on main
         run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
 
+  crate-age:
+    needs: on-main
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      # Pull requests check Cargo.lock against their base, but a push straight to
+      # main skips that, so every version added since the previous release is
+      # checked again here. The first release has no previous tag and checks all.
+      - name: Refuse crate versions published less than 7 days ago
+        run: |
+          if [ -z "$(git tag --list 'v[0-9]*' --merged HEAD^)" ]; then
+            python3 -I .github/scripts/crate_age.py --no-base
+          else
+            previous=$(git describe --tags --abbrev=0 --match 'v[0-9]*' HEAD^)
+            python3 -I .github/scripts/crate_age.py --base "$previous"
+          fi
+
   ci:
     needs: on-main
-    uses: ./.github/workflows/ci.yml
+    uses: $/.github/workflows/ci.yml
     permissions:
       contents: read
 
   build:
-    needs: [on-main, ci]
+    needs: [on-main, crate-age, ci]
     name: build (${{ matrix.platform }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45

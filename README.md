@@ -211,6 +211,8 @@ not cancel an API call already in flight
 certificate ([#35](https://github.com/pecheriere/warden/issues/35)). The
 [threat model](docs/threat-model.md) has the full picture.
 
+Report a vulnerability privately as described in [SECURITY.md](SECURITY.md).
+
 ## Components
 
 | Component | Crate | What it is |
@@ -235,6 +237,40 @@ cargo deny check
 The relay tests start an unprivileged OpenSSH server, so they need
 `/usr/sbin/sshd`. On Linux the password-target tests also need the current
 user's password in `WARDEN_TEST_LOGIN_PASSWORD` (CI sets a random one).
+
+Pull requests also run [zizmor](https://docs.zizmor.sh) on the workflows
+(`uvx zizmor@1.31.1 .` locally) and CodeQL. `cargo deny check advisories` runs
+every night on `main`, so a newly published advisory shows up there before it
+fails an unrelated pull request, and OpenSSF Scorecard reports weekly.
+
+### Dependency age
+
+Every crate version in `Cargo.lock` must have been published on crates.io at
+least 7 days before it is added, so a compromised or broken release has time
+to be noticed and yanked. On each pull request,
+[`.github/scripts/crate_age.py`](.github/scripts/crate_age.py) compares
+`Cargo.lock` with the base branch's and fails the build for a new or changed
+version younger than 7 days; a lookup that fails fails the check. The release
+workflow runs the same check against the previous release tag, so a tag never
+ships a version that skipped it. Dependabot waits out the same 7 days.
+
+The one exception is the oldest release that fixes a security advisory. List
+it in [`.github/crate-age-allow.toml`](.github/crate-age-allow.toml), one entry
+per crate version, with a reason that names the advisory (RUSTSEC or GHSA):
+
+```toml
+[[allow]]
+name = "some-crate"
+version = "1.2.3"
+reason = "Oldest release without RUSTSEC-2026-0001"
+```
+
+An entry whose version leaves `Cargo.lock` is stale and fails the check, so it
+is removed with the update that replaces the crate. To run the check locally:
+
+```sh
+python3 -I .github/scripts/crate_age.py --base main
+```
 
 Pull requests follow [the template](.github/pull_request_template.md);
 approval UI changes follow the [design language](docs/design-language.md).
