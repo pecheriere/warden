@@ -53,7 +53,7 @@ ssh-agent-lib = "0.6.0"
 # russh 0.64 does not check that the target's signature uses the
 # negotiated hash, so a holder of the pinned key could still sign with
 # SHA-1. No DSA, no compression.
-russh = { version = "=0.64.1", default-features = false, features = ["aws-lc-rs", "rsa"] }
+russh = { version = "=0.65.0", default-features = false, features = ["aws-lc-rs", "rsa"] }
 sha2 = "0.11.1"
 zeroize = "1.9.1"
 subtle = "2.6.1"
