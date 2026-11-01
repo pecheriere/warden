@@ -216,7 +216,10 @@ async fn e2e_request_api_approve_and_call() {
         }
         assert_eq!(s.cli.files_containing(needle), Vec::<PathBuf>::new());
     }
-    assert!(!s.cli.files_containing("\"grant_id\"").is_empty());
+    assert_ne!(
+        s.cli.files_containing("\"grant_id\""),
+        [] as [std::path::PathBuf; 0]
+    );
 
     let revoke = s.cli.run(&["revoke", grant]);
     assert_eq!(revoke.status.code(), Some(0), "{}", text(&revoke.stderr));
@@ -233,7 +236,7 @@ async fn e2e_http_without_grant_exits_5() {
         .cli
         .run(&["http", SECRET_NAME, "GET", &s.upstream.url("/hello")]);
     assert_eq!(out.status.code(), Some(5));
-    assert!(out.stdout.is_empty());
+    assert_eq!(out.stdout, [] as [u8; 0]);
     let stderr = text(&out.stderr);
     assert!(
         stderr.contains("no active api grant for svc") && stderr.contains("warden request api"),
@@ -265,12 +268,12 @@ async fn e2e_http_grant_revoked_on_the_broker_exits_4() {
         .unwrap();
 
     // The local record is still there.
-    assert!(!s.cli.files_containing(grant).is_empty());
+    assert_ne!(s.cli.files_containing(grant), [] as [std::path::PathBuf; 0]);
     let out = s
         .cli
         .run(&["http", SECRET_NAME, "GET", &s.upstream.url("/hello")]);
     assert_eq!(out.status.code(), Some(4), "{}", text(&out.stderr));
-    assert!(out.stdout.is_empty());
+    assert_eq!(out.stdout, [] as [u8; 0]);
     let stderr = text(&out.stderr);
     assert!(
         stderr.contains("revoked")
@@ -399,7 +402,7 @@ async fn e2e_http_broker_refusal_prints_message_and_exits_1() {
         .cli
         .run(&["http", SECRET_NAME, "POST", &s.upstream.url("/hello")]);
     assert_eq!(out.status.code(), Some(1));
-    assert!(out.stdout.is_empty());
+    assert_eq!(out.stdout, [] as [u8; 0]);
     assert!(
         text(&out.stderr).contains("broker refused"),
         "{}",

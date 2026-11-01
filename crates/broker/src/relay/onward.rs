@@ -97,10 +97,10 @@ fn ours(key: &russh::keys::PublicKey) -> Option<ssh_key::PublicKey> {
 impl client::Handler for OnwardHandler {
     type Error = russh::Error;
 
-    async fn check_server_key(
+    fn check_server_key(
         &mut self,
         server_public_key: &PublicKeyOrCertificate,
-    ) -> Result<bool, Self::Error> {
+    ) -> impl Future<Output = Result<bool, Self::Error>> + Send {
         // Pinned keys only: a host certificate is not trusted here.
         let trusted = match server_public_key {
             PublicKeyOrCertificate::PublicKey { key, .. } => ours(key).is_some_and(|key| {
@@ -113,10 +113,10 @@ impl client::Handler for OnwardHandler {
         if !trusted {
             self.mismatch.store(true, Ordering::SeqCst);
         }
-        Ok(trusted)
+        std::future::ready(Ok(trusted))
     }
 
-    async fn server_channel_open_forwarded_tcpip(
+    fn server_channel_open_forwarded_tcpip(
         &mut self,
         _channel: Channel<client::Msg>,
         _connected_address: &str,
@@ -125,40 +125,40 @@ impl client::Handler for OnwardHandler {
         _originator_port: u32,
         _reply: client::ChannelOpenHandle,
         _session: &mut client::Session,
-    ) -> Result<(), Self::Error> {
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send {
         // Dropping the reply refuses the channel.
-        Ok(())
+        std::future::ready(Ok(()))
     }
 
-    async fn server_channel_open_forwarded_streamlocal(
+    fn server_channel_open_forwarded_streamlocal(
         &mut self,
         _channel: Channel<client::Msg>,
         _socket_path: &str,
         _reply: client::ChannelOpenHandle,
         _session: &mut client::Session,
-    ) -> Result<(), Self::Error> {
-        Ok(())
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send {
+        std::future::ready(Ok(()))
     }
 
-    async fn server_channel_open_agent_forward(
+    fn server_channel_open_agent_forward(
         &mut self,
         _channel: Channel<client::Msg>,
         _reply: client::ChannelOpenHandle,
         _session: &mut client::Session,
-    ) -> Result<(), Self::Error> {
-        Ok(())
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send {
+        std::future::ready(Ok(()))
     }
 
-    async fn server_channel_open_session(
+    fn server_channel_open_session(
         &mut self,
         _channel: Channel<client::Msg>,
         _reply: client::ChannelOpenHandle,
         _session: &mut client::Session,
-    ) -> Result<(), Self::Error> {
-        Ok(())
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send {
+        std::future::ready(Ok(()))
     }
 
-    async fn server_channel_open_direct_tcpip(
+    fn server_channel_open_direct_tcpip(
         &mut self,
         _channel: Channel<client::Msg>,
         _host_to_connect: &str,
@@ -167,29 +167,29 @@ impl client::Handler for OnwardHandler {
         _originator_port: u32,
         _reply: client::ChannelOpenHandle,
         _session: &mut client::Session,
-    ) -> Result<(), Self::Error> {
-        Ok(())
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send {
+        std::future::ready(Ok(()))
     }
 
-    async fn server_channel_open_direct_streamlocal(
+    fn server_channel_open_direct_streamlocal(
         &mut self,
         _channel: Channel<client::Msg>,
         _socket_path: &str,
         _reply: client::ChannelOpenHandle,
         _session: &mut client::Session,
-    ) -> Result<(), Self::Error> {
-        Ok(())
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send {
+        std::future::ready(Ok(()))
     }
 
-    async fn server_channel_open_x11(
+    fn server_channel_open_x11(
         &mut self,
         _channel: Channel<client::Msg>,
         _originator_address: &str,
         _originator_port: u32,
         _reply: client::ChannelOpenHandle,
         _session: &mut client::Session,
-    ) -> Result<(), Self::Error> {
-        Ok(())
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send {
+        std::future::ready(Ok(()))
     }
 }
 
@@ -656,6 +656,6 @@ mod tests {
 
     #[test]
     fn no_pinned_keys_means_nothing_to_negotiate() {
-        assert!(host_key_algorithms(&[]).is_empty());
+        assert_eq!(host_key_algorithms(&[]), [] as [russh::keys::Algorithm; 0]);
     }
 }

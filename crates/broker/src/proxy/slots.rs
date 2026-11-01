@@ -199,15 +199,15 @@ mod tests {
     #[test]
     fn call_listed_while_slot_held() {
         let slots = CallSlots::new(2, 10);
-        assert!(slots.snapshot().is_empty());
+        assert_eq!(slots.snapshot(), [] as [crate::proxy::slots::CallInfo; 0]);
         let call = info("/v1/items");
         let held = slots.try_acquire(&agent("a"), call.clone()).unwrap();
         assert_eq!(slots.snapshot(), vec![call]);
         drop(held);
-        assert!(slots.snapshot().is_empty());
+        assert_eq!(slots.snapshot(), [] as [crate::proxy::slots::CallInfo; 0]);
         let refused = CallSlots::new(0, 0);
         refused.try_acquire(&agent("a"), info("/")).unwrap_err();
-        assert!(refused.snapshot().is_empty());
+        assert_eq!(refused.snapshot(), [] as [crate::proxy::slots::CallInfo; 0]);
     }
 
     #[test]

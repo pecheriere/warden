@@ -22,7 +22,7 @@ Contents:
 
 ## One-time setup
 
-Install the CLI on the agent's machine (Rust 1.94 or later, and the OpenSSH
+Install the CLI on the agent's machine (Rust 1.99 or later, and the OpenSSH
 client tools):
 
 ```sh

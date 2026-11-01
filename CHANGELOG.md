@@ -24,6 +24,8 @@ All notable changes to this project are recorded here. The format follows
 
 ### Changed
 
+- The minimum supported Rust version is now 1.99, for building both the broker
+  and the `warden` CLI. The builder image and CI moved to Rust 1.99 too.
 - Docs overhaul. The README is now a short introduction with a quick start.
   New guides: `docs/deployment.md`, `docs/configuration.md` and
   `docs/ssh-targets.md`.

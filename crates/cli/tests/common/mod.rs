@@ -173,6 +173,6 @@ pub async fn approved_grant(child: Child) -> (String, String) {
         .strip_prefix("approved: grant ")
         .unwrap_or_else(|| panic!("unexpected stdout: {stdout}"));
     let (grant, until) = rest.split_once(" until ").unwrap();
-    assert!(!until.trim().is_empty());
+    assert_ne!(until.trim(), "");
     (grant.to_owned(), stderr)
 }

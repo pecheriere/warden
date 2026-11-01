@@ -399,7 +399,7 @@ mod tests {
         drop(tx);
         let mut rest = Vec::new();
         reader.read_to_end(&mut rest).await.unwrap();
-        assert!(rest.is_empty());
+        assert_eq!(rest, [] as [u8; 0]);
     }
 
     #[tokio::test]

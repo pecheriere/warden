@@ -88,14 +88,14 @@ pub struct Owner;
 impl FromRequestParts<AppState> for Owner {
     type Rejection = AuthRejection;
 
-    async fn from_request_parts(
+    fn from_request_parts(
         parts: &mut Parts,
         state: &AppState,
-    ) -> Result<Self, Self::Rejection> {
-        match state.identity.caller(&parts.headers) {
+    ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send {
+        std::future::ready(match state.identity.caller(&parts.headers) {
             Some(login) if login == state.config.owner_login => Ok(Self),
             _ => Err(AuthRejection::Forbidden),
-        }
+        })
     }
 }
 
