@@ -6,6 +6,12 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `warden-demo`: try the approval flow on one machine with no setup
+  ([docs/demo.md](docs/demo.md)). A separate, unpublished binary that is not
+  part of `warden-server` or the image; a CI guard keeps it that way.
+
 ## [0.8.1] - 2026-11-01
 
 The `v0.8.0` tag was created by mistake, before the version bump, and was

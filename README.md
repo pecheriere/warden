@@ -9,6 +9,22 @@ expires on its own. The agent never holds a long-lived secret.
 
 <img src="docs/design/mockups/approve-iphone-light.png" alt="The approve page on a phone: the agent, the access with a read-only badge, the goal, the fingerprint, the grant window and the Approve and Deny buttons" width="320">
 
+## Try it in five minutes
+
+See the whole flow on one machine, with no Tailscale, 1Password, Docker or
+phone. It needs Rust and a browser that can create a passkey. Terminal one:
+
+```sh
+git clone https://github.com/pecheriere/warden && cd warden
+cargo build --locked -p warden-demo -p warden-broker-cli
+target/debug/warden-demo
+```
+
+It prints the exact next steps: enroll a passkey in your browser, request
+access from a second terminal, approve, call a local API through the broker,
+read the audit log. **This demo is not secure for real use** and is not in the
+image. [What it does and does not show](docs/demo.md).
+
 ## Why warden
 
 Password managers already keep secrets away from agents. With 1Password,
@@ -175,6 +191,7 @@ and the reasons behind it; follow it for a real setup.
 
 | Document | For |
 |----------|-----|
+| [Local demo](docs/demo.md) | Trying the flow on one machine, and what that leaves out. |
 | [Deployment](docs/deployment.md) | Running warden safely: Tailscale, 1Password Connect, networks, notifications, backups, upgrades. |
 | [Configuration](docs/configuration.md) | Every environment variable and command of the server and the CLI. |
 | [SSH targets](docs/ssh-targets.md) | Setting up hosts: one user per agent, certificate-only logins, relay targets. |

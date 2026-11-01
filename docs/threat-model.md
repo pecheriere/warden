@@ -40,6 +40,11 @@ warden does **not** protect against:
   call already in flight runs to completion (issue
   [#44](https://github.com/pecheriere/warden/issues/44)).
 
+This page is about a real deployment. The [local demo](demo.md) is a separate
+binary that is not secure for real use: on it, everyone on the machine counts as
+the owner. It is not in `warden-server` or the image, and a CI guard keeps it
+out.
+
 ## Actors and trust
 
 | Actor | Trust |

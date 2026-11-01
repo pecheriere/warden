@@ -3,3 +3,5 @@ target
 .github
 Dockerfile
 .dockerignore
+crates/demo/src
+crates/demo/tests

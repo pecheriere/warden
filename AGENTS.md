@@ -40,6 +40,7 @@ Commit messages and PR descriptions carry no AI attribution lines
 | `crates/broker/migrations` | SQLite migrations, applied at startup; never edit a released one, add a new file |
 | `crates/broker/src/testkit` | test helpers (throwaway `sshd`, fixtures), behind the `testkit` feature |
 | `crates/cli` | `warden-broker-cli`, the `warden` command agents run |
+| `crates/demo` | `warden-demo`: the throwaway local demo, never shipped (`docs/demo.md`) |
 | `docs/` | user and design documentation |
 | `scripts/` | CI guards and UI check tools (each script documents its usage) |
 
@@ -51,6 +52,7 @@ every one must pass:
 ```sh
 cargo fmt --check
 scripts/check-no-reqwest-decompression.sh
+scripts/check-demo-not-shipped.sh
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo test --workspace --all-features --locked
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps --locked
