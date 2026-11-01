@@ -160,13 +160,13 @@ pub fn covering<'a>(active: &'a [ApiRecord], method: &str, path: &str) -> Option
     active.iter().find(|r| r.covers(method, path))
 }
 
-/// The error for a call no active grant of `secret` covers.
+/// The error for a call no active grant of the item `name` covers.
 #[must_use]
-pub fn no_covering_message(secret: &SecretName, method: &str, path: &str) -> String {
+pub fn no_covering_message(name: &SecretName, method: &str, path: &str) -> String {
     let method = method.to_ascii_uppercase();
     format!(
-        "no active grant for {secret} allows {method} {path}. If the task needs it, ask the \
-         owner with: warden request api {secret} --methods {method} --for <window> --goal <goal> \
+        "no active grant for {name} allows {method} {path}. If the task needs it, ask the \
+         owner with: warden request api {name} --methods {method} --for <window> --goal <goal> \
          ({})",
         crate::guidance::REQUEST_PLACEHOLDERS
     )
@@ -452,9 +452,9 @@ mod tests {
     fn http_no_covering_grant_suggests_request() {
         let active = [record("svc", 500)];
         assert_eq!(covering(&active, "POST", "/x"), None);
-        let secret = SecretName::try_from("svc".to_owned()).unwrap();
+        let name = SecretName::try_from("svc".to_owned()).unwrap();
         assert_eq!(
-            super::no_covering_message(&secret, "POST", "/x"),
+            super::no_covering_message(&name, "POST", "/x"),
             "no active grant for svc allows POST /x. If the task needs it, ask the owner with: \
              warden request api svc --methods POST --for <window> --goal <goal> (window: the \
              shortest of 15m, 30m, 1h or 4h that covers the work; goal: what you will do and why)"

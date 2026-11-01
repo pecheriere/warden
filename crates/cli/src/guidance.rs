@@ -40,11 +40,11 @@ pub fn no_ssh_grant(target: &TargetName) -> String {
     )
 }
 
-/// The error for `warden http` without an active grant for `secret`.
-pub fn no_api_grant(secret: &SecretName) -> String {
+/// The error for `warden http` without an active grant for the item `name`.
+pub fn no_api_grant(name: &SecretName) -> String {
     format!(
-        "no active api grant for {secret}: none was requested from this machine, or it expired \
-         or was revoked. If the task needs it, ask the owner with: warden request api {secret} \
+        "no active api grant for {name}: none was requested from this machine, or it expired \
+         or was revoked. If the task needs it, ask the owner with: warden request api {name} \
          --for <window> --goal <goal> (read-only; add --methods only for a change the task must \
          make; {REQUEST_PLACEHOLDERS})"
     )
@@ -52,22 +52,22 @@ pub fn no_api_grant(secret: &SecretName) -> String {
 
 /// The error for a call refused because `grant` was revoked. `broker` is the
 /// broker's message.
-pub fn api_grant_revoked(grant: &Id, secret: &SecretName, broker: &str) -> String {
+pub fn api_grant_revoked(grant: &Id, name: &SecretName, broker: &str) -> String {
     format!(
-        "grant {grant} for {secret} was revoked on the broker ({broker}). The owner may have \
+        "grant {grant} for {name} was revoked on the broker ({broker}). The owner may have \
          ended it on purpose: check with them, then if the task still needs it use: warden \
-         request api {secret} --for <window> --goal <goal> ({REQUEST_PLACEHOLDERS})"
+         request api {name} --for <window> --goal <goal> ({REQUEST_PLACEHOLDERS})"
     )
 }
 
 /// The error for a call refused because `grant` ran out, which the local
 /// clock did not expect or which happened while the call was out. `broker` is
 /// the broker's message.
-pub fn api_grant_expired(grant: &Id, secret: &SecretName, broker: &str) -> String {
+pub fn api_grant_expired(grant: &Id, name: &SecretName, broker: &str) -> String {
     format!(
-        "grant {grant} for {secret} has expired ({broker}). No response was returned, and a call \
+        "grant {grant} for {name} has expired ({broker}). No response was returned, and a call \
          that was already out may have taken effect. If the task still needs it, ask the owner \
-         with: warden request api {secret} --for <window> --goal <goal> ({REQUEST_PLACEHOLDERS})"
+         with: warden request api {name} --for <window> --goal <goal> ({REQUEST_PLACEHOLDERS})"
     )
 }
 
@@ -148,10 +148,10 @@ mod tests {
     #[test]
     fn ended_grant_messages_name_the_grant_and_a_valid_request() {
         let id = Id::random();
-        let secret = "home-api".parse().unwrap();
+        let name = "home-api".parse().unwrap();
         for message in [
-            api_grant_revoked(&id, &secret, "broker refused (409): grant revoked"),
-            api_grant_expired(&id, &secret, "broker refused (409): grant expired"),
+            api_grant_revoked(&id, &name, "broker refused (409): grant revoked"),
+            api_grant_expired(&id, &name, "broker refused (409): grant expired"),
         ] {
             assert!(message.contains(&id.to_string()), "{message}");
             assert!(message.contains("broker refused (409)"), "{message}");
