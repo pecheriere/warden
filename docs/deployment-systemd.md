@@ -453,11 +453,11 @@ container on arm64, with a binary built by the repository's Dockerfile. There:
   unit at 1.0.
 - warden started with every setting in the unit and read its secrets from credentials,
   which did not appear in `/proc/<pid>/environ` or `systemctl show`.
-- The `warden_admin` function printed an enrollment code, listed agents and verified the
-  audit log.
-- The file steps of the upgrade and rollback worked, with the same binary under a second
-  name, so no migration ran.
-- DNS, TLS verification and an HTTPS call from inside the sandbox worked. Blocking the
+- On 257, the `warden_admin` function printed an enrollment code, listed agents and
+  verified the audit log.
+- On 257, the file steps of the upgrade and rollback worked, with the same binary under a
+  second name, so no migration ran.
+- On 252, DNS, TLS verification and an HTTPS call from inside the sandbox worked. Blocking the
   resolver or the destination with `IPAddressAllow` made them fail.
 - `SocketBindDeny` refused a bind on 257, and had no effect on 252, which lacks
   `BPF_FRAMEWORK`. `NoExecPaths` stopped a shell from running.
