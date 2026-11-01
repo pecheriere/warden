@@ -6,6 +6,13 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- README: says who warden is for and how stable it is, names Tailscale, Docker
+  and 1Password as the recommended setup and what each part protects, and adds
+  a table of the setups supported today with their security cost. It also lists
+  the notification channel as a requirement.
+
 ## [0.8.1] - 2026-11-01
 
 The `v0.8.0` tag was created by mistake, before the version bump, and was
