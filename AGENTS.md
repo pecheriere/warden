@@ -104,8 +104,9 @@ Semantic versioning, one version for the whole workspace.
    mention of the previous version in the README and `docs/` (install
    commands, image tags, attestation examples).
 2. After it merges, the maintainer creates the `vx.y.z` release on that
-   commit of `main`. `.github/workflows/release.yml` reruns CI, builds
-   the multi-arch image, pushes it to `ghcr.io/pecheriere/warden` and
-   attaches a build-provenance attestation.
+   commit of `main`. `.github/workflows/release.yml` refuses a tag that
+   does not match the version, reruns CI, builds the multi-arch image,
+   pushes it to `ghcr.io/pecheriere/warden` and attaches a build-provenance
+   attestation.
 
 Agents do not create releases or tags.
