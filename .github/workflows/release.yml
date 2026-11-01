@@ -95,7 +95,9 @@ jobs:
           context: .
           platforms: ${{ matrix.platform }}
           outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
-          cache-from: type=gha,scope=${{ matrix.platform }}
+          # No cache-from: pull request builds write to that cache, and an entry
+          # from one must not be able to reach a published image.
+          no-cache: true
       - name: Record the digest
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
