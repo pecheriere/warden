@@ -288,14 +288,14 @@ struct Client {
 impl client::Handler for Client {
     type Error = russh::Error;
 
-    async fn check_server_key(
+    fn check_server_key(
         &mut self,
         key: &russh::keys::PublicKeyOrCertificate,
-    ) -> Result<bool, Self::Error> {
-        Ok(matches!(
+    ) -> impl Future<Output = Result<bool, Self::Error>> + Send {
+        std::future::ready(Ok(matches!(
             key,
             russh::keys::PublicKeyOrCertificate::PublicKey { key, .. } if key.key_data() == self.host_key.key_data()
-        ))
+        )))
     }
 }
 
@@ -494,7 +494,7 @@ async fn relay_refuses_unbound_key_and_inactive_grant() {
     let ssh = OpenSsh::new(&s.broker, s.relay, &agent.key);
     let refused = |out: &Output| {
         assert_eq!(out.status.code(), Some(255), "{}", text(&out.stderr));
-        assert!(out.stdout.is_empty());
+        assert_eq!(out.stdout, [] as [u8; 0]);
         assert!(
             text(&out.stderr).contains("Permission denied (publickey)"),
             "{}",
@@ -587,7 +587,7 @@ async fn onward_host_key_mismatch_aborts_before_auth() {
     let ssh = OpenSsh::new(&s.broker, s.relay, &agent.key);
     let out = ssh.run(&["echo", "ok"]).await;
     assert_ne!(out.status.code(), Some(0));
-    assert!(out.stdout.is_empty());
+    assert_eq!(out.stdout, [] as [u8; 0]);
     let stderr = text(&out.stderr);
     assert!(
         stderr.contains("warden relay: the target's host key does not match"),
@@ -750,7 +750,10 @@ async fn session_refused_when_target_policy_changed() {
     assert_eq!(refused[0]["reason"], "user no longer allowed on the target");
     assert_eq!(refused[1]["reason"], "target is no longer a relay target");
     assert_eq!(sshd_connections(&s.sshd), 0, "{}", s.sshd.log());
-    assert!(events_of(&s.broker, "relay_session_started").is_empty());
+    assert_eq!(
+        events_of(&s.broker, "relay_session_started"),
+        [] as [serde_json::Value; 0]
+    );
 }
 
 /// Replace target `nas` with `changed` after `agent` was approved, then
@@ -772,7 +775,10 @@ async fn assert_refused_after_destination_change(s: &Setup, agent: &Agent, chang
     let refused = await_events(&s.broker, "relay_session_refused", 1).await;
     assert_eq!(refused[0]["reason"], "target policy changed");
     assert_eq!(refused[0]["grant_id"], agent.grant_id.as_str());
-    assert!(events_of(&s.broker, "relay_session_started").is_empty());
+    assert_eq!(
+        events_of(&s.broker, "relay_session_started"),
+        [] as [serde_json::Value; 0]
+    );
     assert_eq!(sshd_connections(&s.sshd), 0, "{}", s.sshd.log());
 }
 
@@ -813,7 +819,10 @@ async fn rotated_credential_alone_still_works() {
     let out = ssh.run(&["echo", "rotated"]).await;
     assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
     assert_eq!(text(&out.stdout), "rotated\n");
-    assert!(events_of(&s.broker, "relay_session_refused").is_empty());
+    assert_eq!(
+        events_of(&s.broker, "relay_session_refused"),
+        [] as [serde_json::Value; 0]
+    );
     await_events(&s.broker, "relay_session_ended", 1).await;
 }
 
@@ -961,7 +970,7 @@ async fn session_audited_start_before_bytes_and_end() {
     let out = ssh.run(&["echo", "unrecorded"]).await;
     holder.unlock().unwrap();
     assert_ne!(out.status.code(), Some(0));
-    assert!(out.stdout.is_empty());
+    assert_eq!(out.stdout, [] as [u8; 0]);
     assert!(
         text(&out.stderr).contains("warden relay: the session could not be recorded"),
         "{}",
@@ -1120,7 +1129,7 @@ async fn snapshot_counts_bytes() {
 
     channel.close().await.unwrap();
     await_events(&s.broker, "relay_session_ended", 1).await;
-    assert!(s.broker.live_relay_bytes().is_empty());
+    assert_eq!(s.broker.live_relay_bytes(), [] as [(u64, u64); 0]);
 }
 
 fn too_many(out: &Output, what: &str) {
@@ -1404,8 +1413,14 @@ async fn assert_refused_once(s: &Setup, reason: &str) {
         "{:?}",
         audit_events(&s.broker)
     );
-    assert!(events_of(&s.broker, "relay_session_started").is_empty());
-    assert!(events_of(&s.broker, "relay_session_ended").is_empty());
+    assert_eq!(
+        events_of(&s.broker, "relay_session_started"),
+        [] as [serde_json::Value; 0]
+    );
+    assert_eq!(
+        events_of(&s.broker, "relay_session_ended"),
+        [] as [serde_json::Value; 0]
+    );
     assert_eq!(sshd_connections(&s.sshd), 0, "{}", s.sshd.log());
 }
 
@@ -2338,8 +2353,14 @@ async fn unstarted_authenticated_connection_is_closed() {
     }
     assert!(logged_in.elapsed() >= Duration::from_millis(1500));
     // Nothing started, so nothing is recorded; its place is free again.
-    assert!(events_of(&s.broker, "relay_session_started").is_empty());
-    assert!(events_of(&s.broker, "relay_session_ended").is_empty());
+    assert_eq!(
+        events_of(&s.broker, "relay_session_started"),
+        [] as [serde_json::Value; 0]
+    );
+    assert_eq!(
+        events_of(&s.broker, "relay_session_ended"),
+        [] as [serde_json::Value; 0]
+    );
     let c = login(&s.broker, s.relay, TARGET, &agent.key).await;
     let mut channel = c.handle.channel_open_session().await.unwrap();
     channel.exec(true, "echo ok").await.unwrap();
@@ -2366,7 +2387,10 @@ async fn db_unreadable_fails_closed() {
     // Not before the state has been unreadable for 10 s ...
     tokio::time::sleep(Duration::from_secs(8)).await;
     assert!(!running.handle.is_closed(), "ended before 10 s of failures");
-    assert!(events_of(&s.broker, "relay_session_ended").is_empty());
+    assert_eq!(
+        events_of(&s.broker, "relay_session_ended"),
+        [] as [serde_json::Value; 0]
+    );
     // ... then the session ends, both sides closed.
     assert_both_sides_closed(&s, &running, 0, lost + Duration::from_secs(15)).await;
     let out = collect(&mut running_channel).await;
@@ -2483,7 +2507,10 @@ async fn connection_closed_once_its_session_is_over() {
         over.elapsed()
     );
     assert_eq!(events_of(&s.broker, "relay_session_refused").len(), 1);
-    assert!(events_of(&s.broker, "relay_session_started").is_empty());
+    assert_eq!(
+        events_of(&s.broker, "relay_session_started"),
+        [] as [serde_json::Value; 0]
+    );
     tokio::time::timeout(Duration::from_secs(3), s.broker.stop_relay())
         .await
         .expect("the relay stopped promptly");

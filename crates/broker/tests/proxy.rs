@@ -555,7 +555,10 @@ async fn item_deleted_after_approval_is_refused() {
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0]["status"], Value::Null);
     assert_eq!(calls[0]["outcome"], "policy changed; request access again");
-    assert!(audit_events(&s.broker, &["proxy_call_started"]).is_empty());
+    assert_eq!(
+        audit_events(&s.broker, &["proxy_call_started"]),
+        [] as [serde_json::Value; 0]
+    );
     audit::verify(s.broker.audit_path()).unwrap();
 
     // Nothing is left half done: with the item back, the grant works.
@@ -588,7 +591,10 @@ async fn backend_unavailable_at_call_time_is_a_fixed_503() {
     assert_eq!(calls[0]["outcome"], "secret backend unavailable");
     let log = std::fs::read_to_string(s.broker.audit_path()).unwrap();
     assert!(!log.contains("10.9.8.7"));
-    assert!(audit_events(&s.broker, &["proxy_call_started"]).is_empty());
+    assert_eq!(
+        audit_events(&s.broker, &["proxy_call_started"]),
+        [] as [serde_json::Value; 0]
+    );
     audit::verify(s.broker.audit_path()).unwrap();
 
     // The outage leaves no state behind: the next call succeeds.
@@ -684,7 +690,7 @@ async fn other_agents_grant_not_found() {
         .await;
     assert_eq!(resp.status, StatusCode::BAD_REQUEST, "{}", resp.body);
     assert!(s.upstream.received().is_empty());
-    assert!(proxy_calls(&s.broker).is_empty());
+    assert_eq!(proxy_calls(&s.broker), [] as [serde_json::Value; 0]);
 }
 
 #[tokio::test]
@@ -844,7 +850,10 @@ async fn proxy_refused_when_audit_unwritable() {
     );
     assert_eq!(resp.body, r#"{"error":"internal error"}"#);
     assert!(s.upstream.received().is_empty());
-    assert!(audit_events(&s.broker, &["proxy_call_started", "proxy_call"]).is_empty());
+    assert_eq!(
+        audit_events(&s.broker, &["proxy_call_started", "proxy_call"]),
+        [] as [serde_json::Value; 0]
+    );
 
     // Once the log is writable again, calls go through.
     let (proxied, _) = proxied(&get(&s, "/v1/hello").await);

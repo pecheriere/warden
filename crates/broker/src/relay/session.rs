@@ -965,7 +965,7 @@ impl Delivered {
         // Saturating, like the totals recorded in the audit log.
         let _ = self
             .bytes
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |b| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |b| {
                 Some(b.saturating_add(n))
             });
     }
@@ -1236,7 +1236,7 @@ mod tests {
         Watch {
             stall: Duration::from_secs(stall_secs),
             wedge: Duration::from_secs(2),
-            idle: Duration::from_secs(15 * 60),
+            idle: Duration::from_mins(15),
         }
     }
 
@@ -1369,13 +1369,16 @@ mod tests {
         drop((a1, a2, b1));
         assert_eq!(sessions.grant_ids(), vec![c.grant_id.clone()]);
         drop(c1);
-        assert!(sessions.grant_ids().is_empty());
+        assert_eq!(sessions.grant_ids(), [] as [warden_broker_proto::Id; 0]);
     }
 
     #[test]
     fn snapshot_lists_live_session_until_dropped() {
         let sessions = LiveSessions::new();
-        assert!(sessions.snapshot().is_empty());
+        assert_eq!(
+            sessions.snapshot(),
+            [] as [crate::relay::session::LiveSessionInfo; 0]
+        );
         let (late, early) = (grant("a", 100), grant("b", 100));
         let first = sessions.register(&late, 20);
         let second = sessions.register(&early, 10);
@@ -1422,7 +1425,10 @@ mod tests {
         drop(first);
         assert_eq!(sessions.snapshot().len(), 1);
         drop(second);
-        assert!(sessions.snapshot().is_empty());
+        assert_eq!(
+            sessions.snapshot(),
+            [] as [crate::relay::session::LiveSessionInfo; 0]
+        );
     }
 
     #[test]

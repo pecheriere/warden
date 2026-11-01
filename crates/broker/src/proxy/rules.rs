@@ -266,7 +266,7 @@ mod tests {
         assert_eq!(prepared.headers["accept"], "application/json");
         let traces: Vec<_> = prepared.headers.get_all("x-trace").iter().collect();
         assert_eq!(traces, ["1", "2"]);
-        assert!(prepared.body.is_empty());
+        assert_eq!(prepared.body, [] as [u8; 0]);
 
         // Host case and the explicit default port are the same origin.
         let prepared = check(&p, &get("https://API.Example.COM:443/v1"), MAX).unwrap();

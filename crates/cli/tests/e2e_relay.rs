@@ -98,7 +98,10 @@ fn assert_echo_ok(cli: &Cli) {
 fn assert_no_secret_on_disk(cli: &Cli, secrets: &[&str]) {
     // The agent socket and grant metadata exist, so the scan covers the
     // directories the CLI actually wrote.
-    assert!(!cli.files_containing("\"grant_id\"").is_empty());
+    assert_ne!(
+        cli.files_containing("\"grant_id\""),
+        [] as [std::path::PathBuf; 0]
+    );
     assert_eq!(cli.files_containing("PRIVATE KEY"), Vec::<PathBuf>::new());
     for secret in secrets {
         assert_eq!(cli.files_containing(secret), Vec::<PathBuf>::new());
@@ -260,7 +263,7 @@ async fn e2e_relay_revoke_ends_access() {
     // And no new session starts.
     let after = s.cli.run(&["ssh", TARGET, "--", "echo", "ok"]);
     assert_eq!(after.status.code(), Some(5));
-    assert!(after.stdout.is_empty());
+    assert_eq!(after.stdout, [] as [u8; 0]);
     let stderr = String::from_utf8(after.stderr).unwrap();
     assert!(stderr.contains("no active grant for nas"), "{stderr}");
     assert_eq!(audit_events(&s.broker, "relay_session_started").len(), 1);

@@ -491,7 +491,7 @@ pub fn discard_grant(grant_id: &Id) -> Result<bool> {
 
 /// How old an abandoned temporary file must be before it is removed: far
 /// longer than any write takes, so another CLI mid-write is never affected.
-const STALE_TEMP_AGE: Duration = Duration::from_secs(10 * 60);
+const STALE_TEMP_AGE: Duration = Duration::from_mins(10);
 
 /// Remove the temporary files of [`write_new_private`] in `dir` that were
 /// last written at least ten minutes before `now` (Unix seconds): left by

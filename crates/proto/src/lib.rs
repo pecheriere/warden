@@ -812,7 +812,7 @@ mod tests {
     #[test]
     fn modifying_methods_names_what_is_not_read_only() {
         let m = |list: &[&str]| list.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
-        assert!(modifying_methods(&m(&["GET", "HEAD"])).is_empty());
+        assert_eq!(modifying_methods(&m(&["GET", "HEAD"])), [] as [&str; 0]);
         assert_eq!(
             modifying_methods(&m(&["GET", "POST", "PUT"])),
             ["POST", "PUT"]

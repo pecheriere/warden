@@ -1255,8 +1255,11 @@ async fn scope_violations_are_rejected_without_notifying() {
         };
         assert_eq!(message, expected);
     }
-    assert!(broker.capture.rung().is_empty());
-    assert!(dedupe_keys(&broker).await.is_empty());
+    assert_eq!(
+        broker.capture.rung(),
+        [] as [warden_broker::notify::Doorbell; 0]
+    );
+    assert_eq!(dedupe_keys(&broker).await, [] as [std::string::String; 0]);
     assert!(!broker.audit_types().contains(&"request_created".to_owned()));
 }
 

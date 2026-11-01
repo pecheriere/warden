@@ -420,7 +420,7 @@ mod tests {
         assert!(reader.is_empty(), "trailing bytes");
         assert_eq!(sig.version(), 1);
         assert_eq!(sig.namespace(), NAMESPACE);
-        assert!(sig.reserved().is_empty());
+        assert_eq!(sig.reserved(), [] as [u8; 0]);
         assert_eq!(sig.hash_alg(), HashAlg::Sha512);
         assert_eq!(sig.public_key(), key.public_key().key_data());
         key.public_key()

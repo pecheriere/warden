@@ -97,7 +97,7 @@ refused with `401`.
 
 ## CLI commands
 
-`warden` is the agent's client. Install it with Rust 1.94 or later; it needs
+`warden` is the agent's client. Install it with Rust 1.99 or later; it needs
 the OpenSSH client tools (`ssh`, `ssh-agent`, `ssh-add`):
 
 ```sh

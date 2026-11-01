@@ -328,7 +328,7 @@ async fn api_window_over_max_rejected() {
     assert!(matches!(err, RequestError::Rejected(_)), "{err:?}");
     assert_eq!(message(&err), "window 1h exceeds max 30m for secret github");
     assert_eq!(row_count(&h.pool, "requests").await, 0);
-    assert!(h.capture.rung().is_empty());
+    assert_eq!(h.capture.rung(), [] as [warden_broker::notify::Doorbell; 0]);
 }
 
 #[tokio::test]
@@ -349,7 +349,7 @@ async fn unknown_secret_not_found_without_notifying() {
         .unwrap_err();
     assert!(matches!(err, RequestError::UnknownSecret(_)), "{err:?}");
     assert_eq!(row_count(&h.pool, "requests").await, 0);
-    assert!(h.capture.rung().is_empty());
+    assert_eq!(h.capture.rung(), [] as [warden_broker::notify::Doorbell; 0]);
 }
 
 #[tokio::test]
@@ -367,7 +367,7 @@ async fn invalid_api_item_is_named_as_a_secret() {
     );
     assert!(!message(&err).contains("x9q7"), "credential echoed: {err}");
     assert_eq!(row_count(&h.pool, "requests").await, 0);
-    assert!(h.capture.rung().is_empty());
+    assert_eq!(h.capture.rung(), [] as [warden_broker::notify::Doorbell; 0]);
 }
 
 #[tokio::test]
@@ -443,7 +443,7 @@ async fn create_rejects_user_not_allowed() {
     assert!(matches!(err, RequestError::Rejected(_)), "{err:?}");
     assert_eq!(message(&err), "user root not allowed for target pi");
     assert_eq!(row_count(&h.pool, "requests").await, 0);
-    assert!(h.capture.rung().is_empty());
+    assert_eq!(h.capture.rung(), [] as [warden_broker::notify::Doorbell; 0]);
 }
 
 #[tokio::test]
@@ -460,7 +460,7 @@ async fn create_rejects_window_over_max() {
     assert!(matches!(err, RequestError::Rejected(_)), "{err:?}");
     assert_eq!(message(&err), "window 4h exceeds max 1h for target pi");
     assert_eq!(row_count(&h.pool, "requests").await, 0);
-    assert!(h.capture.rung().is_empty());
+    assert_eq!(h.capture.rung(), [] as [warden_broker::notify::Doorbell; 0]);
 }
 
 #[tokio::test]
@@ -476,7 +476,7 @@ async fn create_rejects_non_ed25519_key() {
         assert!(message(&err).contains("ssh-ed25519"), "{err}");
     }
     assert_eq!(row_count(&h.pool, "requests").await, 0);
-    assert!(h.capture.rung().is_empty());
+    assert_eq!(h.capture.rung(), [] as [warden_broker::notify::Doorbell; 0]);
 }
 
 #[tokio::test]
@@ -511,8 +511,8 @@ async fn relay_not_configured_rejected_without_notifying() {
     assert!(matches!(err, RequestError::Rejected(_)), "{err:?}");
     assert_eq!(message(&err), "target nas: relay is not configured");
     assert_eq!(row_count(&h.pool, "requests").await, 0);
-    assert!(h.capture.rung().is_empty());
-    assert!(audit_types(&h).is_empty());
+    assert_eq!(h.capture.rung(), [] as [warden_broker::notify::Doorbell; 0]);
+    assert_eq!(audit_types(&h), [] as [std::string::String; 0]);
 
     // Cert targets are unaffected.
     create_notified(&h, "bot", pi_request()).await;
@@ -663,7 +663,10 @@ async fn connect_down_fails_request_without_notifying() {
     assert!(message(&err).contains("HTTP 500"), "{err}");
     assert!(!message(&err).contains(TOKEN));
     assert_eq!(row_count(&down.pool, "requests").await, 0);
-    assert!(down.capture.rung().is_empty());
+    assert_eq!(
+        down.capture.rung(),
+        [] as [warden_broker::notify::Doorbell; 0]
+    );
 
     let h = harness().await;
     let err = h
@@ -692,7 +695,7 @@ async fn connect_down_fails_request_without_notifying() {
     assert_eq!(message(&err), "unknown target nope");
 
     assert_eq!(row_count(&h.pool, "requests").await, 0);
-    assert!(h.capture.rung().is_empty());
+    assert_eq!(h.capture.rung(), [] as [warden_broker::notify::Doorbell; 0]);
 }
 
 #[tokio::test]

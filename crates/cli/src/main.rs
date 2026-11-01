@@ -54,7 +54,7 @@ const CANCEL_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// How long `warden request` waits for a decision (pending requests expire
 /// on the server after 10 minutes).
-const DECISION_TIMEOUT: Duration = Duration::from_secs(11 * 60);
+const DECISION_TIMEOUT: Duration = Duration::from_mins(11);
 
 /// How long the broker keeps a request pending, in seconds.
 const PENDING_EXPIRY_SECS: i64 = 600;
@@ -1311,7 +1311,10 @@ mod tests {
             client.status(&created.id, 0).await,
             Ok(RequestStatus::Revoked)
         );
-        assert!(client.grants().await.unwrap().is_empty());
+        assert_eq!(
+            client.grants().await.unwrap(),
+            [] as [warden_broker_proto::GrantView; 0]
+        );
 
         // A request decided otherwise is just reported.
         let again = client.create(&req).await.unwrap();

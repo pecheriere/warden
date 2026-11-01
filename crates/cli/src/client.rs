@@ -658,7 +658,7 @@ mod tests {
                 assert_eq!(got.header("content-type"), Some("application/json"));
                 assert_eq!(got.body, serde_json::to_vec(&call).unwrap());
             } else {
-                assert!(got.body.is_empty());
+                assert_eq!(got.body, [] as [u8; 0]);
             }
             nonces.push(nonce);
         }

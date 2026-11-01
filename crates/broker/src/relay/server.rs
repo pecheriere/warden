@@ -176,7 +176,7 @@ impl Default for RelayLimits {
             onward_timeout: Duration::from_secs(10),
             stall_timeout: Duration::from_secs(60),
             wedge_timeout: Duration::from_secs(2),
-            idle_timeout: Duration::from_secs(15 * 60),
+            idle_timeout: Duration::from_mins(15),
             start_timeout: Duration::from_secs(30),
         }
     }
@@ -1212,31 +1212,31 @@ async fn open_target(
 impl server::Handler for RelayHandler {
     type Error = russh::Error;
 
-    async fn auth_publickey_offered(
+    fn auth_publickey_offered(
         &mut self,
         _user: &str,
-        public_key: &russh::keys::PublicKey,
-    ) -> Result<Auth, Self::Error> {
+        offer: server::PublicKeyOffer<'_>,
+    ) -> impl Future<Output = Result<Auth, Self::Error>> + Send {
         // Approved keys are Ed25519; anything else is not worth a signature.
-        Ok(
-            if public_key.algorithm() == russh::keys::Algorithm::Ed25519 {
+        std::future::ready(Ok(
+            if offer.public_key.algorithm() == russh::keys::Algorithm::Ed25519 {
                 Auth::Accept
             } else {
                 Auth::reject()
             },
-        )
+        ))
     }
 
     async fn auth_publickey(
         &mut self,
         user: &str,
-        public_key: &russh::keys::PublicKey,
+        verified: server::VerifiedPublicKey<'_>,
     ) -> Result<Auth, Self::Error> {
         let Ok(target) = TargetName::try_from(user.to_owned()) else {
             self.conn.refused(INVALID_USER);
             return Ok(Auth::reject());
         };
-        let key = ours(public_key).filter(|key| key.algorithm() == Algorithm::Ed25519);
+        let key = ours(verified.public_key).filter(|key| key.algorithm() == Algorithm::Ed25519);
         // Bounded like every grant query, not only by the login timeout: a
         // lookup that does not answer in time refuses the attempt.
         let grant = match &key {
@@ -1264,15 +1264,22 @@ impl server::Handler for RelayHandler {
         Ok(Auth::reject())
     }
 
-    async fn auth_succeeded(&mut self, session: &mut Session) -> Result<(), Self::Error> {
+    fn auth_succeeded(
+        &mut self,
+        session: &mut Session,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send {
         self.preauth = None;
         let _ = self.conn.logged_in.send(true);
         let Some(login) = &self.login else {
-            return session.disconnect(Disconnect::ByApplication, NO_LONGER_VALID, "en");
+            return std::future::ready(session.disconnect(
+                Disconnect::ByApplication,
+                NO_LONGER_VALID,
+                "en",
+            ));
         };
         self.logged_in.raise();
         let grant = &login.grant;
-        match self.shared.slots.try_acquire(&grant.grant_id) {
+        std::future::ready(match self.shared.slots.try_acquire(&grant.grant_id) {
             Ok(slot) => {
                 tracing::info!(grant = %grant.grant_id, agent = %grant.agent, target = %grant.target, "relay: agent logged in");
                 self.slot = Some(slot);
@@ -1282,7 +1289,7 @@ impl server::Handler for RelayHandler {
                 tracing::warn!(grant = %grant.grant_id, agent = %grant.agent, limit = refusal.message(), "relay: session limit reached");
                 session.disconnect(Disconnect::TooManyConnections, refusal.message(), "en")
             }
-        }
+        })
     }
 
     async fn channel_open_session(
@@ -1352,23 +1359,23 @@ impl server::Handler for RelayHandler {
         Ok(())
     }
 
-    async fn tcpip_forward(
+    fn tcpip_forward(
         &mut self,
         _address: &str,
         _port: &mut u32,
         _session: &mut Session,
-    ) -> Result<bool, Self::Error> {
+    ) -> impl Future<Output = Result<bool, Self::Error>> + Send {
         self.notice(NO_FORWARDING);
-        Ok(false)
+        std::future::ready(Ok(false))
     }
 
-    async fn streamlocal_forward(
+    fn streamlocal_forward(
         &mut self,
         _socket_path: &str,
         _session: &mut Session,
-    ) -> Result<bool, Self::Error> {
+    ) -> impl Future<Output = Result<bool, Self::Error>> + Send {
         self.notice(NO_FORWARDING);
-        Ok(false)
+        std::future::ready(Ok(false))
     }
 
     async fn pty_request(

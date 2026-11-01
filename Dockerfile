@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
-# Builder: Rust 1.94 on Debian bookworm, pinned by digest.
-FROM rust:1.94-bookworm@sha256:6ae102bdbf528294bc79ad6e1fae682f6f7c2a6e6621506ba959f9685b308a55 AS builder
+# Builder: Rust 1.99 on Debian bookworm, pinned by digest.
+FROM rust:1.99-bookworm@sha256:9181b56c2a21ab1d5e73cffe04fc762426d30aa7fac3c91141dd033f49a7fc8b AS builder
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates

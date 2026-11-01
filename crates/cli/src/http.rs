@@ -550,7 +550,7 @@ mod tests {
         );
         let (mut out, mut err) = (Vec::new(), Vec::new());
         emit(&reply, false, &mut out, &mut err).unwrap();
-        assert!(err.is_empty());
+        assert_eq!(err, [] as [u8; 0]);
         assert!(
             decode(&ProxyResponse {
                 body_b64: "!!".to_owned(),
@@ -612,7 +612,7 @@ mod tests {
         save_in(dir.path(), &ended).unwrap();
         let mut warnings = Vec::new();
         cleanup_expired_in(dir.path(), 200, &mut warnings).unwrap();
-        assert!(warnings.is_empty());
+        assert_eq!(warnings, [] as [u8; 0]);
         let left = names_in(dir.path());
         assert_eq!(left, [format!("{}.json", live.grant_id)]);
         let mode = std::fs::metadata(dir.path().join(left[0].as_str()))
@@ -648,7 +648,7 @@ mod tests {
         age(".inflight.json.bbb.tmp", 599);
         let mut warnings = Vec::new();
         cleanup_expired_in(dir.path(), now, &mut warnings).unwrap();
-        assert!(warnings.is_empty());
+        assert_eq!(warnings, [] as [u8; 0]);
         assert_eq!(
             names_in(dir.path()),
             [

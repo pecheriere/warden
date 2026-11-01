@@ -24,6 +24,8 @@ All notable changes to this project are recorded here. The format follows
 
 ### Changed
 
+- The minimum supported Rust version is now 1.99, for building both the broker
+  and the `warden` CLI. The builder image and CI moved to Rust 1.99 too.
 - Docs overhaul. The README is now a short introduction with a quick start.
   New guides: `docs/deployment.md`, `docs/configuration.md` and
   `docs/ssh-targets.md`.
@@ -48,6 +50,16 @@ All notable changes to this project are recorded here. The format follows
   - Corrected: the certificate key id, the Ctrl-C cancel wait (5 s), the
     published image, what losing the database loses, warden's egress
     (relay targets) and the Linux bearer-key setup.
+
+### Security
+
+- russh is updated to 0.65.0. On the relay, this fixes a stack overflow an
+  unauthenticated client could trigger with a crafted OpenSSH certificate
+  (GHSA-3hm4-p7h4-rvwp), unbounded memory use from a target's repeated
+  `EXT_INFO` messages (GHSA-4p9f-7p9m-5vfg) and channel writes that a peer
+  could stall by declaring a maximum packet size of zero
+  (GHSA-fw5c-8223-6h42). The release's SSH agent fixes do not affect warden,
+  which does not use russh's agent server.
 
 ## [0.7.0] - 2026-10-29
 

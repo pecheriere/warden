@@ -196,7 +196,7 @@ async fn e2e_request_approve_ssh_runs_command() {
 
     let after = s.cli.run(&["ssh", TARGET, "--", "echo", "ok"]);
     assert_eq!(after.status.code(), Some(5));
-    assert!(after.stdout.is_empty());
+    assert_eq!(after.stdout, [] as [u8; 0]);
     let stderr = String::from_utf8(after.stderr).unwrap();
     assert!(stderr.contains("no active grant for box"), "{stderr}");
     drop(s.sshd);
@@ -210,7 +210,7 @@ async fn cert_for_other_target_is_rejected() {
     let _grant = request_and_approve(&s).await;
     let ssh = s.cli.run(&["ssh", TARGET, "--", "echo", "ok"]);
     assert_ne!(ssh.status.code(), Some(0));
-    assert!(ssh.stdout.is_empty());
+    assert_eq!(ssh.stdout, [] as [u8; 0]);
     let stderr = String::from_utf8(ssh.stderr).unwrap();
     assert!(stderr.contains("Permission denied"), "{stderr}");
     drop(s.sshd);
@@ -229,7 +229,10 @@ async fn e2e_private_key_never_on_disk() {
     );
     // The agent socket and grant metadata exist, so the scan covers the
     // directories the CLI actually wrote.
-    assert!(!s.cli.files_containing("\"grant_id\"").is_empty());
+    assert_ne!(
+        s.cli.files_containing("\"grant_id\""),
+        [] as [std::path::PathBuf; 0]
+    );
     assert_eq!(s.cli.files_containing("PRIVATE KEY"), Vec::<PathBuf>::new());
     let mode = fs::metadata(s.cli.root.path().join(STATE_DIR).join("warden"))
         .unwrap()

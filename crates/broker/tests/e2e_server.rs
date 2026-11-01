@@ -119,7 +119,7 @@ async fn revoke_grant_via_api_then_listed_inactive() {
 
     let revoked = broker.api_post(&key, &path).await;
     assert_eq!(revoked.status, StatusCode::NO_CONTENT, "{}", revoked.body);
-    assert!(revoked.body.is_empty());
+    assert_eq!(revoked.body, "");
 
     let listed = broker.api_get(&key, "/v1/grants").await;
     assert_eq!(listed.json(), json!([]));
@@ -480,7 +480,7 @@ async fn agent_cancels_pending_request() {
         "{}",
         cancelled.body
     );
-    assert!(cancelled.body.is_empty());
+    assert_eq!(cancelled.body, "");
     assert_eq!(status, RequestStatus::Cancelled);
     assert_eq!(
         poll(&broker, &key, &created.id, 0).await,
