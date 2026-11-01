@@ -13,8 +13,8 @@ use anyhow::{Context as _, Result, bail, ensure};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use serde::{Deserialize, Serialize};
-use unicode_properties::{GeneralCategory, UnicodeGeneralCategory as _};
 use url::Url;
+use warden_broker_proto::doctor::sanitize;
 use warden_broker_proto::{ApiGrant, Id, ProxyRequest, ProxyResponse, SecretName, under_prefix};
 
 use crate::agent::{private_dir, remove_stale_temps, state_dir, write_new_private};
@@ -346,25 +346,6 @@ pub fn decode(resp: &ProxyResponse) -> Result<Reply> {
     })
 }
 
-/// `text` safe to print on a terminal: control characters (C0, C1),
-/// invisible format characters (bidi overrides, zero-width marks) and line
-/// and paragraph separators are each replaced by `?`.
-#[must_use]
-pub fn sanitize(text: &str) -> String {
-    text.chars()
-        .map(|c| {
-            let unsafe_char = c.is_control()
-                || matches!(
-                    c.general_category(),
-                    GeneralCategory::Format
-                        | GeneralCategory::LineSeparator
-                        | GeneralCategory::ParagraphSeparator
-                );
-            if unsafe_char { '?' } else { c }
-        })
-        .collect()
-}
-
 /// Write the body raw to `out`; with `include`, the status line and headers
 /// to `err`.
 ///
@@ -394,7 +375,7 @@ mod tests {
 
     use super::{
         ApiRecord, MAX_BODY_BYTES, active_in, cleanup_expired_in, covering, decode, emit,
-        parse_header, proxy_request, read_body, read_limited, sanitize, save_in,
+        parse_header, proxy_request, read_body, read_limited, save_in,
     };
 
     fn scoped(secret: &str, not_after: i64, methods: &[&str], prefix: &str) -> ApiRecord {
@@ -557,23 +538,6 @@ mod tests {
                 ..resp
             })
             .is_err()
-        );
-    }
-
-    #[test]
-    fn sanitize_replaces_control_format_and_separator_characters() {
-        assert_eq!(sanitize("plain text: ok"), "plain text: ok");
-        // C0 and C1 controls.
-        assert_eq!(sanitize("a\u{1b}[31mb\r\n\0"), "a?[31mb???");
-        assert_eq!(sanitize("a\u{9b}2Jb\u{85}"), "a?2Jb?");
-        // Format characters: bidi overrides and isolates, zero-width.
-        assert_eq!(sanitize("x\u{202e}y\u{2066}z\u{200b}w\u{feff}"), "x?y?z?w?");
-        // Line and paragraph separators.
-        assert_eq!(sanitize("x\u{2028}y\u{2029}z"), "x?y?z");
-        // Other non-ASCII text is kept.
-        assert_eq!(
-            sanitize("caf\u{e9} \u{5e9}\u{5dc}"),
-            "caf\u{e9} \u{5e9}\u{5dc}"
         );
     }
 

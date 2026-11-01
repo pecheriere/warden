@@ -3,6 +3,7 @@
 mod agent;
 mod client;
 mod config;
+mod doctor;
 mod http;
 mod sign;
 mod ssh;
@@ -17,6 +18,7 @@ use clap::{Parser, Subcommand};
 use ssh_key::rand_core::OsRng;
 use ssh_key::{Algorithm, Certificate, PrivateKey};
 use url::Url;
+use warden_broker_proto::doctor::EXIT_ALL_PASSED;
 use warden_broker_proto::signing::{Audience, PROTOCOL};
 use warden_broker_proto::{
     Access, AgentName, ApiGrant, CreateRequest, Goal, GrantAccess, GrantView, Id, RequestStatus,
@@ -140,6 +142,11 @@ enum Cmd {
         #[arg(long)]
         fail: bool,
     },
+    /// Check this machine's setup without changing anything: server reachable,
+    /// audience pinned, key available, agent accepted. Exits 0 when every check
+    /// passed, 1 when one failed, 7 when none failed but one could not be
+    /// checked.
+    Doctor,
     /// Show local grants and the broker's view of this agent's grants.
     Status,
     /// Revoke a grant on the broker and stop its local agent.
@@ -219,8 +226,10 @@ impl std::error::Error for Exit {}
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
-    let now = unix_now();
-    cleanup_state(now);
+    // Doctor changes nothing, so not even the housekeeping runs before it.
+    if !matches!(cli.command, Cmd::Doctor) {
+        cleanup_state(unix_now());
+    }
     match run(cli.command).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
@@ -317,6 +326,16 @@ async fn run(cmd: Cmd) -> Result<()> {
             run_http(call, include, fail).await
         }
         Cmd::Ssh { target, command } => run_ssh(&target, &command),
+        Cmd::Doctor => {
+            let report = doctor::examine(&doctor::Live).await;
+            print!("{}", report.render());
+            let code = report.exit_code();
+            ensure!(
+                code == EXIT_ALL_PASSED,
+                Exit::new(code, "doctor: not every check passed; see the report above")
+            );
+            Ok(())
+        }
         Cmd::Status => status().await,
         Cmd::Revoke { grant } => revoke(&grant).await,
     }
@@ -343,11 +362,7 @@ fn local_time(unix: i64) -> String {
 
 fn client() -> Result<(Config, Client)> {
     let config = config::load()?;
-    let auth = match config.signer()? {
-        Some(signer) => Auth::Signed(Box::new(signer)),
-        None => Auth::Bearer(config::agent_key(&config)?),
-    };
-    let client = Client::new(&config.server, auth)?;
+    let client = Client::for_config(&config)?;
     Ok((config, client))
 }
 

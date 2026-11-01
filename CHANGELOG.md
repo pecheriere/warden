@@ -6,6 +6,16 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `warden-server doctor` and `warden doctor` check a setup and report each
+  check as pass, fail or could-not-check, with what to do. They exit 0 when
+  every check passed, 1 when one failed and 7 when none failed but one could
+  not be checked. A working setup exits 7, since some checks can only be done
+  by hand. They are read-only: only `warden-server doctor
+  --send-test-notification` sends anything, one message through each channel
+  to the owner's phone.
+
 ## [0.8.1] - 2026-11-01
 
 The `v0.8.0` tag was created by mistake, before the version bump, and was

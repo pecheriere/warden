@@ -57,6 +57,7 @@ macro_rules! string_newtype {
     };
 }
 
+pub mod doctor;
 pub mod signing;
 
 /// 16 bytes of OS randomness as 32 lowercase hex characters.

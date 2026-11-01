@@ -58,6 +58,7 @@ environment as the server. The image's default command is `serve`.
 | Command | What it does | Needs |
 |---------|--------------|-------|
 | `serve` | Runs the agent API, the approval UI and, when configured, the SSH relay. | All of the above. |
+| `doctor [--send-test-notification]` | Checks the configuration and says what to fix. See [Checking a setup](#checking-a-setup). | The same environment as `serve`. |
 | `enroll` | Prints a one-time code (single use, valid 10 minutes) and the URL of the enrollment page, where the owner creates a passkey. | `WARDEN_DB_PATH`, `WARDEN_AUDIT_PATH`, `WARDEN_PUBLIC_URL` |
 | `passkey list` | Lists enrolled passkeys: id, label, creation time. | `WARDEN_DB_PATH` |
 | `passkey remove <id>` | Removes a passkey. | `WARDEN_DB_PATH`, `WARDEN_AUDIT_PATH` |
@@ -71,6 +72,66 @@ environment as the server. The image's default command is `serve`.
 
 Agent names match `^[a-z0-9][a-z0-9-]{0,31}$`. A key belongs to one agent,
 and a revoked agent keeps its key: make a new key after a revocation.
+
+### Checking a setup
+
+`warden-server doctor` reports each check as `pass`, `FAIL` or
+`COULD NOT CHECK`, says what to do about anything that did not pass, and ends
+by saying what the run did. Run it in the server's container, as the broker's
+user, so that it sees the same network and files:
+
+```sh
+docker compose exec warden /warden-server doctor
+```
+
+| Exit code | Meaning |
+|-----------|---------|
+| 0 | Every check passed. |
+| 1 | At least one check failed. |
+| 2 | Wrong arguments. |
+| 7 | No check failed, but at least one could not be checked. |
+
+warden cannot see everything, so **a working deployment exits 7, not 0**: read
+the `COULD NOT CHECK` lines and do each by hand. A check that could not run
+never counts as passed.
+
+| Check | Passes when | Reports `COULD NOT CHECK` when |
+|-------|-------------|--------------------------------|
+| `config` | The settings are present and valid. A failure names the first bad setting and links this page; there may be more. | Never. When it fails, everything below except `tailscale.*` is not checked. |
+| `connect.reachable` | Connect answers. | The vault name is unusable. |
+| `connect.token` | Connect accepts the token. | Connect gave no useful answer. |
+| `connect.vault` | The token can see `WARDEN_OP_VAULT`. | Connect gave no useful answer, or refused the token. |
+| `connect.token-read-only` | Never. | Always: Connect does not report a token's permissions, and doctor will not attempt a write. Check how the token was created. |
+| `ssh-ca` | The CA key loads, or there is no CA item and no certificate target needs one. | Connect or the vault is not usable, or a target item cannot be read. |
+| `notify` | Never. | Without `--send-test-notification`: nothing was sent. |
+| `notify.<channel>` | With the flag: the channel accepts the message. | Never. |
+| `notify.delivery` | Never. | With the flag: warden sees that a channel accepted the message, not that it reached the phone. Confirm that it did. |
+| `passkey` | At least one passkey is enrolled. | The database exists but cannot be read. |
+| `listener.api`, `listener.approval`, `listener.relay` | A process accepts TCP connections on the address, and the address is not `0.0.0.0` or `::`. This does not prove the process is warden. The relay is checked only when it is on. | The connection neither succeeds nor is refused. |
+| `data.directory` | The database's directory belongs to doctor's user, with no group or other permissions (0700). | The path cannot be read. |
+| `data.database`, `data.audit-log`, `data.audience` | Each is a regular file (not a symbolic link) of doctor's user, not writable by group or others. | The path cannot be read. |
+| `data.relay-host-key` | The same, with no group or other permissions (0600). Only when the relay is on. | The path cannot be read. |
+| `tailscale.funnel-off`, `tailscale.serve` | Never. | Always: from inside its container warden cannot see Tailscale's configuration. The output says what to run on the host. |
+
+What doctor does and does not do:
+
+- **It is read-only by default.** It creates and migrates nothing, and opens
+  the database read-only. The one exception is outside warden's control: on a
+  database in WAL mode, SQLite may create the `-shm` file that readers share.
+  Its reads of the vault, the CA item included, appear in 1Password's usage
+  reports like any other.
+- **`--send-test-notification` reaches the owner's phone.** It sends one message
+  through every channel in `WARDEN_NOTIFY`, not only the first, so that a broken
+  fallback shows up. The message says it is a test.
+- **It writes nothing to the audit log, even with the flag.** The commands that
+  change an agent or a passkey (`agent add`, `agent revoke`, `passkey remove`)
+  are audited. Those that only read (`agent list`, `passkey list`,
+  `audit verify`) are not. Doctor is one of those: a test message changes no
+  state and decides no access, and doctor has to work when the audit log is
+  what is broken.
+- **It never prints a secret.** It quotes no response body, removes the
+  configured secrets from everything it prints in case an upstream echoed one
+  into an error, and replaces control characters.
 
 ## Server data
 
@@ -113,11 +174,34 @@ cargo install --locked --git https://github.com/pecheriere/warden --tag v0.8.1 w
 | `warden request cancel <id>` | Withdraws one of this agent's pending requests. |
 | `warden ssh <target> [-- <command>…]` | Runs `ssh` through the active grant for the target that stays valid longest. |
 | `warden http <secret> <METHOD> <url> [-H 'Name: value']… [-d <body> \| --data-file <path\|->] [-i] [--fail]` | Makes one HTTPS call through an `api` grant. |
+| `warden doctor` | Checks this machine's setup and says what to fix. See [Checking an agent machine](#checking-an-agent-machine). |
 | `warden status` | Lists the grants on this machine and the broker's view of this agent's grants. |
 | `warden revoke <grant>` | Revokes a grant on the broker and stops its local `ssh-agent`. |
 
 A window is `15m`, `30m`, `1h` or `4h`. Exit codes are in
 [Agent usage](agent-usage.md#exit-codes).
+
+### Checking an agent machine
+
+`warden doctor` reports each check as `pass`, `FAIL` or `COULD NOT CHECK`. It
+exits 0 when every check passed, 1 when one failed, 2 for wrong arguments, and
+7 when none failed but one could not be checked.
+
+| Check | Passes when | Reports `COULD NOT CHECK` when |
+|-------|-------------|--------------------------------|
+| `config` | The configuration file is usable. | Never. |
+| `server.reachable` | The broker answers `GET /v1/info`. | There is no usable configuration. |
+| `audience` | The broker reports the audience pinned at login. Another one is a failure. | The broker did not answer, or the agent uses a bearer key, which pins no audience. |
+| `protocol` | The broker accepts signed requests. Only for a key-signed agent, when the broker answered. | Never. |
+| `ssh-agent.key` or `bearer-key` | The `ssh-agent` holds the signing key, or the bearer key is available. | There is no usable configuration. |
+| `broker.accepts-agent` | The broker accepts one authenticated `GET /v1/grants`. A 4xx answer is a failure. | The credential is not available, or the broker is unreachable or answers 5xx. |
+| `version` | Never. | Always: the broker does not publish its version. Doctor prints the CLI's, to compare with `warden-server --version`. |
+
+Because of `version`, **a working machine exits 7, not 0**.
+
+It changes nothing on the machine: unlike every other command, it does not even
+clean up ended grants first. The broker handles its `GET /v1/grants` like any
+other authenticated call, which for a signed call means recording the nonce.
 
 ### CLI environment and files
 

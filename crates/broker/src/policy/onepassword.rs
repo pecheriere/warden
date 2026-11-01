@@ -32,6 +32,10 @@ const MIN_CREDENTIAL_CHARS: usize = 12;
 const CA_FIELD_ID: &str = "private_key";
 const TIMEOUT: Duration = Duration::from_secs(5);
 
+mod probe;
+
+pub use probe::{CaProbe, VaultProbe};
+
 #[derive(Deserialize)]
 struct Vault {
     id: String,
@@ -156,13 +160,8 @@ impl OnePasswordConnect {
         })
     }
 
-    /// Like [`Self::get_bytes`], but `Ok(None)` for a 404, so that callers
-    /// can tell "not found" from a failure.
-    async fn get_found(
-        &self,
-        segments: &[&str],
-        query: &[(&str, &str)],
-    ) -> Result<Option<Zeroizing<Vec<u8>>>, PolicyError> {
+    /// The URL of an API path on the Connect server.
+    fn url(&self, segments: &[&str], query: &[(&str, &str)]) -> Result<Url, PolicyError> {
         let mut url = self.base.clone();
         url.path_segments_mut()
             .map_err(|()| PolicyError::Unavailable("Connect URL cannot be a base".into()))?
@@ -171,6 +170,17 @@ impl OnePasswordConnect {
         if !query.is_empty() {
             url.query_pairs_mut().extend_pairs(query);
         }
+        Ok(url)
+    }
+
+    /// Like [`Self::get_bytes`], but `Ok(None)` for a 404, so that callers
+    /// can tell "not found" from a failure.
+    async fn get_found(
+        &self,
+        segments: &[&str],
+        query: &[(&str, &str)],
+    ) -> Result<Option<Zeroizing<Vec<u8>>>, PolicyError> {
+        let url = self.url(segments, query)?;
         let mut response = self
             .client
             .get(url)
@@ -233,13 +243,22 @@ impl OnePasswordConnect {
         Ok(id)
     }
 
+    /// A name with a quote or backslash cannot go into a Connect filter.
+    fn vault_name_is_usable(&self) -> bool {
+        !self.vault.contains(['"', '\\'])
+    }
+
+    fn vault_filter(&self) -> String {
+        format!("name eq \"{}\"", self.vault)
+    }
+
     async fn resolve_vault(&self) -> Result<String, PolicyError> {
-        if self.vault.contains(['"', '\\']) {
+        if !self.vault_name_is_usable() {
             return Err(PolicyError::Unavailable(
                 "vault name contains unsupported characters".into(),
             ));
         }
-        let filter = format!("name eq \"{}\"", self.vault);
+        let filter = self.vault_filter();
         let vaults: Vec<Vault> = self.get(&["v1", "vaults"], &[("filter", &filter)]).await?;
         let vault = vaults
             .into_iter()

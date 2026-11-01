@@ -775,6 +775,20 @@ secret, so make it long and random. Details and the automation are in
 
 Run these on the warden host, in `/srv/warden`.
 
+Check the setup at any step with
+[`warden-server doctor`](configuration.md#checking-a-setup). It changes nothing,
+and says what to fix and what it could not check, such as Funnel:
+
+```sh
+docker compose exec warden /warden-server doctor
+# Also sends a test message through every channel, to the owner's phone:
+docker compose exec warden /warden-server doctor --send-test-notification
+```
+
+It exits 7 on a working deployment, because some checks can only be done by
+hand. On an agent machine,
+[`warden doctor`](configuration.md#checking-an-agent-machine) does the same.
+
 1. **Enroll the owner's passkey**, on the phone:
 
    ```sh

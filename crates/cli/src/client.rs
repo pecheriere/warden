@@ -17,14 +17,14 @@ use reqwest::{Method, Response, StatusCode};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use url::{Position, Url};
+use warden_broker_proto::doctor::sanitize;
 use warden_broker_proto::{
     ApiError, CreateRequest, CreatedResponse, GrantView, Id, InfoResponse, ProxyRequest,
     ProxyResponse, RequestStatus,
 };
 use zeroize::Zeroizing;
 
-use crate::config::check_server_url;
-use crate::http::sanitize;
+use crate::config::{self, Config, check_server_url};
 use crate::sign::Signer;
 
 /// Longest the server may hold a status request (`wait`), in seconds.
@@ -128,6 +128,18 @@ impl Client {
             base: as_directory(base),
             auth,
         })
+    }
+
+    /// A client for the broker of `config`, authenticating as its agent.
+    ///
+    /// # Errors
+    /// If the signer or the bearer key is not available, or see [`Self::new`].
+    pub fn for_config(config: &Config) -> Result<Self> {
+        let auth = match config.signer()? {
+            Some(signer) => Auth::Signed(Box::new(signer)),
+            None => Auth::Bearer(config::agent_key(config)?),
+        };
+        Self::new(&config.server, auth)
     }
 
     fn url(&self, path: &str) -> Result<Url, CallError> {
