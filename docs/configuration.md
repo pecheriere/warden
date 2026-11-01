@@ -101,7 +101,7 @@ refused with `401`.
 the OpenSSH client tools (`ssh`, `ssh-agent`, `ssh-add`):
 
 ```sh
-cargo install --locked --git https://github.com/pecheriere/warden --tag v0.7.0 warden-broker-cli
+cargo install --locked --git https://github.com/pecheriere/warden --tag v0.8.1 warden-broker-cli
 ```
 
 | Command | What it does |
