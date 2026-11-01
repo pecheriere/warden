@@ -33,8 +33,9 @@ pub struct Target {
 }
 
 impl Target {
-    /// A fresh CA, certificate and token, for `https://localhost:<port>`.
-    pub fn generate(port: u16) -> Result<Self> {
+    /// A fresh CA, certificate and token, for `origin`, which must be on
+    /// `localhost`, the name the certificate holds.
+    pub fn generate(origin: Url) -> Result<Self> {
         let (ca_pem, chain, key) = certificates()?;
         let config = ServerConfig::builder_with_provider(Arc::new(aws_lc_rs::default_provider()))
             .with_safe_default_protocol_versions()
@@ -45,16 +46,11 @@ impl Target {
         let mut token = [0_u8; 32];
         getrandom::fill(&mut token).context("generating the demo token")?;
         Ok(Self {
-            origin: Url::parse(&format!("https://localhost:{port}"))?,
+            origin,
             ca_pem,
             tls: TlsAcceptor::from(Arc::new(config)),
             secret: Zeroizing::new(format!("demo-token-{}", hex::encode(token))),
         })
-    }
-
-    /// `https://localhost:<port>/`.
-    pub const fn origin_url(&self) -> &Url {
-        &self.origin
     }
 
     /// The token the broker will send.

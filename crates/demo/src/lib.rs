@@ -264,12 +264,18 @@ impl Demo {
         let clock = Arc::new(SystemClock);
         let (notifier, doorbells) = TerminalNotifier::new();
 
-        let target = upstream::Target::generate(listeners.target.local_addr()?.port())?;
+        // Built from the port alone, before the demo API's keys exist: what the
+        // banner prints has no path from the certificate material.
+        let target_origin = Url::parse(&format!(
+            "https://localhost:{}",
+            listeners.target.local_addr()?.port()
+        ))?;
+        let target_url = target_origin.join("v1/hello")?;
+        let target = upstream::Target::generate(target_origin)?;
         let backend = Arc::new(DemoBackend::new(
             target.policy(SECRET_NAME)?,
             target.secret(),
         ));
-        let target_url = target.origin_url().join("v1/hello")?;
 
         let requests = Requests::new(
             pool.clone(),
