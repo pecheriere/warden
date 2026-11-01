@@ -211,29 +211,32 @@ fn serve_all(
     (servers, stop)
 }
 
-/// A running demo: the broker's two listeners and the demo API, all on
-/// loopback, with its data in a temporary directory removed by
-/// [`Demo::finish`] (or on drop).
-pub struct Demo {
+/// Everything the demo sets up before the demo API has any keys: its directory,
+/// its database, its listeners, what it tells the owner. The banner is printed
+/// from this, so no key can reach the terminal.
+pub struct Prepared {
     dir: TempDir,
     pool: SqlitePool,
+    config: Arc<Config>,
+    audit: Arc<AuditLog>,
+    passkeys: Arc<Passkeys>,
+    listeners: Listeners,
     approval_url: Url,
     api_url: Url,
+    target_origin: Url,
     target_url: Url,
     enrollment_code: String,
     agent_env: PathBuf,
-    doorbells: mpsc::UnboundedReceiver<Doorbell>,
-    servers: JoinSet<Result<()>>,
-    _stop: watch::Sender<bool>,
 }
 
-impl Demo {
-    /// Create the throwaway keys and data, and start serving.
+impl Prepared {
+    /// Create the throwaway directory, database, agent and enrollment code,
+    /// and bind the listeners. Nothing is served yet.
     ///
     /// # Errors
-    /// If the temporary directory, the database, a key or a listener cannot
-    /// be set up.
-    pub async fn start() -> Result<Self> {
+    /// If the temporary directory, the database or a listener cannot be set
+    /// up.
+    pub async fn new() -> Result<Self> {
         let dir = tokio::task::spawn_blocking(|| {
             tempfile::Builder::new().prefix("warden-demo-").tempdir()
         })
@@ -252,6 +255,11 @@ impl Demo {
         // `localhost`, not 127.0.0.1: WebAuthn needs a domain as relying party.
         let approval_url = Url::parse(&format!("http://localhost:{}/", approval_addr.port()))?;
         let api_url = Url::parse(&format!("http://{api_addr}/"))?;
+        let target_origin = Url::parse(&format!(
+            "https://localhost:{}",
+            listeners.target.local_addr()?.port()
+        ))?;
+        let target_url = target_origin.join("v1/hello")?;
         let config = Arc::new(demo_config(
             dir.path(),
             api_addr,
@@ -262,30 +270,6 @@ impl Demo {
         let pool = store::open(&config.db_path).await?;
         let audit = Arc::new(AuditLog::open(&config.audit_path).await?);
         let clock = Arc::new(SystemClock);
-        let (notifier, doorbells) = TerminalNotifier::new();
-
-        // Built from the port alone, before the demo API's keys exist: what the
-        // banner prints has no path from the certificate material.
-        let target_origin = Url::parse(&format!(
-            "https://localhost:{}",
-            listeners.target.local_addr()?.port()
-        ))?;
-        let target_url = target_origin.join("v1/hello")?;
-        let target = upstream::Target::generate(target_origin)?;
-        let backend = Arc::new(DemoBackend::new(
-            target.policy(SECRET_NAME)?,
-            target.secret(),
-        ));
-
-        let requests = Requests::new(
-            pool.clone(),
-            audit.clone(),
-            backend.clone(),
-            Arc::new(notifier),
-            config.public_url.clone(),
-            clock.clone(),
-            None,
-        );
         let passkeys = Arc::new(
             Passkeys::new(
                 pool.clone(),
@@ -305,6 +289,106 @@ impl Demo {
             .context("adding the demo agent")?;
         let agent_env = write_agent_env(dir.path(), &api_url, agent_key.expose()).await?;
 
+        Ok(Self {
+            dir,
+            pool,
+            config,
+            audit,
+            passkeys,
+            listeners,
+            approval_url,
+            api_url,
+            target_origin,
+            target_url,
+            enrollment_code,
+            agent_env,
+        })
+    }
+
+    /// What to print at startup: that this is a demo, and the exact steps.
+    #[must_use]
+    pub fn banner(&self) -> String {
+        let enroll = self
+            .approval_url
+            .join("enroll")
+            .map_or_else(|_| self.approval_url.to_string(), |url| url.to_string());
+        format!(
+            "\n\
+             ================================================================\n\
+             \x20 WARDEN DEMO. THIS IS NOT SECURE FOR REAL USE.\n\
+             \x20 Everyone on this machine counts as the owner, and everything\n\
+             \x20 below is throwaway. Do not put real secrets near it.\n\
+             \x20 A real deployment works differently: see docs/deployment.md.\n\
+             ================================================================\n\
+             \n\
+             Listening on loopback only. Data in {dir} (deleted when this stops).\n\
+             \n\
+             1. Enroll a passkey in your browser. Use this exact address:\n\
+             \x20    {enroll}\n\
+             \x20  Enrollment code (works once, for 10 minutes): {code}\n\
+             \n\
+             2. In a second terminal, in the same directory, be the agent:\n\
+             \x20    source {env}\n\
+             \x20    target/debug/warden request api {SECRET_NAME} --for 15m --goal \"try the warden demo\"\n\
+             \x20  It waits for your decision. The approval link appears here.\n\
+             \n\
+             3. Approve with your passkey on that page. Then, as the agent:\n\
+             \x20    target/debug/warden http {SECRET_NAME} GET {target}\n\
+             \x20  The demo API received the secret. The agent sees [REDACTED].\n\
+             \n\
+             4. Read what happened:\n\
+             \x20    cat \"$WARDEN_DEMO_DIR/audit.jsonl\"\n\
+             \x20  Or open {history}\n\
+             \n\
+             Press Ctrl-C here to stop and delete everything.\n",
+            dir = self.dir.path().display(),
+            code = self.enrollment_code,
+            env = shell_quote(&self.agent_env.display().to_string()),
+            target = self.target_url,
+            history = self
+                .approval_url
+                .join("history")
+                .map_or_else(|_| self.approval_url.to_string(), |url| url.to_string()),
+        )
+    }
+
+    /// Generate the demo API's keys and token, and start serving.
+    ///
+    /// # Errors
+    /// If a key cannot be generated or the broker cannot be set up.
+    pub async fn serve(self) -> Result<Demo> {
+        let Self {
+            dir,
+            pool,
+            config,
+            audit,
+            passkeys,
+            listeners,
+            approval_url,
+            api_url,
+            target_origin,
+            target_url,
+            enrollment_code,
+            agent_env,
+        } = self;
+        let (api_addr, approval_addr) = (config.api_listen, config.approval_listen);
+        let clock = Arc::new(SystemClock);
+        let (notifier, doorbells) = TerminalNotifier::new();
+
+        let target = upstream::Target::generate(target_origin)?;
+        let backend = Arc::new(DemoBackend::new(
+            target.policy(SECRET_NAME)?,
+            target.secret(),
+        ));
+        let requests = Requests::new(
+            pool.clone(),
+            audit.clone(),
+            backend.clone(),
+            Arc::new(notifier),
+            config.public_url.clone(),
+            clock.clone(),
+            None,
+        );
         let audience = audience::load_or_create(config.audience_path.clone()).await?;
         let state = AppState {
             pool: pool.clone(),
@@ -328,7 +412,7 @@ impl Demo {
 
         let (servers, stop) = serve_all(listeners, api, approval, target, requests);
 
-        Ok(Self {
+        Ok(Demo {
             dir,
             pool,
             approval_url,
@@ -340,6 +424,32 @@ impl Demo {
             servers,
             _stop: stop,
         })
+    }
+}
+
+/// A running demo: the broker's two listeners and the demo API, all on
+/// loopback, with its data in a temporary directory removed by
+/// [`Demo::finish`] (or on drop).
+pub struct Demo {
+    dir: TempDir,
+    pool: SqlitePool,
+    approval_url: Url,
+    api_url: Url,
+    target_url: Url,
+    enrollment_code: String,
+    agent_env: PathBuf,
+    doorbells: mpsc::UnboundedReceiver<Doorbell>,
+    servers: JoinSet<Result<()>>,
+    _stop: watch::Sender<bool>,
+}
+
+impl Demo {
+    /// [`Prepared::new`], then [`Prepared::serve`].
+    ///
+    /// # Errors
+    /// As those.
+    pub async fn start() -> Result<Self> {
+        Prepared::new().await?.serve().await
     }
 
     /// The approval UI, as the browser must open it: `http://localhost:<port>/`.
@@ -398,53 +508,6 @@ impl Demo {
                 Some(Ok(Ok(()))) | None => bail!("a demo server stopped unexpectedly"),
             },
         }
-    }
-
-    /// What to print at startup: that this is a demo, and the exact steps.
-    #[must_use]
-    pub fn banner(&self) -> String {
-        let enroll = self
-            .approval_url
-            .join("enroll")
-            .map_or_else(|_| self.approval_url.to_string(), |url| url.to_string());
-        format!(
-            "\n\
-             ================================================================\n\
-             \x20 WARDEN DEMO. THIS IS NOT SECURE FOR REAL USE.\n\
-             \x20 Everyone on this machine counts as the owner, and everything\n\
-             \x20 below is throwaway. Do not put real secrets near it.\n\
-             \x20 A real deployment works differently: see docs/deployment.md.\n\
-             ================================================================\n\
-             \n\
-             Listening on loopback only. Data in {dir} (deleted when this stops).\n\
-             \n\
-             1. Enroll a passkey in your browser. Use this exact address:\n\
-             \x20    {enroll}\n\
-             \x20  Enrollment code (works once, for 10 minutes): {code}\n\
-             \n\
-             2. In a second terminal, in the same directory, be the agent:\n\
-             \x20    source {env}\n\
-             \x20    target/debug/warden request api {SECRET_NAME} --for 15m --goal \"try the warden demo\"\n\
-             \x20  It waits for your decision. The approval link appears here.\n\
-             \n\
-             3. Approve with your passkey on that page. Then, as the agent:\n\
-             \x20    target/debug/warden http {SECRET_NAME} GET {target}\n\
-             \x20  The demo API received the secret. The agent sees [REDACTED].\n\
-             \n\
-             4. Read what happened:\n\
-             \x20    cat \"$WARDEN_DEMO_DIR/audit.jsonl\"\n\
-             \x20  Or open {history}\n\
-             \n\
-             Press Ctrl-C here to stop and delete everything.\n",
-            dir = self.dir.path().display(),
-            code = self.enrollment_code,
-            env = shell_quote(&self.agent_env.display().to_string()),
-            target = self.target_url,
-            history = self
-                .approval_url
-                .join("history")
-                .map_or_else(|_| self.approval_url.to_string(), |url| url.to_string()),
-        )
     }
 
     /// Stop serving, verify the audit log's hash chain and delete the

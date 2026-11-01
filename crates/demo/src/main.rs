@@ -2,8 +2,9 @@
 
 use anyhow::{Context as _, Result};
 use clap::Parser;
+use tokio::signal::unix::{SignalKind, signal};
 use tracing_subscriber::EnvFilter;
-use warden_demo::Demo;
+use warden_demo::Prepared;
 
 /// A throwaway warden on this machine, to try the approval flow.
 ///
@@ -14,15 +15,18 @@ use warden_demo::Demo;
 #[command(version)]
 struct Cli {}
 
-/// Resolves on SIGTERM or Ctrl-C.
-async fn termination() -> Result<()> {
-    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        .context("installing the SIGTERM handler")?;
-    tokio::select! {
-        _ = term.recv() => {}
-        result = tokio::signal::ctrl_c() => result.context("installing the Ctrl-C handler")?,
-    }
-    Ok(())
+/// Installs the handlers for SIGTERM and Ctrl-C at once, so a signal from now
+/// on deletes the data instead of killing the process, and returns a future
+/// that resolves on either.
+fn termination() -> Result<impl Future<Output = ()>> {
+    let mut term = signal(SignalKind::terminate()).context("installing the SIGTERM handler")?;
+    let mut interrupt = signal(SignalKind::interrupt()).context("installing the Ctrl-C handler")?;
+    Ok(async move {
+        tokio::select! {
+            _ = term.recv() => {}
+            _ = interrupt.recv() => {}
+        }
+    })
 }
 
 #[tokio::main]
@@ -33,17 +37,15 @@ async fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
-    let mut demo = Demo::start().await?;
-    println!("{}", demo.banner());
-
-    let stop = termination();
+    let stop = termination()?;
     tokio::pin!(stop);
+    let prepared = Prepared::new().await?;
+    println!("{}", prepared.banner());
+    let mut demo = prepared.serve().await?;
+
     loop {
         tokio::select! {
-            result = &mut stop => {
-                result?;
-                break;
-            }
+            () = &mut stop => break,
             bell = demo.next_doorbell() => {
                 let bell = bell?;
                 println!("\n>>> {}: {}\n>>> Open: {}\n", bell.title, bell.message, bell.url);
