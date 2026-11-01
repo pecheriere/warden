@@ -97,8 +97,11 @@ refused with `401`.
 
 ## CLI commands
 
-`warden` is the agent's client. Install it with Rust 1.99 or later; it needs
-the OpenSSH client tools (`ssh`, `ssh-agent`, `ssh-add`):
+`warden` is the agent's client. It needs the OpenSSH client tools (`ssh`,
+`ssh-agent`, `ssh-add`). Releases after v0.8.1 attach attested binaries:
+[Agent usage](agent-usage.md#one-time-setup) has the commands to download and
+verify one. For v0.8.1 and earlier, or on another platform, build it with Rust
+1.99 or later:
 
 ```sh
 cargo install --locked --git https://github.com/pecheriere/warden --tag v0.8.1 warden-broker-cli

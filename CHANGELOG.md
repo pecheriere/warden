@@ -6,6 +6,13 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Releases attach `warden` CLI binaries for macOS arm64, Linux amd64 and
+  Linux arm64, so the CLI installs without Rust. The Linux binaries are
+  fully static. Each `.tar.gz` has a build-provenance attestation to check
+  with `gh attestation verify`.
+
 ## [0.8.1] - 2026-11-01
 
 The `v0.8.0` tag was created by mistake, before the version bump, and was

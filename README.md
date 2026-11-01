@@ -151,7 +151,8 @@ and the reasons behind it; follow it for a real setup.
    # on the server, with the agent's public key line
    docker compose exec warden /warden-server agent add build-agent \
      --public-key "ssh-ed25519 AAAA… build-agent"
-   # on the agent machine
+   # on the agent machine (Rust 1.99 or later; releases after v0.8.1 also
+   # attach binaries, see Agent usage)
    cargo install --locked --git https://github.com/pecheriere/warden --tag v0.8.1 warden-broker-cli
    warden login --server https://warden-api.example.ts.net --agent build-agent \
      --ssh-key ~/.ssh/build-agent.pub
