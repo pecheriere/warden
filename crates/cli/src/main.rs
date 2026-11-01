@@ -3,6 +3,7 @@
 mod agent;
 mod client;
 mod config;
+mod guidance;
 mod http;
 mod sign;
 mod ssh;
@@ -736,7 +737,7 @@ async fn request_grant(
         }
         other => {
             let code = terminal_exit_code(&other).unwrap_or(EXIT_ERROR);
-            Err(Exit::new(code, format!("request {}", status_word(&other))).into())
+            Err(Exit::new(code, guidance::request_ended(&other)).into())
         }
     }
 }
@@ -845,7 +846,11 @@ where
         match poll().await {
             Ok(status) if terminal_exit_code(&status).is_some() => return Ok(status),
             Ok(_) => delay = first_delay,
-            Err(CallError::Refused(message) | CallError::Revoked(message)) => return Err(message),
+            Err(
+                CallError::Refused(message)
+                | CallError::Revoked(message)
+                | CallError::Expired(message),
+            ) => return Err(message),
             Err(CallError::Unavailable(message)) => {
                 let pause = delay.min(left);
                 eprintln!("warden: {message}; retrying in {} ms", pause.as_millis());
@@ -986,11 +991,7 @@ async fn install_grant(
 fn run_ssh(target: &TargetName, command: &[String]) -> Result<()> {
     let grants = agent::grants_dir()?;
     let Some(grant) = ssh::active_grant(&grants, target, unix_now()) else {
-        return Err(Exit::new(
-            EXIT_NO_GRANT,
-            format!("no active grant for {target}; run warden request ssh {target} --user <user> --for <window> --goal <text>"),
-        )
-        .into());
+        return Err(Exit::new(EXIT_NO_GRANT, guidance::no_ssh_grant(target)).into());
     };
     let args = ssh::ssh_args(&grant, command)?;
     Err(ssh::exec(&args)).context("cannot run ssh")
@@ -1010,11 +1011,7 @@ async fn run_http(call: HttpCall, include: bool, fail: bool) -> Result<()> {
     let secret = &call.secret;
     let active = http::active(secret, unix_now())?;
     if active.is_empty() {
-        return Err(Exit::new(
-            EXIT_NO_GRANT,
-            format!("no active api grant for {secret}; run warden request api {secret} --for <window> --goal <text>"),
-        )
-        .into());
+        return Err(Exit::new(EXIT_NO_GRANT, guidance::no_api_grant(secret)).into());
     }
     let body = http::read_body(call.data.as_deref(), call.data_file.as_deref())?;
     let proxy = http::proxy_request(&call.method, &call.url, call.headers, body.as_deref())?;
@@ -1037,10 +1034,16 @@ async fn run_http(call: HttpCall, include: bool, fail: bool) -> Result<()> {
             http::discard(&grant.grant_id)?;
             return Err(Exit::new(
                 EXIT_REVOKED,
-                format!(
-                    "grant {} for {secret} was revoked on the broker ({message}); request access again with warden request api {secret} --for <window> --goal <text>",
-                    grant.grant_id
-                ),
+                guidance::api_grant_revoked(&grant.grant_id, secret, &message),
+            )
+            .into());
+        }
+        Err(CallError::Expired(message)) => {
+            // The local clock thought it live: the record is dead weight.
+            http::discard(&grant.grant_id)?;
+            return Err(Exit::new(
+                EXIT_NO_GRANT,
+                guidance::api_grant_expired(&grant.grant_id, secret, &message),
             )
             .into());
         }

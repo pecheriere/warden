@@ -6,6 +6,23 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `warden-server agent add` prints what to run on the agent's machine, on
+  stderr: the exact `warden login` command, with the broker's audience for a
+  key-signed agent. `--server <url>` gives it the agent API's URL. A bearer key
+  is still printed once, alone on stdout, and never in these instructions.
+- `docs/agent-instructions.md`, a block to paste into an agent's `AGENTS.md` or
+  `CLAUDE.md`, and `docs/agent-examples.md`, with an SSH deployment and an API
+  call end to end.
+
+### Changed
+
+- `warden request` and `warden ssh`/`warden http` say what to do next when a
+  request is denied, expires or is revoked, or there is no active grant.
+- `warden http` now exits 5, not 1, when the broker says the grant has expired,
+  and removes its local record.
+
 ## [0.8.1] - 2026-11-01
 
 The `v0.8.0` tag was created by mistake, before the version bump, and was

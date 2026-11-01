@@ -13,7 +13,7 @@ use tracing_subscriber::EnvFilter;
 use url::Url;
 use warden_broker::approval::passkeys::{self, Passkeys};
 use warden_broker::audit::AuditLog;
-use warden_broker::config::{Config, parse_public_url};
+use warden_broker::config::{Config, DEFAULT_AUDIENCE_PATH, parse_public_url};
 use warden_broker::health;
 use warden_broker::identity::TailscaleServeIdentity;
 use warden_broker::notify::{ChannelSettings, Fallback, Notifier};
@@ -22,7 +22,7 @@ use warden_broker::proxy::CallSlots;
 use warden_broker::relay::host_key::RelayHostKey;
 use warden_broker::relay::{RelayEndpoint, RelayLimits, RelayServer, host_key};
 use warden_broker::requests::{self, Clock as _, Requests, SystemClock};
-use warden_broker::{AppState, agents, audience, audit, build_routers, store};
+use warden_broker::{AppState, agents, audience, audit, build_routers, enrollment, store};
 use warden_broker_proto::AgentName;
 
 #[derive(Parser)]
@@ -68,11 +68,15 @@ enum AuditCommand {
 
 #[derive(Subcommand)]
 enum AgentCommand {
-    /// Create an agent. With --public-key it signs its requests with that
-    /// SSH key and no bearer key is made; without, its bearer key is printed
-    /// once.
+    /// Create an agent and print the command to run on its machine. With
+    /// --public-key it signs its requests with that SSH key and no bearer
+    /// key is made; without, its bearer key is printed once, on stdout.
     Add {
         name: AgentName,
+        /// The agent API's URL, as agents reach it (not the approval UI's),
+        /// to put in the printed command.
+        #[arg(long, value_name = "URL", value_parser = enrollment::parse_agent_api_url)]
+        server: Option<Url>,
         /// The agent's OpenSSH public key line (ssh-ed25519 or
         /// ecdsa-sha2-nistp256), as in its .pub file.
         #[arg(long)]
@@ -103,6 +107,12 @@ fn audit_path() -> Result<PathBuf> {
         Some(path) if !path.is_empty() => Ok(path.into()),
         _ => bail!("missing required environment variable WARDEN_AUDIT_PATH"),
     }
+}
+
+fn audience_path() -> PathBuf {
+    std::env::var_os("WARDEN_AUDIENCE_PATH")
+        .filter(|path| !path.is_empty())
+        .map_or_else(|| DEFAULT_AUDIENCE_PATH.into(), PathBuf::from)
 }
 
 fn public_url() -> Result<Url> {
@@ -142,6 +152,7 @@ async fn main() -> Result<()> {
     match command {
         AgentCommand::Add {
             name,
+            server,
             public_key: None,
         } => {
             let audit = open_audit().await?;
@@ -150,9 +161,11 @@ async fn main() -> Result<()> {
                 .with_context(|| format!("adding agent {name}"))?;
             eprintln!("warning: this key is shown once and cannot be recovered; store it now.");
             println!("{}", key.expose());
+            eprintln!("{}", enrollment::bearer_next_steps(&name, server.as_ref()));
         }
         AgentCommand::Add {
             name,
+            server,
             public_key: Some(line),
         } => {
             let key = agents::AgentPublicKey::parse(&line).context("refusing the public key")?;
@@ -163,6 +176,21 @@ async fn main() -> Result<()> {
             eprintln!(
                 "agent {name} added; it signs requests with key {}",
                 key.fingerprint()
+            );
+            // The agent exists by now: not reading the audience only leaves
+            // the pin out of the command.
+            let audience = audience::read_existing(audience_path())
+                .await
+                .inspect_err(|e| {
+                    eprintln!(
+                        "note: the command below does not pin the broker's audience ({e}); \
+                         login pins what the broker reports"
+                    );
+                })
+                .ok();
+            eprintln!(
+                "{}",
+                enrollment::key_next_steps(&name, server.as_ref(), audience.as_ref())
             );
         }
         AgentCommand::SetKey { name, public_key } => {

@@ -796,10 +796,15 @@ Run these on the warden host, in `/srv/warden`.
    # A key-signed agent: paste the public key line (the content of its .pub
    # file) that the agent machine's user sent you:
    docker compose exec warden /warden-server agent add build-agent \
+     --server https://warden-api.example.ts.net \
      --public-key 'ssh-ed25519 AAAA… build-agent'
    # Or a bearer-key agent; the key is printed once:
-   docker compose exec warden /warden-server agent add build-agent
+   docker compose exec warden /warden-server agent add build-agent \
+     --server https://warden-api.example.ts.net
    ```
+
+   Each prints what to run on the agent's machine. Then give the agent
+   [its instructions](agent-instructions.md).
 
 4. **Make a test request** from the agent machine, approve it on the phone,
    and check the audit log:

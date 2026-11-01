@@ -108,6 +108,9 @@ impl fmt::Display for SecretUrl {
     }
 }
 
+/// Where the audience file is when `WARDEN_AUDIENCE_PATH` is not set.
+pub const DEFAULT_AUDIENCE_PATH: &str = "/data/audience";
+
 /// Parse a `WARDEN_PUBLIC_URL` value: a bare https origin with a domain
 /// name, since it is the `WebAuthn` relying party and the approval UI is served
 /// at its root.
@@ -334,7 +337,7 @@ impl Config {
             db_path: required("WARDEN_DB_PATH")?.into(),
             audit_path: required("WARDEN_AUDIT_PATH")?.into(),
             audience_path: get("WARDEN_AUDIENCE_PATH")
-                .unwrap_or_else(|| "/data/audience".to_owned())
+                .unwrap_or_else(|| DEFAULT_AUDIENCE_PATH.to_owned())
                 .into(),
             api_listen: addr("WARDEN_API_LISTEN", "127.0.0.1:8080")?,
             approval_listen: addr("WARDEN_APPROVAL_LISTEN", "127.0.0.1:8081")?,

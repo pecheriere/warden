@@ -74,6 +74,18 @@ pub fn load_or_create_blocking(path: &Path) -> Result<Audience, AudienceError> {
     }
 }
 
+/// Load the audience at `path` without ever creating it, for a command that
+/// only reports it: the server creates the file when it first starts.
+///
+/// # Errors
+/// As [`load_or_create_blocking`], and [`AudienceError::Io`] when there is no
+/// file yet.
+pub async fn read_existing(path: PathBuf) -> Result<Audience, AudienceError> {
+    tokio::task::spawn_blocking(move || load(&path))
+        .await
+        .map_err(|_| AudienceError::Task)?
+}
+
 fn io_error(path: &Path) -> impl FnOnce(io::Error) -> AudienceError + '_ {
     move |source| AudienceError::Io {
         path: path.to_owned(),
@@ -187,7 +199,20 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<(), AudienceError> {
 mod tests {
     use std::os::unix::fs::PermissionsExt as _;
 
-    use super::{AudienceError, load_or_create, load_or_create_blocking};
+    use super::{AudienceError, load_or_create, load_or_create_blocking, read_existing};
+
+    #[tokio::test]
+    async fn reading_never_creates_the_audience() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audience");
+        assert!(matches!(
+            read_existing(path.clone()).await,
+            Err(AudienceError::Io { .. })
+        ));
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+        let created = load_or_create(path.clone()).await.unwrap();
+        assert_eq!(read_existing(path).await.unwrap(), created);
+    }
 
     #[tokio::test]
     async fn audience_created_once_and_stable() {

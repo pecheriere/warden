@@ -181,6 +181,8 @@ and the reasons behind it; follow it for a real setup.
 | [1Password items](docs/1password-items.md) | The exact tags and fields of targets, API secrets and the CA. |
 | [Notifications](docs/notifications.md) | Home Assistant and ntfy. |
 | [Agent usage](docs/agent-usage.md) | Setting up an agent and how it should ask for access. |
+| [Agent instructions](docs/agent-instructions.md) | A block to paste into an agent's `AGENTS.md` or `CLAUDE.md`. |
+| [Examples](docs/agent-examples.md) | An SSH deployment and an API call, end to end. |
 | [Agent protocol](docs/agent-protocol.md) | The agent API, for writing another client. |
 | [Threat model](docs/threat-model.md) | What warden protects, what it does not, and what it assumes. |
 | [Design](docs/design.md) | The design and its decisions. |

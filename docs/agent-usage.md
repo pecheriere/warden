@@ -20,7 +20,29 @@ Contents:
 - [Known limits](#known-limits)
 - [Instructions to give an agent](#instructions-to-give-an-agent)
 
+[Examples](agent-examples.md) walks through an SSH deployment and an API call,
+end to end.
+
 ## One-time setup
+
+In short:
+
+1. Pick the key for the machine:
+
+   | Machine | Use |
+   |---------|-----|
+   | Linux with a TPM | A signing key in the TPM. |
+   | Linux without one | A signing key from a YubiKey or a key file. A bearer key only if neither is possible, through `WARDEN_AGENT_KEY`, as `warden login` cannot store one there. |
+   | macOS, unattended | A bearer key in the login Keychain: the macOS key agents refuse to sign while the Mac is locked. |
+   | macOS, someone present | A signing key, for example in the 1Password SSH agent. |
+
+2. The owner runs `warden-server agent add`, which prints the exact
+   `warden login` command for the agent's machine.
+3. Install the CLI there and run that command.
+4. Paste [the instructions](agent-instructions.md) into the agent's `AGENTS.md`
+   or `CLAUDE.md`.
+
+The rest of this section gives the details.
 
 Install the CLI on the agent's machine (Rust 1.99 or later, and the OpenSSH
 client tools):
@@ -100,8 +122,15 @@ Whatever you pick, lock the screen once and check that signing still works
 
    ```sh
    docker compose exec warden /warden-server agent add build-agent \
+     --server https://warden-api.example.ts.net \
      --public-key 'ecdsa-sha2-nistp256 AAAA… build-agent'
    ```
+
+   It prints the command for step 3, with the broker's audience pinned.
+   `--server` is the agent API's URL: the server does not know the name agents
+   reach it by. Without it, the command says `<agent-api-url>`. The audience is
+   left out, with a note, if warden has not started yet. Nothing in the command
+   is secret.
 
    `docker compose exec warden /warden-server agent list` shows the key's
    `SHA256:` fingerprint; compare it with
@@ -112,12 +141,16 @@ Whatever you pick, lock the screen once and check that signing still works
    agent is revoked (for example because its machine was compromised), make
    a new key and enroll it under a new name.
 
-3. **Log in** with the public key file (the CLI never reads a private key):
+3. **Log in** with the public key file (the CLI never reads a private key),
+   using the command `agent add` printed:
 
    ```sh
    warden login --server https://warden-api.example.ts.net --agent build-agent \
-     --ssh-key ~/.ssh/build-agent.pub
+     --ssh-key ~/.ssh/build-agent.pub --audience 0123456789abcdef0123456789abcdef
    ```
+
+   The printed `--ssh-key` path uses the agent's name; change it if the file
+   is elsewhere.
 
    `warden login` fetches the broker's audience from `GET /v1/info` and
    pins it, checks that the `ssh-agent` holds the key, makes one signed
@@ -130,10 +163,10 @@ Whatever you pick, lock the screen once and check that signing still works
    path: the path is part of what is signed.
 
 **The audience** identifies the broker: a signature for one broker is
-refused by every other. To check it at login, ask the owner for it (it is
-in the broker's startup log, `audience loaded`, and in its `/data/audience`
-file) and pass `--audience <id>`; the login fails if the broker reports
-another. Once an audience is pinned, logging in again to the same URL fails
+refused by every other. To check it at login, pass `--audience <id>` as the
+command from `agent add` does (it is also in the broker's startup log,
+`audience loaded`, and in its `/data/audience` file); the login fails if the
+broker reports another. Once an audience is pinned, logging in again to the same URL fails
 if the broker reports a different one: you are talking to another broker,
 or its data was reset. Ask the owner, then log in with `--audience <new
 id>`. If a call is refused and the broker's audience has changed, `warden`
@@ -165,8 +198,14 @@ from your password manager too.
 The owner creates the agent on the warden host and gets its key once:
 
 ```sh
-docker compose exec warden /warden-server agent add build-agent
+docker compose exec warden /warden-server agent add build-agent \
+  --server https://warden-api.example.ts.net
 ```
+
+Only the key goes to stdout, so it can be piped into a password manager. The
+next steps go to stderr and never contain the key: the `warden login` command
+for macOS, which takes the key from a prompt or stdin, and the configuration
+to write on Linux.
 
 Store the key in a password manager. On macOS, log in with it:
 
@@ -417,13 +456,13 @@ is reported once on stderr and never stops the command.
 | 2 | The request was denied. Do not retry the same request. Ask the owner what to change. |
 | 3 | The request expired without a decision. The owner may be away. Retry later, not in a loop. |
 | 4 | The grant was revoked: reported by `warden request`, or by `warden http` when the broker says the grant it used was revoked. `warden http` then removes the stale local record; request access again. |
-| 5 | `warden ssh` or `warden http` found no active grant (for `warden http`, none that covers the method and path; the message gives the `warden request api <secret> --methods <METHOD> …` command to run). |
+| 5 | `warden ssh` or `warden http` found no active grant (for `warden http`, none that covers the method and path), or the broker said the grant `warden http` used has expired, whose local record is then removed. The message gives the `warden request …` command to run if the task needs it. |
 | 6 | The request was cancelled while `warden request` waited for it (`warden request cancel` from another terminal). |
 | 22 | `warden http --fail` got an upstream status of 400 or more. The body is still written to stdout. |
 | 130 | Interrupted with Ctrl-C while `warden request` waited; the pending request was cancelled (or, if the broker did not answer in time or Ctrl-C was pressed again, left to expire). Also Ctrl-C while an approved grant was being installed; the message names the grant to revoke. |
 
 `warden http` exits 0 for any upstream status unless `--fail` is given. A
-refusal or failure by the broker (policy violation, 409, timeout, size
+refusal or failure by the broker (policy violation, other 409s, timeout, size
 limit) is exit 1 with the broker's message on stderr.
 
 ## When the broker is unreachable
@@ -453,24 +492,6 @@ never try to get around warden by any other route.
 
 ## Instructions to give an agent
 
-A block to paste into an agent's instructions (for example a `CLAUDE.md`):
-
-```markdown
-## Privileged access: warden
-
-- Get SSH or API access only through `warden`. Never use other credentials,
-  and never try to get around a denial or an unreachable broker: stop and
-  tell me.
-- Request access right before a task needs it, one request per task:
-  `warden request ssh <target> --user <user> --for 15m --goal "<goal>"` or
-  `warden request api <secret> [--methods POST --path /prefix/] --for 15m --goal "<goal>"`.
-- The goal says exactly what you will do and why, naming the issue, change or
-  error. Ask for the least privileged user, read-only API access unless you
-  must change something, and the shortest window.
-- Tell me the fingerprint `warden request` prints, and wait for the decision.
-- Use the grant only for that task: `warden ssh <target> -- <command>` or
-  `warden http <secret> <METHOD> <url>`.
-- When the task is done, run `warden revoke <grant-id>`.
-- Exit 2 (denied): do not retry; ask me what to change. Exit 3 (expired):
-  retry later, not in a loop.
-```
+[Instructions for an agent](agent-instructions.md) is a block to paste into an
+agent's `AGENTS.md` or `CLAUDE.md`: how to ask, how to write a goal, how to
+choose a window, when to revoke and what to do when denied.

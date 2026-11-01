@@ -61,8 +61,8 @@ environment as the server. The image's default command is `serve`.
 | `enroll` | Prints a one-time code (single use, valid 10 minutes) and the URL of the enrollment page, where the owner creates a passkey. | `WARDEN_DB_PATH`, `WARDEN_AUDIT_PATH`, `WARDEN_PUBLIC_URL` |
 | `passkey list` | Lists enrolled passkeys: id, label, creation time. | `WARDEN_DB_PATH` |
 | `passkey remove <id>` | Removes a passkey. | `WARDEN_DB_PATH`, `WARDEN_AUDIT_PATH` |
-| `agent add <name>` | Creates a bearer-key agent and prints its key once. | `WARDEN_DB_PATH`, `WARDEN_AUDIT_PATH` |
-| `agent add <name> --public-key '<line>'` | Creates a key-signed agent, with the public key line of its signing key (`ssh-ed25519` or `ecdsa-sha2-nistp256`). No bearer key is made. | same |
+| `agent add <name>` | Creates a bearer-key agent and prints its key once, alone on stdout. On stderr, what to run on the agent's machine; `--server <url>` gives the agent API's URL to use there. | `WARDEN_DB_PATH`, `WARDEN_AUDIT_PATH` |
+| `agent add <name> --public-key '<line>'` | Creates a key-signed agent, with the public key line of its signing key (`ssh-ed25519` or `ecdsa-sha2-nistp256`). No bearer key is made. On stderr, the `warden login` command for the agent's machine, with `--server <url>` as above and the audience from `WARDEN_AUDIENCE_PATH` once the server has created it. | same |
 | `agent set-key <name> '<line>'` | Switches an agent to key-signed requests. Its bearer key stops working at once. | same |
 | `agent list` | Lists agents: name, creation time, `active` or `revoked@<time>`, `bearer` or `ssh-key`, and the key's `SHA256:` fingerprint (`-` for a bearer key). | `WARDEN_DB_PATH` |
 | `agent revoke <name>` | Disables the agent, ends its pending requests and grants, and ends its relay sessions. A running server notices within about 30 seconds for waiting clients and within seconds for relay sessions. | `WARDEN_DB_PATH`, `WARDEN_AUDIT_PATH` |
