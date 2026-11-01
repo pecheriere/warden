@@ -197,7 +197,7 @@ impl client::Handler for OnwardHandler {
 /// keys, in pinned order, each once, so the target proves the key that is
 /// pinned (a target with several host keys would otherwise be asked for
 /// the relay's favourite one). RSA keys are asked for as `rsa-sha2-512` then
-/// `rsa-sha2-256`, never SHA-1 `ssh-rsa`. (russh 0.64 does not check that
+/// `rsa-sha2-256`, never SHA-1 `ssh-rsa`. (russh 0.65 does not check that
 /// the target's signature uses the negotiated hash, so a holder of the
 /// pinned key could still sign with SHA-1; the key itself is pinned.) Key
 /// types the relay cannot

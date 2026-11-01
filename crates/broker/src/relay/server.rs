@@ -1215,11 +1215,11 @@ impl server::Handler for RelayHandler {
     async fn auth_publickey_offered(
         &mut self,
         _user: &str,
-        public_key: &russh::keys::PublicKey,
+        offer: server::PublicKeyOffer<'_>,
     ) -> Result<Auth, Self::Error> {
         // Approved keys are Ed25519; anything else is not worth a signature.
         Ok(
-            if public_key.algorithm() == russh::keys::Algorithm::Ed25519 {
+            if offer.public_key.algorithm() == russh::keys::Algorithm::Ed25519 {
                 Auth::Accept
             } else {
                 Auth::reject()
@@ -1230,13 +1230,13 @@ impl server::Handler for RelayHandler {
     async fn auth_publickey(
         &mut self,
         user: &str,
-        public_key: &russh::keys::PublicKey,
+        verified: server::VerifiedPublicKey<'_>,
     ) -> Result<Auth, Self::Error> {
         let Ok(target) = TargetName::try_from(user.to_owned()) else {
             self.conn.refused(INVALID_USER);
             return Ok(Auth::reject());
         };
-        let key = ours(public_key).filter(|key| key.algorithm() == Algorithm::Ed25519);
+        let key = ours(verified.public_key).filter(|key| key.algorithm() == Algorithm::Ed25519);
         // Bounded like every grant query, not only by the login timeout: a
         // lookup that does not answer in time refuses the attempt.
         let grant = match &key {
