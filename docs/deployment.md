@@ -24,6 +24,10 @@ warden's guarantees depend on its surroundings as much as on its code. The
 [threat model](threat-model.md#deployment-assumptions) lists the assumptions;
 this guide is how to meet them.
 
+[Running warden without Docker](deployment-systemd.md) describes a systemd
+service instead. It gives up part of the isolation below and has not been
+tested on a clean host, so this guide stays the recommended way.
+
 Contents:
 
 1. [The recommended layout](#1-the-recommended-layout)

@@ -6,6 +6,18 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- A hardened systemd unit (`deploy/systemd/warden.service`) and a guide to run
+  warden without Docker (`docs/deployment-systemd.md`), which says what holds,
+  what is replaced and what is lost compared with Docker. Docker stays the
+  recommended setup, and the unit has not yet been tested on a clean host.
+- `WARDEN_OP_CONNECT_TOKEN_FILE`,
+  `WARDEN_NOTIFY_HOMEASSISTANT_WEBHOOK_URL_FILE`, `WARDEN_NOTIFY_NTFY_URL_FILE`
+  and `WARDEN_NOTIFY_NTFY_TOKEN_FILE` read these secrets from a file, so that
+  they can come from systemd credentials and stay out of the process
+  environment.
+
 ## [0.8.1] - 2026-11-01
 
 The `v0.8.0` tag was created by mistake, before the version bump, and was

@@ -1,0 +1,119 @@
+# warden-server as a hardened systemd service. docs/deployment-systemd.md is
+# the guide: it says what to prepare first, what goes in the drop-in, and which
+# guarantees of the recommended Docker setup hold here and which do not.
+#
+# Needs systemd 249 or later. An older systemd ignores the settings it does not
+# know, with a warning in the journal, and the service runs with less
+# protection than this file suggests.
+#
+# Left out on purpose:
+#
+# - PrivateNetwork: Tailscale Serve reaches warden on the host's loopback, and
+#   warden has to reach 1Password Connect and its notifiers.
+# - DynamicUser: backups and restores keep a stable owner with a fixed user,
+#   and the admin commands need a user to run as.
+# - AF_UNIX and AF_NETLINK in RestrictAddressFamilies: warden opens no Unix
+#   socket, and leaving AF_UNIX out keeps it from the host's sockets, such as
+#   tailscaled's and D-Bus. Name resolution does not need either when
+#   /etc/resolv.conf names a resolver, which IPAddressAllow must then allow.
+# - RootImage, RootDirectory: warden sees the host's root filesystem, read-only.
+#   That is the largest difference from the image, which holds only warden.
+# - AppArmorProfile, SELinuxContext: no profile ships with warden.
+# - LoadCredentialEncrypted: it depends on the host's TPM or credential key.
+#   Use it from a drop-in if your host has them.
+
+[Unit]
+Description=warden approval broker
+Documentation=https://github.com/pecheriere/warden/blob/main/docs/deployment-systemd.md
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=warden
+Group=warden
+# A symlink to the installed version, so that a rollback only moves the link.
+ExecStart=/usr/local/bin/warden-server serve
+Restart=on-failure
+RestartSec=5s
+# warden lets in-flight requests finish for up to 10 s on shutdown.
+TimeoutStopSec=15s
+
+# Settings that are not secret: the public URL, the owner, Connect's address.
+EnvironmentFile=/etc/warden/warden.conf
+# The data files. warden's default for the audience is under /data, which does
+# not exist here.
+Environment=WARDEN_DB_PATH=/var/lib/warden/warden.db
+Environment=WARDEN_AUDIT_PATH=/var/lib/warden/audit.jsonl
+Environment=WARDEN_AUDIENCE_PATH=/var/lib/warden/audience
+
+# Secrets. Never use Environment= for one: `systemctl show` prints it to every
+# user. systemd copies the source file to a non-swappable, in-memory directory
+# only this user can read; warden is told only the path. Notifier secrets are
+# added the same way, from the drop-in.
+LoadCredential=op-connect-token:/etc/warden/credentials/op-connect-token
+Environment=WARDEN_OP_CONNECT_TOKEN_FILE=%d/op-connect-token
+
+# The only path warden can write.
+StateDirectory=warden
+StateDirectoryMode=0700
+UMask=0077
+
+# No privileges to gain or keep.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictSUIDSGID=yes
+PrivateUsers=yes
+
+# The filesystem.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateIPC=yes
+RemoveIPC=yes
+# Nothing but warden's own binaries and the libraries they load can be
+# executed, as the image has no shell. warden starts no child process. Files
+# under /usr/lib stay executable, because the dynamic loader needs them.
+NoExecPaths=/
+ExecPaths=/usr/local/lib/warden -/usr/lib -/usr/lib64 -/lib -/lib64
+
+# The kernel and other processes.
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
+
+# warden holds the CA key and relay credentials in memory: keep them out of
+# core files and swap.
+LimitCORE=0
+MemorySwapMax=0
+
+# The network. RestrictAddressFamilies leaves only IP sockets. warden may bind
+# only its two ports, and reach only loopback: the drop-in allows the addresses
+# of Connect, the DNS resolver, the notifiers and the API origins. IPAddress*
+# need cgroup v2, and SocketBind* also a systemd built with BPF_FRAMEWORK, which
+# Debian 12's is not. Where they are unsupported the service still starts, without
+# them, so check them as the guide describes.
+RestrictAddressFamilies=AF_INET AF_INET6
+SocketBindDeny=any
+SocketBindAllow=tcp:8080
+SocketBindAllow=tcp:8081
+IPAddressDeny=any
+IPAddressAllow=localhost
+
+[Install]
+WantedBy=multi-user.target

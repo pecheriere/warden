@@ -19,7 +19,7 @@ Values are never echoed in errors.
 | `WARDEN_PUBLIC_URL` | The approval UI's URL: `https`, a domain name (not an IP address), no path, query or credentials. Its host is the WebAuthn relying party: changing it invalidates every enrolled passkey. Notifications link to it. |
 | `WARDEN_OWNER_LOGIN` | The owner's Tailscale login (as Tailscale Serve reports it in `Tailscale-User-Login`). Only this login may use the approval UI or a bearer agent key. |
 | `WARDEN_OP_CONNECT_URL` | The 1Password Connect API, for example `http://172.31.251.11:8080`. |
-| `WARDEN_OP_CONNECT_TOKEN` | The Connect token. Read-only, for the warden vault only. Secret. |
+| `WARDEN_OP_CONNECT_TOKEN` | The Connect token. Read-only, for the warden vault only. Secret; can be [read from a file](#secrets-in-files). |
 | `WARDEN_NOTIFY` | The notification channels in priority order, comma-separated, lowercase: `homeassistant`, `ntfy`. See [Notifications](notifications.md). |
 
 ### Optional
@@ -42,8 +42,30 @@ Values are never echoed in errors.
 | `WARDEN_RELAY_MAX_SESSIONS` | `16` | Relayed sessions open at once, 1 to 1024. Each grant may hold 4. |
 | `RUST_LOG` | `info` | Log filter, in [`tracing` `EnvFilter`](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html) syntax. |
 
-Pass the secrets from a secret manager or an environment file readable only
-by root, never on a command line or in a repository.
+Pass the secrets from a secret manager, an environment file readable only by
+root, or a file as below, never on a command line or in a repository.
+
+### Secrets in files
+
+These variables can be read from a file instead, by setting the name with
+`_FILE` added to the path of that file. Then the process environment holds only
+the path. [The systemd service](deployment-systemd.md) uses this.
+
+| Variable | Read from a file with |
+|----------|-----------------------|
+| `WARDEN_OP_CONNECT_TOKEN` | `WARDEN_OP_CONNECT_TOKEN_FILE` |
+| `WARDEN_NOTIFY_HOMEASSISTANT_WEBHOOK_URL` | `WARDEN_NOTIFY_HOMEASSISTANT_WEBHOOK_URL_FILE` |
+| `WARDEN_NOTIFY_NTFY_URL` | `WARDEN_NOTIFY_NTFY_URL_FILE` |
+| `WARDEN_NOTIFY_NTFY_TOKEN` | `WARDEN_NOTIFY_NTFY_TOKEN_FILE` |
+
+`warden-server serve` reads each file once, at startup, and refuses to start,
+naming the `_FILE` variable, when:
+
+- both forms of one secret are set;
+- the file is missing or unreadable, or is not a regular file;
+- other users have any access to it (mode bits `0o007`; group access is allowed);
+- it is empty, not valid UTF-8, larger than 32 KiB or more than one line. A
+  line ending at the end of the file is removed.
 
 The variables of the fixed notifier wiring before 0.5.0
 (`WARDEN_HA_WEBHOOK_URL`, `WARDEN_NTFY_URL`, `WARDEN_NTFY_TOKEN`) are
@@ -53,7 +75,9 @@ refused at startup, with the name of the replacement.
 
 Run them in the container, for example
 `docker compose exec warden /warden-server <command>`. They use the same
-environment as the server. The image's default command is `serve`.
+environment as the server. The image's default command is `serve`. For the
+systemd service, see [Server commands](deployment-systemd.md#7-server-commands)
+there.
 
 | Command | What it does | Needs |
 |---------|--------------|-------|

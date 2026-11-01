@@ -83,7 +83,9 @@ defends against it.
   Serve can reach it (on a network of its own behind a host whose Serve
   publishes it as Tailscale Services, or on loopback in the network
   namespace of its Tailscale sidecar), and is exposed only through that
-  Serve. It holds a read-only Connect token.
+  Serve. It holds a read-only Connect token. Run as a systemd service instead,
+  it has no image of its own: see "systemd service" under "Deployment
+  assumptions".
 - **Silent failure.** The CLI always receives an explicit terminal state:
   `approved`, `denied`, `expired`, `cancelled` or `error` with a message.
 - **An API secret reaches the agent.** In proxy mode the broker reads the
@@ -207,9 +209,9 @@ These were recorded during implementation and are accepted for this release.
 - **The CA key is copied into HTTP client buffers.** The CA private key PEM is
   read from 1Password Connect over HTTP. Parts of it can sit in reqwest and
   hyper buffers that warden does not control and cannot zeroize. The parsed
-  key warden holds is zeroized on drop. The mitigation is the container
-  hardening described under "Deployment assumptions": an unprivileged process,
-  no capabilities and no other container on its network.
+  key warden holds is zeroized on drop. The mitigation is the hardening
+  described under "Deployment assumptions": an unprivileged process, no
+  capabilities and, in a container, no other container on its network.
 - **Signing protects the key, not the machine.** A key-signed agent's
   signature stops credential theft (nothing reusable is stored or sent; a
   key in the Secure Enclave, a TPM or a PIV token cannot be copied off the
@@ -415,8 +417,9 @@ These were recorded during implementation and are accepted for this release.
 
 warden's guarantees depend on its environment being set up as follows.
 
-- **Publishing through Tailscale.** One of the two deployments below.
-  Either way, only Tailscale Serve (or a reverse proxy that Serve targets)
+- **Publishing through Tailscale.** One of the two Docker deployments below or,
+  with less isolation, the systemd service after them.
+  In every case, only Tailscale Serve (or a reverse proxy that Serve targets)
   may reach the listeners: anything that can reach a listener directly can
   forge `Tailscale-User-Login`. (Signed agent requests do not rely on the
   header, but the approval UI and bearer-key agents do.)
@@ -450,6 +453,35 @@ warden's guarantees depend on its environment being set up as follows.
   warden on a shared bridge network breaks this. The WebAuthn relying party
   is the node's name, so it is not shared with other services. Nothing is
   published on the LAN.
+- **systemd service (no container for warden; not the recommended setup, and
+  not yet tested on a clean host).** warden runs on the host under a dedicated
+  user, with the sandbox of `deploy/systemd/warden.service`, and the host's
+  Tailscale Services publish its listeners from loopback. As in the Services
+  layout, every process on the host can connect to the listeners and forge the
+  header, so the whole host is inside the trust boundary. Further:
+  - Other machines cannot reach loopback as long as `route_localnet` stays 0
+    on every interface; this replaces the Docker Engine 28 requirement. A local
+    process can also bind a listener's port while warden is stopped, and receive
+    what Serve forwards; in a container, it cannot bind warden's address.
+  - warden shares the host's filesystem (read-only) and network stack. Code
+    running in warden can read world-readable files on the host and connect to
+    other services on its loopback, which the image and its network do not
+    allow. `NoExecPaths` limits the programs it can start, and it can open no
+    Unix socket.
+  - The Connect token is readable by root and the `warden` user, not by the
+    `docker` group, and is not in the process environment
+    (`LoadCredential`).
+  - Egress is limited by address but not by port (`IPAddressAllow`), and only
+    if the kernel supports the filter; the service starts without it otherwise.
+    The filter also covers tailnet addresses.
+  - There is no build attestation to verify until binaries are published. The
+    operator builds from a release tag and trusts that build.
+  - 1Password publishes Connect only as a container, so it still runs in one, on
+    this host or another. Either way it cannot reach this host's loopback.
+    Connect on another host must be reached over the tailnet or TLS.
+  - SSH relay targets are not supported.
+
+  [deployment-systemd.md](deployment-systemd.md) compares each guarantee.
 - **Phone-only approval port.** The tailnet policy grants the approval UI port
   to the owner's phone only, never to a machine an agent runs on. An
   agent that is prompt-injected must not be able to put an approval prompt in
@@ -468,7 +500,7 @@ warden's guarantees depend on its environment being set up as follows.
   limited to what warden needs: Connect, the notifiers, the origins of the
   API secrets (proxy mode) and the addresses of the relay targets (relay
   mode). The image is pinned by a digest whose build attestation was
-  verified.
+  verified. The systemd service has its own equivalents, listed above.
 - **Targets trust the CA, per target.** Each target host must trust the SSH
   CA only for its own target name. With OpenSSH: `TrustedUserCAKeys
   /etc/ssh/warden_ca.pub` and `AuthorizedPrincipalsFile
@@ -482,7 +514,7 @@ warden's guarantees depend on its environment being set up as follows.
   other targets. A target that cannot be set up this way is outside this
   release.
 - **Backups.** The SQLite database, the audit log, the audience and the relay
-  host key live on `/data`. Losing the database loses requests, grants,
+  host key live on `/data` (`/var/lib/warden` for the systemd service). Losing the database loses requests, grants,
   enrolled passkeys and agents, which are all enrolled again; losing the
   audience makes key-signed agents log in again. Migrations are one-way, so
   `/data` is backed up (with warden stopped) before every upgrade. The audit

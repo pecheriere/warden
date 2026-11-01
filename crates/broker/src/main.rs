@@ -401,7 +401,12 @@ async fn serve() -> Result<()> {
         // lines go to a log pipeline, where escape codes are noise.
         .with_ansi(std::io::stdout().is_terminal())
         .init();
-    let config = Arc::new(Config::from_env().context("reading configuration")?);
+    // This reads secret files, so it does not run on the async workers.
+    let config = tokio::task::spawn_blocking(Config::from_env)
+        .await
+        .context("reading configuration")?
+        .context("reading configuration")?;
+    let config = Arc::new(config);
     let App {
         api,
         approval,
