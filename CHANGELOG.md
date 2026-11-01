@@ -6,6 +6,11 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-11-01
+
+The `v0.8.0` tag was created by mistake, before the version bump, and was
+never published. This is the first release with these changes.
+
 ### Added
 
 - `AGENTS.md`: contributor rules for coding agents and humans (the CI

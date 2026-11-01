@@ -72,7 +72,7 @@ What warden can grant:
 | **HTTP API calls** | warden makes each call, adds the secret, and returns the answer with the secret redacted. | The API secret. |
 
 Status: early development, for one owner. The current release is
-**0.7.0**; see the [changelog](CHANGELOG.md).
+**0.8.1**; see the [changelog](CHANGELOG.md).
 
 ## Requirements
 
@@ -121,7 +121,7 @@ and the reasons behind it; follow it for a real setup.
    published ports, Connect on its own network. Verify the image first:
 
    ```sh
-   gh attestation verify oci://ghcr.io/pecheriere/warden:0.7.0 --owner pecheriere
+   gh attestation verify oci://ghcr.io/pecheriere/warden:0.8.1 --owner pecheriere
    ```
 
    [The Compose file](docs/deployment.md#5-run-warden), and
@@ -152,7 +152,7 @@ and the reasons behind it; follow it for a real setup.
    docker compose exec warden /warden-server agent add build-agent \
      --public-key "ssh-ed25519 AAAA… build-agent"
    # on the agent machine
-   cargo install --locked --git https://github.com/pecheriere/warden --tag v0.7.0 warden-broker-cli
+   cargo install --locked --git https://github.com/pecheriere/warden --tag v0.8.1 warden-broker-cli
    warden login --server https://warden-api.example.ts.net --agent build-agent \
      --ssh-key ~/.ssh/build-agent.pub
    ```

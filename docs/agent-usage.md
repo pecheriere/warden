@@ -26,7 +26,7 @@ Install the CLI on the agent's machine (Rust 1.99 or later, and the OpenSSH
 client tools):
 
 ```sh
-cargo install --locked --git https://github.com/pecheriere/warden --tag v0.7.0 warden-broker-cli
+cargo install --locked --git https://github.com/pecheriere/warden --tag v0.8.1 warden-broker-cli
 ```
 
 The machine must be on the tailnet, and the tailnet policy must let it reach
