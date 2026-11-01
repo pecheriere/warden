@@ -588,7 +588,10 @@ mod tests {
                 kind: io::ErrorKind::NotFound
             }
         );
-        assert!(!format!("{err} {err:?}").contains(SECRET), "{err}");
+        assert!(
+            !format!("{err} {err:?}").contains(SECRET),
+            "the error echoes the path"
+        );
     }
 
     #[test]
@@ -634,9 +637,12 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let path = secret_file(&dir, "token", content, 0o400);
             let err = token_from_file(&path).unwrap_err();
-            assert!(is_invalid_token_file(&err), "{err}");
+            assert!(
+                is_invalid_token_file(&err),
+                "a different error was returned"
+            );
             let shown = format!("{err} {err:?}");
-            assert!(!shown.contains(SECRET), "{shown}");
+            assert!(!shown.contains(SECRET), "the error echoes the content");
         }
     }
 
