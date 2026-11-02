@@ -116,7 +116,7 @@ For the systemd service, see
 |-----------|---------|
 | 0 | No check failed. Some may not have run: the report lists them. |
 | 1 | At least one check failed. |
-| 2 | Wrong arguments. |
+| 2 | Wrong arguments. This is `warden-server`: `warden` on an agent machine exits 2 for a denied request and [64 for wrong arguments](agent-usage.md#exit-codes). |
 | 7 | With `--strict` only: no check failed, but at least one could not be checked. |
 
 warden cannot see everything, so **exit 0 does not mean everything was
@@ -218,7 +218,7 @@ A window is `15m`, `30m`, `1h` or `4h`. Exit codes are in
 
 `warden doctor` reports each check as `pass`, `FAIL` or `COULD NOT CHECK`, and
 the summary lists what could not be checked with what to do by hand. It exits 1
-when a check failed, 2 for wrong arguments, and otherwise 0. With `--strict` it
+when a check failed, 64 for wrong arguments, and otherwise 0. With `--strict` it
 exits 7 when nothing failed but a check could not run.
 
 | Check | Passes when | Reports `COULD NOT CHECK` when |

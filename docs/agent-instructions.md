@@ -100,11 +100,12 @@ Read the message on stderr, then act on the exit code:
 
 | Exit | Meaning | What to do |
 |------|---------|------------|
-| 2 | Denied. A usage error in your command also exits 2, and its message shows the usage. | If denied: do not send the same request again. Stop, and ask the person what to change. Change the request only as they say. For a usage error, fix the command. |
+| 2 | Denied. | Do not send the same request again. Stop, and ask the person what to change. Change the request only as they say. |
 | 3 | No decision in time. | Tell the person you need the access. Try again later, not in a loop. |
 | 4 | The grant was revoked. | It may have been on purpose. Check with the person before asking again. |
 | 5 | No active grant covers this. It was never requested, or it expired or was revoked. | If the task still needs it, make a new request with an honest goal. Do not widen it beyond what the task needs. |
 | 6 | The request was cancelled. | Someone withdrew it. Ask again only if the task still needs it. |
+| 64 | Your command is wrong. The message shows the usage. | Fix the command and run it again. |
 | 1 | Another error. The message says which. | If the broker cannot be reached or refuses your login, stop and tell the person what `warden doctor` reports. Otherwise fix what the message names, and do not retry blindly. |
 
 Checking the setup changes nothing, and is safe at any time:
