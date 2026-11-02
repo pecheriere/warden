@@ -639,6 +639,7 @@ async fn e2e_request_refused_by_a_pending_one_prints_a_working_cancel() {
     let said = text(&refused.stderr);
     assert!(said.contains(&format!("id {id}")), "{said}");
     assert!(said.contains("within 10 minutes"), "{said}");
+    assert!(said.contains("not waiting on it"), "{said}");
     assert_eq!(only_request_id(&s).await, id);
 
     // The command it prints withdraws the request, which ends the waiting CLI.

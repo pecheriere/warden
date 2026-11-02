@@ -30,16 +30,17 @@ pub fn request_ended(status: &RequestStatus) -> String {
     }
 }
 
-/// The error for a request the broker answered with `pending`, another pending
-/// request of this agent for the same target or secret. `subject` names that
-/// target or secret. The broker's answer has no expiry time, so this gives the
-/// upper limit.
+/// The error for a request the broker answered with `pending`, whose
+/// fingerprint is not the one this request has. `subject` names the target or
+/// secret. All the CLI knows is that the fingerprints differ, so this says no
+/// more about why, or about when `pending` was made. The broker's answer has no
+/// expiry time, so this gives the upper limit.
 pub fn already_pending(subject: &str, pending: &CreatedResponse) -> String {
     format!(
-        "a request {subject} is already pending (id {id}, fingerprint {fingerprint}), made with \
-         a different goal, window or key, so this one was not made. The pending request expires \
-         within {minutes} minutes of being made, unless the owner decides it first. To withdraw \
-         it: warden request cancel {id}",
+        "a request {subject} is pending (id {id}, fingerprint {fingerprint}), and its fingerprint \
+         differs from this request's, so warden is not waiting on it. It expires within {minutes} \
+         minutes of being made, unless the owner decides it first. To withdraw it: warden request \
+         cancel {id}",
         id = pending.id,
         fingerprint = pending.fingerprint,
         minutes = PENDING_EXPIRY_SECS / 60,
@@ -213,6 +214,7 @@ mod tests {
         assert!(message.contains("for switch-01"), "{message}");
         assert!(message.contains("ab02-cd02-ef02"), "{message}");
         assert!(message.contains("within 10 minutes"), "{message}");
+        assert!(message.contains("not waiting on it"), "{message}");
         let (_, command) = message.rsplit_once(": ").unwrap();
         assert_eq!(command, format!("warden request cancel {id}"));
         let parsed = Cli::try_parse_from(command.split_whitespace());

@@ -241,6 +241,38 @@ async fn e2e_private_key_never_on_disk() {
     assert_eq!(mode & 0o777, 0o700);
 }
 
+/// Each `warden request ssh` makes a new key, so the same command run again
+/// does not wait on the pending request: it stops and says how to withdraw it.
+#[tokio::test(flavor = "multi_thread")]
+async fn e2e_same_ssh_request_stops_on_the_pending_one() {
+    let s = setup().await;
+    let first = spawn_request(&s.cli, TARGET);
+    s.broker.capture.next().await;
+
+    let second = spawn_request(&s.cli, TARGET);
+    let refused = tokio::task::spawn_blocking(move || second.wait_with_output())
+        .await
+        .unwrap()
+        .unwrap();
+    let said = String::from_utf8_lossy(&refused.stderr);
+    assert_eq!(refused.status.code(), Some(1), "{said}");
+    assert!(said.contains("not waiting on it"), "{said}");
+
+    let (_, command) = said.trim_end().rsplit_once(": warden ").unwrap();
+    let cancel = s.cli.run(&command.split_whitespace().collect::<Vec<_>>());
+    assert_eq!(
+        cancel.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&cancel.stderr)
+    );
+    let out = tokio::task::spawn_blocking(move || first.wait_with_output())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(6));
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn poll_survives_server_restart_mid_wait() {
     let Setup {
