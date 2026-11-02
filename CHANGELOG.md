@@ -79,6 +79,7 @@ All notable changes to this project are recorded here. The format follows
 
 ### Changed
 
+- A proxied call may carry at most 100 headers; more is a 400.
 - `warden` now exits 64, not 2, for wrong arguments, so that a usage error
   cannot be taken for a denied request, which stays exit 2. A script that reads
   exit 2 as a usage error needs updating. `--help` and `--version` still exit 0,

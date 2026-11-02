@@ -8,8 +8,8 @@
 #
 # With --quiet the fuzzer's output is discarded: it holds the crashing input and a
 # stack trace, which must not reach the public CI log before a fix (see
-# SECURITY.md). Only the target, the result and the random seed are printed; rerun
-# with --seed and that seed to look for the crash.
+# SECURITY.md). Only the target, the result, the kind of failure and the random
+# seed are printed; rerun with --seed and that seed to look for the crash.
 #
 # Usage: scripts/fuzz.sh [--quiet] [--seed N] [--jobs N] <seconds> [target ...]
 #        (with no target, all of them)
@@ -60,7 +60,10 @@ for target in "${targets[@]}"; do
     if "${command[@]}" >/dev/null 2>&1; then
       echo "$target: no crash in ${seconds}s (seed $seed)"
     else
-      echo "$target: FAILED (seed $seed); the output is withheld, rerun it locally"
+      # The kind (crash, oom, timeout, leak) says nothing about the input. No
+      # kind means the run failed without an input to blame: a tool failure.
+      kinds="$(find "artifacts/$target" -type f -exec basename {} \; 2>/dev/null | cut -d- -f1 | sort -u | xargs || true)"
+      echo "$target: FAILED (seed $seed, kind: ${kinds:-none}); the output is withheld, rerun it locally"
       failed=1
     fi
   elif ! "${command[@]}"; then

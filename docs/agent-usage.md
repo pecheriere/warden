@@ -436,6 +436,7 @@ The broker refuses, with a message that names the rule (exit 1):
   outside the allowed prefix or has dot segments, `//`, `;`, `\` or encoded
   separators;
 - a method or path the policy, narrowed to the grant, does not allow;
+- more than 100 headers;
 - headers you may not set: `Host`, `Content-Length`, `Connection` and other
   hop-by-hop headers, the secret's own header, `Accept-Encoding`, `Range`,
   `If-Range`, method or URL override headers, and forwarding or
