@@ -20,6 +20,7 @@ use tempfile::TempDir;
 use warden_broker::audit::AuditLog;
 use warden_broker::config::LocalSettings;
 use warden_broker::policy::LocalBackend;
+use warden_broker::policy::local::seal_text;
 use warden_broker::store;
 use warden_broker::testkit::{CapturingNotifier, HttpsUpstream, TestBroker, TestResponse};
 use warden_broker_proto::{CreatedResponse, GrantAccess, Id, RequestStatus, Window};
@@ -57,11 +58,8 @@ impl Files {
 
     /// Write a complete policy file: `text` and the end marker.
     fn policy(&self, text: &str) {
-        fs::write(
-            &self.settings.policy_file,
-            format!("{text}\n[end_of_policy]\n"),
-        )
-        .unwrap();
+        let sealed = seal_text(&format!("{text}\n[end_of_policy]\n")).unwrap();
+        fs::write(&self.settings.policy_file, sealed.as_bytes()).unwrap();
         chmod(&self.settings.policy_file, 0o600);
     }
 
@@ -255,6 +253,40 @@ async fn a_policy_edit_invalidates_a_grant_at_once() {
     let gone = call(&broker, &key, &grant, &url).await;
     assert_eq!(gone.status, StatusCode::CONFLICT, "{}", gone.body);
     assert_eq!(upstream.received().len(), sent_before);
+}
+
+/// A live grant, a live proxied call: a file that no longer matches its digest
+/// refuses the next call, even though every setting that decides the destination
+/// is unchanged, sends nothing upstream and is audited. Sealed again, it works.
+#[tokio::test]
+async fn a_policy_file_not_matching_its_digest_refuses_a_proxied_call() {
+    let upstream = HttpsUpstream::start().await;
+    let files = Files::new();
+    files.policy(&api_entry(&upstream, ""));
+    files.secret("svc-token", CREDENTIAL);
+    let (broker, key) = broker_on(&files).await;
+    let grant = approve_api(&broker, "svc").await;
+    let url = upstream.url("/anything");
+    assert_eq!(
+        call(&broker, &key, &grant, &url).await.status,
+        StatusCode::OK
+    );
+
+    let policy_file = &files.settings.policy_file;
+    let sealed = fs::read_to_string(policy_file).unwrap();
+    fs::write(policy_file, format!("# changed\n{sealed}")).unwrap();
+    let sent_before = upstream.received().len();
+    let refused = call(&broker, &key, &grant, &url).await;
+    assert_ne!(refused.status, StatusCode::OK, "{}", refused.body);
+    assert_eq!(upstream.received().len(), sent_before);
+    assert!(!refused.body.contains(CREDENTIAL), "{}", refused.body);
+    assert!(backend_audit(&files).contains("does not match the digest"));
+
+    fs::write(policy_file, sealed).unwrap();
+    assert_eq!(
+        call(&broker, &key, &grant, &url).await.status,
+        StatusCode::OK
+    );
 }
 
 /// Each change that makes the files unsafe refuses the next call, sends
@@ -628,6 +660,97 @@ async fn the_server_refuses_to_start_on_a_policy_cut_short() {
     assert!(!output.status.success());
     assert!(stderr(&output).contains("cut short"), "{}", stderr(&output));
     assert!(server.audit().contains("cut short"), "{}", server.audit());
+}
+
+/// The whole hand edit through the real binary: an edit that was not sealed stops
+/// the server and fails doctor, saying what to do; sealing it fixes both.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_hand_edit_is_refused_until_seal_policy_runs() {
+    let server = Server::new().await;
+    server.files.secret("svc-token", CREDENTIAL);
+    server.files.policy(API_ONLY);
+    let policy_file = server.files.settings.policy_file.clone();
+    let sealed = fs::read_to_string(&policy_file).unwrap();
+    fs::write(
+        &policy_file,
+        sealed.replacen("website", "# edited\nwebsite", 1),
+    )
+    .unwrap();
+
+    let doctor = server.command(&["doctor"]).output().unwrap();
+    let report = stdout(&doctor);
+    assert!(!doctor.status.success(), "{report}");
+    assert!(
+        line_of(&report, "local.policy").contains("seal-policy"),
+        "{report}"
+    );
+    let serve = server.command(&["serve"]).output().unwrap();
+    assert!(!serve.status.success());
+    assert!(
+        stderr(&serve).contains("does not match the digest"),
+        "{}",
+        stderr(&serve)
+    );
+    assert!(
+        server.audit().contains("does not match the digest"),
+        "{}",
+        server.audit()
+    );
+
+    // Needs none of warden's settings, and shows the file before sealing it.
+    let refused = Command::new(env!("CARGO_BIN_EXE_warden-server"))
+        .env_clear()
+        .args(["seal-policy"])
+        .arg(&policy_file)
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    assert!(
+        stderr(&refused).contains("--accept-unverified"),
+        "{}",
+        stderr(&refused)
+    );
+    assert!(stderr(&refused).contains("svc"), "{}", stderr(&refused));
+
+    let seal = Command::new(env!("CARGO_BIN_EXE_warden-server"))
+        .env_clear()
+        .args(["seal-policy", "--accept-unverified"])
+        .arg(&policy_file)
+        .output()
+        .unwrap();
+    assert!(seal.status.success(), "{}", stderr(&seal));
+    assert!(stdout(&seal).contains("1 API entry"), "{}", stdout(&seal));
+    assert!(
+        fs::read_to_string(&policy_file)
+            .unwrap()
+            .contains("# edited")
+    );
+    let doctor = server.command(&["doctor"]).output().unwrap();
+    assert!(!line_of(&stdout(&doctor), "local.policy").contains("seal-policy"));
+}
+
+/// A refused seal names what is wrong and leaves the file as it was.
+#[test]
+fn seal_policy_refuses_a_draft_cut_short() {
+    let files = Files::new();
+    files.policy(API_ONLY);
+    let before = fs::read(&files.settings.policy_file).unwrap();
+    let draft = files.root.join("draft.toml");
+    fs::write(&draft, API_ONLY).unwrap();
+    let seal = Command::new(env!("CARGO_BIN_EXE_warden-server"))
+        .env_clear()
+        .args(["seal-policy", "--from"])
+        .arg(&draft)
+        .arg(&files.settings.policy_file)
+        .output()
+        .unwrap();
+    assert!(!seal.status.success());
+    assert!(
+        stderr(&seal).contains("[end_of_policy]"),
+        "{}",
+        stderr(&seal)
+    );
+    assert_eq!(fs::read(&files.settings.policy_file).unwrap(), before);
 }
 
 /// The weaker backend needs asking for: without the setting its files mean

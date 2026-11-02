@@ -14,6 +14,9 @@
 //! secret always comes from the file named by the policy it is checked against,
 //! but changing what a file holds and what the policy says are two steps: see
 //! `docs/local-backend.md` for how to rotate.
+//!
+//! A policy file ends with a digest of itself, so that a read which mixes two
+//! versions, or holds a part of one, is refused: see `verify_seal` and [`seal_policy_file`].
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -21,6 +24,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::Deserialize;
+use sha2::{Digest as _, Sha256};
 use ssh_key::HashAlg;
 use warden_broker_proto::{SecretName, TargetName};
 use zeroize::Zeroizing;
@@ -36,16 +40,28 @@ use crate::audit::{AuditEvent, AuditLog};
 use crate::config::LocalSettings;
 
 mod files;
+mod seal;
+
+pub use seal::{ACCESS_NOTE, SealError, SealedPolicy, Unverified, seal_policy_file, seal_text};
 
 use files::{Refusal, check_file_name, one_line, read_policy, read_secret};
 
-/// The line a policy file must end with. A file cut at any byte has lost it,
-/// or part of it, so it cannot pass for a complete one: a prefix of a valid
+/// The last line but one of a policy file. A file cut at any byte has lost it or
+/// the digest after it, so it cannot pass for a complete one: a prefix of a valid
 /// policy can otherwise be a valid and wider policy, because leaving out a
 /// setting takes its default. TOML allows the table once, and an occurrence
 /// inside an unfinished string does not parse, so no earlier cut can end with
 /// this line and still load.
 const END_MARKER: &str = "[end_of_policy]";
+
+/// What the last line of a policy file starts with, before the digest in
+/// lower-case hex and a closing quote.
+const DIGEST_LINE_START: &str = "sha256 = \"";
+
+/// Shown whenever a policy file's end cannot be trusted.
+const HOW_TO_SEAL: &str = "to change it, check a draft and run warden-server seal-policy --from \
+                           <draft> <file>; to see what this file allows, run warden-server \
+                           seal-policy <file>";
 
 /// What the audit log calls this backend.
 const AUDIT_CONTEXT: &str = "local secret backend";
@@ -60,14 +76,17 @@ struct PolicyFile {
     targets: BTreeMap<String, TargetEntry>,
     #[serde(default)]
     api_secrets: BTreeMap<String, ApiEntry>,
-    /// Holds nothing: see [`END_MARKER`].
+    /// Checked before parsing: see `verify_seal`.
     #[serde(rename = "end_of_policy")]
     _end_of_policy: EndOfPolicy,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct EndOfPolicy {}
+struct EndOfPolicy {
+    #[serde(rename = "sha256")]
+    _sha256: String,
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -186,14 +205,46 @@ impl LocalProbe {
     }
 }
 
+/// The digest line for `sealed`, which is everything before that line.
+fn digest_line(sealed: &str) -> String {
+    let digest = hex::encode(Sha256::digest(sealed));
+    format!("{DIGEST_LINE_START}{digest}\"")
+}
+
+/// Whether `text` is whole: it ends with [`END_MARKER`] and then the digest of
+/// every byte before the digest line, which is the last line. A read that mixes
+/// two versions of the file, in any proportion, holds bytes that do not match the
+/// digest it ended with, unless they are that version's bytes. Checked on the very
+/// bytes that get parsed, so nothing can change in between. The digest shows that
+/// the file is what its last writer finished, not who that was: anyone who can
+/// write the file can seal it.
+fn verify_seal(text: &str) -> Result<(), String> {
+    let complete = text.strip_suffix('\n').unwrap_or(text);
+    let line_start = complete.rfind('\n').map_or(0, |at| at + 1);
+    let (sealed, last_line) = complete.split_at(line_start);
+    let ends_with_marker = sealed
+        .strip_suffix('\n')
+        .and_then(|rest| rest.strip_suffix(END_MARKER))
+        .is_some_and(|before| before.is_empty() || before.ends_with('\n'));
+    if !ends_with_marker || !last_line.starts_with(DIGEST_LINE_START) {
+        return Err(format!(
+            "does not end with the line {END_MARKER} and then its digest, so it may be cut short \
+             or was never sealed; {HOW_TO_SEAL}"
+        ));
+    }
+    if last_line != digest_line(sealed) {
+        return Err(format!(
+            "does not match the digest on its last line: it was changed without sealing, or read \
+             while being overwritten; {HOW_TO_SEAL}"
+        ));
+    }
+    Ok(())
+}
+
 /// A complete policy file, or what is wrong with it. The parser's message is
 /// never used: it can quote the file, and a secret may have been pasted into it.
 fn parse_policy(text: &str) -> Result<PolicyFile, String> {
-    if text.trim_end().rsplit('\n').next() != Some(END_MARKER) {
-        return Err(format!(
-            "does not end with the line {END_MARKER}, so it may be cut short"
-        ));
-    }
+    verify_seal(text)?;
     toml::from_str(text).map_err(|e| {
         let line = e
             .span()
@@ -557,5 +608,7 @@ impl SecretBackend for LocalBackend {
     }
 }
 
+#[cfg(test)]
+mod integrity_tests;
 #[cfg(test)]
 mod tests;

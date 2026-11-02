@@ -20,6 +20,7 @@ use warden_broker::config::{
 };
 use warden_broker::identity::TailscaleServeIdentity;
 use warden_broker::notify::{ChannelSettings, Fallback, Notifier};
+use warden_broker::policy::local::{ACCESS_NOTE, Unverified, seal_policy_file};
 use warden_broker::policy::{LocalBackend, OnePasswordConnect, SecretBackend};
 use warden_broker::private_files::{self, DirectoryState};
 use warden_broker::relay::host_key::RelayHostKey;
@@ -66,6 +67,19 @@ enum Command {
     /// Manage enrolled passkeys.
     #[command(subcommand)]
     Passkey(PasskeyCommand),
+    /// With the local backend: end a finished policy file with its digest, and
+    /// replace it in one step. Needs no other setting.
+    SealPolicy {
+        /// The policy file, which warden reads.
+        file: PathBuf,
+        /// Take the content from this draft, rather than from the file itself.
+        #[arg(long, value_name = "DRAFT")]
+        from: Option<PathBuf>,
+        /// Seal the file itself although its digest does not match. It may be a mix
+        /// of two versions: run without this first, and read what it would allow.
+        #[arg(long, conflicts_with = "from")]
+        accept_unverified: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -174,6 +188,33 @@ async fn main() -> Result<ExitCode> {
         Command::Serve => serve().await?,
         Command::Enroll => enroll().await?,
         Command::Passkey(command) => passkey(command).await?,
+        Command::SealPolicy {
+            file,
+            from,
+            accept_unverified,
+        } => {
+            let unverified = if accept_unverified {
+                Unverified::Accept
+            } else {
+                Unverified::Refuse
+            };
+            let shown = file.display().to_string();
+            let sealed = tokio::task::spawn_blocking(move || {
+                seal_policy_file(&file, from.as_deref(), unverified)
+            })
+            .await
+            .context("the seal task failed")?
+            .with_context(|| format!("sealing {shown}"))?;
+            println!(
+                "{shown} sealed: {} target(s), {} API entry(ies). Entries and secrets are not \
+                 checked here: run warden-server doctor.",
+                sealed.targets, sealed.api_entries
+            );
+            for line in &sealed.access {
+                println!("  {line}");
+            }
+            println!("{ACCESS_NOTE}");
+        }
     }
     Ok(ExitCode::SUCCESS)
 }

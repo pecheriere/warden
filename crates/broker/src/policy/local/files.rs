@@ -4,13 +4,15 @@
 //! `O_NOFOLLOW`, and decides on `fstat` of what it opened, never on a second
 //! lookup of the name. So a symbolic link anywhere on the path is refused, and
 //! nothing can be swapped between the check and the read. A FIFO cannot block
-//! the open (`O_NONBLOCK`) and is then refused as not a regular file.
+//! the open (`O_NONBLOCK`) and is then refused as not a regular file. A file
+//! that is a mount of its own is refused as well: it stays on the old file when
+//! the one it came from is replaced, whatever names that file keeps.
 //!
 //! Nothing here returns a path or a file's content in an error.
 
 use std::fmt;
 use std::fs::{File, Metadata};
-use std::io::{self, Read as _};
+use std::io::{self, Read};
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Component, Path};
 
@@ -23,7 +25,7 @@ use zeroize::Zeroizing;
 const MAX_SECRET_BYTES: usize = 32 * 1024;
 
 /// Largest policy file read.
-const MAX_POLICY_BYTES: usize = 1024 * 1024;
+pub(super) const MAX_POLICY_BYTES: usize = 1024 * 1024;
 
 /// The permission bits for group and others.
 const GROUP_OTHER: u32 = 0o077;
@@ -98,7 +100,7 @@ fn check_ancestor(directory: &File, euid: u32) -> Result<(), Refusal> {
 }
 
 /// Open `path`, an absolute path, checking each directory on the way.
-fn open_directory(path: &Path, euid: u32) -> Result<File, Refusal> {
+pub(super) fn open_directory(path: &Path, euid: u32) -> Result<File, Refusal> {
     let mut current = File::from(rustix::fs::open("/", directory_flags(), Mode::empty())?);
     check_ancestor(&current, euid)?;
     for component in path.components() {
@@ -122,19 +124,87 @@ fn open_directory(path: &Path, euid: u32) -> Result<File, Refusal> {
 }
 
 /// Open the file `name` in `directory` without following a link or blocking.
-fn open_regular(directory: &File, name: &Path) -> Result<(File, std::fs::Metadata), Refusal> {
+pub(super) fn open_regular(
+    directory: &File,
+    name: &Path,
+) -> Result<(File, std::fs::Metadata), Refusal> {
     let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK;
     let file = File::from(rustix::fs::openat(directory, name, flags, Mode::empty())?);
     let meta = file.metadata().map_err(|e| Refusal::Io(e.kind()))?;
     if !meta.is_file() {
         return Err(Refusal::Rule("is not a regular file"));
     }
+    // Only Linux has bind mounts of a single file among the systems warden runs on.
+    #[cfg(target_os = "linux")]
+    check_not_a_mount(&file)?;
     Ok((file, meta))
+}
+
+#[cfg(target_os = "linux")]
+const MOUNTED_ALONE: &str = "is a mount of this one file, which keeps showing the old file after \
+                             it is replaced; mount the directory holding it";
+
+#[cfg(target_os = "linux")]
+const CANNOT_TELL: &str = "cannot be checked for a mount of the single file: this needs Linux 5.8 \
+                           or later, with the statx system call allowed";
+
+/// A bind mount of one file stays on that file's inode. After a rename over the
+/// source, the mount shows the old content: with no name left when the old file
+/// was replaced, which `nlink` shows, but with one name when it was first moved
+/// aside as a backup, which nothing about the file shows. So the mount itself is
+/// refused, before any edit, rather than its aftermath. The kernel has reported
+/// this since Linux 5.8; on one that does not, warden cannot tell, and refuses.
+#[cfg(target_os = "linux")]
+fn check_not_a_mount(file: &File) -> Result<(), Refusal> {
+    use rustix::fs::{AtFlags, StatxFlags, statx};
+
+    statx_rule(&statx(
+        file,
+        c"",
+        AtFlags::EMPTY_PATH,
+        StatxFlags::BASIC_STATS,
+    ))
+}
+
+/// The decision on what the `statx` call returned.
+#[cfg(target_os = "linux")]
+fn statx_rule(result: &rustix::io::Result<rustix::fs::Statx>) -> Result<(), Refusal> {
+    match result {
+        Ok(stat) => mount_rule(stat.stx_attributes_mask, stat.stx_attributes),
+        Err(errno) => Err(statx_failed(*errno)),
+    }
+}
+
+/// A kernel without `statx`, or a sandbox that forbids it, cannot answer: name what
+/// is needed, because it stops this backend altogether.
+#[cfg(target_os = "linux")]
+fn statx_failed(errno: Errno) -> Refusal {
+    match errno {
+        Errno::NOSYS | Errno::PERM | Errno::ACCESS => Refusal::Rule(CANNOT_TELL),
+        other => Refusal::from(other),
+    }
+}
+
+/// The decision on what `statx` reports.
+#[cfg(target_os = "linux")]
+fn mount_rule(
+    known: rustix::fs::StatxAttributes,
+    attributes: rustix::fs::StatxAttributes,
+) -> Result<(), Refusal> {
+    use rustix::fs::StatxAttributes;
+
+    if !known.contains(StatxAttributes::MOUNT_ROOT) {
+        return Err(Refusal::Rule(CANNOT_TELL));
+    }
+    if attributes.contains(StatxAttributes::MOUNT_ROOT) {
+        return Err(Refusal::Rule(MOUNTED_ALONE));
+    }
+    Ok(())
 }
 
 /// All of `file`, as text, in memory wiped on drop. Allocated once at its
 /// largest, so that growing it leaves no copy for `Zeroizing` to miss.
-fn read_limited(file: File, limit: usize) -> Result<Zeroizing<String>, Refusal> {
+pub(super) fn read_limited(file: impl Read, limit: usize) -> Result<Zeroizing<String>, Refusal> {
     let mut text = Zeroizing::new(String::with_capacity(limit + 1));
     let most = u64::try_from(limit).map_or(u64::MAX, |n| n.saturating_add(1));
     file.take(most)
@@ -167,7 +237,7 @@ pub(super) fn read_policy(path: &Path, euid: u32) -> Result<Zeroizing<String>, R
 /// a bind mount of the single file keeps showing the old content after a rename
 /// over the source, and obeying that would ignore a revocation. A second name
 /// is refused too, because it would hide that from this check.
-fn check_policy_file(meta: &Metadata, euid: u32) -> Result<(), Refusal> {
+pub(super) fn check_policy_file(meta: &Metadata, euid: u32) -> Result<(), Refusal> {
     if meta.nlink() == 0 {
         return Err(Refusal::Rule(
             "was replaced or removed, and this path still shows the old file; mount the directory \
@@ -512,6 +582,84 @@ mod tests {
             0o600,
         );
         assert_eq!(rule(read_policy(&path, euid())), "is too large");
+    }
+
+    /// What the kernel reports decides, and not knowing refuses.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_mount_of_one_file_is_refused_and_so_is_not_being_able_to_tell() {
+        use rustix::fs::StatxAttributes;
+
+        use super::{MOUNTED_ALONE, mount_rule};
+
+        let (none, root) = (StatxAttributes::empty(), StatxAttributes::MOUNT_ROOT);
+        assert_eq!(mount_rule(root, none), Ok(()));
+        assert_eq!(mount_rule(root, root), Err(Refusal::Rule(MOUNTED_ALONE)));
+        assert!(
+            matches!(mount_rule(none, none), Err(Refusal::Rule(reason)) if reason.contains("5.8"))
+        );
+    }
+
+    /// A kernel or sandbox refusing the call is told apart from a failed read.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_kernel_without_statx_is_named_as_the_reason() {
+        use rustix::io::Errno;
+
+        for errno in [Errno::NOSYS, Errno::PERM, Errno::ACCESS] {
+            assert_eq!(
+                super::statx_rule(&Err(errno)),
+                Err(Refusal::Rule(super::CANNOT_TELL))
+            );
+        }
+        assert!(matches!(
+            super::statx_rule(&Err(Errno::IO)),
+            Err(Refusal::Io(_))
+        ));
+    }
+
+    /// The real kernel's answer, on something always a mount (`/`) and on a
+    /// plain file.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_kernel_tells_a_mount_from_a_plain_file() {
+        let (_guard, dir) = private_dir();
+        let path = write(&dir, "plain", b"", 0o600);
+        assert_eq!(
+            super::check_not_a_mount(&fs::File::open(path).unwrap()),
+            Ok(())
+        );
+        assert_eq!(
+            super::check_not_a_mount(&fs::File::open("/").unwrap()),
+            Err(Refusal::Rule(super::MOUNTED_ALONE))
+        );
+    }
+
+    /// A real bind mount of one file, which CI prepares because mounting needs
+    /// root: refused before and after the file behind it is moved aside and
+    /// replaced, the case that leaves the old file with one name.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_bind_mount_of_the_policy_file_is_refused() {
+        let mounted = std::env::var_os("WARDEN_TEST_BIND_MOUNTED_FILE")
+            .expect("WARDEN_TEST_BIND_MOUNTED_FILE names a file bind-mounted on its own");
+        let source = std::env::var_os("WARDEN_TEST_BIND_MOUNT_SOURCE")
+            .expect("WARDEN_TEST_BIND_MOUNT_SOURCE names the file behind that mount");
+        let mounted = Path::new(&mounted);
+        assert_eq!(rule(read_policy(mounted, euid())), super::MOUNTED_ALONE);
+        let (directory, name) = (mounted.parent().unwrap(), mounted.file_name().unwrap());
+        assert_eq!(
+            rule(read_secret(directory, name.to_str().unwrap(), euid())),
+            super::MOUNTED_ALONE
+        );
+        let source = Path::new(&source);
+        let backup = source.with_extension("bak");
+        fs::rename(source, &backup).unwrap();
+        fs::write(source, b"new").unwrap();
+        let after = rule(read_policy(mounted, euid()));
+        fs::remove_file(source).unwrap();
+        fs::rename(&backup, source).unwrap();
+        assert_eq!(after, super::MOUNTED_ALONE);
     }
 
     #[test]
