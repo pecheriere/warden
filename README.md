@@ -9,10 +9,16 @@ expires on its own. The agent never holds a long-lived secret.
 
 <img src="docs/design/mockups/approve-iphone-light.png" alt="The approve page on a phone: the agent, the access with a read-only badge, the goal, the fingerprint, the grant window and the Approve and Deny buttons" width="320">
 
-## Try it in five minutes
+## Try the demo
 
-See the whole flow on one machine, with no Tailscale, 1Password, Docker or
-phone. It needs Rust and a browser that can create a passkey. Terminal one:
+The fastest way to see warden work is a local demo. **It is a demo and is not
+secure for real use**: everyone on the machine counts as the owner, and all its
+data is throwaway. It shows the whole flow on one machine, with no Tailscale,
+1Password, Docker or phone.
+
+It currently needs [Rust](https://rustup.rs), because it is built from source:
+whether to publish a demo binary has not been decided. You also need a browser
+that can create a passkey. In a first terminal:
 
 ```sh
 git clone https://github.com/pecheriere/warden && cd warden
@@ -21,9 +27,35 @@ target/debug/warden-demo
 ```
 
 It prints the exact next steps: enroll a passkey in your browser, request
-access from a second terminal, approve, call a local API through the broker,
-read the audit log. **This demo is not secure for real use** and is not in the
-image. [What it does and does not show](docs/demo.md).
+access from a second terminal, approve, call a local API through the broker and
+read the audit log. The demo is not in the image, and it covers API calls only.
+[What it does and does not show](docs/demo.md).
+
+For a real setup, go on to the [recommended setup](#recommended-setup) and the
+[quick start](#quick-start).
+
+## Who warden is for
+
+warden is for people who run AI agents or scripts, often unattended, and
+want them to reach their own servers, devices and APIs without holding a
+standing credential. You run the server yourself, so you need to be
+comfortable administering a Linux host and a tailnet.
+
+Each warden server has one owner, who approves every request. One owner can
+have many agents, but there are no teams, roles or shared approvals.
+
+**Status: early.** The current release is **0.8.1**. warden has a single
+maintainer and has not had an independent security review. Before 1.0,
+expect this to change:
+
+- **Settings and upgrades.** Releases can include breaking changes, and
+  database migrations are one-way. Read the [changelog](CHANGELOG.md) and
+  back up before you upgrade.
+- **How you install and set it up.** The CLI is built from source today
+  ([#71](https://github.com/pecheriere/warden/issues/71)), and setup is
+  manual ([#77](https://github.com/pecheriere/warden/issues/77),
+  [#78](https://github.com/pecheriere/warden/issues/78)).
+- **Which setups exist.** See [Supported setups](#supported-setups).
 
 ## Why warden
 
@@ -87,10 +119,43 @@ What warden can grant:
 | **SSH, relay mode** (appliances, password-only hosts) | A session through warden's SSH relay; warden logs in to the target. | The target's key or password. |
 | **HTTP API calls** | warden makes each call, adds the secret, and returns the answer with the secret redacted. | The API secret. |
 
-Status: early development, for one owner. The current release is
-**0.8.1**; see the [changelog](CHANGELOG.md).
+## Recommended setup
 
-## Requirements
+Run warden with **Tailscale, Docker and 1Password**, on a Linux server
+dedicated to it. All three are required today. What each part protects:
+
+- **Tailscale** keeps warden off the internet and tells it who is calling.
+  The tailnet policy keeps the approval page off agent machines, so a
+  prompt-injected agent cannot put an approval prompt in front of you on a
+  machine it controls.
+- **Docker** runs warden and 1Password Connect as hardened containers: no
+  capabilities, a read-only root filesystem and no published ports. Connect
+  sits on its own network, so it cannot reach warden's listeners and forge
+  your identity.
+- **1Password** holds targets, API secrets and the SSH CA key in a dedicated
+  vault, not in warden's database or configuration. warden's token is
+  read-only and limited to that vault, so a compromised warden can read what
+  the vault holds, but cannot change the policy or reach your other vaults.
+
+### Supported setups
+
+The first two use Docker and differ in how warden joins the tailnet. All three
+use 1Password Connect, which 1Password ships only as a container.
+
+| Setup | State | Access | What it costs in security |
+|-------|-------|--------|---------------------------|
+| **Tailscale Services** on the host | Recommended. The [guide](docs/deployment.md#1-the-recommended-layout) is the main path. | SSH certificates, API calls. No SSH relay. | [The whole host is trusted](docs/deployment.md#who-can-reach-the-listeners). Any local process can reach the listeners and forge your login. That cannot approve anything, but it can read the history, revoke grants and use a stolen bearer key, so the host must run nothing else untrusted. |
+| **Tailscale sidecar** container | [Documented](docs/deployment.md#10-the-sidecar-layout-for-relay-targets), but not yet tested end to end. | SSH certificates, API calls, SSH relay. | Other host processes cannot reach the listeners, but firewall rules can no longer tell warden's traffic from Tailscale's, and hardening the Tailscale container is untested. With relay targets, warden also [reads and uses their credentials](docs/threat-model.md#relay-mode-residual-risks), so a compromised warden can expose them. |
+| **systemd service**, warden outside a container | [Documented](docs/deployment-systemd.md), but not yet tested on a clean host. Needs a release later than 0.8.1 and a build from source. | SSH certificates, API calls. No SSH relay. | As for Tailscale Services, the whole host is trusted. warden also [loses the image's isolation](docs/deployment-systemd.md#1-what-holds-what-is-replaced-what-is-lost): it shares the host's filesystem (read-only) and network stack, and there is no build attestation yet. |
+
+The [local demo](docs/demo.md) is for trying warden, not one of these setups:
+it is not secure for real use.
+
+Other setups are planned but **do not exist yet**: approving without Tailscale
+([#75](https://github.com/pecheriere/warden/issues/75)) and secrets without
+1Password ([#76](https://github.com/pecheriere/warden/issues/76)).
+
+### Requirements
 
 - A Linux server dedicated to warden, on a
   [Tailscale](https://tailscale.com) tailnet. warden is reachable only over
@@ -102,12 +167,15 @@ Status: early development, for one owner. The current release is
 - A 1Password account that can run a
   [1Password Connect](https://developer.1password.com/docs/connect/) server.
 - A phone with a passkey (and on the tailnet).
+- A notification channel: [Home Assistant or ntfy](docs/notifications.md).
 - On each agent machine: the `warden` CLI and OpenSSH.
 
 ## Quick start
 
-This is the short path. [Deployment](docs/deployment.md) explains each step
-and the reasons behind it; follow it for a real setup.
+This is the short path through the recommended setup, and it needs everything
+above. To look first without any of that, [try the demo](#try-the-demo).
+[Deployment](docs/deployment.md) explains each step and the reasons behind
+it; follow it for a real setup.
 
 1. **Tailscale.** Tag the server `tag:warden-host`, and publish warden as
    two [Tailscale Services][svc]: `svc:warden` (the approval UI) granted to
@@ -140,8 +208,10 @@ and the reasons behind it; follow it for a real setup.
    gh attestation verify oci://ghcr.io/pecheriere/warden:0.8.1 --owner pecheriere
    ```
 
-   [The Compose file](docs/deployment.md#5-run-warden), and
-   [every setting](docs/configuration.md).
+   [The Compose file](docs/deployment.md#5-run-warden),
+   [every setting](docs/configuration.md), and
+   [the notification channel](docs/notifications.md), which warden needs in
+   order to start.
 
 4. **Publish the Services** on the server:
 
@@ -167,7 +237,8 @@ and the reasons behind it; follow it for a real setup.
    # on the server, with the agent's public key line
    docker compose exec warden /warden-server agent add build-agent \
      --public-key "ssh-ed25519 AAAA… build-agent"
-   # on the agent machine
+   # on the agent machine (Rust 1.99 or later; releases after v0.8.1 also
+   # attach binaries, see Agent usage)
    cargo install --locked --git https://github.com/pecheriere/warden --tag v0.8.1 warden-broker-cli
    warden login --server https://warden-api.example.ts.net --agent build-agent \
      --ssh-key ~/.ssh/build-agent.pub
@@ -198,6 +269,8 @@ and the reasons behind it; follow it for a real setup.
 | [1Password items](docs/1password-items.md) | The exact tags and fields of targets, API secrets and the CA. |
 | [Notifications](docs/notifications.md) | Home Assistant and ntfy. |
 | [Agent usage](docs/agent-usage.md) | Setting up an agent and how it should ask for access. |
+| [Agent instructions](docs/agent-instructions.md) | A block to paste into an agent's `AGENTS.md` or `CLAUDE.md`. |
+| [Examples](docs/agent-examples.md) | An SSH deployment and an API call, end to end. |
 | [Agent protocol](docs/agent-protocol.md) | The agent API, for writing another client. |
 | [Threat model](docs/threat-model.md) | What warden protects, what it does not, and what it assumes. |
 | [Design](docs/design.md) | The design and its decisions. |
@@ -219,8 +292,9 @@ and the reasons behind it; follow it for a real setup.
   log. Secrets never reach the log or the notifications.
 
 warden does not protect against whoever controls the warden host (it is the
-root of trust), against an approved agent misusing its window, or against a
-misleading goal you approve. Grants are not yet tied to a task, so one
+root of trust) or the 1Password vault, against an approved agent or code on
+its machine misusing its window, or against a misleading goal you approve.
+Grants are not yet tied to a task, so one
 agent's sessions can share them
 ([#49](https://github.com/pecheriere/warden/issues/49)), and a revoke does
 not cancel an API call already in flight

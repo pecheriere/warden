@@ -81,11 +81,16 @@ for path in crates/demo/src crates/demo/tests; do
   grep -qx "$path" .dockerignore || fail ".dockerignore does not exclude $path"
 done
 
-# 5. The release workflow neither builds nor publishes the demo.
-[ -f .github/workflows/release.yml ] || fail "release.yml not found"
-if offending="$(grep -nE 'warden-demo|crates/demo|--workspace|cargo install' .github/workflows/release.yml)"; then
-  fail "the release workflow could build the demo: $offending"
-fi
+# 5. The release workflow, and the script it builds the CLI with, neither build
+#    nor publish the demo.
+for file in .github/workflows/release.yml scripts/package-cli.sh; do
+  [ -f "$file" ] || fail "$file not found"
+  if offending="$(grep -nE 'warden-demo|crates/demo|--workspace|cargo install' "$file")"; then
+    fail "$file could build the demo: $offending"
+  fi
+done
+grep -q 'cargo build --release --locked -p warden-broker-cli ' scripts/package-cli.sh \
+  || fail "scripts/package-cli.sh builds something other than the CLI"
 
 # 6. The demo cannot be published to a registry.
 grep -qx 'publish = false' crates/demo/Cargo.toml || fail "warden-demo is publishable"

@@ -139,6 +139,11 @@ async fn the_documented_flow_works_with_real_checks() {
     let browser = Browser::new(&demo);
     let call = ["http", SECRET_NAME, "GET", target.as_str()];
 
+    // The settings the demo writes are a working setup, as `warden doctor` sees it.
+    let doctor = agent(&demo, &["doctor"]).output().unwrap();
+    assert!(doctor.status.success(), "{}", text(&doctor));
+    assert!(!text(&doctor).contains("wdn_"), "{}", text(&doctor));
+
     // Nothing has been approved, so the agent can call nothing.
     let refused = agent(&demo, &call).output().unwrap();
     assert!(!refused.status.success(), "{}", text(&refused));

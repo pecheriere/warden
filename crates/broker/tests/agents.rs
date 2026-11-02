@@ -194,8 +194,15 @@ fn notify_channels_keep_the_configured_priority_order() {
     let cfg = both("ntfy,homeassistant");
     assert_eq!(kinds(&cfg), [ChannelKind::Ntfy, ChannelKind::HomeAssistant]);
     let shown = format!("{cfg:?}");
-    assert!(!shown.contains("tk_ntfy-secret"), "{shown}");
-    assert!(!shown.contains("secret-hook-id"), "{shown}");
+    // Fixed messages: on failure, printing `shown` would expose what leaked.
+    assert!(
+        !shown.contains("tk_ntfy-secret"),
+        "Debug output of the config contains the ntfy token"
+    );
+    assert!(
+        !shown.contains("secret-hook-id"),
+        "Debug output of the config contains the webhook id"
+    );
 }
 
 #[test]
@@ -208,7 +215,10 @@ fn notify_single_channel_works_alone() {
     .unwrap();
     let channels: Vec<&ChannelSettings> = cfg.notify.iter().collect();
     let [ChannelSettings::Ntfy { url, token }] = channels.as_slice() else {
-        panic!("expected only ntfy, got {:?}", cfg.notify);
+        panic!(
+            "expected only ntfy, got {} channels or another kind",
+            channels.len()
+        );
     };
     assert_eq!(url.as_str(), "https://ntfy.example.com/warden");
     assert!(token.is_none());

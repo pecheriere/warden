@@ -44,6 +44,9 @@ const REMOVED: [(&str, &str); 3] = [
 const HA_WEBHOOK_URL: &str = "WARDEN_NOTIFY_HOMEASSISTANT_WEBHOOK_URL";
 const NTFY_URL: &str = "WARDEN_NOTIFY_NTFY_URL";
 const NTFY_TOKEN: &str = "WARDEN_NOTIFY_NTFY_TOKEN";
+const HA_WEBHOOK_URL_FILE: &str = "WARDEN_NOTIFY_HOMEASSISTANT_WEBHOOK_URL_FILE";
+const NTFY_URL_FILE: &str = "WARDEN_NOTIFY_NTFY_URL_FILE";
+const NTFY_TOKEN_FILE: &str = "WARDEN_NOTIFY_NTFY_TOKEN_FILE";
 
 /// A built-in notification channel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,6 +87,16 @@ impl ChannelKind {
         match self {
             Self::HomeAssistant => &[HA_WEBHOOK_URL],
             Self::Ntfy => &[NTFY_URL, NTFY_TOKEN],
+        }
+    }
+
+    /// The variables of the channel that may also be read from a file, each
+    /// with the variable naming that file. An ntfy topic URL is among them:
+    /// whoever knows a topic can read it.
+    pub(crate) const fn file_variables(self) -> &'static [(&'static str, &'static str)] {
+        match self {
+            Self::HomeAssistant => &[(HA_WEBHOOK_URL, HA_WEBHOOK_URL_FILE)],
+            Self::Ntfy => &[(NTFY_URL, NTFY_URL_FILE), (NTFY_TOKEN, NTFY_TOKEN_FILE)],
         }
     }
 }

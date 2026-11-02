@@ -24,6 +24,10 @@ warden's guarantees depend on its surroundings as much as on its code. The
 [threat model](threat-model.md#deployment-assumptions) lists the assumptions;
 this guide is how to meet them.
 
+[Running warden without Docker](deployment-systemd.md) describes a systemd
+service instead. It gives up part of the isolation below and has not been
+tested on a clean host, so this guide stays the recommended way.
+
 Contents:
 
 1. [The recommended layout](#1-the-recommended-layout)
@@ -775,6 +779,21 @@ secret, so make it long and random. Details and the automation are in
 
 Run these on the warden host, in `/srv/warden`.
 
+Check the setup at any step with
+[`warden-server doctor`](configuration.md#checking-a-setup). It changes nothing,
+and says what to fix and what it could not check, such as Funnel:
+
+```sh
+docker compose exec warden /warden-server doctor
+# Also sends a test message through every channel, to the owner's phone:
+docker compose exec warden /warden-server doctor --send-test-notification
+```
+
+It exits 1 when a check failed, and otherwise 0. Exit 0 does not mean
+everything was checked: do the items its summary lists by hand. With `--strict`
+those items make it exit 7. On an agent machine,
+[`warden doctor`](configuration.md#checking-an-agent-machine) does the same.
+
 1. **Enroll the owner's passkey**, on the phone:
 
    ```sh
@@ -796,10 +815,15 @@ Run these on the warden host, in `/srv/warden`.
    # A key-signed agent: paste the public key line (the content of its .pub
    # file) that the agent machine's user sent you:
    docker compose exec warden /warden-server agent add build-agent \
+     --server https://warden-api.example.ts.net \
      --public-key 'ssh-ed25519 AAAA… build-agent'
    # Or a bearer-key agent; the key is printed once:
-   docker compose exec warden /warden-server agent add build-agent
+   docker compose exec warden /warden-server agent add build-agent \
+     --server https://warden-api.example.ts.net
    ```
+
+   Each prints what to run on the agent's machine. Then give the agent
+   [its instructions](agent-instructions.md).
 
 4. **Make a test request** from the agent machine, approve it on the phone,
    and check the audit log:

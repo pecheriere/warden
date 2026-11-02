@@ -31,7 +31,6 @@ ssh-encoding.workspace = true
 ssh-key = { workspace = true, features = ["std", "ed25519", "getrandom"] }
 tokio.workspace = true
 toml.workspace = true
-unicode-properties.workspace = true
 url.workspace = true
 warden-broker-proto.workspace = true
 zeroize.workspace = true

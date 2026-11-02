@@ -18,8 +18,11 @@ deployment is described in [deployment.md](deployment.md).
   build command, which also needs `perl` and `make`.
 - A browser that can create a passkey. The first build takes a few minutes.
 
-There is no Docker version. Reaching a container from the browser means
-listening on something other than loopback inside it, which the demo refuses.
+The demo currently needs Rust, because it is built from source: whether to
+publish a demo binary has not been decided, and the binaries a release attaches
+are the `warden` CLI only. There is no Docker version either. Reaching a
+container from the browser means listening on something other than loopback
+inside it, which the demo refuses.
 
 ## Run it
 

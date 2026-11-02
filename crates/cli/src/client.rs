@@ -17,14 +17,14 @@ use reqwest::{Method, Response, StatusCode};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use url::{Position, Url};
+use warden_broker_proto::doctor::sanitize;
 use warden_broker_proto::{
     ApiError, CreateRequest, CreatedResponse, GrantView, Id, InfoResponse, ProxyRequest,
     ProxyResponse, RequestStatus,
 };
 use zeroize::Zeroizing;
 
-use crate::config::check_server_url;
-use crate::http::sanitize;
+use crate::config::{self, Config, check_server_url};
 use crate::sign::Signer;
 
 /// Longest the server may hold a status request (`wait`), in seconds.
@@ -128,6 +128,18 @@ impl Client {
             base: as_directory(base),
             auth,
         })
+    }
+
+    /// A client for the broker of `config`, authenticating as its agent.
+    ///
+    /// # Errors
+    /// If the signer or the bearer key is not available, or see [`Self::new`].
+    pub fn for_config(config: &Config) -> Result<Self> {
+        let auth = match config.signer()? {
+            Some(signer) => Auth::Signed(Box::new(signer)),
+            None => Auth::Bearer(config::agent_key(config)?),
+        };
+        Self::new(&config.server, auth)
     }
 
     fn url(&self, path: &str) -> Result<Url, CallError> {
@@ -292,12 +304,17 @@ pub enum CallError {
     /// The broker says the grant was revoked (409). Trying again will not
     /// help: access has to be requested again.
     Revoked(String),
+    /// The broker says the grant expired (409), maybe while the call was
+    /// out. Trying again will not help: access has to be requested again.
+    Expired(String),
 }
 
 impl fmt::Display for CallError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Unavailable(m) | Self::Refused(m) | Self::Revoked(m) => f.write_str(m),
+            Self::Unavailable(m) | Self::Refused(m) | Self::Revoked(m) | Self::Expired(m) => {
+                f.write_str(m)
+            }
         }
     }
 }
@@ -324,6 +341,10 @@ async fn json<T: DeserializeOwned>(resp: Response, expected: StatusCode) -> Resu
 /// grant revoked, or sees it revoked while it was out).
 const GRANT_REVOKED: &str = "grant revoked";
 
+/// How the broker's 409 for an expired grant begins (a call that finds the
+/// grant expired, or sees it expire while it was out).
+const GRANT_EXPIRED: &str = "grant expired";
+
 /// The server's error for a failed call, classified by its status, with
 /// the broker's message made safe to print.
 async fn failure(resp: Response) -> CallError {
@@ -338,12 +359,15 @@ async fn failure(resp: Response) -> CallError {
         Some(body) => format!("{what} ({status}): {}", sanitize(&body.error)),
         None => format!("{what} ({status})"),
     };
+    let conflict = body
+        .filter(|_| status == StatusCode::CONFLICT)
+        .map_or_else(String::new, |b| b.error);
     if status.is_server_error() {
         CallError::Unavailable(message)
-    } else if status == StatusCode::CONFLICT
-        && body.is_some_and(|b| b.error.starts_with(GRANT_REVOKED))
-    {
+    } else if conflict.starts_with(GRANT_REVOKED) {
         CallError::Revoked(message)
+    } else if conflict.starts_with(GRANT_EXPIRED) {
+        CallError::Expired(message)
     } else {
         CallError::Refused(message)
     }
@@ -462,9 +486,23 @@ mod tests {
                 )))
             );
         }
-        let expired = client(&answering(409, r#"{"error":"grant expired"}"#).await);
+        for (message, body) in [
+            ("grant expired", r#"{"error":"grant expired"}"#),
+            (
+                "grant expired during the call",
+                r#"{"error":"grant expired during the call"}"#,
+            ),
+        ] {
+            assert_eq!(
+                client(&answering(409, body).await).proxy(&id, &call).await,
+                Err(CallError::Expired(format!(
+                    "broker refused (409 Conflict): {message}"
+                )))
+            );
+        }
+        let changed = client(&answering(409, r#"{"error":"policy changed"}"#).await);
         assert!(matches!(
-            expired.proxy(&id, &call).await,
+            changed.proxy(&id, &call).await,
             Err(CallError::Refused(_))
         ));
     }

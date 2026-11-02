@@ -663,7 +663,9 @@ enrolled passkeys and agents (re-enroll them).
   `ghcr.io/pecheriere/warden` with a build provenance attestation or built
   from this repository, as a non-root user with all capabilities dropped and
   a read-only root filesystem. The data volume (database and audit log) is the
-  only writable path and is backed up.
+  only writable path and is backed up. A
+  [systemd service](deployment-systemd.md) is the alternative for hosts that
+  should not run warden in a container, with less isolation.
 - **Two supported ways to publish** the listeners: a dedicated node (below)
   or Tailscale Services (after it; the recommended one, see
   [deployment.md](deployment.md)). Both keep the rule that only Serve may

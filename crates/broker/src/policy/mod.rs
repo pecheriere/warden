@@ -15,7 +15,7 @@ use zeroize::Zeroizing;
 
 pub mod onepassword;
 
-pub use onepassword::OnePasswordConnect;
+pub use onepassword::{CaProbe, OnePasswordConnect, VaultProbe};
 
 /// How warden grants access to an SSH target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

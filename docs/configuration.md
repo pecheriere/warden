@@ -19,7 +19,7 @@ Values are never echoed in errors.
 | `WARDEN_PUBLIC_URL` | The approval UI's URL: `https`, a domain name (not an IP address), no path, query or credentials. Its host is the WebAuthn relying party: changing it invalidates every enrolled passkey. Notifications link to it. |
 | `WARDEN_OWNER_LOGIN` | The owner's Tailscale login (as Tailscale Serve reports it in `Tailscale-User-Login`). Only this login may use the approval UI or a bearer agent key. |
 | `WARDEN_OP_CONNECT_URL` | The 1Password Connect API, for example `http://172.31.251.11:8080`. |
-| `WARDEN_OP_CONNECT_TOKEN` | The Connect token. Read-only, for the warden vault only. Secret. |
+| `WARDEN_OP_CONNECT_TOKEN` | The Connect token. Read-only, for the warden vault only. Secret; can be [read from a file](#secrets-in-files). |
 | `WARDEN_NOTIFY` | The notification channels in priority order, comma-separated, lowercase: `homeassistant`, `ntfy`. See [Notifications](notifications.md). |
 
 ### Optional
@@ -42,8 +42,31 @@ Values are never echoed in errors.
 | `WARDEN_RELAY_MAX_SESSIONS` | `16` | Relayed sessions open at once, 1 to 1024. Each grant may hold 4. |
 | `RUST_LOG` | `info` | Log filter, in [`tracing` `EnvFilter`](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html) syntax. |
 
-Pass the secrets from a secret manager or an environment file readable only
-by root, never on a command line or in a repository.
+Pass the secrets from a secret manager, an environment file readable only by
+root, or a file as below, never on a command line or in a repository.
+
+### Secrets in files
+
+These variables can be read from a file instead, by setting the name with
+`_FILE` added to the path of that file. Then the process environment holds only
+the path. [The systemd service](deployment-systemd.md) uses this.
+
+| Variable | Read from a file with |
+|----------|-----------------------|
+| `WARDEN_OP_CONNECT_TOKEN` | `WARDEN_OP_CONNECT_TOKEN_FILE` |
+| `WARDEN_NOTIFY_HOMEASSISTANT_WEBHOOK_URL` | `WARDEN_NOTIFY_HOMEASSISTANT_WEBHOOK_URL_FILE` |
+| `WARDEN_NOTIFY_NTFY_URL` | `WARDEN_NOTIFY_NTFY_URL_FILE` |
+| `WARDEN_NOTIFY_NTFY_TOKEN` | `WARDEN_NOTIFY_NTFY_TOKEN_FILE` |
+
+`warden-server serve` reads each file once, at startup, and `warden-server
+doctor` when it runs; neither prints its content. `serve` refuses to start, and
+doctor fails its `config` check, naming the `_FILE` variable, when:
+
+- both forms of one secret are set;
+- the file is missing or unreadable, or is not a regular file;
+- other users have any access to it (mode bits `0o007`; group access is allowed);
+- it is empty, not valid UTF-8, larger than 32 KiB or more than one line. A
+  line ending at the end of the file is removed.
 
 The variables of the fixed notifier wiring before 0.5.0
 (`WARDEN_HA_WEBHOOK_URL`, `WARDEN_NTFY_URL`, `WARDEN_NTFY_TOKEN`) are
@@ -53,16 +76,19 @@ refused at startup, with the name of the replacement.
 
 Run them in the container, for example
 `docker compose exec warden /warden-server <command>`. They use the same
-environment as the server. The image's default command is `serve`.
+environment as the server. The image's default command is `serve`. For the
+systemd service, see [Server commands](deployment-systemd.md#7-server-commands)
+there.
 
 | Command | What it does | Needs |
 |---------|--------------|-------|
 | `serve` | Runs the agent API, the approval UI and, when configured, the SSH relay. | All of the above. |
+| `doctor [--send-test-notification] [--strict]` | Checks the configuration and says what to fix. See [Checking a setup](#checking-a-setup). | The same environment as `serve`. |
 | `enroll` | Prints a one-time code (single use, valid 10 minutes) and the URL of the enrollment page, where the owner creates a passkey. | `WARDEN_DB_PATH`, `WARDEN_AUDIT_PATH`, `WARDEN_PUBLIC_URL` |
 | `passkey list` | Lists enrolled passkeys: id, label, creation time. | `WARDEN_DB_PATH` |
 | `passkey remove <id>` | Removes a passkey. | `WARDEN_DB_PATH`, `WARDEN_AUDIT_PATH` |
-| `agent add <name>` | Creates a bearer-key agent and prints its key once. | `WARDEN_DB_PATH`, `WARDEN_AUDIT_PATH` |
-| `agent add <name> --public-key '<line>'` | Creates a key-signed agent, with the public key line of its signing key (`ssh-ed25519` or `ecdsa-sha2-nistp256`). No bearer key is made. | same |
+| `agent add <name>` | Creates a bearer-key agent and prints its key once, alone on stdout. On stderr, what to run on the agent's machine; `--server <url>` gives the agent API's URL to use there. | `WARDEN_DB_PATH`, `WARDEN_AUDIT_PATH` |
+| `agent add <name> --public-key '<line>'` | Creates a key-signed agent, with the public key line of its signing key (`ssh-ed25519` or `ecdsa-sha2-nistp256`). No bearer key is made. On stderr, the `warden login` command for the agent's machine, with `--server <url>` as above and the audience from `WARDEN_AUDIENCE_PATH` once the server has created it. | same |
 | `agent set-key <name> '<line>'` | Switches an agent to key-signed requests. Its bearer key stops working at once. | same |
 | `agent list` | Lists agents: name, creation time, `active` or `revoked@<time>`, `bearer` or `ssh-key`, and the key's `SHA256:` fingerprint (`-` for a bearer key). | `WARDEN_DB_PATH` |
 | `agent revoke <name>` | Disables the agent, ends its pending requests and grants, and ends its relay sessions. A running server notices within about 30 seconds for waiting clients and within seconds for relay sessions. | `WARDEN_DB_PATH`, `WARDEN_AUDIT_PATH` |
@@ -71,6 +97,71 @@ environment as the server. The image's default command is `serve`.
 
 Agent names match `^[a-z0-9][a-z0-9-]{0,31}$`. A key belongs to one agent,
 and a revoked agent keeps its key: make a new key after a revocation.
+
+### Checking a setup
+
+`warden-server doctor` reports each check as `pass`, `FAIL` or
+`COULD NOT CHECK`, says what to do about anything that did not pass, and ends
+by saying what the run did. Run it in the server's container, as the broker's
+user, so that it sees the same network and files:
+
+```sh
+docker compose exec warden /warden-server doctor
+```
+
+For the systemd service, see
+[Server commands](deployment-systemd.md#7-server-commands) there.
+
+| Exit code | Meaning |
+|-----------|---------|
+| 0 | No check failed. Some may not have run: the report lists them. |
+| 1 | At least one check failed. |
+| 2 | Wrong arguments. |
+| 7 | With `--strict` only: no check failed, but at least one could not be checked. |
+
+warden cannot see everything, so **exit 0 does not mean everything was
+checked**. A check that could not run never counts as passed: it is labelled
+`COULD NOT CHECK`, and the summary lists each one with what to do by hand. Do
+those. Because some of them can never run from inside the container, a working
+deployment exits 7 with `--strict`.
+
+| Check | Passes when | Reports `COULD NOT CHECK` when |
+|-------|-------------|--------------------------------|
+| `config` | The settings are present and valid. A failure names the first bad setting and links this page; there may be more. | Never. When it fails, everything below except `tailscale.*` is not checked. |
+| `connect.reachable` | Connect answers. | The vault name is unusable. |
+| `connect.token` | Connect accepts the token. | Connect gave no useful answer. |
+| `connect.vault` | The token can see `WARDEN_OP_VAULT`. | Connect gave no useful answer, or refused the token. |
+| `connect.token-read-only` | Never. | Always: Connect does not report a token's permissions, and doctor will not attempt a write. Check how the token was created. |
+| `ssh-ca` | The CA key loads, or there is no CA item and no certificate target needs one. | Connect or the vault is not usable, or a target item cannot be read. |
+| `notify` | Never. | Without `--send-test-notification`: nothing was sent. |
+| `notify.<channel>` | With the flag: the channel accepts the message. | Never. |
+| `notify.delivery` | Never. | With the flag: warden sees that a channel accepted the message, not that it reached the phone. Confirm that it did. |
+| `passkey` | At least one passkey is enrolled. | The database exists but cannot be read. |
+| `listener.api`, `listener.approval`, `listener.relay` | A process accepts TCP connections on the address, and the address is not `0.0.0.0` or `::`. This does not prove the process is warden. The relay is checked only when it is on. | The connection neither succeeds nor is refused. |
+| `data.directory` | The database's directory belongs to doctor's user, with no group or other permissions (0700). | The path cannot be read. |
+| `data.database`, `data.audit-log`, `data.audience` | Each is a regular file (not a symbolic link) of doctor's user, not writable by group or others. | The path cannot be read. |
+| `data.relay-host-key` | The same, with no group or other permissions (0600). Only when the relay is on. | The path cannot be read. |
+| `tailscale.funnel-off`, `tailscale.serve` | Never. | Always: from inside its container warden cannot see Tailscale's configuration. The output says what to run on the host. |
+
+What doctor does and does not do:
+
+- **It is read-only by default.** It creates and migrates nothing, and opens
+  the database read-only. The one exception is outside warden's control: on a
+  database in WAL mode, SQLite may create the `-shm` file that readers share.
+  Its reads of the vault, the CA item included, appear in 1Password's usage
+  reports like any other.
+- **`--send-test-notification` reaches the owner's phone.** It sends one message
+  through every channel in `WARDEN_NOTIFY`, not only the first, so that a broken
+  fallback shows up. The message says it is a test.
+- **It writes nothing to the audit log, even with the flag.** The commands that
+  change an agent or a passkey (`agent add`, `agent revoke`, `passkey remove`)
+  are audited. Those that only read (`agent list`, `passkey list`,
+  `audit verify`) are not. Doctor is one of those: a test message changes no
+  state and decides no access, and doctor has to work when the audit log is
+  what is broken.
+- **It never prints a secret.** It quotes no response body, removes the
+  configured secrets from everything it prints in case an upstream echoed one
+  into an error, and replaces control characters.
 
 ## Server data
 
@@ -97,8 +188,11 @@ refused with `401`.
 
 ## CLI commands
 
-`warden` is the agent's client. Install it with Rust 1.99 or later; it needs
-the OpenSSH client tools (`ssh`, `ssh-agent`, `ssh-add`):
+`warden` is the agent's client. It needs the OpenSSH client tools (`ssh`,
+`ssh-agent`, `ssh-add`). Releases after v0.8.1 attach attested binaries:
+[Agent usage](agent-usage.md#one-time-setup) has the commands to download and
+verify one. For v0.8.1 and earlier, or on another platform, build it with Rust
+1.99 or later:
 
 ```sh
 cargo install --locked --git https://github.com/pecheriere/warden --tag v0.8.1 warden-broker-cli
@@ -113,11 +207,35 @@ cargo install --locked --git https://github.com/pecheriere/warden --tag v0.8.1 w
 | `warden request cancel <id>` | Withdraws one of this agent's pending requests. |
 | `warden ssh <target> [-- <command>…]` | Runs `ssh` through the active grant for the target that stays valid longest. |
 | `warden http <secret> <METHOD> <url> [-H 'Name: value']… [-d <body> \| --data-file <path\|->] [-i] [--fail]` | Makes one HTTPS call through an `api` grant. |
+| `warden doctor [--strict]` | Checks this machine's setup and says what to fix. See [Checking an agent machine](#checking-an-agent-machine). |
 | `warden status` | Lists the grants on this machine and the broker's view of this agent's grants. |
 | `warden revoke <grant>` | Revokes a grant on the broker and stops its local `ssh-agent`. |
 
 A window is `15m`, `30m`, `1h` or `4h`. Exit codes are in
 [Agent usage](agent-usage.md#exit-codes).
+
+### Checking an agent machine
+
+`warden doctor` reports each check as `pass`, `FAIL` or `COULD NOT CHECK`, and
+the summary lists what could not be checked with what to do by hand. It exits 1
+when a check failed, 2 for wrong arguments, and otherwise 0. With `--strict` it
+exits 7 when nothing failed but a check could not run.
+
+| Check | Passes when | Reports `COULD NOT CHECK` when |
+|-------|-------------|--------------------------------|
+| `config` | The configuration file is usable. | Never. |
+| `server.reachable` | The broker answers `GET /v1/info`. | There is no usable configuration. |
+| `audience` | The broker reports the audience pinned at login. Another one is a failure. | The broker did not answer, or the agent uses a bearer key, which pins no audience. |
+| `protocol` | The broker accepts signed requests. Only for a key-signed agent, when the broker answered. | Never. |
+| `ssh-agent.key` or `bearer-key` | The `ssh-agent` holds the signing key, or the bearer key is available. | There is no usable configuration. |
+| `broker.accepts-agent` | The broker accepts one authenticated `GET /v1/grants`. A 4xx answer is a failure. | The credential is not available, or the broker is unreachable or answers 5xx. |
+| `version` | Never. | Always: the broker does not publish its version. Doctor prints the CLI's, to compare with `warden-server --version`. |
+
+Because of `version`, a working machine exits 0, and 7 with `--strict`.
+
+It changes nothing on the machine: unlike every other command, it does not even
+clean up ended grants first. The broker handles its `GET /v1/grants` like any
+other authenticated call, which for a signed call means recording the nonce.
 
 ### CLI environment and files
 
