@@ -516,7 +516,17 @@ see [Verifying a release](verifying-releases.md).
 You can also build it from this repository:
 `docker buildx build -t warden:dev --load .`.
 
-The image runs as uid 65532, has no shell, and writes only to `/data`.
+The image runs as uid 65532, has no shell, and writes only to `/data`, which it
+ships with mode 0700 and owned by that user. What `/data` is at runtime depends
+on how it is mounted, and `warden-server doctor` checks it (`data.directory`):
+
+- **A new named or anonymous volume** takes the owner and mode from the image.
+- **A bind mount** keeps the owner and mode of the host's directory. If the
+  directory does not exist, Docker creates it owned by root, and warden cannot
+  start: create it first, as [the steps below](#the-compose-file) do.
+- **A named volume first used with v0.8.1 or earlier** has mode 0755, and keeps it
+  when you upgrade. As the image has no shell, correct it from another image:
+  `docker run --rm -v <volume>:/volume debian:bookworm-slim chmod 0700 /volume`.
 
 ### Networks
 

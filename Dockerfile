@@ -36,7 +36,10 @@ RUN install -d -o 65532 -g 65532 -m 0700 /out/data
 # Runtime: distroless, no shell, non-root (uid 65532), pinned by digest.
 FROM gcr.io/distroless/cc-debian12:nonroot@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f
 COPY --from=builder /out/warden-server /warden-server
-COPY --from=builder --chown=65532:65532 /out/data /data
+# COPY of a directory copies what is in it, and makes the destination with the
+# default mode 0755 whatever the source's: only --chmod sets /data's own mode.
+# A new named or anonymous volume takes this mode and owner from the image.
+COPY --from=builder --chown=65532:65532 --chmod=0700 /out/data /data
 VOLUME ["/data"]
 USER nonroot
 # There is no shell or curl in this image, so there is no HEALTHCHECK here:

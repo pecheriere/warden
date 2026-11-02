@@ -70,7 +70,7 @@ fi
 final_stage="$(awk '/^FROM /{stage=""} {stage=stage $0 "\n"} END{printf "%s", stage}' Dockerfile)"
 copies="$(grep '^COPY' <<<"$final_stage")"
 expected_copies='COPY --from=builder /out/warden-server /warden-server
-COPY --from=builder --chown=65532:65532 /out/data /data'
+COPY --from=builder --chown=65532:65532 --chmod=0700 /out/data /data'
 [ "$copies" = "$expected_copies" ] \
   || fail "the image's final stage copies something unexpected: $copies"
 grep -q '^ENTRYPOINT \["/warden-server"\]$' <<<"$final_stage" \
