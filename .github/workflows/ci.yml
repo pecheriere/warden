@@ -43,6 +43,17 @@ jobs:
           echo "::add-mask::$password"
           echo "$USER:$password" | sudo chpasswd
           echo "WARDEN_TEST_LOGIN_PASSWORD=$password" >> "$GITHUB_ENV"
+      # A local-backend test needs a real bind mount of one file, and mounting
+      # needs root.
+      - name: Bind-mount a single file
+        run: |
+          mounted="$(mktemp -d)"
+          printf 'policy\n' > "$mounted/source.toml"
+          chmod 600 "$mounted/source.toml"
+          touch "$mounted/mounted.toml"
+          sudo mount --bind "$mounted/source.toml" "$mounted/mounted.toml"
+          echo "WARDEN_TEST_BIND_MOUNT_SOURCE=$mounted/source.toml" >> "$GITHUB_ENV"
+          echo "WARDEN_TEST_BIND_MOUNTED_FILE=$mounted/mounted.toml" >> "$GITHUB_ENV"
       - run: cargo fmt --check
       - name: Refuse a stale fuzz/Cargo.lock
         run: cargo metadata --locked --manifest-path fuzz/Cargo.toml --format-version 1 > /dev/null
@@ -105,6 +116,15 @@ jobs:
           echo "::add-mask::$password"
           echo "$USER:$password" | sudo chpasswd
           echo "WARDEN_TEST_LOGIN_PASSWORD=$password" >> "$GITHUB_ENV"
+      - name: Bind-mount a single file
+        run: |
+          mounted="$(mktemp -d)"
+          printf 'policy\n' > "$mounted/source.toml"
+          chmod 600 "$mounted/source.toml"
+          touch "$mounted/mounted.toml"
+          sudo mount --bind "$mounted/source.toml" "$mounted/mounted.toml"
+          echo "WARDEN_TEST_BIND_MOUNT_SOURCE=$mounted/source.toml" >> "$GITHUB_ENV"
+          echo "WARDEN_TEST_BIND_MOUNTED_FILE=$mounted/mounted.toml" >> "$GITHUB_ENV"
       - name: Run the tests with coverage
         run: cargo llvm-cov --workspace --all-features --locked --no-report
       # An explicit bash has pipefail on, so a broken report fails through the tee.

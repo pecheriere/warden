@@ -18,6 +18,7 @@ use warden_broker::audit::AuditLog;
 use warden_broker::config::{BackendSettings, Config, DEFAULT_AUDIENCE_PATH, parse_public_url};
 use warden_broker::identity::TailscaleServeIdentity;
 use warden_broker::notify::{ChannelSettings, Fallback, Notifier};
+use warden_broker::policy::local::seal_policy_file;
 use warden_broker::policy::{LocalBackend, OnePasswordConnect, SecretBackend};
 use warden_broker::proxy::CallSlots;
 use warden_broker::relay::host_key::RelayHostKey;
@@ -64,6 +65,15 @@ enum Command {
     /// Manage enrolled passkeys.
     #[command(subcommand)]
     Passkey(PasskeyCommand),
+    /// With the local backend: end a finished policy file with its digest, and
+    /// replace it in one step. Needs no other setting.
+    SealPolicy {
+        /// The policy file, which warden reads.
+        file: PathBuf,
+        /// Take the content from this draft, rather than from the file itself.
+        #[arg(long, value_name = "DRAFT")]
+        from: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -172,6 +182,19 @@ async fn main() -> Result<ExitCode> {
         Command::Serve => serve().await?,
         Command::Enroll => enroll().await?,
         Command::Passkey(command) => passkey(command).await?,
+        Command::SealPolicy { file, from } => {
+            let shown = file.display().to_string();
+            let sealed =
+                tokio::task::spawn_blocking(move || seal_policy_file(&file, from.as_deref()))
+                    .await
+                    .context("the seal task failed")?
+                    .with_context(|| format!("sealing {shown}"))?;
+            println!(
+                "{shown} sealed: {} target(s), {} API secret(s). Entries and secrets are not \
+                 checked here: run warden-server doctor.",
+                sealed.targets, sealed.api_secrets
+            );
+        }
     }
     Ok(ExitCode::SUCCESS)
 }

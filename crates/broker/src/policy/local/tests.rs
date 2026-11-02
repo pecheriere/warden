@@ -11,7 +11,7 @@ use ssh_key::{Algorithm, LineEnding, PrivateKey};
 use tempfile::TempDir;
 use warden_broker_proto::{SecretName, TargetName, Window};
 
-use super::{END_MARKER, LocalBackend, LocalProbe, parse_policy};
+use super::{END_MARKER, LocalBackend, LocalProbe, digest_line, parse_policy, seal_text};
 use crate::audit::AuditLog;
 use crate::config::LocalSettings;
 use crate::policy::{CaProbe, PolicyError, RelayCredential, SecretBackend, SshMode};
@@ -96,7 +96,7 @@ impl Setup {
 
     /// Write a complete policy file: `policy` and the end marker.
     fn write_policy(&self, policy: &str) {
-        self.write_raw(format!("{policy}\n{END_MARKER}\n").as_bytes());
+        self.write_raw(seal(&format!("{policy}\n{END_MARKER}\n")).as_bytes());
     }
 
     fn write_raw(&self, bytes: &[u8]) {
@@ -650,9 +650,13 @@ async fn a_refused_request_is_audited_but_an_unknown_name_is_not() {
     Setup::assert_no_secret(&log);
 }
 
+fn seal(draft: &str) -> String {
+    seal_text(draft).unwrap().to_string()
+}
+
 /// Every setting that has a default, each narrowing it, and every kind of entry.
 fn full_policy() -> String {
-    format!(
+    seal(&format!(
         r#"# A comment with a non-ASCII character: café, and # [end_of_policy]
 [ca]
 private_key_file = "ssh-ca"
@@ -687,7 +691,7 @@ path_prefix = "/api/"
 "#,
         key = host_key(),
         ca = include_str!("../../../tests/fixtures/throwaway-test-only-ca.pem"),
-    )
+    ))
 }
 
 /// A file cut at any byte, however the cut came about, must not load: neither
@@ -728,7 +732,7 @@ async fn a_cut_policy_file_is_refused_at_every_line_and_inside_the_marker() {
         .match_indices('\n')
         .map(|(at, _)| at)
         .filter(|at| *at < complete);
-    let marker = complete - END_MARKER.len()..complete;
+    let marker = full.rfind(END_MARKER).unwrap()..complete;
     let inside_the_character = full.find('\u{e9}').unwrap() + 1;
     for cut in line_ends.chain(marker).chain([0, inside_the_character]) {
         setup.write_raw(&full.as_bytes()[..cut]);
@@ -767,7 +771,7 @@ async fn a_cut_can_never_widen_a_prefix_or_change_a_header() {
 }
 
 /// A line reading like the marker inside a string is not the marker: a cut just
-/// after it leaves the string open.
+/// after it leaves the string open, sealed or not.
 #[tokio::test]
 async fn the_marker_inside_a_string_does_not_complete_a_cut_file() {
     let setup = Setup::new("");
@@ -777,9 +781,11 @@ async fn the_marker_inside_a_string_does_not_complete_a_cut_file() {
          format = \"\"\"\n{END_MARKER}\nx {{{{secret}}}}\"\"\"\n{END_MARKER}\n"
     );
     let cut = text.find(END_MARKER).unwrap() + END_MARKER.len();
-    setup.write_raw(&text.as_bytes()[..cut]);
-    let probe = setup.backend.probe().await;
-    assert!(matches!(probe, LocalProbe::Unreadable(_)), "{probe:?}");
+    for cut_file in [text[..cut].to_owned(), seal(&text[..cut])] {
+        setup.write_raw(cut_file.as_bytes());
+        let probe = setup.backend.probe().await;
+        assert!(matches!(probe, LocalProbe::Unreadable(_)), "{probe:?}");
+    }
 }
 
 #[tokio::test]
@@ -792,7 +798,9 @@ async fn the_marker_must_be_the_last_line_and_empty() {
         format!("{API_ENTRY}\n{END_MARKER}\n{END_MARKER}\n"),
         format!("{API_ENTRY}\n[end_of_policy.more]\n{END_MARKER}\n"),
     ] {
-        setup.write_raw(bad.as_bytes());
+        // With a digest that matches: the marker's rules hold by themselves.
+        let digest = digest_line(&bad);
+        setup.write_raw(format!("{bad}{digest}\n").as_bytes());
         let probe = setup.backend.probe().await;
         assert!(
             matches!(probe, LocalProbe::Unreadable(_)),

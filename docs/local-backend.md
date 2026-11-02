@@ -78,14 +78,70 @@ methods = ["GET", "POST"]
 path_prefix = "/api/"
 
 [end_of_policy]
+sha256 = "9f2c...the digest seal-policy writes..."
 ```
 
-### `[end_of_policy]`
+### The end of the file: `[end_of_policy]` and its digest
 
-The last line of the file must be exactly `[end_of_policy]`. A file cut short at any
-point, by a full disk or an interrupted write, has lost that line and is refused.
-Without it, a cut file could still be valid and **wider** than the one it came from:
-cut before `path_prefix`, the entry above would allow every path.
+The last two lines of the file must be `[end_of_policy]`, then
+`sha256 = "<digest>"`: the SHA-256, in lower-case hex, of every byte before that
+last line. warden checks it on the bytes it read, at every read, and refuses
+anything else.
+
+A file cut short at any point, by a full disk or an interrupted write, has lost
+those lines. A write in place that does not truncate can show the start of one
+version with the end of another, and the digest no longer matches. Without these
+checks, either could still be valid and **wider** than any version you wrote: cut
+before `path_prefix`, the entry above would allow every path, and a mix could put
+one version's methods on the other's path.
+
+The digest catches accidents, not an attacker. Anyone who can write the file can
+compute a new digest, so it adds nothing to the [ownership rules](#what-is-refused).
+
+### Editing the file
+
+`warden-server seal-policy` writes the digest and replaces the file in one atomic
+rename. It needs none of warden's settings. Edit a copy, keeping `[end_of_policy]`
+at the end (the old digest line after it does not matter, and is replaced), then
+install it:
+
+```sh
+cp /etc/warden/policy.toml /etc/warden/policy.draft
+$EDITOR /etc/warden/policy.draft
+warden-server seal-policy --from /etc/warden/policy.draft /etc/warden/policy.toml
+warden-server doctor
+```
+
+Requests are served from the old file until the rename, and from the new one after
+it. The command keeps the replaced file's owner and mode, and makes a new file
+`0644`. It refuses a draft that does not parse, or that has lost its
+`[end_of_policy]` line, because that may mean the draft was cut short, and it then
+leaves the policy file as it was. It does not read your secrets, which is what
+`doctor` is for.
+
+Editing the policy file itself also works: `warden-server seal-policy
+/etc/warden/policy.toml` seals what is there. From your save until you seal, warden
+refuses every request and audits why, and says what to run:
+
+> the policy file does not match the digest on its last line: it was changed without
+> sealing, or read while being overwritten; after a finished edit, run warden-server
+> seal-policy on it
+
+**Seal only a file nobody is still writing.** Sealing is your word that the content
+is finished: warden cannot tell a finished edit from a write in progress, and a
+sealed mix is a valid policy.
+
+With Docker, run it on the host if you have the binary. Otherwise use the image,
+with the directory mounted writable, as root, for a file root owns:
+
+```sh
+docker run --rm --user 0 -v /etc/warden/policy:/policy --entrypoint /warden-server \
+  ghcr.io/pecheriere/warden:<version> \
+  seal-policy --from /policy/policy.draft /policy/policy.toml
+```
+
+Any other tool can write the file too, given the format above, as long as it
+replaces the file by a rename.
 
 ### `[targets.<name>]`
 
@@ -146,9 +202,9 @@ check and the read.
 | What | Rule |
 |---|---|
 | Every directory on either path, from `/` | Owned by root or warden's user. Not writable by group or others, unless sticky (as `/tmp` is). Not a symbolic link, so give real paths. Readable by warden's user. |
-| The policy file | A regular file, not a link, with exactly one name. Owned by root or warden's user. Not writable by group or others. At most 1 MiB. Its last line is `[end_of_policy]`. |
+| The policy file | A regular file, not a link, with exactly one name, and not a mount of that file alone. Owned by root or warden's user. Not writable by group or others. At most 1 MiB. It ends with `[end_of_policy]` and a digest that matches. |
 | The secrets directory | Owned by warden's user, with no access for group or others (`0700` or `0500`). |
-| Each secret file | A regular file, not a link, with one name (no hard links). Owned by warden's user, with no access for group or others (`0600` or `0400`). Not blank, valid UTF-8, at most 32 KiB. |
+| Each secret file | A regular file, not a link, with one name (no hard links), and not a mount of that file alone. Owned by warden's user, with no access for group or others (`0600` or `0400`). Not blank, valid UTF-8, at most 32 KiB. |
 
 **At startup**, `warden-server serve` reads the whole policy and every secret it
 names. If anything is invalid, unreadable or too open, or a certificate target has
@@ -159,7 +215,8 @@ no CA, it writes each problem to the audit log and refuses to start.
 - A policy edit applies at once, with no restart. A grant whose destination changed
   stops working (409), as when a 1Password item is edited.
 - Removing an entry or a secret file stops it at once.
-- If a file has become invalid or too open, the request or call is refused and the
+- If a file has become invalid or too open, or the policy no longer matches its
+  digest, the request or call is refused and the
   refusal is written to the audit log as an `error` event from
   `local secret backend`. Only the entry concerned is affected, unless the policy
   file itself cannot be used, which refuses everything.
@@ -175,13 +232,11 @@ secret always comes from the file the policy being checked names, but a change t
 needs both files is two steps, and a call can fall between them. So when a
 credential moves to another destination, do not rewrite its file: write the new
 credential under **a new file name**, then point the policy at it in one atomic
-step, by writing a temporary file in the same directory and renaming it over the
-policy file.
+step, with [`warden-server seal-policy`](#editing-the-file).
 
 Always replace the policy file that way. A write in place can be read part way
-through. A file cut short is refused, whatever it still parses as, but overwriting
-without truncating can show the start of the new file with the end of the old one,
-and that the end marker cannot detect.
+through. warden refuses what such a read returns, whether cut short or mixed with
+the old file, so it cannot widen anything, but every request in that moment fails.
 
 ## Where the files go
 
@@ -203,9 +258,11 @@ them:
 
 **Mount the directory, never the single file.** A mount of one file stays on the old
 file after a rename over it, so an edit or a revocation on the host would not reach
-the container. warden refuses a policy file left with no name in that way, and every
-request fails until it is restarted, but mounting the directory is what makes edits
-apply at once. The same goes for a single-file `BindReadOnlyPaths=` under systemd.
+the container. warden refuses a policy file or a secret file that is a mount of its
+own, at startup and at every read, so this fails at once rather than after your first
+edit. The check needs Linux 5.8 or later; on an older kernel warden cannot tell, and
+refuses every such file. The same goes for a single-file `BindReadOnlyPaths=` under
+systemd.
 
 On the host, `/etc/warden/secrets` and its files belong to the image's user (uid
 65532), mode `0700` and `0600`. Compose's own `secrets:` do not fit, because the
@@ -251,7 +308,7 @@ reports:
 
 | Check | Passes when | Otherwise |
 |---|---|---|
-| `local.policy` | The policy file is safe to read and parses. | Fails, and the next two are not checked. |
+| `local.policy` | The policy file is safe to read, matches its digest and parses. | Fails, and the next two are not checked. |
 | `local.entries` | Every entry is valid and its secret files are safe to read. | Fails, listing each problem. |
 | `ssh-ca` | The CA key loads, or no target needs one. | Fails, or could not check if the system refused the read. |
 | `local.host-boundary` | Never. | Always reported as could not check: warden cannot tell whether the host is kept as locked down as this backend needs. |
@@ -264,8 +321,9 @@ credentials, run it inside the unit's context, because `%d` exists only there.
 
 Unit tests through the backend's interface and an integration test of the whole
 flow (request, approval, a certificate signed by the local CA, a proxied call with
-redaction, refusals) run in CI on Linux. Neither the Docker mounts nor the
-systemd drop-ins and credentials above have been run on a real host yet. The code
+redaction, refusals) run in CI on Linux, with reads torn by a real overwrite part
+way through and a real bind mount of a single file. Neither the Docker Compose
+example nor the systemd drop-ins and credentials above have been run on a real host yet. The code
 was written for what systemd documents about the credentials directory (a private
 directory of regular files, mode `0400`, owned by the service's user), and has not
 been run against it. `warden-server doctor` tells you straight away if a host

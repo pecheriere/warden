@@ -25,8 +25,12 @@ All notable changes to this project are recorded here. The format follows
   1Password stays the recommended backend and the default when the setting is
   unset, so existing deployments do not change. Files with loose permissions, links
   or invalid content refuse the server's start or the request, and refusals are
-  audited. A policy file must end with `[end_of_policy]`, so that one cut short is
-  refused. `warden-server doctor` checks it. warden does not generate the CA key.
+  audited. A policy file ends with `[end_of_policy]` and a digest of its content,
+  so that a read cut short or mixing two versions is refused; the new
+  `warden-server seal-policy` writes the digest and replaces the file atomically. A
+  policy or secret file mounted on its own is refused, because it would keep showing
+  the old file after a change. `warden-server doctor` checks all of it. warden does
+  not generate the CA key.
 - Contributions now need a Developer Certificate of Origin sign-off
   (`git commit -s`). A new `dco` check reads every commit of a pull request, and
   `CONTRIBUTING.md` explains the rule, including merge commits and Dependabot.

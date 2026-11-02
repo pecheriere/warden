@@ -78,6 +78,10 @@ uvx zizmor@1.31.1 .   # when a workflow or the Dependabot config changes
   `WARDEN_TEST_LOGIN_PASSWORD` (the current user's login password) and an
   OpenSSH server binary at `/usr/sbin/sshd`; they fail rather than skip
   without them. They do not exist on macOS.
+- On Linux, one local-backend test needs a real bind mount of a single file,
+  which takes root: `WARDEN_TEST_BIND_MOUNT_SOURCE` names a file you own, and
+  `WARDEN_TEST_BIND_MOUNTED_FILE` names where it is mounted (`mount --bind`). It
+  fails rather than skips without them. It does not exist on macOS.
 - Tests must not depend on timing. Wait on a condition, not a sleep.
 - Dependencies: add them to `[workspace.dependencies]` with a comment when
   the reason is not obvious, keep default features off where practical,
