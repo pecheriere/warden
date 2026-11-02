@@ -36,6 +36,9 @@ Values are never echoed in errors.
 | `WARDEN_PROXY_MAX_RESPONSE_BYTES` | `1048576` (1 MiB) | The largest response a proxied API call may return, 1 to `67108864` (64 MiB). |
 | `WARDEN_PROXY_MAX_CALLS_PER_AGENT` | `4` | Proxied calls in flight per agent, 1 to 64. |
 | `WARDEN_PROXY_MAX_CALLS` | `16` | Proxied calls in flight overall, 1 to 256, at least the per-agent limit. |
+| `WARDEN_REQUEST_MAX_PENDING_PER_AGENT` | `5` | Requests of one agent that may wait for the owner at once, 1 to 256, at most the limit on new requests. See [Request limits](#request-limits). |
+| `WARDEN_REQUEST_MAX_NEW_PER_AGENT` | `10` | New requests one agent may make per window, 1 to 1024. See [Request limits](#request-limits). |
+| `WARDEN_REQUEST_LIMIT_WINDOW_SECS` | `600` (10 minutes) | Length of that sliding window, 60 to 3600 seconds. |
 | `WARDEN_RELAY_PUBLIC_ADDR` | unset | Where agents reach the SSH relay, `host:port`. Unset turns the relay off: requests for relay targets are refused. |
 | `WARDEN_RELAY_LISTEN` | `127.0.0.1:2222` | The SSH relay listener. Used only when `WARDEN_RELAY_PUBLIC_ADDR` is set. |
 | `WARDEN_RELAY_HOST_KEY_PATH` | `/data/relay_host_ed25519` | The relay's Ed25519 host key, created on first use (mode 0600) and never overwritten. An existing file must be a regular file owned by the broker's user, with no group or other permissions (0600). Keep it on the data volume. |
@@ -44,6 +47,30 @@ Values are never echoed in errors.
 
 Pass the secrets from a secret manager, an environment file readable only by
 root, or a file as below, never on a command line or in a repository.
+
+### Request limits
+
+Each agent has its own allowance, so that it cannot flood the owner with
+notifications or grow the database. With the defaults, one agent can have 5
+requests waiting and make 10 new ones every 10 minutes. Every request stored
+counts towards the 10, whatever became of it, including cancelled ones. A
+duplicate of a request already pending is answered with that request and does
+not count, and neither does a request that the policy refuses.
+
+An agent over a limit gets `429` with a `Retry-After` header and a message
+saying how long to wait. A request held back by the limit on new requests waits
+for the window at most, so 10 minutes by default and an hour at the highest
+setting. One held back by the pending limit waits 10 minutes at most, when a
+pending request expires, and less if the owner decides one or the agent cancels
+one. An agent's refusals do not use up another agent's allowance or stop the
+owner from deciding. They are not free, though: each refused request is first
+checked against the policy, which reads 1Password Connect, shared with everyone
+else.
+
+The first refusal is recorded in the audit log as `request_limited`. Further
+ones are counted and written at most once a minute. The owner gets one
+notification per agent per hour at most, linking to the request history and
+recorded as `limit_notified`. It names the agent and nothing the agent wrote.
 
 ### Secrets in files
 

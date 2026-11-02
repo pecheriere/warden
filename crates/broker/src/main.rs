@@ -413,7 +413,8 @@ async fn build_app(config: &Arc<Config>) -> Result<App> {
         config.public_url.clone(),
         clock.clone(),
         relay,
-    );
+    )
+    .with_limits(config.requests);
     let passkeys = Passkeys::new(
         pool.clone(),
         audit.clone(),

@@ -588,6 +588,12 @@ Responses:
   notified.
 - `404`: `unknown target <name>` or `unknown API secret <name>`.
 - `409`: `{"error":"this public key is already bound to another request or grant"}`.
+- `429`: the agent is over a limit: by default 5 requests pending at once and
+  10 new requests per 10 minutes, cancelled ones included. The `Retry-After`
+  header gives the wait in seconds, and the message says which limit it is. Wait
+  that long or, for the pending limit, cancel a request. Nothing is stored and
+  the owner is not asked about this request. A duplicate of a pending request
+  (below) is never refused this way.
 - `401`, `413`, `415`, `500`, `503`: see section 5.
 
 **Only one pending request per agent and target (or secret and scope).**

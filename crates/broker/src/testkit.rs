@@ -57,7 +57,7 @@ use crate::policy::{
 };
 use crate::proxy::{CallInfo, CallSlots, ProxyLimits};
 use crate::relay::{RelayEndpoint, RelayLimits, RelayServer, host_key};
-use crate::requests::{Clock, RelayGrantRecord, Requests};
+use crate::requests::{Clock, RelayGrantRecord, RequestLimits, Requests};
 use crate::signed::BodyReadTimeout;
 use crate::{AppState, agents, store};
 
@@ -596,6 +596,7 @@ pub struct BaseUrls {
 #[derive(Debug, Clone, Copy, Default)]
 struct Limits {
     proxy: ProxyLimits,
+    requests: RequestLimits,
     body_read_timeout: BodyReadTimeout,
 }
 
@@ -690,6 +691,21 @@ impl TestBroker {
         Self::fresh(
             Limits {
                 proxy,
+                ..Limits::default()
+            },
+            Some(format!("{RELAY_PUBLIC_HOST}:{RELAY_PUBLIC_PORT}")),
+        )
+        .await
+    }
+
+    /// Like [`TestBroker::new`], with agents held to `requests`.
+    ///
+    /// # Panics
+    /// If any part of the setup fails.
+    pub async fn with_request_limits(requests: RequestLimits) -> Self {
+        Self::fresh(
+            Limits {
+                requests,
                 ..Limits::default()
             },
             Some(format!("{RELAY_PUBLIC_HOST}:{RELAY_PUBLIC_PORT}")),
@@ -812,7 +828,8 @@ impl TestBroker {
             config.public_url.clone(),
             clock.clone(),
             relay_endpoint,
-        );
+        )
+        .with_limits(limits.requests);
         let passkeys = Passkeys::new(
             pool.clone(),
             audit.clone(),

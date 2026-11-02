@@ -118,6 +118,7 @@ const fn status_of(e: &RequestError) -> Option<StatusCode> {
         | RequestError::NotFound => Some(StatusCode::NOT_FOUND),
         RequestError::AlreadyDecided | RequestError::KeyInUse => Some(StatusCode::CONFLICT),
         RequestError::AgentRevoked => Some(StatusCode::UNAUTHORIZED),
+        RequestError::Limited(_) => Some(StatusCode::TOO_MANY_REQUESTS),
         RequestError::Unavailable(_) | RequestError::Contended => {
             Some(StatusCode::SERVICE_UNAVAILABLE)
         }
@@ -163,6 +164,14 @@ impl IntoResponse for Failure {
                 tracing::error!(error = %detail, "secret backend unavailable");
                 error_body(StatusCode::SERVICE_UNAVAILABLE, BACKEND_UNAVAILABLE)
             }
+            Self::Request(RequestError::Limited(refusal)) => (
+                StatusCode::TOO_MANY_REQUESTS,
+                [(header::RETRY_AFTER, refusal.retry_after_secs().to_string())],
+                Json(ApiError {
+                    error: refusal.to_string(),
+                }),
+            )
+                .into_response(),
             Self::Request(e) => status_of(&e).map_or_else(
                 || {
                     tracing::error!(error = %e, "agent API request failed internally");

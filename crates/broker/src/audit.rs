@@ -70,6 +70,24 @@ pub enum AuditEvent {
         /// Request id.
         id: Id,
     },
+    /// Requests of an agent were refused for being over its limits, since the
+    /// previous such entry for it. Written for the first refusal, then at most
+    /// once a minute, so that refused requests cannot fill the log.
+    RequestLimited {
+        /// The agent.
+        agent: AgentName,
+        /// Refused because too many of its requests were pending.
+        pending: u64,
+        /// Refused because it made too many new requests.
+        rate: u64,
+    },
+    /// The owner was told that an agent is over its request limits.
+    LimitNotified {
+        /// The agent.
+        agent: AgentName,
+        /// Name of the channel that delivered the notification.
+        channel: String,
+    },
     /// An agent withdrew its own pending request.
     RequestCancelled {
         /// Request id.
