@@ -338,9 +338,10 @@ These were recorded during implementation and are accepted for this release.
     first, so each refused request still reads the item from 1Password Connect
     and, for a signed request, verifies a signature and stores a nonce. This is
     bounded by who the tailnet policy lets reach the API, as for other refused
-    requests. 1Password Connect is shared, so this is the one way a flooding agent
-    can affect others: by slowing a backend they also read. The server log has
-    one warning per agent per minute at most.
+    requests. A flooding agent can affect others in two ways: by slowing 1Password
+    Connect, which they also read, and through the shared database, whose write
+    lock each refused request takes. The server log has one warning per agent per
+    minute at most.
 - **Certificate logins are not audited.** They go straight to the target. warden
   records the approval and the certificate, and the target's `sshd` logs the login
   with the certificate's key id. Ship those logs if you need that trail.

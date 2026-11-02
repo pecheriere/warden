@@ -383,15 +383,20 @@ fn history_link(public_url: &Url) -> Option<Url> {
 
 #[cfg(test)]
 mod tests {
+    use std::future::{Future as _, poll_fn};
+    use std::task::Poll;
+
     use sqlx::Row as _;
     use url::Url;
-    use warden_broker_proto::AgentName;
+    use warden_broker_proto::{AgentName, Window};
 
     use super::{
         AUDIT_EVERY_SECS, LimitRefusal, NEW_AT_LIMIT, NOTICE_EVERY_SECS, PENDING_AT_LIMIT,
         Refusals, RequestError, RequestLimits, Steps, Tally, check, due, history_link, wait_until,
     };
+    use crate::requests::Clock as _;
     use crate::store;
+    use crate::testkit::TestBroker;
 
     fn agent(name: &str) -> AgentName {
         name.parse().unwrap()
@@ -612,5 +617,58 @@ mod tests {
                 "{steps:?}"
             );
         }
+    }
+
+    /// A create that queued for the write lock counts what was added while it
+    /// waited. If it read the clock before taking the lock, those rows would
+    /// look newer than itself, be taken for the work of a clock set back, and
+    /// go uncounted.
+    #[tokio::test]
+    async fn a_create_queued_for_the_write_lock_counts_what_it_waited_for() {
+        let broker = TestBroker::with_request_limits(RequestLimits {
+            max_pending: 10,
+            max_new: 1,
+            window_secs: 300,
+        })
+        .await;
+        broker.add_agent("bot").await;
+        let state = broker.state();
+
+        let mut holder = state.pool.acquire().await.unwrap();
+        sqlx::query("BEGIN IMMEDIATE")
+            .execute(&mut *holder)
+            .await
+            .unwrap();
+
+        // One poll runs everything up to the wait for the lock, which `holder`
+        // keeps from being granted, so any earlier clock read happens now.
+        let bot = agent("bot");
+        let req = TestBroker::api_request("github", "triage issue 42", Window::M15);
+        let create = state
+            .requests
+            .insert(&bot, &req, "subject", "slot", "token");
+        tokio::pin!(create);
+        poll_fn(|cx| {
+            assert!(create.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+
+        broker.clock.advance(1);
+        sqlx::query(
+            "INSERT INTO requests (id, agent, fingerprint, dedupe_key, body, \
+             approval_token_hash, status, created_at, expires_at) \
+             VALUES ('earlier', 'bot', 'f', 'other-slot', '{}', 'h', 'pending', ?1, ?1 + 900)",
+        )
+        .bind(broker.clock.now())
+        .execute(&mut *holder)
+        .await
+        .unwrap();
+        sqlx::query("COMMIT").execute(&mut *holder).await.unwrap();
+
+        assert!(matches!(
+            create.await,
+            Err(RequestError::Limited(LimitRefusal::Rate { .. }))
+        ));
     }
 }
