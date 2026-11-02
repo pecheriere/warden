@@ -1,0 +1,453 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self'; style-src 'self'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" media="(prefers-color-scheme: light)" content="#FFFFFF">
+<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#142348">
+<title>warden: your agent asks, you approve from your phone, the access expires</title>
+<meta name="description" content="warden is a self-hosted approval broker for AI agents and scripts. An agent asks for SSH or API access and says why, you approve with a passkey for a time window, and every step is audited.">
+<link rel="canonical" href="https://pecheriere.github.io/warden/">
+<link rel="icon" href="mascot.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<svg class="sprite" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <symbol id="mascot" viewBox="0 0 120 120">
+    <ellipse cx="60" cy="114" rx="30" ry="4" fill="#0F1E3D" opacity="0.12"/>
+    <path d="M62 22 C62 8 78 2 90 8 C80 10 72 14 68 22 Z" fill="#F5B800"/>
+    <path d="M66 20 C70 12 80 10 86 14" fill="none" stroke="#0F1E3D" stroke-width="2" stroke-linecap="round" opacity="0.25"/>
+    <rect x="34" y="70" width="52" height="38" rx="16" fill="#2557D6"/>
+    <rect x="34" y="70" width="52" height="38" rx="16" fill="#0F1E3D" opacity="0.15"/>
+    <path d="M22 72 C22 38 38 20 60 20 C82 20 98 38 98 72 Z" fill="#2557D6"/>
+    <path d="M60 20 L60 72" stroke="#0F1E3D" stroke-width="3" opacity="0.18"/>
+    <rect x="28" y="46" width="64" height="22" rx="11" fill="#0F1E3D"/>
+    <circle cx="47" cy="57" r="5.5" fill="#FFFFFF"/>
+    <circle cx="73" cy="57" r="5.5" fill="#FFFFFF"/>
+    <circle cx="48.5" cy="55.5" r="1.8" fill="#0F1E3D"/>
+    <circle cx="74.5" cy="55.5" r="1.8" fill="#0F1E3D"/>
+    <rect x="18" y="68" width="84" height="8" rx="4" fill="#DCE6FB"/>
+    <circle cx="60" cy="90" r="9" fill="#F5B800"/>
+    <circle cx="60" cy="88" r="2.6" fill="#0F1E3D"/>
+    <path d="M60 89 L60 94" stroke="#0F1E3D" stroke-width="2.6" stroke-linecap="round"/>
+    <rect x="40" y="104" width="14" height="8" rx="4" fill="#0F1E3D"/>
+    <rect x="66" y="104" width="14" height="8" rx="4" fill="#0F1E3D"/>
+  </symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="5" y="11" width="14" height="9" rx="2"/>
+    <path d="M8 11V8a4 4 0 0 1 8 0v3"/>
+  </symbol>
+  <symbol id="i-warn" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 3 2 20h20L12 3z"/>
+    <path d="M12 10v4M12 17h.01"/>
+  </symbol>
+  <symbol id="i-menu" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+    <path d="M4 7h16M4 12h16M4 17h16"/>
+  </symbol>
+</svg>
+
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="top">
+  <a class="brand" href="#main" aria-label="warden, top of the page">
+    <svg class="mascot" aria-hidden="true"><use href="#mascot"/></svg>
+    <span>warden</span>
+  </a>
+  <nav class="nav-wide" aria-label="Sections">
+    <a href="#why">Why</a>
+    <a href="#flow">How it works</a>
+    <a href="#uses">Use cases</a>
+    <a href="#trust">Trust</a>
+    <a href="#start">Start</a>
+    <a href="https://github.com/pecheriere/warden">GitHub</a>
+  </nav>
+  <details class="nav-menu">
+    <summary class="menu" aria-label="Menu"><svg width="24" height="24" aria-hidden="true"><use href="#i-menu"/></svg></summary>
+    <nav aria-label="Sections, menu">
+      <a href="#why">Why</a>
+      <a href="#flow">How it works</a>
+      <a href="#uses">Use cases</a>
+      <a href="#trust">Trust</a>
+      <a href="#start">Start</a>
+      <a href="https://github.com/pecheriere/warden">GitHub</a>
+    </nav>
+  </details>
+</header>
+
+<main id="main" tabindex="-1">
+
+<section class="hero" aria-labelledby="pitch">
+  <div class="wrap hero-grid">
+    <div class="hero-copy">
+      <p class="chip"><span class="dot" aria-hidden="true"></span>Early: release 0.8.1, with no independent security review</p>
+      <h1 id="pitch"><span>Your agent asks.</span> <span>You approve from your phone.</span> <span>The access expires.</span></h1>
+      <p class="lede">warden is a self-hosted approval broker for AI agents and scripts. An agent asks for SSH or API access and says why. You approve with a passkey for a time window, the agent gets that access and no reusable secret, and every step goes in an audit log.</p>
+      <p class="cta">
+        <a class="btn primary" href="#start">Try the demo</a>
+        <a class="btn ghost" href="https://github.com/pecheriere/warden/blob/main/docs/threat-model.md">Read the threat model</a>
+      </p>
+    </div>
+    <figure class="phone hero-phone">
+      <picture>
+        <source srcset="img/approve-ssh-relay-dark.webp" media="(prefers-color-scheme: dark)">
+        <img src="img/approve-ssh-relay-light.webp" width="600" height="1298" fetchpriority="high" alt="warden's approval page on a phone. build-agent asks for ssh deploy@switch-01 through the warden relay, with the goal: Deploy the nightly build. Below are the fingerprint ab01-cd01-ef01, a choice of 15 minutes, 30 minutes, 1 hour or 4 hours, and the buttons Approve with passkey and Deny.">
+      </picture>
+    </figure>
+  </div>
+</section>
+
+<section id="why" class="band" aria-labelledby="why-h">
+  <div class="wrap">
+    <p class="label">Why</p>
+    <h2 id="why-h">Agents need access. The usual ways to give it fall short.</h2>
+    <p class="intro">An agent that diagnoses or operates your own infrastructure has to reach servers, appliances and the APIs running on them. Often it does this while you are not at the computer.</p>
+    <div class="why-grid">
+      <article class="card">
+        <h3>A reusable key on the agent's machine</h3>
+        <p>An SSH key, API token or vault service account token works unattended. It also works for anything, at any time, and the agent, or whatever compromises it, holds it for good.</p>
+      </article>
+      <article class="card">
+        <h3>Approving each use at the computer</h3>
+        <p>A password manager can keep the secret from the agent, but each use is approved on the computer, with the desktop app unlocked. Overnight, or on another machine, the request waits for a fingerprint nobody can give.</p>
+      </article>
+      <article class="answer">
+        <h3>warden moves the approval to your phone</h3>
+        <p>The agent asks for one piece of access, with a stated goal and a short window. You approve or deny it from wherever you are. Secrets stay in your vault and on your warden server.</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<section id="flow" aria-labelledby="flow-h">
+  <div class="wrap">
+    <p class="label">How it works</p>
+    <h2 id="flow-h">From request to audit log</h2>
+    <p class="intro">One request, followed through. The screenshots are warden's real pages, rendered from its test fixtures, so the names and times are placeholders.</p>
+    <ol class="flow">
+      <li class="step half">
+        <h3>The agent asks</h3>
+        <p>It names the access, the window and the goal, then waits. warden checks the request against your policy in a 1Password vault. Without <code class="nb">--methods</code>, an API request is read-only.</p>
+        <figure class="cmd">
+          <figcaption>On the agent's machine</figcaption>
+<pre><code>warden request api home-api \
+  --methods GET --path /v1/devices/ \
+  --for 1h --goal "Read device status"
+<span class="out">request &lt;id&gt;, fingerprint ab01-cd01-ef01 — waiting for approval…</span></code></pre>
+        </figure>
+      </li>
+      <li class="step half">
+        <h3>Your phone notifies you</h3>
+        <p>Through Home Assistant or ntfy. A notification carries the agent, the access, up to 200 characters of the goal and a link. It holds no secret and cannot approve anything.</p>
+        <div class="notice">
+          <p class="label">The text warden sends</p>
+          <p class="notice-title">warden: build-agent wants api home-api (read-only)</p>
+          <p>Read device status</p>
+          <p class="notice-link"><code>https://warden.example.ts.net/approve/…</code></p>
+        </div>
+      </li>
+      <li class="step third">
+        <h3>You approve with a passkey</h3>
+        <p>The page shows the goal, the exact access and a fingerprint to compare with the agent's. You pick a window from 15 minutes to 4 hours, capped by the target's policy.</p>
+        <figure class="phone">
+          <picture>
+            <source srcset="img/approve-api-read-only-dark.webp" media="(prefers-color-scheme: dark)">
+            <img src="img/approve-api-read-only-light.webp" width="600" height="1298" loading="lazy" decoding="async" alt="The approval page for an API request. build-agent asks to use secret home-api for GET on https://api.example.com/v1/devices/, with a Read-only badge and the goal: Read device status. Below are the fingerprint ab01-cd01-ef01, a choice of 15 minutes, 30 minutes or 1 hour, and the buttons Approve with passkey and Deny.">
+          </picture>
+        </figure>
+      </li>
+      <li class="step third">
+        <h3>The agent gets that access</h3>
+        <p>Only what you approved, for the window you chose. Your grants page shows what is active, with open relay sessions and calls in flight, and lets you revoke.</p>
+        <figure class="phone">
+          <picture>
+            <source srcset="img/grants-live-dark.webp" media="(prefers-color-scheme: dark)">
+            <img src="img/grants-live-light.webp" width="600" height="1298" loading="lazy" decoding="async" alt="The Active grants page. One card shows ssh deploy@switch-01 through the warden relay, ending in 30 minutes, with 2 sessions open and the bytes each one moved. A second card shows secret home-api with a Can modify: POST badge. Each card has a Revoke button.">
+          </picture>
+        </figure>
+      </li>
+      <li class="step third">
+        <h3>Every step is audited</h3>
+        <p>Requests, decisions and uses go to a hash-chained log. <code>warden-server audit verify</code> detects an edited, reordered or removed entry before the last one. Your history page lists every request.</p>
+        <figure class="phone">
+          <picture>
+            <source srcset="img/history-dark.webp" media="(prefers-color-scheme: dark)">
+            <img src="img/history-light.webp" width="600" height="1298" loading="lazy" decoding="async" alt="The History page. One card shows the time, the agent, a long goal, the access api:home-api, its fingerprint, the status approved and a window of 15 minutes. The next card starts below it, for build-agent with the goal: Deploy the nightly build.">
+          </picture>
+        </figure>
+      </li>
+    </ol>
+  </div>
+</section>
+
+<section id="uses" class="band" aria-labelledby="uses-h">
+  <div class="wrap">
+    <p class="label">Use cases</p>
+    <h2 id="uses-h">Three kinds of access</h2>
+    <p class="intro">warden grants these three, one target or secret at a time. Each card ends with what to know before relying on it.</p>
+    <div class="use-grid">
+      <article class="card use">
+        <h3>SSH with no key on the agent's machine</h3>
+        <p class="access"><code>warden ssh web-01 -- docker restart web</code></p>
+        <div class="field">
+          <p class="label">How</p>
+          <p>The CLI makes a new key in memory for each request. warden's SSH CA signs a certificate for it, valid for the window, and each host trusts the CA for its own target name only.</p>
+        </div>
+        <div class="field">
+          <p class="label">The agent never sees</p>
+          <p>Any reusable key.</p>
+        </div>
+        <div class="field">
+          <p class="label">Limit</p>
+          <p>Revoking stops new use through warden, but an issued certificate stays valid on the host until it expires, at most 4 hours (<a href="https://github.com/pecheriere/warden/issues/35">#35</a>).</p>
+        </div>
+      </article>
+      <article class="card use">
+        <h3>API calls where the agent never sees the secret</h3>
+        <p class="access"><code>warden http home-api GET https://api.example.com/v1/devices/</code></p>
+        <div class="field">
+          <p class="label">How</p>
+          <p>warden reads the secret from 1Password, makes the call to the origin and path you allow, and returns the answer with the secret redacted. Redirects are not followed.</p>
+        </div>
+        <div class="field">
+          <p class="label">The agent never sees</p>
+          <p>The API secret.</p>
+        </div>
+        <div class="field">
+          <p class="label">Limit</p>
+          <p>Redaction is defence in depth and cannot catch every transformation. Within the window the agent can make any call you allowed, and a revoke does not stop a call in flight (<a href="https://github.com/pecheriere/warden/issues/44">#44</a>).</p>
+        </div>
+      </article>
+      <article class="card use">
+        <h3>Appliances through the relay</h3>
+        <p class="access"><code>warden ssh switch-01 -- show version</code></p>
+        <div class="field">
+          <p class="label">How</p>
+          <p>For switches, firewalls, access points and password-only hosts that cannot trust a CA. warden logs in to the target itself and relays the session, and the agent's commands stay the same. Forwarding and sftp are refused.</p>
+        </div>
+        <div class="field">
+          <p class="label">The agent never sees</p>
+          <p>The target's key or password.</p>
+        </div>
+        <div class="field">
+          <p class="label">Limit</p>
+          <p>It needs the <a href="https://github.com/pecheriere/warden/blob/main/docs/deployment.md#10-the-sidecar-layout-for-relay-targets">sidecar layout</a>, which is documented but not yet tested end to end. warden uses these credentials, so a compromised warden can expose them.</p>
+        </div>
+      </article>
+    </div>
+  </div>
+</section>
+
+<section id="trust" aria-labelledby="trust-h">
+  <div class="wrap">
+    <p class="label">Why trust it</p>
+    <h2 id="trust-h">What holds, and what does not</h2>
+    <div class="status">
+      <p class="label">Read this first</p>
+      <p><strong>warden has not had an independent security review.</strong> It has a single maintainer and is before 1.0, so releases can include breaking changes, and database migrations are one-way. Judge it by the code and the threat model.</p>
+    </div>
+    <div class="trust-grid">
+      <div class="card">
+        <h3><svg class="ico" width="20" height="20" aria-hidden="true"><use href="#i-lock"/></svg>What warden is built to hold</h3>
+        <ul class="plain">
+          <li><strong>An agent can only ask.</strong> Every grant needs a WebAuthn assertion from your enrolled passkey, tied to one request and one window.</li>
+          <li><strong>Grants are bounded.</strong> At most 4 hours, one target or secret, and the account or methods you approved. There is no "always allow".</li>
+          <li><strong>The approval page stays off agent machines.</strong> Your tailnet policy grants it to your phone only, so an injected agent cannot put a prompt in front of you on a machine it controls. You set this policy: warden itself only checks that the caller is the owner.</li>
+          <li><strong>Nothing on the internet.</strong> warden is reachable only over your tailnet, and refuses requests that arrive through Tailscale Funnel.</li>
+          <li><strong>Open source.</strong> MIT or Apache-2.0, written in Rust with <code>unsafe</code> forbidden in its own crates. The <a href="https://github.com/pecheriere/warden/blob/main/docs/threat-model.md">threat model</a> is public.</li>
+          <li><strong>Attested releases.</strong> Check where the image was built before you run it:
+            <figure class="cmd inline">
+<pre><code>gh attestation verify \
+  oci://ghcr.io/pecheriere/warden:0.8.1 \
+  --owner pecheriere</code></pre>
+            </figure>
+          </li>
+        </ul>
+      </div>
+      <div class="card limits">
+        <h3><svg class="ico" width="20" height="20" aria-hidden="true"><use href="#i-warn"/></svg>What warden does not protect against</h3>
+        <ul class="plain">
+          <li><strong>Whoever controls the warden host.</strong> Root there can read the CA key and relay credentials, rewrite the database and audit log, and issue grants. Keep the host as locked down as the most sensitive thing it reaches.</li>
+          <li><strong>Whoever controls the 1Password vault.</strong> The vault decides what warden may hand out and where secrets may go.</li>
+          <li><strong>A compromised agent machine, within its approvals.</strong> Code running as the agent's OS user can make requests and use its active grants. A copied agent key works until you revoke the agent, though it cannot approve anything.</li>
+          <li><strong>A grant used for another task.</strong> Grants are not tied to a task, so everything running as that OS user can use them (<a href="https://github.com/pecheriere/warden/issues/49">#49</a>).</li>
+          <li><strong>A misleading goal you approve.</strong> warden shows the goal, the scope and a fingerprint. It cannot judge whether the goal is honest.</li>
+          <li><strong>What happens during the window.</strong> An approved shell or API scope can do anything it permits until the grant ends.</li>
+          <li><strong>Instant revocation everywhere.</strong> Issued certificates last until they expire, and API calls in flight finish.</li>
+          <li><strong>An audit log rewritten whole.</strong> Whoever can rewrite the whole file can rewrite the chain, so ship the log somewhere the server cannot modify.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="start" class="band" aria-labelledby="start-h">
+  <div class="wrap">
+    <p class="label">How to start</p>
+    <h2 id="start-h">See it work first, then decide</h2>
+
+    <div class="track">
+      <div class="track-side">
+        <h3>Try the demo on one machine</h3>
+        <p>A throwaway warden shows an API call from request to audit log, with no Tailscale, 1Password, Docker or phone.</p>
+        <p class="badge modify"><svg width="18" height="18" aria-hidden="true"><use href="#i-warn"/></svg>Not secure for real use</p>
+        <p>Everyone on the machine counts as the owner, so keep real secrets away from it. It does not cover SSH or the phone-only separation that makes warden safe.</p>
+        <p class="label">You need</p>
+        <ul class="plain tight">
+          <li><a href="https://rustup.rs">Rust</a>, because the demo currently builds from source</li>
+          <li>A C toolchain and the OpenSSL headers. On Debian or Ubuntu: <code>sudo apt install build-essential pkg-config libssl-dev</code></li>
+          <li>A browser that can create a passkey</li>
+        </ul>
+        <p><a href="https://github.com/pecheriere/warden/blob/main/docs/demo.md">What the demo does and does not show</a></p>
+      </div>
+      <div class="track-main">
+        <figure class="cmd">
+          <figcaption>First terminal</figcaption>
+<pre><code>git clone https://github.com/pecheriere/warden && cd warden
+cargo build --locked -p warden-demo -p warden-broker-cli
+target/debug/warden-demo</code></pre>
+        </figure>
+        <p>It prints the next steps with the real ports, paths and enrollment code. Open the printed <code>/enroll</code> link in your browser, enter the code and create a passkey. Then be the agent:</p>
+        <figure class="cmd">
+          <figcaption>Second terminal, same directory</figcaption>
+<pre><code>source '&lt;the printed path&gt;/agent.env'
+target/debug/warden request api demo-api --for 15m \
+  --goal "try the warden demo"</code></pre>
+        </figure>
+        <p>The first terminal prints an approval link. Open it, check the fingerprint and approve with your passkey. Then call the API and read the log:</p>
+        <figure class="cmd">
+          <figcaption>Second terminal</figcaption>
+<pre><code>target/debug/warden http demo-api GET https://localhost:&lt;port&gt;/v1/hello
+cat "$WARDEN_DEMO_DIR/audit.jsonl"</code></pre>
+        </figure>
+        <p>The answer shows <code>"authorization_received": "[REDACTED]"</code>: the demo API received the token and echoed it, and warden removed it before the agent could see it. Ctrl-C in the first terminal verifies the audit chain and deletes the temporary directory. The passkey stays in your authenticator, so delete it afterwards.</p>
+      </div>
+    </div>
+
+    <div class="track">
+      <div class="track-side">
+        <h3>Then run the recommended setup</h3>
+        <p>Tailscale, Docker and 1Password, on a Linux server dedicated to warden. All three are required today. Each server has one owner, who approves every request. One owner can have many agents, but there are no teams or roles.</p>
+        <p class="label">You need</p>
+        <ul class="plain tight">
+          <li>A Linux server on a <a href="https://tailscale.com">Tailscale</a> tailnet, and to be comfortable running it</li>
+          <li>Docker Engine 28 or later and Compose 2.33 or later</li>
+          <li>A 1Password account that can run a Connect server</li>
+          <li>A phone with a passkey, on the tailnet</li>
+          <li>Home Assistant or ntfy for notifications</li>
+          <li>On each agent machine, the <code>warden</code> CLI and OpenSSH</li>
+        </ul>
+        <p>This is the short path. <a href="https://github.com/pecheriere/warden/blob/main/docs/deployment.md">The deployment guide</a> explains each step and why it matters; follow it for a real setup.</p>
+        <p>Approving without Tailscale (<a href="https://github.com/pecheriere/warden/issues/75">#75</a>) and secrets without 1Password (<a href="https://github.com/pecheriere/warden/issues/76">#76</a>) are planned and do not exist yet.</p>
+      </div>
+      <ol class="track-main setup">
+        <li>
+          <h4>Tailscale</h4>
+          <p>Tag the server <code>tag:warden-host</code>. Plan two Services: <code>svc:warden</code> (the approval UI), granted to your phone only, and <code>svc:warden-api</code> (the agent API), granted to the agent machines only. Add policy tests so agent machines can never reach the approval UI. <a href="https://github.com/pecheriere/warden/blob/main/docs/deployment.md#2-tailscale">The policy and commands</a>.</p>
+        </li>
+        <li>
+          <h4>1Password</h4>
+          <p>In a private directory, because this writes a credentials file there and prints a token once (<a href="https://github.com/pecheriere/warden/blob/main/docs/deployment.md#3-1password">how to move both safely</a>):</p>
+          <figure class="cmd">
+<pre><code>op vault create Warden
+op connect server create warden-connect --vaults Warden
+op connect token create warden-read \
+  --server warden-connect --vault Warden,r
+op item create --vault Warden --category "SSH Key" \
+  --title warden-ssh-ca --tags warden:ssh-ca \
+  --ssh-generate-key ed25519</code></pre>
+          </figure>
+        </li>
+        <li>
+          <h4>Run Connect and warden</h4>
+          <p>With <a href="https://github.com/pecheriere/warden/blob/main/docs/deployment.md#5-run-warden">the Compose file</a>, <a href="https://github.com/pecheriere/warden/blob/main/docs/configuration.md">your settings</a> and <a href="https://github.com/pecheriere/warden/blob/main/docs/notifications.md">a notification channel</a>, which warden needs in order to start. Verify the image first:</p>
+          <figure class="cmd">
+<pre><code>gh attestation verify \
+  oci://ghcr.io/pecheriere/warden:0.8.1 \
+  --owner pecheriere</code></pre>
+          </figure>
+        </li>
+        <li>
+          <h4>Publish the Services</h4>
+          <figure class="cmd">
+<pre><code>tailscale serve --service=svc:warden \
+  --https=443 --bg http://172.31.250.10:8081
+tailscale serve --service=svc:warden-api \
+  --https=443 --bg http://172.31.250.10:8080</code></pre>
+          </figure>
+        </li>
+        <li>
+          <h4>Enroll your passkey</h4>
+          <p>Then open the printed URL on your phone and enter the code.</p>
+          <figure class="cmd">
+<pre><code>docker compose exec warden /warden-server enroll</code></pre>
+          </figure>
+        </li>
+        <li>
+          <h4>Add a target</h4>
+          <p>Create its item in the vault and let the host trust the CA for that target only. <a href="https://github.com/pecheriere/warden/blob/main/docs/ssh-targets.md">SSH targets</a>, <a href="https://github.com/pecheriere/warden/blob/main/docs/1password-items.md#api-secret">API secrets</a>.</p>
+        </li>
+        <li>
+          <h4>Enroll an agent and log in</h4>
+          <p>This uses a signing key. <a href="https://github.com/pecheriere/warden/blob/main/docs/agent-usage.md#one-time-setup">Which key to use</a>. The CLI build needs Rust 1.99 or later; releases after v0.8.1 also attach binaries.</p>
+          <figure class="cmd">
+            <figcaption>On the server, with the agent's public key line</figcaption>
+<pre><code>docker compose exec warden /warden-server agent add build-agent \
+  --public-key "ssh-ed25519 AAAA… build-agent"</code></pre>
+          </figure>
+          <figure class="cmd">
+            <figcaption>On the agent machine</figcaption>
+<pre><code>cargo install --locked \
+  --git https://github.com/pecheriere/warden \
+  --tag v0.8.1 warden-broker-cli
+warden login --server https://warden-api.example.ts.net \
+  --agent build-agent --ssh-key ~/.ssh/build-agent.pub</code></pre>
+          </figure>
+        </li>
+        <li>
+          <h4>Request and use access</h4>
+          <figure class="cmd">
+<pre><code>warden request ssh web-01 --user build-agent --for 15m \
+  --goal "restart the web container after the config change in PR #42"
+warden ssh web-01 -- docker restart web
+warden revoke &lt;grant-id&gt;</code></pre>
+          </figure>
+        </li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+<section id="docs" aria-labelledby="docs-h">
+  <div class="wrap">
+    <p class="label">Read more</p>
+    <h2 id="docs-h">Documentation</h2>
+    <ul class="doc-grid">
+      <li><a href="https://github.com/pecheriere/warden/blob/main/docs/demo.md">Local demo</a><span>Trying the flow on one machine, and what that leaves out.</span></li>
+      <li><a href="https://github.com/pecheriere/warden/blob/main/docs/deployment.md">Deployment</a><span>Running warden safely, from Tailscale to backups and upgrades.</span></li>
+      <li><a href="https://github.com/pecheriere/warden/blob/main/docs/threat-model.md">Threat model</a><span>What warden protects, what it does not, and what it assumes.</span></li>
+      <li><a href="https://github.com/pecheriere/warden/blob/main/docs/agent-usage.md">Agent usage</a><span>Setting up an agent and how it should ask for access.</span></li>
+      <li><a href="https://github.com/pecheriere/warden/blob/main/docs/agent-instructions.md">Agent instructions</a><span>A block to paste into an agent's <code>AGENTS.md</code> or <code>CLAUDE.md</code>.</span></li>
+      <li><a href="https://github.com/pecheriere/warden/blob/main/docs/configuration.md">Configuration</a><span>Every environment variable and command.</span></li>
+      <li><a href="https://github.com/pecheriere/warden/blob/main/docs/design.md">Design</a><span>The design and its decisions.</span></li>
+      <li><a href="https://github.com/pecheriere/warden/blob/main/CHANGELOG.md">Changelog</a><span>What changed in each release. Read it before you upgrade.</span></li>
+      <li><a href="https://github.com/pecheriere/warden">Repository</a><span>The source, issues and releases on GitHub.</span></li>
+    </ul>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap foot-grid">
+    <div class="halo" aria-hidden="true"><svg class="mascot"><use href="#mascot"/></svg></div>
+    <div>
+      <p><strong>warden</strong> is open source, under MIT or Apache-2.0, at your option. Report a vulnerability privately as described in <a href="https://github.com/pecheriere/warden/blob/main/SECURITY.md">SECURITY.md</a>.</p>
+      <p>This page has no scripts, cookies or trackers, and loads nothing from other sites. GitHub Pages hosts it, under GitHub's terms and privacy policy.</p>
+    </div>
+  </div>
+</footer>
+</body>
+</html>

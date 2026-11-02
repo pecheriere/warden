@@ -8,6 +8,9 @@ All notable changes to this project are recorded here. The format follows
 
 ### Added
 
+- A landing page in `site/`, published to GitHub Pages by
+  `.github/workflows/pages.yml`. It is static, with no scripts or external
+  resources.
 - A hardened systemd unit (`deploy/systemd/warden.service`) and a guide to run
   warden without Docker (`docs/deployment-systemd.md`), which says what holds,
   what is replaced and what is lost compared with Docker. Docker stays the

@@ -1,0 +1,188 @@
+/* warden landing page. Tokens and components follow docs/design-language.md. */
+:root{--ground:#F3F6FD;--surface:#FFFFFF;--ink:#0F1E3D;--muted:#4A5A7C;--line:#DDE5F5;
+--primary:#2557D6;--on-primary:#FFFFFF;--soft:#E3EBFC;--soft-ink:#1D45AB;
+--accent:#F5B800;--accent-edge:#9A6B00;--warn-bg:#FFF1D6;--warn-ink:#7A3300;--warn-line:#C25100;--fp-bg:#F7F9FF;
+--mono:ui-monospace,SFMono-Regular,Menlo,monospace}
+@media (prefers-color-scheme:dark){:root{--ground:#0B1530;--surface:#142348;--ink:#EAF0FF;--muted:#A5B4D8;--line:#22346A;
+--primary:#8FB0FF;--on-primary:#0B1530;--soft:#1B2D5C;--soft-ink:#C9D7FF;
+--accent:#F5B800;--accent-edge:#F5B800;--warn-bg:#3A2306;--warn-ink:#FFD08A;--warn-line:#E08A2C;--fp-bg:#101D40}}
+
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+@media (prefers-reduced-motion:no-preference){html{scroll-behavior:smooth}}
+body{margin:0;background:var(--ground);color:var(--ink);
+font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;font-size:17px;line-height:1.5;
+padding:0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
+img{display:block;width:100%;height:auto}
+p{margin:0}
+main:focus{outline:0}
+a{color:var(--primary);text-underline-offset:2px;overflow-wrap:anywhere}
+a:focus-visible,summary:focus-visible{outline:2px solid var(--primary);outline-offset:2px;border-radius:4px}
+code{font-family:var(--mono);font-size:.88em;overflow-wrap:anywhere}
+.sprite{position:absolute;width:0;height:0;overflow:hidden}
+.wrap{width:100%;max-width:1160px;margin:0 auto;padding:0 20px}
+section{padding:64px 0;scroll-margin-top:0}
+.band{background:var(--surface);border-block:1px solid var(--line)}
+h1,h2,h3,h4{margin:0;letter-spacing:-.025em;line-height:1.12;font-weight:800}
+h1{font-size:clamp(34px,4.1vw,48px);line-height:1.08;text-wrap:balance}
+h2{font-size:clamp(27px,3.6vw,38px);margin-top:8px;text-wrap:balance}
+h3{font-size:20px;line-height:1.2}
+h4{font-size:17px}
+.label{font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.intro{max-width:64ch;margin-top:14px;color:var(--muted)}
+
+.skip{position:absolute;left:12px;top:-64px;z-index:20;padding:10px 16px;border-radius:14px;
+background:var(--primary);color:var(--on-primary);font-weight:700}
+.skip:focus{top:12px}
+
+/* Header: mascot and wordmark; navigation inline from 720 px, behind a <details> below. */
+.top{position:relative;display:flex;align-items:center;gap:10px;padding:12px 16px 12px 20px;
+padding-top:calc(12px + env(safe-area-inset-top));background:var(--surface);border-bottom:1px solid var(--line)}
+.brand{display:flex;align-items:center;gap:10px;min-height:44px;color:var(--ink);text-decoration:none;
+font-weight:800;font-size:21px;letter-spacing:-.03em}
+.mascot{display:block;width:38px;height:38px;flex:none}
+.top nav a{display:flex;align-items:center;min-height:44px;padding:0 12px;border-radius:10px;
+color:var(--muted);font-weight:600;text-decoration:none;font-size:16px}
+.top nav a:hover{color:var(--soft-ink);background:var(--soft)}
+.nav-wide{display:flex;gap:4px;margin-left:auto}
+.nav-menu{display:none;margin-left:auto}
+.menu{display:flex;align-items:center;justify-content:center;width:44px;height:44px;border:1px solid var(--line);
+border-radius:12px;color:var(--ink);cursor:pointer;list-style:none}
+.menu::-webkit-details-marker{display:none}
+.nav-menu nav{position:absolute;z-index:10;top:calc(100% + 6px);right:16px;min-width:220px;display:flex;flex-direction:column;
+padding:6px;background:var(--surface);border:1px solid var(--line);border-radius:14px}
+@media (max-width:719px){.nav-wide{display:none}.nav-menu{display:block}}
+
+/* Hero: rings around the phone, like the halo on warden's finished pages, widening into the sky. */
+.hero{position:relative;padding:40px 0 48px;overflow:hidden;--rx:50%;--ry:76%}
+.hero::before{content:"";position:absolute;inset:0;
+background:repeating-radial-gradient(circle at var(--rx) var(--ry),transparent 0 59px,var(--line) 59px 60px);
+-webkit-mask-image:radial-gradient(circle at var(--rx) var(--ry),#000 240px,transparent 480px);
+mask-image:radial-gradient(circle at var(--rx) var(--ry),#000 240px,transparent 480px)}
+.hero-grid{position:relative;display:grid;gap:36px}
+.hero-copy{display:flex;flex-direction:column;align-items:flex-start;gap:20px}
+.chip{display:inline-flex;align-items:center;gap:8px;padding:6px 12px;border-radius:18px;
+background:var(--soft);color:var(--soft-ink);font-size:13px;font-weight:600}
+.dot{flex:none;width:10px;height:10px;border-radius:50%;background:var(--accent);border:2px solid var(--accent-edge)}
+.lede{max-width:56ch;font-size:clamp(17px,1.7vw,19px)}
+.cta{display:flex;flex-wrap:wrap;gap:10px;margin-top:4px}
+.btn{display:inline-flex;align-items:center;justify-content:center;min-height:54px;padding:0 22px;border-radius:14px;
+font-weight:700;text-decoration:none}
+.primary{background:var(--primary);color:var(--on-primary)}
+.ghost{border:2px solid var(--line);background:var(--surface);color:var(--ink)}
+.btn:focus-visible{outline-offset:3px;border-radius:14px}
+
+/* A screenshot in a plain phone outline. */
+.phone{margin:0;width:100%;max-width:280px;border:6px solid var(--surface);outline:1px solid var(--line);border-radius:30px;
+overflow:hidden;background:var(--surface)}
+.hero-phone{justify-self:center;max-width:260px}
+@media (min-width:860px){.hero{padding:44px 0;--rx:80%;--ry:50%}
+.hero::before{-webkit-mask-image:radial-gradient(circle at var(--rx) var(--ry),#000 300px,transparent 560px);
+mask-image:radial-gradient(circle at var(--rx) var(--ry),#000 300px,transparent 560px)}
+.hero-grid{grid-template-columns:minmax(0,1fr) 300px;gap:56px;align-items:center}
+.hero-phone{max-width:300px}
+h1 span{display:block}}
+@media (max-width:599px){section{padding:48px 0}}
+
+/* Why */
+.why-grid,.use-grid{display:grid;gap:14px;margin-top:32px}
+.card{display:flex;flex-direction:column;gap:12px;min-width:0;padding:20px;background:var(--surface);
+border:1px solid var(--line);border-radius:18px}
+.band .card{background:var(--ground)}
+.card p{color:var(--muted)}
+.answer{display:flex;flex-direction:column;gap:12px;padding:20px;border-radius:18px;background:var(--primary);color:var(--on-primary)}
+@media (min-width:860px){.why-grid,.use-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
+
+/* Flow: a dashed rail, the fingerprint frame's line, ties the numbered steps together. */
+.flow{list-style:none;margin:36px 0 0;padding:0;display:grid;gap:36px;counter-reset:step}
+.step{position:relative;display:flex;flex-direction:column;gap:12px;min-width:0;padding-left:46px;counter-increment:step}
+.step::before{content:counter(step);position:absolute;left:0;top:-4px;width:32px;height:32px;border-radius:50%;
+display:flex;align-items:center;justify-content:center;background:var(--soft);color:var(--soft-ink);font-weight:800;font-size:15px}
+.step::after{content:"";position:absolute;left:15px;top:36px;bottom:-32px;border-left:2px dashed var(--primary);opacity:.45}
+.step:last-child::after{display:none}
+.step>p{color:var(--muted)}
+.step .phone{margin-top:6px}
+.notice{display:flex;flex-direction:column;gap:6px;padding:16px;background:var(--surface);border:1px solid var(--line);border-radius:18px}
+.notice-title{font-weight:700}
+.notice-link{color:var(--muted)}
+@media (min-width:900px){.flow{grid-template-columns:repeat(6,minmax(0,1fr));gap:44px 28px}
+.half{grid-column:span 3}.third{grid-column:span 2}
+.step{padding-left:0;padding-top:46px}
+.step::before{top:0}
+.step::after{left:40px;right:-24px;top:15px;bottom:auto;border-left:0;border-top:2px dashed var(--primary)}
+.step:nth-child(2)::after{display:none}
+/* Each column's phone starts at the same height, however long the text above it. */
+.third{display:grid;grid-row:span 3;grid-template-rows:subgrid;row-gap:12px;align-content:start}}
+
+@media (max-width:599px){.step{padding:40px 0 0}.step::after{display:none}
+.step .phone{max-width:240px;align-self:center}}
+
+/* Commands: they wrap rather than hide behind a scroll, which leaves what is copied unchanged. */
+.cmd{margin:0;min-width:0}
+.cmd figcaption{margin-bottom:6px;font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.cmd pre{margin:0;padding:14px 16px;white-space:pre-wrap;overflow-wrap:anywhere;background:var(--fp-bg);border:1px solid var(--line);border-radius:14px;
+font-family:var(--mono);font-size:14px;line-height:1.55}
+.cmd code{font-size:inherit}
+.nb{white-space:nowrap}
+.out{color:var(--muted)}
+.inline{margin-top:10px}
+/* On a phone, commands in the setup steps also use the numbers' indent. */
+@media (max-width:599px){.cmd pre{padding:12px;font-size:13px}
+.setup .cmd{margin-left:-42px}}
+
+/* Use cases: laid out like a grant card. */
+.use{gap:14px}
+.access{padding-bottom:14px;border-bottom:1px solid var(--line)}
+.card .access{color:var(--ink)}
+.field{display:flex;flex-direction:column;gap:3px}
+
+/* Trust */
+.status{display:flex;flex-direction:column;gap:6px;margin-top:28px;padding:16px 20px;border:2px dashed var(--warn-line);border-radius:18px;background:var(--warn-bg);color:var(--warn-ink)}
+.status .label{color:var(--warn-ink)}
+.trust-grid{display:grid;gap:14px;margin-top:14px}
+.trust-grid h3{display:flex;align-items:flex-start;gap:8px}
+.ico{flex:none;margin-top:1px}
+.card li{color:var(--muted)}
+.card li strong{color:var(--ink)}
+.plain{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:12px}
+.tight{gap:6px}
+.limits{border-color:var(--warn-line)}
+.limits .ico{color:var(--warn-line)}
+@media (min-width:860px){.trust-grid{grid-template-columns:repeat(2,minmax(0,1fr));align-items:start}}
+
+/* Start */
+.track{display:grid;gap:24px;margin-top:40px;padding-top:32px;border-top:1px solid var(--line)}
+.track:first-of-type{border-top:0;padding-top:0;margin-top:32px}
+.track-side,.track-main{display:flex;flex-direction:column;gap:14px;min-width:0}
+.track-side>p:not(.label):not(.badge){color:var(--muted)}
+.track-side li{color:var(--muted)}
+.badge{align-self:flex-start;display:inline-flex;align-items:center;gap:6px;padding:5px 10px;border-radius:10px;
+font-size:14px;font-weight:700;border:1.5px solid}
+.modify{background:var(--warn-bg);color:var(--warn-ink);border-color:var(--warn-line)}
+.setup{list-style:none;margin:0;padding:0;counter-reset:setup;gap:26px}
+.setup>li{position:relative;display:flex;flex-direction:column;gap:10px;min-width:0;padding-left:42px;counter-increment:setup}
+.setup>li::before{content:counter(setup);position:absolute;left:0;top:-5px;width:30px;height:30px;border-radius:50%;
+display:flex;align-items:center;justify-content:center;background:var(--soft);color:var(--soft-ink);font-weight:800;font-size:14px}
+.setup p{color:var(--muted)}
+@media (min-width:860px){.track{grid-template-columns:340px minmax(0,1fr);gap:48px}}
+
+/* Docs */
+.doc-grid{list-style:none;margin:28px 0 0;padding:0;display:grid;gap:14px}
+.doc-grid li{display:flex;flex-direction:column;gap:3px;padding:16px;background:var(--surface);border:1px solid var(--line);border-radius:18px}
+.doc-grid a{font-weight:700}
+.doc-grid span{color:var(--muted);font-size:15px}
+@media (min-width:640px){.doc-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (min-width:960px){.doc-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
+
+/* Footer */
+.foot{padding:36px 0 48px;background:var(--surface);border-top:1px solid var(--line);color:var(--muted);font-size:15px}
+.foot strong{color:var(--ink)}
+.foot-grid{display:grid;gap:20px;align-items:center}
+.foot-grid>div+div{display:flex;flex-direction:column;gap:6px;max-width:72ch}
+.halo{display:flex;align-items:center;justify-content:center;width:112px;height:112px;border-radius:50%;background:var(--soft)}
+.halo .mascot{width:84px;height:84px}
+@media (min-width:640px){.foot-grid{grid-template-columns:auto minmax(0,1fr)}}
+
+/* The live dot breathes slowly, unless motion is unwelcome. */
+@media (prefers-reduced-motion:no-preference){.dot{animation:breathe 3.2s ease-in-out infinite}
+@keyframes breathe{50%{opacity:.45}}}

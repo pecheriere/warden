@@ -7,6 +7,9 @@ get a notification on your phone, read the goal and exactly what would be
 granted, and approve with a passkey. warden then hands out access that
 expires on its own. The agent never holds a long-lived secret.
 
+The [project page](https://pecheriere.github.io/warden/) shows the flow, the
+use cases and how to start.
+
 <img src="docs/design/mockups/approve-iphone-light.png" alt="The approve page on a phone: the agent, the access with a read-only badge, the goal, the fingerprint, the grant window and the Approve and Deny buttons" width="320">
 
 ## Who warden is for
