@@ -8,11 +8,12 @@
 #
 # The key defaults to git's user.signingkey, and must be listed in
 # docs/release-signers. The script refuses to sign unless the tag carries a good
-# signature from a listed key, the draft holds exactly the expected archives, and
-# each archive and the image have a build attestation from the release workflow
-# at that tag. It then uploads warden-<version>-SHA256SUMS and its .sig to the
-# draft. It never publishes. It needs gh, git, ssh-keygen and shasum, and is
-# safe to rerun: a rerun of the workflow replaces the archives, so sign again.
+# signature from a listed key and was signed under that name, the draft holds
+# exactly the expected files, and each archive and the image have a build
+# attestation from the release workflow at that tag and at the tag's commit. It
+# then uploads warden-<version>-SHA256SUMS and its .sig to the draft. It never
+# publishes. It needs gh, git, ssh-keygen and shasum, and is safe to rerun. A rerun
+# of the workflow replaces the archives and removes the manifest, so sign again.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -57,25 +58,39 @@ grep -Fq "$key_type $key_blob" "$signers" || fail "the key is not listed in $sig
 
 # Checks the tag with ssh-keygen directly, so that the result depends on the
 # list in this repository and not on this machine's git configuration.
-git cat-file tag "$tag" > "$work/tag" 2> /dev/null || fail "$tag is not an annotated tag here: git fetch --tags"
+git cat-file tag "refs/tags/$tag" > "$work/tag" 2> /dev/null || fail "$tag is not an annotated tag here: git fetch --tags"
 sed -n '/^-----BEGIN SSH SIGNATURE-----$/,$p' "$work/tag" > "$work/tag.sig"
 sed '/^-----BEGIN SSH SIGNATURE-----$/,$d' "$work/tag" > "$work/tag.payload"
 ssh-keygen -Y verify -f "$signers" -I "$identity" -n git -s "$work/tag.sig" < "$work/tag.payload" > /dev/null \
   || fail "$tag has no good signature from a key in $signers"
-local_commit=$(git rev-parse "$tag^{commit}")
-remote_commit=$(gh api "repos/$repo/commits/$tag" --jq .sha)
+# A signed tag object can be moved to another ref, so its signed name must match.
+signed_name=$(sed -n 's/^tag //p' "$work/tag.payload" | head -n 1)
+[ "$signed_name" = "$tag" ] || fail "the tag at $tag was signed as $signed_name"
+local_commit=$(git rev-parse "refs/tags/$tag^{commit}")
+remote_commit=$(gh api "repos/$repo/commits/refs/tags/$tag" --jq .sha)
 [ "$local_commit" = "$remote_commit" ] || fail "$tag is $local_commit here but $remote_commit on GitHub"
 
 is_draft=$(gh release view "$tag" --repo "$repo" --json isDraft --jq .isDraft) || fail "no release for $tag yet"
 [ "$is_draft" = true ] || fail "$tag is already published, so it cannot gain files"
 
+# Only the archives are downloaded, so anything else on the draft must be refused
+# here: publishing the draft would ship it, outside the manifest.
+expected=$(for platform in "${platforms[@]}"; do echo "warden-$version-$platform.tar.gz"; done)
+allowed=$expected$'\n'warden-$version-SHA256SUMS$'\n'warden-$version-SHA256SUMS.sig
+assets=$(gh release view "$tag" --repo "$repo" --json assets --jq '.assets[].name')
+while IFS= read -r asset; do
+  [ -z "$asset" ] || grep -Fxq "$asset" <<< "$allowed" || fail "unexpected asset on the draft: $asset"
+done <<< "$assets"
+
 mkdir "$work/assets"
 gh release download "$tag" --repo "$repo" --pattern 'warden-*.tar.gz' --dir "$work/assets"
-expected=$(for platform in "${platforms[@]}"; do echo "warden-$version-$platform.tar.gz"; done)
 found=$(cd "$work/assets" && ls)
 [ "$found" = "$expected" ] || fail "the draft holds unexpected archives:"$'\n'"$found"
 
-attestation_args=(--repo "$repo" --signer-workflow "$workflow" --source-ref "refs/tags/$tag")
+# The ref alone is not enough: an account able to bypass the tag ruleset could
+# build other code under this tag and then restore the signed tag.
+attestation_args=(--repo "$repo" --signer-workflow "$workflow" --source-ref "refs/tags/$tag"
+  --source-digest "$local_commit")
 manifest=$work/warden-$version-SHA256SUMS
 : > "$manifest"
 for platform in "${platforms[@]}"; do

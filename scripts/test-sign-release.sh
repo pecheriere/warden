@@ -40,12 +40,26 @@ cat > "$work/bin/gh" <<'STUB_GH'
 set -euo pipefail
 case "$1 ${2:-}" in
   'api repos/'*) cat "$STUB/remote-commit" ;;
-  'release view') cat "$STUB/is-draft" ;;
+  'release view')
+    if [ "$7" = assets ]; then
+      ls "$STUB/assets"
+      cat "$STUB/also-listed"
+    else
+      cat "$STUB/is-draft"
+    fi
+    ;;
   'release download') cp "$STUB"/assets/* "$9/" ;;
   'release upload') cp "$4" "$5" "$STUB/uploaded/" ;;
   'attestation verify')
-    if [ -e "$STUB/unattested" ] && [ "$(basename "$3")" = "$(cat "$STUB/unattested")" ]; then exit 1; fi
-    case "$3" in oci://*) cat "$STUB/image-digest" ;; esac
+    subject=$3
+    if [ -e "$STUB/unattested" ] && [ "$(basename "$subject")" = "$(cat "$STUB/unattested")" ]; then exit 1; fi
+    digest=
+    while [ "$#" -gt 1 ]; do
+      if [ "$1" = --source-digest ]; then digest=$2; fi
+      shift
+    done
+    if [ "$digest" != "$(cat "$STUB/attested-commit")" ]; then exit 1; fi
+    case "$subject" in oci://*) cat "$STUB/image-digest" ;; esac
     ;;
   *)
     echo "stub gh: unexpected call: $*" >&2
@@ -60,6 +74,8 @@ reset_stub() {
   rm -rf "$STUB/uploaded" "$STUB/unattested" "$STUB/assets"
   mkdir -p "$STUB/uploaded" "$STUB/assets"
   git -C "$repo" rev-parse "$tag^{commit}" > "$STUB/remote-commit"
+  cp "$STUB/remote-commit" "$STUB/attested-commit"
+  : > "$STUB/also-listed"
   echo true > "$STUB/is-draft"
   echo "$image_digest" > "$STUB/image-digest"
   for platform in linux-amd64 linux-arm64 macos-arm64; do
@@ -97,12 +113,14 @@ git -C "$repo" tag -s -m other-signer v9.9.9
 git -C "$repo" config user.signingkey "$work/release-key.pub"
 git -C "$repo" tag -a --no-sign -m unsigned v8.8.8
 git -C "$repo" tag -s -m "warden $version" "$tag"
+git -C "$repo" update-ref refs/tags/v6.6.6 "$(git -C "$repo" rev-parse "refs/tags/$tag")"
 
 reset_stub
 must_refuse 'not a release tag' 'not a release tag' main
 must_refuse 'tag signed by an unlisted key' 'no good signature' v9.9.9
 must_refuse 'unsigned tag' 'no good signature' v8.8.8
 must_refuse 'tag that does not exist' 'not an annotated tag' v7.7.7
+must_refuse 'signed tag moved to another name' 'signed as' v6.6.6
 must_refuse 'signing key that is not listed' 'not listed' "$tag" "$work/other-key.pub"
 
 echo 0000000000000000000000000000000000000000 > "$STUB/remote-commit"
@@ -118,7 +136,11 @@ must_refuse 'missing archive' 'unexpected archives' "$tag"
 
 reset_stub
 echo extra > "$STUB/assets/warden-$version-windows-amd64.tar.gz"
-must_refuse 'extra archive' 'unexpected archives' "$tag"
+must_refuse 'extra archive' 'unexpected asset' "$tag"
+
+reset_stub
+echo checksums.txt > "$STUB/also-listed"
+must_refuse 'file that is not an archive' 'unexpected asset' "$tag"
 
 reset_stub
 echo "warden-$version-macos-arm64.tar.gz" > "$STUB/unattested"
@@ -129,11 +151,16 @@ echo "warden:$version" > "$STUB/unattested"
 must_refuse 'image without an attestation' 'no valid attestation' "$tag"
 
 reset_stub
+echo 1111111111111111111111111111111111111111 > "$STUB/attested-commit"
+must_refuse 'attestations from another commit' 'no valid attestation' "$tag"
+
+reset_stub
 echo not-a-digest > "$STUB/image-digest"
 must_refuse 'malformed image digest' 'unexpected digest' "$tag"
 
 # The good case, then the steps docs/verifying-releases.md gives to users.
 reset_stub
+printf 'warden-%s-SHA256SUMS\nwarden-%s-SHA256SUMS.sig\n' "$version" "$version" > "$STUB/also-listed"
 sign "$tag" > /dev/null
 manifest=$STUB/uploaded/warden-$version-SHA256SUMS
 verify_manifest() {

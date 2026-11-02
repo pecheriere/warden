@@ -53,7 +53,8 @@ release that lists `warden-*.tar.gz` files on the
 [releases page](https://github.com/pecheriere/warden/releases). Checking the
 attestation needs a logged-in [`gh`](https://cli.github.com/).
 [Verifying a release](verifying-releases.md) adds the check of the maintainer's
-signature, which also holds if GitHub is compromised:
+signature. That also holds if GitHub is compromised later, but only if you got the
+maintainer's public key before then; there is no source for it off GitHub yet:
 
 ```sh
 version=x.y.z         # the release you picked

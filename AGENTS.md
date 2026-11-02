@@ -55,6 +55,7 @@ every one must pass:
 cargo fmt --check
 scripts/check-no-reqwest-decompression.sh
 scripts/check-demo-not-shipped.sh
+scripts/test-sign-release.sh
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo test --workspace --all-features --locked
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps --locked
@@ -124,7 +125,9 @@ Semantic versioning, one version for the whole workspace.
    attestations of the draft's archives and of the image, then uploads
    `warden-x.y.z-SHA256SUMS` and its `.sig` to the draft. The key must be
    listed in `docs/release-signers` and is never on GitHub, so the workflow
-   cannot do this step. If the workflow is rerun, sign again.
+   cannot do this step. Nothing enforces it, so do not skip it: a release
+   published without a manifest can never gain one. Rerunning the workflow
+   removes the manifest, so sign again after a rerun.
 4. The maintainer, or an agent the maintainer has confirmed, checks the
    draft and publishes it: `gh release edit vx.y.z --draft=false`. Do not use
    `gh release create` here: releases are immutable, so a release published

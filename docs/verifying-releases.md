@@ -11,8 +11,13 @@ independent ways. They answer different questions, so check both.
 The attestation alone is not enough if GitHub itself, or an account that can
 change this repository, is compromised: that attacker could run a workflow and
 get a valid attestation. They could not produce the maintainer's signature,
-because that key is never on GitHub. The signature alone does not say how the
-files were built.
+because that key is never on GitHub. The signature only helps, though, if you got
+the maintainer's public key before the compromise: see step 1. It also does not
+say how the files were built.
+
+Nothing stops a release being published without a manifest, because signing is a
+manual step and the workflow cannot do it. Treat a release after v0.8.1 that has
+no manifest as unsigned.
 
 GitHub also attests each immutable release (`gh release verify`). GitHub signs
 that with its own key, so it shows that the release has not changed since it was
@@ -25,22 +30,31 @@ The public key is in [`docs/release-signers`](release-signers), in the format
 
 ```sh
 curl -fsSLO https://raw.githubusercontent.com/pecheriere/warden/main/docs/release-signers
-ssh-keygen -lf release-signers
+grep -v '^#' release-signers | awk '{ print $3, $4 }' | ssh-keygen -lf -
 ```
 
-Compare the fingerprint with the signing keys on the maintainer's GitHub account:
+Compare that fingerprint with the signing keys on the maintainer's GitHub account:
 
 ```sh
-curl -fsSL https://api.github.com/users/pecheriere/ssh_signing_keys | jq -r '.[].key'
+curl -fsSL https://api.github.com/users/pecheriere/ssh_signing_keys | jq -r '.[].key' | ssh-keygen -lf -
 ```
 
-The key is `SHA256:aF+0knqtnI3TWceyXtxVRGbcfH64yoZfRGJ3HnDbPT4`.
+The first command should print
+`SHA256:aF+0knqtnI3TWceyXtxVRGbcfH64yoZfRGJ3HnDbPT4`, and the second should list
+it. The account can hold other signing keys; only the ones in `release-signers`
+sign releases.
 
-All of these places are on GitHub, so they agree with each other even if GitHub
-is compromised. Keep your copy of the file and reuse it for later releases: a
-compromise after that cannot replace the key you hold. If the key ever changes,
-the file changes in a signed commit and `CHANGELOG.md` says so. Treat an
-unexplained change as a reason to stop.
+**There is no source for this key off GitHub yet.** The file, the account and this
+page are all on GitHub, so a compromise of GitHub could change them together, and
+checking one against another does not detect that. If you first fetch the key after
+such a compromise, the signature check proves nothing. Keep your copy of the file
+and reuse it for later releases: a compromise after that cannot replace the key you
+hold.
+
+If the key ever changes, the file changes in a pull request and `CHANGELOG.md` says
+so. Merges to `main` are squashed, so the commit carries GitHub's signature rather
+than the maintainer's, and it does not show who made the change. Treat an unexplained
+change as a reason to stop.
 
 ## 2. Verify a CLI archive
 
@@ -97,6 +111,7 @@ sed -n '/^-----BEGIN SSH SIGNATURE-----$/,$p' tag.txt > tag.sig
 sed '/^-----BEGIN SSH SIGNATURE-----$/,$d' tag.txt > tag.payload
 ssh-keygen -Y verify -f release-signers -I pecheriere@users.noreply.github.com \
   -n git -s tag.sig < tag.payload
+grep -x "tag $tag" tag.payload   # the name it was signed under; expect one line
 ```
 
 ## What older releases have
@@ -117,9 +132,9 @@ signature covers that image.
 
 ## Where the signing key is
 
-The private key is on the maintainer's own machine. It is not on GitHub: the
-repository has no Actions secret holding it, no workflow uses it, and only its
-public half is listed on the account and in this repository. The release workflow
+The private key is not on GitHub: the repository has no Actions secret holding it,
+no workflow uses it, and only its public half is listed on the account and in this
+repository. The release workflow
 cannot sign the manifest, which is why the maintainer signs it after the workflow
 has finished, with `scripts/sign-release.sh`, before publishing the draft.
 
