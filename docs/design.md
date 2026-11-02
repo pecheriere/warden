@@ -203,6 +203,10 @@ The CLI always gets a terminal state: `approved`, `denied`, `expired`,
 - The CLI generates an **ephemeral Ed25519 key in memory**, adds it to an
   ssh-agent with a lifetime equal to the window (`ssh-add -t` semantics), and
   never writes it to disk.
+- The window limits new logins only. `sshd` checks a certificate when it
+  authenticates, so a session already open continues after the window, and warden
+  cannot see or end it. Relay sessions (§8.2) and API calls (§8.3) do end with the
+  window.
 - warden signs the public key: principal = `warden:<target>:<user>`; targets
   map it via AuthorizedPrincipalsFile or a cert-authority principals= option
   (so an approval is valid only on the approved target), validity

@@ -66,12 +66,13 @@ decision by the maintainer, and stay open until then.
 | F11 | **The reason on `deny.toml`'s `RUSTSEC-2026-0387` exemption is out of date.** It says "only Ed25519 is used", but P-256 signatures are verified through that code. Verification handles no secret, so the exemption still seems right. | [#99](https://github.com/pecheriere/warden/issues/99) re-checks the exemptions. |
 | F12 | **`subtle` is listed in `[workspace.dependencies]`, and no crate uses it directly.** | Harmless. For a code change. |
 | F13 | **The documents said a copied bearer key can only create requests.** `proxy_call`, `list_grants` and `revoke_grant` in [`api.rs`](../crates/broker/src/api.rs) take the same `AuthedAgent` as creating a request, so any copied agent key can use the agent's live API grants and manage its grants. | Documents corrected, and the risk re-rated (risk 9). The code does what it should: a key is the agent. |
-| F14 | **The documents treated a certificate's expiry as the end of access.** `sshd` checks a certificate when it authenticates, and not afterwards. On a throwaway OpenSSH 10.3 server on 2026-11-01, a session outlived its certificate's expiry, and outlived removing the CA with a reload, while new logins were refused in both cases. warden sees none of it. | Documents corrected, and risk 5 re-rated. [#35](https://github.com/pecheriere/warden/issues/35) covers what to do about it. |
+| F14 | **The documents treated a certificate's expiry as the end of access.** `sshd` checks a certificate when it authenticates, and not afterwards. On a throwaway OpenSSH 10.3 server on 2026-11-01, a session outlived its certificate's expiry, and outlived removing the CA with a reload, while new logins were refused in both cases. On OpenSSH 9.2 in a Debian 12 container, `usermod --expiredate 1` refused new logins and did not end an open session, and with `UsePAM yes`, `passwd -l` and `usermod -L` did not stop certificate logins at all. warden sees none of it. | Documents corrected, and risk 5 re-rated. [#35](https://github.com/pecheriere/warden/issues/35) covers what to do about it. |
 | F15 | **Certificate logins are not in the audit log.** They go straight to the target, so warden records the issue and not the use. The target's `sshd` logs each login with the certificate's key id, `warden:<agent>:<grant id>`. Interactive input to a relay session is not recorded either. | Documents corrected. Ship the targets' logs if you need this trail. |
 
 ## What this assessment did not do
 
-- Test a live deployment, including the [systemd service](deployment-systemd.md),
+- Test a live deployment (the OpenSSH behaviour above was tried on throwaway
+  servers only), including the [systemd service](deployment-systemd.md),
   which is itself not yet tested on a clean host, or the procedures for
   [replacing credentials](assurance-case.md#7-replacing-credentials).
 - Review the dependencies, beyond the algorithm lists quoted in the

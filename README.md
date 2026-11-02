@@ -4,8 +4,11 @@ warden is a self-hosted **approval broker** for AI agents and scripts.
 
 An agent asks for temporary access to a server or an API and says why. You
 get a notification on your phone, read the goal and exactly what would be
-granted, and approve with a passkey. warden then hands out access that
-expires on its own. The agent never holds a long-lived secret.
+granted, and approve with a passkey. warden then hands out access for a limited
+window. When the window ends, API calls through warden are refused and relay
+sessions are closed. On an SSH certificate target new logins stop, but a session
+already open keeps running until it ends or is ended on the target. The agent
+never holds a long-lived secret.
 
 The [project page](https://pecheriere.github.io/warden/) shows the flow, the
 use cases and how to start.
@@ -91,14 +94,14 @@ your phone, on a server you run.
 warden takes a different approach: approval moves to your phone. The agent
 asks for one piece of access, for one stated goal and a short window. You
 approve or deny it from wherever you are. The secrets stay in your vault
-and on the warden server, and the agent only gets access that expires.
+and on the warden server, and the agent only gets access for a limited window.
 
 warden still needs a person. It frees you from the computer, not from
 deciding. If nobody answers, the request expires after 10 minutes and the
 agent has to ask again, and a grant lasts at most 4 hours. So an agent working
-through the night stops when its grant ends, or when it needs something you
-did not approve while you are asleep. That is the trade: you stay in the loop,
-and the agent holds no access that lasts.
+through the night can start nothing new once its grant ends, or when it needs
+something you did not approve while you are asleep. That is the trade: you stay
+in the loop, and the agent holds no secret that lasts.
 
 ## How it works
 
@@ -130,9 +133,9 @@ What warden can grant:
 
 | Access | How the agent gets it | What the agent never sees |
 |--------|-----------------------|---------------------------|
-| **SSH, certificate mode** | A certificate signed by warden's SSH CA, valid for the window, for a key that exists only in memory. | Any reusable key. |
-| **SSH, relay mode** (appliances, password-only hosts) | A session through warden's SSH relay; warden logs in to the target. | The target's key or password. |
-| **HTTP API calls** | warden makes each call, adds the secret, and returns the answer with the secret redacted. | The API secret. |
+| **SSH, certificate mode** | A certificate signed by warden's SSH CA, for a key that exists only in memory. It is valid for new logins during the window. A session already open keeps running after it, and warden cannot end it. | Any reusable key. |
+| **SSH, relay mode** (appliances, password-only hosts) | A session through warden's SSH relay; warden logs in to the target. warden closes the session when the window ends or the grant is revoked. | The target's key or password. |
+| **HTTP API calls** | warden makes each call, adds the secret, and returns the answer with the secret redacted. Calls are refused once the window ends or the grant is revoked. | The API secret. |
 
 ## Recommended setup
 

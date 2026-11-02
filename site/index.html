@@ -8,8 +8,8 @@
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" media="(prefers-color-scheme: light)" content="#FFFFFF">
 <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#142348">
-<title>warden: your agent asks, you approve from your phone, the access expires</title>
-<meta name="description" content="warden is a self-hosted approval broker for AI agents and scripts. An agent asks for SSH or API access and says why, you approve with a passkey for a time window, and every step is audited.">
+<title>warden: your agent asks, you approve from your phone, the grant expires</title>
+<meta name="description" content="warden is a self-hosted approval broker for AI agents and scripts. An agent asks for SSH or API access and says why, you approve with a passkey for a time window, and what warden does is audited.">
 <link rel="canonical" href="https://pecheriere.github.io/warden/">
 <link rel="icon" href="mascot.svg" type="image/svg+xml">
 <link rel="stylesheet" href="style.css">
@@ -83,8 +83,8 @@
   <div class="wrap hero-grid">
     <div class="hero-copy">
       <p class="chip"><span class="dot" aria-hidden="true"></span>Early, before 1.0, with no independent security review</p>
-      <h1 id="pitch"><span>Your agent asks.</span> <span>You approve from your phone.</span> <span>The access expires.</span></h1>
-      <p class="lede">warden is a self-hosted approval broker for AI agents and scripts. An agent asks for SSH or API access and says why. You approve with a passkey for a time window, the agent gets that access and no reusable secret, and every step goes in an audit log.</p>
+      <h1 id="pitch"><span>Your agent asks.</span> <span>You approve from your phone.</span> <span>The grant expires.</span></h1>
+      <p class="lede">warden is a self-hosted approval broker for AI agents and scripts. An agent asks for SSH or API access and says why. You approve with a passkey for a time window, the agent gets that access and no reusable secret, and what warden does goes in an audit log. When the window ends, API calls are refused and relay sessions close. In SSH certificate mode new logins stop, but a session already open keeps running.</p>
       <p class="cta">
         <a class="btn primary" href="#start">Try the demo</a>
         <a class="btn ghost" href="https://github.com/pecheriere/warden/blob/main/docs/threat-model.md">Read the threat model</a>
@@ -169,7 +169,7 @@
         </figure>
       </li>
       <li class="step third">
-        <h3>Every step is audited</h3>
+        <h3>What warden does is audited</h3>
         <p>Requests, decisions, relay sessions and API calls go to a hash-chained log; certificate logins are in the target's own log. <code>warden-server audit verify</code> detects an edited, reordered or removed entry before the last one. Your history page lists every request.</p>
         <figure class="phone">
           <picture>
@@ -193,7 +193,7 @@
         <p class="access"><code>warden ssh web-01 -- docker restart web</code></p>
         <div class="field">
           <p class="label">How</p>
-          <p>The CLI makes a new key in memory for each request. warden's SSH CA signs a certificate for it, valid for the window, and each host trusts the CA for its own target name only.</p>
+          <p>The CLI makes a new key in memory for each request. warden's SSH CA signs a certificate for it, valid for new logins during the window, and each host trusts the CA for its own target name only. A session already open keeps running after the window, and warden cannot end it.</p>
         </div>
         <div class="field">
           <p class="label">The agent never sees</p>
@@ -253,7 +253,7 @@
         <h3><svg class="ico" width="20" height="20" aria-hidden="true"><use href="#i-lock"/></svg>What warden is built to hold</h3>
         <ul class="plain">
           <li><strong>An agent can only ask.</strong> Every grant needs a WebAuthn assertion from your enrolled passkey, tied to one request and one window.</li>
-          <li><strong>Grants are bounded.</strong> At most 4 hours, one target or secret, and the account or methods you approved. There is no "always allow".</li>
+          <li><strong>Grants are bounded.</strong> At most 4 hours, one target or secret, and the account or methods you approved. There is no "always allow". In SSH certificate mode the time limit is on new logins: a session already open keeps running.</li>
           <li><strong>The approval page stays off agent machines.</strong> Your tailnet policy grants it to your phone only, so an injected agent cannot put a prompt in front of you on a machine it controls. You set this policy: warden itself only checks that the caller is the owner.</li>
           <li><strong>Nothing on the internet.</strong> warden is reachable only over your tailnet, and refuses requests that arrive through Tailscale Funnel.</li>
           <li><strong>Open source.</strong> MIT or Apache-2.0, written in Rust with <code>unsafe</code> forbidden in its own crates. The <a href="https://github.com/pecheriere/warden/blob/main/docs/threat-model.md">threat model</a> is public.</li>

@@ -371,17 +371,22 @@ logins were refused. So on each target, also:
 7. See what the account is running: `ps -u <user>`. `who` is not enough, as it
    misses sessions without a terminal.
 8. If the account is [used by warden alone](ssh-targets.md#the-recommended-setup-one-user-per-agent),
-   end all of it with `pkill -KILL -u <user>`. That also ends what a session left
-   running in the background. On an account that does other work too, this would
-   stop that as well, so kill the processes you identified instead.
+   end all of it, **as root**: `pkill -KILL -u <user>`. Run from another account it
+   only fails. That also ends what a session left running in the background. Then
+   check with `ps -u <user>`, and repeat until nothing is left: a process that keeps
+   forking can slip past one pass. If it cannot be cleared, restart the host. On an
+   account that does other work too, `pkill -u` would stop that as well, so kill the
+   processes you identified instead.
 9. Look for what would outlast this: cron jobs, added `authorized_keys` lines,
    services, and anything started under another account through `sudo`, which
    `pkill -u` does not match. warden cannot see any of it. Anyone holding the old
    key could also have signed any principal, so read each target's `sshd` log for
    the period: it names each certificate's key id and CA.
 
-These steps have not been run as a drill on a real target. Check that they work on
-yours, in particular on an appliance whose tools differ.
+We ran steps 7 and 8 in a Debian 12 container with OpenSSH 9.2: `pkill` as root
+ended a live session, and a process that kept replacing itself took a second pass.
+They have not been run on a real target. Check that they work on yours, in
+particular on an appliance whose tools differ.
 
 To refuse one certificate and not the whole CA, `sshd`'s `RevokedKeys` setting takes
 a list of keys ([`sshd_config(5)`](https://man.openbsd.org/sshd_config#RevokedKeys)).
