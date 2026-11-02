@@ -6,6 +6,9 @@ relay mode (sessions the broker relays to targets that cannot trust a CA) and
 the HTTP proxy mode (brokered API calls that use a stored secret). The design
 rationale is in [design.md](design.md), and how to deploy warden so that the
 assumptions at the end of this page hold is in [deployment.md](deployment.md).
+The [assurance case](assurance-case.md) argues how the code meets all this, and
+the dated [security assessment](security-assessment.md) ranks what is most likely
+to go wrong. Both are the project's own, not an independent review.
 
 ## In short
 
@@ -33,10 +36,13 @@ warden does **not** protect against:
 - **The owner approving a misleading goal.** warden shows the goal, the
   scope and a fingerprint; it cannot judge whether the goal is honest.
 - **What happens on the target or API during the window.** An approved
-  shell or API scope can do anything it permits until the grant ends.
+  shell or API scope can do anything it permits until the grant ends. On a
+  certificate target warden does not see the logins at all, and a login already
+  open does not end with the grant.
 - **Instant revocation everywhere.** An issued certificate stays valid on
-  its target until it expires (issue
-  [#35](https://github.com/pecheriere/warden/issues/35)), and a proxied API
+  its target until it expires, and an open login to a certificate target continues
+  even after that (issue
+  [#35](https://github.com/pecheriere/warden/issues/35)). A proxied API
   call already in flight runs to completion (issue
   [#44](https://github.com/pecheriere/warden/issues/44)).
 
@@ -51,8 +57,8 @@ out.
 |---|---|
 | Owner (phone, workstation) | Root of trust. Holds the passkey. Edits the 1Password vault. |
 | The warden host (its root, its container runtime) | Root of trust. Can read everything warden holds and act as warden. |
-| Agent (for example an AI coding agent on the owner's workstation) | Semi-trusted: well-intentioned but may be prompt-injected. Bounded by its stated goal, the approved window, and the targets and users the vault allows. It can only request access, never approve it. |
-| warden server | Trusted. Holds the SSH CA private key and a read-only 1Password Connect token in memory, and relay login credentials briefly (see below). Compromise of the server is compromise of everything it brokers, so it is hardened accordingly. |
+| Agent (for example an AI coding agent on the owner's workstation) | Semi-trusted: well-intentioned but may be prompt-injected. Bounded by its stated goal, the approved window, and the targets and users the vault allows. It can request access and use what was granted, never approve it. |
+| warden server | Trusted. Holds a read-only 1Password Connect token in memory, and for short times what it reads with it: the SSH CA private key, from the read at an approval until the certificate is signed, API secrets during a call, and relay login credentials (see below). Compromise of the server is compromise of everything it brokers, so it is hardened accordingly. |
 | 1Password Connect | Trusted secret backend. Reachable only from warden, on its own network, and unable to reach warden's listeners. |
 | Notifiers (Home Assistant Companion, ntfy, push providers) | Untrusted doorbells. They receive the goal text, agent, target and a link, and nothing else. They cannot approve anything. Which channels are used is fixed at startup from a compile-time set (`WARDEN_NOTIFY`); agents cannot influence it. |
 | Tailscale | Transport and network-level identity. The tailnet policy is the outer access control. |
@@ -77,8 +83,10 @@ defends against it.
   requires a passkey.
 - **Private keys are written to disk on the workstation.** The CLI keeps the
   ephemeral Ed25519 key in memory and hands it to a dedicated per-grant
-  `ssh-agent`. A key-signed agent stores no secret at all; a bearer key
-  lives in the macOS Keychain (or in `WARDEN_AGENT_KEY`). Otherwise the CLI
+  `ssh-agent`. For a key-signed agent the CLI stores no secret at all: it signs
+  through an `ssh-agent`, and whether that key sits in hardware or in a file is
+  the operator's choice. A bearer key lives in the macOS Keychain (or in
+  `WARDEN_AGENT_KEY`). Otherwise the CLI
   stores only its configuration (server URL, agent name, the signing key's
   public half, the `ssh-agent` socket and the pinned audience), grant
   records, sockets and `known_hosts` files, in 0700 directories with 0600
@@ -92,7 +100,8 @@ defends against it.
   it has no image of its own: see "systemd service" under "Deployment
   assumptions".
 - **Silent failure.** The CLI always receives an explicit terminal state:
-  `approved`, `denied`, `expired`, `cancelled` or `error` with a message.
+  `approved`, `denied`, `expired`, `cancelled`, `revoked` or `error` with a
+  message.
 - **An API secret reaches the agent.** In proxy mode the broker reads the
   secret from 1Password only when a call is made, in the same single read of
   the item as the policy it is checked against, builds the header from the
@@ -107,7 +116,10 @@ defends against it.
 The design called for a WebAuthn challenge derived from the hash of the exact
 request plus the chosen window. webauthn-rs generates and verifies the
 challenge itself, so warden binds the approval differently, with an equivalent
-guarantee because the server is the trusted party:
+guarantee because the server is the trusted party. The passkey's signature does
+not itself cover the request: it covers a random challenge, and the link between
+the two is state on the server. So the signature alone cannot prove afterwards
+what was approved, and a compromised broker could misapply it.
 
 - The server starts the passkey ceremony for one specific request and window.
   The ceremony state, including the challenge, is kept server-side and keyed
@@ -117,7 +129,9 @@ guarantee because the server is the trusted party:
   for another request or another window, and a replay finds no state.
 - The approval page and the CLI both show a short fingerprint of the request
   (a hash of the agent name and the whole request: target, user, requested
-  window, goal and public key). If the owner is talking to the person or agent
+  window, goal and public key). It is 48 bits, for people to compare, so an agent
+  could craft two requests that share one: it detects a mix-up, not an attacker
+  who controls both. If the owner is talking to the person or agent
   that made the request, they can compare the two before approving. A mismatch
   means the owner is looking at a different request and should deny it.
 - The destination the page shows (host, port and the target's host keys; for
@@ -148,7 +162,8 @@ guarantee because the server is the trusted party:
   it carries; a signed one's body is not read. The exemptions above assume
   a tailnet peer: published through Funnel by mistake, the API would let
   anyone on the internet read the audience and try signed requests. The
-  approval UI needs the owner's login, which Funnel requests never carry.
+  approval UI needs the owner's login, which Funnel requests never carry; it
+  has no Funnel check of its own, so it relies on Serve for this.
 - Agent endpoints also require the agent to authenticate, in one of two ways.
   A request with any `Warden-*` header is authenticated by its signature or
   refused; it is never treated as a bearer request.
@@ -164,9 +179,9 @@ guarantee because the server is the trusted party:
     `sha256`, by exactly the registered key (the key embedded in the
     signature must equal it), over the canonical message rebuilt from the
     request as received (audience, agent, method, path and query, timestamp,
-    nonce, body SHA-256); and the `(agent, nonce)` pair is new. Every failure
-    is a 401 with a fixed body; the reason is logged without key material or
-    signature bytes. A captured request cannot be replayed (the nonce is
+    nonce, body SHA-256); and the `(agent, nonce)` pair is new. Every other
+    failure is a 401 with a fixed body (a database failure is a 500); the reason
+    is logged without key material or signature bytes. A captured request cannot be replayed (the nonce is
     single use and remembered for 10 minutes, longer than the ±60 s window),
     sent to another broker (the audience), or altered (method, target and
     body are signed). The nonce is recorded only after the signature
@@ -218,9 +233,9 @@ These were recorded during implementation and are accepted for this release.
   described under "Deployment assumptions": an unprivileged process, no
   capabilities and, in a container, no other container on its network.
 - **Signing protects the key, not the machine.** A key-signed agent's
-  signature stops credential theft (nothing reusable is stored or sent; a
-  key in the Secure Enclave, a TPM or a PIV token cannot be copied off the
-  machine), replay (single-use nonce, 60 s window) and reuse against another
+  signature stops credential theft on the wire (nothing reusable is sent), and at
+  rest when the key is in hardware (a key in the Secure Enclave, a TPM or a PIV
+  token cannot be copied off the machine; a key file can), replay (single-use nonce, 60 s window) and reuse against another
   broker (the audience) or another endpoint or body (all signed). It does not
   stop code running as the agent's operating-system user: whatever can reach
   the agent's `ssh-agent` socket can ask it to sign, for as long as it runs
@@ -237,15 +252,24 @@ These were recorded during implementation and are accepted for this release.
 - **Bearer agent keys are bearer credentials.** Anyone who obtains a bearer
   agent key can replay it from a host that can reach the API with the
   owner's login (key-signed agents do not have this problem; switch an agent
-  with `warden-server agent set-key`). The impact is bounded: a key
-  can only create requests, and every request still needs a passkey approval
-  that shows the agent name and goal. A leaked key is revoked with
-  `warden-server agent revoke`.
-- **Certificates cannot be revoked before they expire.** Revoking a grant
-  stops new issuance and the CLI's use of it, but a certificate already issued
-  stays valid on target hosts until it expires. The windows are short (at most
-  four hours) and each certificate is bound to a key that exists only in the
-  agent's memory. Distributing a revocation list to targets is out of scope.
+  with `warden-server agent set-key`). The key is the agent, so whoever holds it
+  can use the agent's live API grants within their scope, read the answers, list
+  and revoke its grants, and cancel its requests. A signing key copied from a file
+  gives the same, without needing the owner's login. Neither can approve anything:
+  each new request still needs a passkey approval that shows the agent name and
+  goal. Neither can use a live SSH grant, which needs that grant's ephemeral key. A
+  leaked key is revoked with `warden-server agent revoke`, which ends all of this.
+- **Certificates cannot be revoked before they expire, and open logins outlive
+  them.** Revoking a grant stops new issuance and the CLI's use of it, but a
+  certificate already issued stays valid on target hosts until it expires. The
+  windows are short (at most four hours) and each certificate is bound to a key
+  that exists only in the agent's memory, which limits new logins. It does not
+  limit a login already open: `sshd` checks a certificate when it authenticates,
+  so a session, and whatever it left running, continues after the window and after
+  a revocation, until something on the target ends it. warden cannot see or end it.
+  Use relay mode where sessions must end on time.
+  [Ending them by hand](assurance-case.md#the-ssh-ca-key) is possible. Distributing
+  a revocation list to targets is out of scope.
 - **Revocation from the server CLI is not instant for waiting clients.** A
   `warden-server agent revoke` run from the command line changes the database,
   but the running server only re-reads it when a long poll wakes, so a waiting
@@ -274,6 +298,27 @@ These were recorded during implementation and are accepted for this release.
   mitigations today: one request per task, revoking each grant when its task
   ends, and separate agents (separate OS users and keys) for work that must
   not share grants.
+- **Nothing limits how many requests an agent makes.** One pending request per
+  target (or per secret and scope) is the only bound. An agent that holds a valid
+  key can vary the path prefix, or cancel and ask again, and each new request
+  notifies the owner. That can wear the owner down and make a careless approval
+  more likely, and the `requests` table and audit log grow without limit. Revoking
+  the agent stops it.
+- **Certificate logins are not audited.** They go straight to the target. warden
+  records the approval and the certificate, and the target's `sshd` logs the login
+  with the certificate's key id. Ship those logs if you need that trail.
+- **A certificate's `cert_issued` entry can be missing.** The approval is committed
+  and audited first. If writing the entry for the certificate then fails, this is
+  logged and the grant stands. The `approved` entry still names the grant.
+- **Connect and notifiers can be configured over plain HTTP.** warden does not
+  require `https` for `WARDEN_OP_CONNECT_URL` or the notifier URLs, because Connect
+  on its own network and a local Home Assistant commonly use `http`. On a network
+  that is not private, that exposes the Connect token and everything it reads.
+- **Secrets in the environment.** Unless given through a `_FILE` variable (see
+  [Configuration](configuration.md#secrets-in-files)), the Connect token and the
+  notifier secrets are in the process environment, readable by root and the same
+  user. A `_FILE` keeps them out, and may allow group access. It is read once at
+  startup.
 - **Goals are free text.** The goal is a single line of at most 500 characters
   without control characters or invisible format characters (bidi overrides,
   zero-width characters). The owner decides on the goal alone, and a
@@ -487,6 +532,14 @@ warden's guarantees depend on its environment being set up as follows.
   - SSH relay targets are not supported.
 
   [deployment-systemd.md](deployment-systemd.md) compares each guarantee.
+- **Operator commands run as the broker's user, with its secrets.**
+  `warden-server doctor` reads the vault with the Connect token, loads the CA key
+  and drops it, and prints no secret; with `--send-test-notification` it sends a
+  fixed text that holds no request data and no approval link. `warden-server agent
+  add` prints a bearer key once, alone on stdout, and sends the instructions for
+  the agent's machine to stderr, so that a pipe takes the key and a log of the
+  instructions does not. Shell history, terminal scrollback and logs on that host
+  are the operator's to protect.
 - **Phone-only approval port.** The tailnet policy grants the approval UI port
   to the owner's phone only, never to a machine an agent runs on. An
   agent that is prompt-injected must not be able to put an approval prompt in

@@ -18,6 +18,9 @@ All notable changes to this project are recorded here. The format follows
 
 ### Added
 
+- Contributions now need a Developer Certificate of Origin sign-off
+  (`git commit -s`). A new `dco` check reads every commit of a pull request, and
+  `CONTRIBUTING.md` explains the rule, including merge commits and Dependabot.
 - CI measures test coverage with `cargo llvm-cov`, including the Linux-only
   relay tests, and reports it in each run's summary. No threshold fails the
   build yet.
@@ -29,6 +32,15 @@ All notable changes to this project are recorded here. The format follows
   [docs/verifying-releases.md](docs/verifying-releases.md) says how to verify
   each kind of asset and the signer. It starts with the next release: v0.8.1 and
   earlier have no manifest, and tags before v0.8.0 are not signed.
+- Release builds are meant to be repeatable from the next release:
+  [docs/reproducing-builds.md](docs/reproducing-builds.md) says how to rebuild one
+  and what must match, and a workflow builds each output twice and compares them.
+  The CLI no longer holds the build machine's paths, the image's times come from
+  the commit, BuildKit is pinned, and `rust-toolchain.toml` names an exact Rust
+  version. `scripts/package-cli.sh` now needs `python3`.
+- Fuzz targets for signed agent requests, agent-supplied keys and names, the
+  proxy rules and redaction, run by a scheduled CI job (`fuzz/`, see "Fuzzing"
+  in `AGENTS.md`). The fuzz crate is not part of the workspace or the image.
 - `warden-demo`: try the approval flow on one machine with no setup
   ([docs/demo.md](docs/demo.md)). A separate, unpublished binary that is not
   part of `warden-server` or the image; a CI guard keeps it that way. It is not
@@ -63,6 +75,12 @@ All notable changes to this project are recorded here. The format follows
 - A landing page in `site/`, published to GitHub Pages by
   `.github/workflows/pages.yml`. It is static, with no scripts or external
   resources.
+- `docs/assurance-case.md` (trust boundaries, design principles, how common
+  weaknesses are countered, cryptography, how to replace each credential, including
+  a procedure for the SSH CA key), `docs/security-assessment.md` (a dated ranking
+  of the most likely and most damaging problems; the project's own, not an
+  independent review) and `docs/interfaces.md` (every external interface, with the
+  approval UI's routes and the SSH relay).
 
 ### Changed
 
@@ -70,6 +88,8 @@ All notable changes to this project are recorded here. The format follows
   cannot be taken for a denied request, which stays exit 2. A script that reads
   exit 2 as a usage error needs updating. `--help` and `--version` still exit 0,
   and `warden-server` keeps exit 2 for wrong arguments.
+- A `Warden-Signature` must be the exact SSHSIG encoding, as `ssh-keygen` and
+  `ssh-agent` produce it (`docs/agent-protocol.md`).
 - README: says who warden is for and how stable it is, names Tailscale, Docker
   and 1Password as the recommended setup and what each part protects, and adds
   a table of the setups supported today with their security cost. It also lists

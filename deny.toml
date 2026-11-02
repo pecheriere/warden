@@ -37,6 +37,10 @@ allow = [
     "MPL-2.0",
     "CDLA-Permissive-2.0", # webpki-root-certs trust-anchor data (reqwest rustls verifier)
 ]
+exceptions = [
+    # LLVM's libFuzzer, linked only into the fuzz targets (fuzz/Cargo.toml).
+    { allow = ["NCSA"], crate = "libfuzzer-sys" },
+]
 
 [bans]
 # The RustCrypto and rand ecosystems currently ship overlapping major versions
