@@ -19,6 +19,20 @@ updates:
     commit-message:
       prefix: deps
 
+  # The fuzz crate is its own workspace, with its own Cargo.lock.
+  - package-ecosystem: cargo
+    directory: /fuzz
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 14
+    groups:
+      cargo:
+        applies-to: version-updates
+        update-types: [minor, patch]
+    commit-message:
+      prefix: deps
+
   - package-ecosystem: github-actions
     directory: /
     schedule:

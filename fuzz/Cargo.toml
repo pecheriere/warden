@@ -1,0 +1,76 @@
+# Fuzz targets, run with cargo-fuzz: see "Fuzzing" in AGENTS.md. The empty
+# [workspace] keeps this crate out of the main workspace, so workspace builds,
+# tests and the image never compile it. It has its own Cargo.lock, which the
+# crate-age check and `cargo deny` cover as well.
+[package]
+name = "warden-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+
+# The workspace's lints; a separate workspace cannot inherit them.
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+
+[dependencies]
+base64 = "0.23.1"
+http = "1.5.0"
+libfuzzer-sys = "0.4.13"
+serde_json = "1.0.154"
+# The features the broker enables, so the targets test the same build of it.
+ssh-key = { version = "0.6.7", default-features = false, features = ["alloc", "ecdsa", "ed25519", "getrandom"] }
+url = "2.5.8"
+warden-broker = { path = "../crates/broker", version = "0.8.1", features = ["fuzzing"] }
+warden-broker-proto = { path = "../crates/proto", version = "0.8.1" }
+
+[[bin]]
+name = "signed_headers"
+path = "fuzz_targets/signed_headers.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "signature_blob"
+path = "fuzz_targets/signature_blob.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "validated_names"
+path = "fuzz_targets/validated_names.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "signing_key"
+path = "fuzz_targets/signing_key.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "proxy_rules"
+path = "fuzz_targets/proxy_rules.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "redaction"
+path = "fuzz_targets/redaction.rs"
+test = false
+doc = false
+bench = false

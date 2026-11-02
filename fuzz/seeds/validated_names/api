@@ -1,0 +1,1 @@
+{"goal":"list open pull requests to triage issue 42","access":{"kind":"api","secret":"github"},"window":"15m"}
