@@ -17,7 +17,6 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use sha2::{Digest as _, Sha256};
 use sqlx::sqlite::SqliteRow;
 use sqlx::{Row as _, Sqlite, SqliteConnection, SqlitePool, Transaction};
-use tokio::sync::broadcast;
 use url::Url;
 use warden_broker_proto::{
     Access, AgentName, CreateRequest, CreatedResponse, Fingerprint, GrantAccess, GrantView, Id,
@@ -30,14 +29,19 @@ use crate::notify::{Doorbell, Notifier, doorbell};
 use crate::policy::{ApiSecretPolicy, PolicyError, SecretBackend, SshMode, SshTarget};
 use crate::relay::{LiveSessions, RelayEndpoint};
 
+mod bus;
+mod limits;
+
+pub use self::bus::StatusBus;
+use self::bus::next_change;
+use self::limits::Refusals;
+pub use self::limits::{LimitRefusal, RequestLimits};
+
 /// How long a request waits for the owner, in seconds.
 const PENDING_TTL_SECS: i64 = 600;
 
 /// Longest a status long-poll may wait.
 const MAX_WAIT: Duration = Duration::from_secs(30);
-
-/// Messages a slow long-poll may fall behind before it re-reads.
-const BUS_CAPACITY: usize = 256;
 
 /// Attempts to claim the pending slot when racing other creates.
 const INSERT_ATTEMPTS: usize = 3;
@@ -60,47 +64,6 @@ impl Clock for SystemClock {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
-    }
-}
-
-/// Broadcasts the id of every request whose state may have changed; a
-/// receiver re-reads the request to learn what happened.
-#[derive(Debug, Clone)]
-pub struct StatusBus {
-    tx: broadcast::Sender<Id>,
-}
-
-impl StatusBus {
-    /// A bus with no subscribers.
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            tx: broadcast::channel(BUS_CAPACITY).0,
-        }
-    }
-
-    /// Receive ids published from now on.
-    #[must_use]
-    pub fn subscribe(&self) -> broadcast::Receiver<Id> {
-        self.tx.subscribe()
-    }
-
-    /// Announce that request `id` may have changed.
-    pub fn publish(&self, id: &Id) {
-        // An error only means nobody is listening, which is fine.
-        let _ = self.tx.send(id.clone());
-    }
-
-    /// Number of live subscribers.
-    #[must_use]
-    pub fn receiver_count(&self) -> usize {
-        self.tx.receiver_count()
-    }
-}
-
-impl Default for StatusBus {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -166,6 +129,10 @@ pub enum RequestError {
     /// another agent, or of this agent for another target.
     #[error("this public key is already bound to another request or grant")]
     KeyInUse,
+    /// The agent is over one of its [`RequestLimits`]; nothing was stored and
+    /// the owner was not asked about this request.
+    #[error(transparent)]
+    Limited(LimitRefusal),
     /// Too many concurrent creates for the same slot; retry.
     #[error("request slot contended; retry")]
     Contended,
@@ -387,6 +354,10 @@ pub struct Requests {
     relay: Option<Arc<RelayEndpoint>>,
     /// Live relay sessions, ended when their grant is revoked.
     sessions: Arc<LiveSessions>,
+    /// How many requests each agent may make.
+    limits: RequestLimits,
+    /// What has been recorded and told about refusals under `limits`.
+    refusals: Arc<Refusals>,
 }
 
 /// Which pending requests an expiry pass looks at.
@@ -399,7 +370,8 @@ enum Scope {
 impl Requests {
     /// Build the service. Approval links are `<public_url>/approve/<token>`.
     /// Relay targets can be requested only when `relay` (where agents reach
-    /// the relay) is given.
+    /// the relay) is given. Agents are held to the default [`RequestLimits`];
+    /// see [`Requests::with_limits`].
     #[must_use]
     pub fn new(
         pool: SqlitePool,
@@ -420,6 +392,8 @@ impl Requests {
             clock,
             relay: relay.map(Arc::new),
             sessions: LiveSessions::new(),
+            limits: RequestLimits::default(),
+            refusals: Arc::default(),
         }
     }
 
@@ -473,9 +447,11 @@ impl Requests {
 
     /// Validate `req` against policy, store it and notify the owner in the
     /// background. A duplicate of the agent's pending request for the same
-    /// target (or secret) and kind returns that request instead.
+    /// target (or secret) and kind returns that request instead, whatever
+    /// the agent's limits.
     ///
     /// # Errors
+    /// [`RequestError::Limited`] if the agent is over its [`RequestLimits`],
     /// [`RequestError::Rejected`] for policy violations,
     /// [`RequestError::KeyInUse`] if the SSH public key backs another live
     /// request or grant, the target or secret errors from the backend,
@@ -553,7 +529,11 @@ impl Requests {
                     subject.clone(),
                 );
                 detached(async move {
-                    let created = this.insert(&agent, &req, &subject, &key, &token).await?;
+                    let created = this.insert(&agent, &req, &subject, &key, &token).await;
+                    if let Err(RequestError::Limited(refusal)) = &created {
+                        this.record_refusal(&agent, *refusal).await;
+                    }
+                    let created = created?;
                     this.spawn_notify(created.id.clone(), doorbell(&agent, &subject, &req, link));
                     Ok(created)
                 })
@@ -581,10 +561,12 @@ impl Requests {
         dedupe_key: &str,
         token: &str,
     ) -> Result<CreatedResponse, RequestError> {
-        let now = self.clock.now();
         let id = Id::random();
         let fp = fingerprint(agent, req);
         let mut tx = begin(&self.pool).await?;
+        // Read after the write lock: a create that queued for it must see the
+        // requests made meanwhile as earlier than itself, or the limits miss them.
+        let now = self.clock.now();
         if let Access::Ssh {
             target, public_key, ..
         } = &req.access
@@ -593,6 +575,8 @@ impl Requests {
             // key between this check and the insert.
             check_key_unbound(&mut tx, agent, target, public_key, now).await?;
         }
+        // Also in the write transaction, so concurrent creates are counted.
+        limits::check(&mut tx, &self.limits, agent, dedupe_key, now).await?;
         let inserted = sqlx::query(
             "INSERT INTO requests (id, agent, fingerprint, dedupe_key, body, \
              approval_token_hash, status, created_at, expires_at) \
@@ -1538,19 +1522,6 @@ pub(crate) async fn begin(pool: &SqlitePool) -> Result<Transaction<'static, Sqli
     pool.begin_with("BEGIN IMMEDIATE").await
 }
 
-/// Wait for a bus message about `id`. `true` means re-read (it changed or
-/// messages were missed); `false` means the bus is gone.
-async fn next_change(rx: &mut broadcast::Receiver<Id>, id: &Id) -> bool {
-    loop {
-        match rx.recv().await {
-            Ok(changed) if changed == *id => return true,
-            Ok(_) => {}
-            Err(broadcast::error::RecvError::Lagged(_)) => return true,
-            Err(broadcast::error::RecvError::Closed) => return false,
-        }
-    }
-}
-
 fn to_status(row: &SqliteRow) -> Result<RequestStatus, RequestError> {
     let status: String = row.try_get("status")?;
     Ok(match status.as_str() {
@@ -1635,8 +1606,8 @@ pub const fn window_label(window: Window) -> &'static str {
     }
 }
 
-/// Expire due pending requests and forget expired nonces every `every`
-/// until `shutdown` changes (or its sender is dropped). Failures are logged
+/// Expire due pending requests, forget expired nonces and record held-back
+/// limit refusals every `every` until `shutdown` changes (or its sender is dropped). Failures are logged
 /// and never end the loop.
 pub async fn sweep_loop(
     requests: Requests,
@@ -1656,9 +1627,13 @@ pub async fn sweep_loop(
                 if let Err(e) = requests.sweep_nonces().await {
                     tracing::error!(error = %e, "nonce sweep failed");
                 }
+                requests.flush_refusals(false).await;
             }
             // Any change, or the sender going away, means stop.
-            _ = shutdown.changed() => return,
+            _ = shutdown.changed() => {
+                requests.flush_refusals(true).await;
+                return;
+            }
         }
     }
 }

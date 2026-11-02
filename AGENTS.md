@@ -46,7 +46,7 @@ is not one: see [Sign-off](#sign-off-dco).
 | `site/` | the landing page on GitHub Pages: static HTML and CSS, no scripts, no external resources. It names no version and leaves setup commands to the README, so a release does not touch it |
 | `deploy/systemd` | the systemd unit that `docs/deployment-systemd.md` installs |
 | `fuzz` | `cargo-fuzz` targets for code that parses untrusted input; its own workspace, on its own nightly |
-| `scripts/` | CI guards and UI check tools (each script documents its usage) |
+| `scripts/` | CI guards, UI check tools and release signing (each script documents its usage) |
 
 ## Before you push
 
@@ -58,6 +58,7 @@ python3 -I .github/scripts/dco.py pull-request --base origin/main --head HEAD
 cargo fmt --check
 scripts/check-no-reqwest-decompression.sh
 scripts/check-demo-not-shipped.sh
+scripts/test-sign-release.sh
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo test --workspace --all-features --locked
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps --locked
@@ -181,11 +182,18 @@ Semantic versioning, one version for the whole workspace.
    pushes it to `ghcr.io/pecheriere/warden`, builds the CLI archives, attests
    both, and leaves a draft release for the tag, with the archives attached
    and the changelog section as its notes.
-3. When the workflow has finished, the maintainer, or an agent the
-   maintainer has confirmed, checks the draft and publishes it:
-   `gh release edit vx.y.z --draft=false`. Do not use `gh release create`
-   here: releases are immutable, so a release published without the files
-   can never gain them.
+3. When the workflow has finished, the maintainer signs the manifest with
+   `scripts/sign-release.sh vx.y.z`. It checks the tag's signature and the
+   attestations of the draft's archives and of the image, then uploads
+   `warden-x.y.z-SHA256SUMS` and its `.sig` to the draft. The key must be
+   listed in `docs/release-signers` and is never on GitHub, so the workflow
+   cannot do this step. Nothing enforces it, so do not skip it: a release
+   published without a manifest can never gain one. Rerunning the workflow
+   removes the manifest, so sign again after a rerun.
+4. The maintainer, or an agent the maintainer has confirmed, checks the
+   draft and publishes it: `gh release edit vx.y.z --draft=false`. Do not use
+   `gh release create` here: releases are immutable, so a release published
+   without the files can never gain them, including the signed manifest.
 
 An agent creates a tag or a release only after asking the maintainer and
 getting a yes for that specific version and commit. A yes for one release

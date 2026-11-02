@@ -588,6 +588,12 @@ Responses:
   notified.
 - `404`: `unknown target <name>` or `unknown API secret <name>`.
 - `409`: `{"error":"this public key is already bound to another request or grant"}`.
+- `429`: the agent is over a limit: by default 5 requests pending at once and
+  10 new requests per 10 minutes, cancelled ones included. The `Retry-After`
+  header gives the wait in seconds, and the message says which limit it is. Wait
+  that long or, for the pending limit, cancel a request. Nothing is stored and
+  the owner is not asked about this request. A duplicate of a pending request
+  (below) is never refused this way.
 - `401`, `413`, `415`, `500`, `503`: see section 5.
 
 **Only one pending request per agent and target (or secret and scope).**
@@ -786,7 +792,7 @@ grant covers; pick the grant whose scope covers the call.
 |-------|------|---------|
 | `method` | string | HTTP method, one of the grant's `methods`. |
 | `url` | string | Absolute URL: `https`, exactly the grant's `origin`, a path under `path_prefix` on a segment boundary. Printable ASCII, no spaces, no user info, no fragment; the path has no `.` or `..` segments, `//`, `;`, `\` or encoded separators (`%2e`, `%2f`, `%5c`, `%3b`, `%25`, `%c0`, `%c1`, `%u`, any case). The query is free. |
-| `headers` | array | Request headers, as `[name, value]` pairs: `[["Content-Type","application/json"]]`. Not allowed: `Host`, `Content-Length`, `Transfer-Encoding`, `Connection`, `Keep-Alive`, `TE`, `Trailer`, `Upgrade`, `Proxy-*`, the grant's `header`, `Accept-Encoding`, `Range`, `If-Range`, method and URL override headers, forwarding and host-override headers (`Forwarded`, `Via`, `X-Forwarded-*`, `X-Real-IP`, `X-Host`, `X-Original-Host`), and any name or value with CR, LF or NUL. |
+| `headers` | array | Request headers, as `[name, value]` pairs: `[["Content-Type","application/json"]]`, at most 100. Not allowed: `Host`, `Content-Length`, `Transfer-Encoding`, `Connection`, `Keep-Alive`, `TE`, `Trailer`, `Upgrade`, `Proxy-*`, the grant's `header`, `Accept-Encoding`, `Range`, `If-Range`, method and URL override headers, forwarding and host-override headers (`Forwarded`, `Via`, `X-Forwarded-*`, `X-Real-IP`, `X-Host`, `X-Original-Host`), and any name or value with CR, LF or NUL. |
 | `body_b64` | string or null | The request body, **standard base64** (RFC 4648 alphabet with `+` and `/`, `=` padding, no line breaks, no whitespace), at most 1 MiB once decoded. Absent or `null` for no body. |
 
 ```json
