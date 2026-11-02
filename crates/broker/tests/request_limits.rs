@@ -56,7 +56,7 @@ async fn broker() -> TestBroker {
 
 async fn request_count(broker: &TestBroker) -> i64 {
     sqlx::query_scalar("SELECT COUNT(*) FROM requests")
-        .fetch_one(broker.pool())
+        .fetch_one(&broker.state().pool)
         .await
         .unwrap()
 }
@@ -285,10 +285,10 @@ async fn refusals_held_back_are_written_by_the_sweep_even_if_the_agent_stops() {
             StatusCode::TOO_MANY_REQUESTS
         );
     }
-    broker.requests().flush_refusals(false).await;
+    broker.state().requests.flush_refusals(false).await;
     assert_eq!(limited_entries(&broker).len(), 1);
     broker.clock.advance(60);
-    broker.requests().flush_refusals(false).await;
+    broker.state().requests.flush_refusals(false).await;
     assert_eq!(
         limited_entries(&broker),
         [

@@ -1071,18 +1071,6 @@ impl TestBroker {
         }
     }
 
-    /// The broker's database.
-    #[must_use]
-    pub const fn pool(&self) -> &sqlx::SqlitePool {
-        &self.state.pool
-    }
-
-    /// The broker's request lifecycle service.
-    #[must_use]
-    pub const fn requests(&self) -> &Requests {
-        &self.state.requests
-    }
-
     /// Path of the audit log.
     #[must_use]
     pub fn audit_path(&self) -> &Path {
