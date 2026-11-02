@@ -8,6 +8,9 @@ All notable changes to this project are recorded here. The format follows
 
 ### Added
 
+- Project documents: `CONTRIBUTING.md` (where to discuss, reporting bugs, the
+  test policy), `GOVERNANCE.md`, `CODE_OF_CONDUCT.md`, `docs/roadmap.md`,
+  `docs/building.md` and `docs/upgrading.md`.
 - `warden-demo`: try the approval flow on one machine with no setup
   ([docs/demo.md](docs/demo.md)). A separate, unpublished binary that is not
   part of `warden-server` or the image; a CI guard keeps it that way. It is not

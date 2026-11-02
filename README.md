@@ -278,6 +278,12 @@ it; follow it for a real setup.
 | [Threat model](docs/threat-model.md) | What warden protects, what it does not, and what it assumes. |
 | [Design](docs/design.md) | The design and its decisions. |
 | [Design language](docs/design-language.md) | The approval UI's visual design. |
+| [Upgrading](docs/upgrading.md) | The upgrade path, and which releases get fixes. |
+| [Building and dependencies](docs/building.md) | Building from source, and how dependencies are chosen and tracked. |
+| [Roadmap](docs/roadmap.md) | What warden intends to work on next. |
+| [Contributing](CONTRIBUTING.md) | Where to discuss, reporting bugs, making a change, the test policy. |
+| [Governance](GOVERNANCE.md) | Who decides, roles, and who has access to what. |
+| [Code of conduct](CODE_OF_CONDUCT.md) | Contributor Covenant 3.0, and where reports go. |
 
 ## Security
 
@@ -316,6 +322,9 @@ Report a vulnerability privately as described in [SECURITY.md](SECURITY.md).
 | | `warden-broker-proto` | The wire types and the request-signing protocol shared by both. |
 
 ## Development
+
+Start with [CONTRIBUTING.md](CONTRIBUTING.md). The tools to install are in
+[Building and dependencies](docs/building.md).
 
 The checks CI runs:
 
