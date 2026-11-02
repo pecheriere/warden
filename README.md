@@ -76,7 +76,9 @@ frustrating than coming back to your Mac to find the agent has sat on a
 The usual way around this is a standing credential on the agent's machine,
 such as an API token, an SSH key or a vault service account token. Those
 work unattended, but they also work for anything at any time, and the
-agent (or whatever compromises it) holds them for good.
+agent (or whatever compromises it) holds them for good. warden exists because
+that is not an acceptable price for never getting stuck: no password on disk,
+and no access that is always on.
 
 Password managers are starting to close this gap. As of late 2026,
 1Password lets some personal agents sign in to websites after you approve
