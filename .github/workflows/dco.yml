@@ -1,7 +1,7 @@
 name: dco
 
-# Checks the Developer Certificate of Origin sign-off. AGENTS.md says what it
-# means, and .github/scripts/dco.py says what passes and why.
+# Checks the Developer Certificate of Origin sign-off. CONTRIBUTING.md says what
+# it means, and .github/scripts/dco.py says what passes and why.
 #
 # `dco` checks the commits of a pull request and is the check to require.
 # `dco-squash` checks the squash commit after the merge: GitHub writes that

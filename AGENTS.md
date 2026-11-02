@@ -91,9 +91,9 @@ uvx zizmor@1.31.1 .   # when a workflow or the Dependabot config changes
   `CHANGELOG.md` ([Keep a Changelog](https://keepachangelog.com/en/1.1.0/)).
 - When behaviour changes, update the docs in the same pull request: the
   README, `docs/configuration.md`, `docs/deployment.md`,
-  `docs/agent-usage.md`, `docs/agent-protocol.md`,
-  `docs/threat-model.md` and `site/index.html` must stay consistent with the
-  code.
+  `docs/agent-usage.md`, `docs/agent-protocol.md`, `docs/building.md`,
+  `docs/upgrading.md`, `docs/threat-model.md` and `site/index.html` must stay
+  consistent with the code.
 - **Approval UI pages** follow `docs/design-language.md`. Render and
   screenshot them with `scripts/screenshot-pages.sh <out-dir>` at the sizes
   the PR template lists, light and dark, and attach the screenshots.
@@ -102,21 +102,9 @@ uvx zizmor@1.31.1 .   # when a workflow or the Dependabot config changes
 
 ## Sign-off (DCO)
 
-warden uses the [Developer Certificate of Origin](https://developercertificate.org/).
-Every commit ends with a line saying that its author has the right to
-contribute the change under the project's licenses, as the certificate sets
-out. Commit signatures do not say this: they say who made a commit, not whether
-they were entitled to contribute it.
-
-```sh
-git commit -s
-```
-
-That adds `Signed-off-by: Your Name <your address>` from your git identity. The
-line is public for good, so use an address you are happy to publish: GitHub's
-`users.noreply.github.com` address for your account works. To add missing
-sign-offs to a branch, run `git rebase --signoff origin/main` and push with
-`git push --force-with-lease`.
+Every commit is signed off with `git commit -s`.
+[`CONTRIBUTING.md`](CONTRIBUTING.md#sign-off-dco) says what that means and what the
+`dco` check accepts.
 
 **Agents.** A sign-off is a person's statement, and an agent cannot make it. An
 agent adds one on behalf of the maintainer, only:
@@ -131,32 +119,6 @@ If no person with that standing asked for the work, leave the commit without a
 sign-off and say so: the check fails, and a person decides. The line names the
 maintainer and never the agent, so it fits the rule against AI attribution, and
 it does not replace that rule: add no other trailer for the agent.
-
-**What the `dco` check accepts** (`.github/workflows/dco.yml`, running
-`.github/scripts/dco.py` on every commit a pull request adds):
-
-| Commit | Rule |
-|---|---|
-| Ordinary commit | Needs a well-formed `Signed-off-by` in the trailer block at the end of the message, with the commit author's address. The name is not compared. A line elsewhere in the message does not count. |
-| Clean merge of two parents, such as `gh pr update-branch` makes | Passes without a sign-off: its tree is exactly what git's merge produces, so it adds no work, and the commits it brings in are checked themselves. |
-| Merge with resolved conflicts or other changes of its own, or of more than two parents | Is new work, so it needs a sign-off like any commit. |
-| Dependabot's commit on a pull request Dependabot opened | Passes: a bot cannot certify anything, and the maintainer reviews the bump. The check takes the pull request's author from GitHub, because anyone can put Dependabot's address on a commit. A person's commit on that pull request needs a sign-off. |
-
-The check shows that the statement was made. It does not prove who made it: a
-commit's author is whatever the committer typed.
-
-**Squash merges.** `main` keeps only squash commits. The repository's default
-squash message includes the commit messages, so the sign-offs carry over: merge
-with that default, and do not replace it (`gh pr merge --body`, or by editing it
-in the merge box) unless the new message keeps a `Signed-off-by`. GitHub writes
-that message at merge time, so nothing can check it first; the `dco-squash` job
-checks each commit on `main` afterwards and reports one that lost its sign-off.
-It needs one well-formed line and compares no address, since GitHub chooses the
-squash commit's author. Dependabot's messages already carry its own sign-off.
-
-The repository setting "require contributors to sign off on web-based commits"
-applies to commits made in GitHub's web interface. The check covers those commits
-like any other.
 
 ## Releases
 

@@ -50,7 +50,7 @@ WRONG_ADDRESS = "no Signed-off-by trailer with the commit author's address"
 SQUASH_MISSING = "no Signed-off-by line in the squash commit's message"
 HELP = (
     "Add the sign-off with `git rebase --signoff <base>` and push again with "
-    "`git push --force-with-lease`. AGENTS.md explains what it means."
+    "`git push --force-with-lease`. CONTRIBUTING.md explains what it means."
 )
 SQUASH_HELP = "The sign-off was lost at merge time: do not replace the default squash message."
 
