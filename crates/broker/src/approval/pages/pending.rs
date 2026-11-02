@@ -24,6 +24,17 @@ fn stored_access(entry: &PendingEntry) -> Markup {
     }
 }
 
+/// What the page says about itself. The script fills these in. In the list they
+/// are overlaid, so that a message appearing moves no card under the owner's finger.
+fn notices() -> Markup {
+    html! {
+        div.notices {
+            p.result #result role="status" {}
+            p.live-state #live-state role="status" {}
+        }
+    }
+}
+
 /// The card of one pending request. Both buttons are described by whose request
 /// it is and its fingerprint, since every card has the same two labels.
 fn card(entry: &PendingEntry, now: i64) -> Markup {
@@ -71,8 +82,8 @@ fn card(entry: &PendingEntry, now: i64) -> Markup {
 }
 
 /// Every request waiting for a decision, soonest expiry first. `data-pending` is
-/// what the script refreshes, from the empty state as well; it replaces this `main`
-/// with a fresh copy, keeping `#result`, so both forms have one.
+/// what the script refreshes, from the empty state as well, so both forms have
+/// the notices, which it keeps when it replaces this `main`.
 #[must_use]
 pub fn pending(entries: &[PendingEntry], now: i64) -> Markup {
     if entries.is_empty() {
@@ -88,7 +99,7 @@ pub fn pending(entries: &[PendingEntry], now: i64) -> Markup {
         let content = html! {
             main.done data-pending="empty" {
                 // First, so that what a denial said is on screen on a small phone.
-                p.result #result role="status" {}
+                (notices())
                 (parts)
             }
         };
@@ -101,7 +112,7 @@ pub fn pending(entries: &[PendingEntry], now: i64) -> Markup {
                 "Approve… opens the request's approval page on a new link. "
                 "The link in its notification then stops working."
             }
-            p.result #result role="status" {}
+            (notices())
             @for entry in entries { (card(entry, now)) }
         }
     };

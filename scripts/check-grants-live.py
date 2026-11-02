@@ -18,7 +18,9 @@ Usage: scripts/check-grants-live.py <out-dir>
   and GET /pending:
 
   - a 401 or 403 answer stops polling after the first request;
-  - a request missing from the answer loses its card, and polling goes on;
+  - a request missing from the answer is marked in place, and polling goes on;
+  - no live update moves a card: new ones go at the end;
+  - a failing or stopped poll shows that the list is not updating;
   - a new request appears without a reload, also from the empty state;
   - the last card going leaves the empty state, which polls on;
   - the time left on a card follows the answer;
@@ -56,6 +58,24 @@ NEW_REQUEST = f"{10:032x}"
 FOCUS_PAGE = "/focus.html"
 DENY_PAGE = "/deny.html"
 DENIED_SAYS = "Denied. But the audit log could not be written"
+TAP_PAGE = "/tap.html"
+# Test harness only, never served by the broker: frames the fixture, and reports
+# where a card's Deny button is at load and 8 s later.
+TAP_HARNESS = f"""<!doctype html><meta charset="utf-8">
+<iframe id="page" src="{PENDING_PAGE}" width="400" height="3000"></iframe><pre id="out"></pre>
+<script>
+const frame = document.getElementById('page');
+const at = () => frame.contentDocument
+  .querySelector('section.pending[data-request="{PENDING_IDS[1]}"] button.deny')
+  .getBoundingClientRect().top;
+frame.addEventListener('load', () => {{
+  const before = at();
+  setTimeout(() => {{
+    document.getElementById('out').textContent = 'moved:' + (at() - before);
+  }}, 8000);
+}}, {{ once: true }});
+</script>
+"""
 # Test harness only, never served by the broker: frames a fixture of one card,
 # denies it, and reports the status line once the empty state is showing.
 DENY_HARNESS = """<!doctype html><meta charset="utf-8">
@@ -204,6 +224,10 @@ def pending_cards(dom):
     return re.findall(r'data-request="([0-9a-f]+)"', dom)
 
 
+def ended_cards(dom):
+    return re.findall(r'class="card pending ended" data-request="([0-9a-f]+)"', dom)
+
+
 def main():
     try:
         return run()
@@ -241,6 +265,7 @@ def run():
     shutil.copy(ROOT / "crates/broker/src/approval/warden.js", out / "static/warden.js")
     (out / FOCUS_PAGE.lstrip("/")).write_text(FOCUS_HARNESS)
     (out / DENY_PAGE.lstrip("/")).write_text(DENY_HARNESS)
+    (out / TAP_PAGE.lstrip("/")).write_text(TAP_HARNESS)
     listed = (out / PENDING_PAGE.lstrip("/")).read_text()
     empty = (out / PENDING_EMPTY_PAGE.lstrip("/")).read_text().encode()
     with_new = listed.replace(PENDING_IDS[3], NEW_REQUEST).encode()
@@ -298,21 +323,38 @@ def run():
             mock.set(status, b'{"error":"forbidden"}')
             load(pending_url, 30_000)
             polls = mock.count("/pending/live")
+            dom = load(pending_url, 12_000)
             check(f"pending: a {status} stops polling", polls == 1, f"{polls} requests")
+            check(f"pending: a {status} says the list stopped updating",
+                  "stopped updating" in dom, "no note")
+
+        mock.set(500, b'{"error":"internal error"}')
+        dom = load(pending_url, 12_000)
+        check("pending: a failing poll says the list is not updating",
+              "not updating" in dom, "no note")
 
         mock.set(200, pending_body(*PENDING_IDS[:3]), with_new)
         dom = load(pending_url, 12_000)
         shown = pending_cards(dom)
-        check("pending: an ended request loses its card", shown == PENDING_IDS[:3], shown)
+        check("pending: an ended request stays in place", shown == PENDING_IDS, shown)
+        check("pending: and is marked as ended", ended_cards(dom) == PENDING_IDS[3:],
+              ended_cards(dom))
         polls = mock.count("/pending/live")
         check("pending: polling goes on after a removal", polls >= 2, f"{polls} requests")
         check("pending: a removal fetches no page", mock.count("/pending") == 0,
               f"{mock.count('/pending')} fetches")
 
-        mock.set(200, pending_body(*PENDING_IDS[:3], NEW_REQUEST), with_new)
+        mock.set(200, pending_body(*PENDING_IDS[1:], NEW_REQUEST), with_new)
+        dom = load(f"{origin}{TAP_PAGE}", 12_000)
+        moved = re.search(r"moved:(-?[\d.]+)", dom)
+        moved = moved.group(1) if moved else "nothing reported"
+        check("pending: an ended and a new card move nothing", moved == "0", moved)
+
+        mock.set(200, pending_body(*PENDING_IDS, NEW_REQUEST), with_new)
         dom = load(pending_url, 12_000)
         shown = pending_cards(dom)
-        check("pending: a new request appears", NEW_REQUEST in shown, shown)
+        check("pending: a new request goes at the end",
+              shown == PENDING_IDS + [NEW_REQUEST], shown)
         loads = mock.count(PENDING_PAGE)
         check("pending: a new request does not reload", loads == 1, f"{loads} page loads")
         fetched = mock.count("/pending")

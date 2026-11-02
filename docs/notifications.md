@@ -20,7 +20,9 @@ A request stays pending for 10 minutes whether or not the notification was seen,
 and an agent asking again gets the same request back with no new notification. So
 open the **Pending** page of the approval UI (`/pending`) instead. It lists every
 pending request, with the same details to judge it by, and it keeps itself current
-while it is open, so you can wait on it.
+while it is open, so you can wait on it. It says so if it stops updating. A request
+that ends meanwhile stays dimmed where it is, so that nothing moves under your finger,
+until you leave the page.
 
 - **Deny** decides there and then.
 - **Approve…** opens the request's approval page, where you choose the window and

@@ -93,9 +93,21 @@ font-weight:700;font-size:15px;font-family:inherit;cursor:pointer}
 /* Pending: a card per request, Approve and Deny the same size at every width. */
 .pending .meta{display:flex;flex-wrap:wrap;gap:6px 14px;color:var(--muted);font-size:14px}
 .pending .meta code{white-space:nowrap;word-break:normal}
+/* As wide as its longest text, so that a changing time never rewraps the line and moves a card. */
+.pending .remaining{display:inline-block;min-width:10ch}
+.pending.ended .field,.pending.ended .meta{opacity:.6}
 .pending .btns{grid-template-columns:repeat(2,minmax(0,1fr))}
-/* What a denial said, above the empty state, across its columns on a short screen. */
-main.done .result{grid-column:1/-1}
+/* What the page says, above the empty state, across its columns on a short screen. */
+main.done .notices{grid-column:1/-1;display:flex;flex-direction:column;gap:6px}
+.live-state{margin:0;font-weight:600;text-align:center;color:var(--warn-ink)}
+.live-state:empty{display:none}
+/* In the list it is overlaid and lets taps through: nothing in the flow may move a card
+   under the owner's finger. The room at the bottom lets the last card scroll clear of it. */
+main[data-pending="list"]{padding-bottom:calc(150px + env(safe-area-inset-bottom))}
+main[data-pending="list"] .notices{position:fixed;z-index:5;left:0;right:0;bottom:0;display:flex;flex-direction:column;gap:6px;
+padding:0 16px calc(12px + env(safe-area-inset-bottom));pointer-events:none}
+main[data-pending="list"] .result:not(:empty),main[data-pending="list"] .live-state{padding:10px 14px;border-radius:14px;border:1px solid var(--line);background:var(--surface)}
+main[data-pending="list"] .live-state{background:var(--warn-bg);border-color:var(--warn-line)}
 /* Form inputs: 48 px high, a boundary with 3:1 contrast, 17 px text (no zoom on focus on phones). */
 .input{width:100%;height:48px;padding:0 14px;border:1px solid var(--muted);border-radius:12px;
 background:var(--ground);color:var(--ink);font:inherit;font-size:17px}

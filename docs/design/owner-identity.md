@@ -54,7 +54,8 @@ Three limits matter once Tailscale is gone:
   approval listener has a 64 KiB body limit and no timer.
 - **The passkey ceremony table is bounded per request and per kind.** Ceremonies
   live 120 s. A request keeps its 4 newest, enrollment has 8 slots of its own, and
-  approvals as a whole stop at 1024 (`PasskeyError::Busy` in
+  approvals as a whole stop at 1024, counting requests that ended in the last 120 s
+  (`PasskeyError::Busy` in
   [`passkeys.rs`](../../crates/broker/src/approval/passkeys.rs)). Today only the
   owner can reach it. An unauthenticated login route would need limits of its own:
   nothing here ties a ceremony to a request for it to be bounded by.

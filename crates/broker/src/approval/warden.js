@@ -178,8 +178,9 @@
 
   /** Polls `path` while the page is visible, with one request at a time, and hands
    *  each answer to `apply`. A 401 or 403 stops it, and so does calling the `stop`
-   *  it returns. Offline or a bad answer keeps what is shown and tries again. */
-  const pollEvery = (path, apply) => {
+   *  it returns. Offline or a bad answer keeps what is shown and tries again.
+   *  `report`, if given, hears how each poll went: 'ok', 'failing' or 'stopped'. */
+  const pollEvery = (path, apply, report = () => {}) => {
     let timer = null;
     let inFlight = false;
     let stopped = false;
@@ -203,11 +204,16 @@
         });
         if (response.status === 401 || response.status === 403) {
           stopped = true;
+          report('stopped');
         } else if (response.ok) {
           await apply(await response.json());
+          report('ok');
+        } else {
+          report('failing');
         }
       } catch (_) {
         // Offline or a bad answer: keep what is shown and try again later.
+        report('failing');
       } finally {
         inFlight = false;
         schedule();
@@ -228,26 +234,64 @@
   // --- pending page -------------------------------------------------------------
   // Polling only reads which requests are waiting; it changes nothing, and no token
   // is replaced except by the owner pressing Approve…. The markup always comes from
-  // the server: anything the answer cannot express is fetched as the page itself,
-  // which keeps the status line, so what a denial said is never lost.
+  // the server.
+  //
+  // A refresh must never change what a tap lands on. So a request that ends stays
+  // where it is, marked and with its buttons disabled, and goes only while the page
+  // is hidden or when no card with live buttons is left. New cards go at the end,
+  // and their buttons wake up a moment later, in case a tap was already on its way
+  // to that spot. What the page says is overlaid, not in the flow. Nothing here moves
+  // focus or scrolls.
+
+  const CARD_ARM_MS = 1000;
 
   const setupPending = () => {
     if (!document.querySelector('main[data-pending]')) return;
     const deadlines = new WeakMap();
+    // Requests known to have ended: a stale answer must not bring their cards back.
+    const over = new Set();
     let refreshing = false;
 
     const cards = () => [...document.querySelectorAll('section.pending')];
-    const acting = () => Boolean(document.querySelector('section.pending button:disabled'));
+    const live = (card) => !card.classList.contains('ended');
+    const acting = () => Boolean(document.querySelector('section.pending[data-acting]'));
+    const buttons = (card) => [card.querySelector('button.approve'), card.querySelector('button.deny')];
 
-    const focusHeading = () => {
-      const heading = document.querySelector('main h1');
-      if (!heading) return;
-      heading.setAttribute('tabindex', '-1');
-      heading.focus();
+    /** Marks `card` as over, in place: nothing about its size changes. */
+    const endCard = (card, word) => {
+      card.classList.add('ended');
+      busy(buttons(card), true);
+      const remaining = card.querySelector('.remaining');
+      if (remaining) remaining.textContent = word;
     };
 
-    /** Replaces the page's `main` with a fresh copy from the server. Not under an
-     *  action in progress: the next poll comes back to it. */
+    const finish = (card, word) => {
+      over.add(card.dataset.request);
+      delete card.dataset.byClock;
+      endCard(card, word);
+    };
+
+    const setRemaining = (card, seconds) => {
+      deadlines.set(card, Date.now() + seconds * 1000);
+    };
+
+    /** Replaces the page's `main` with `fresh`, keeping what the page says. */
+    const swapMain = (shown, fresh) => {
+      for (const id of ['result', 'live-state']) {
+        const said = shown.querySelector(`#${id}`);
+        const keep = fresh.querySelector(`#${id}`);
+        if (said && keep) {
+          keep.textContent = said.textContent;
+          keep.className = said.className;
+        }
+      }
+      shown.replaceWith(document.importNode(fresh, true));
+      for (const node of document.querySelectorAll('main time[datetime]')) localTime(node);
+      for (const card of cards()) wireCard(card, true);
+    };
+
+    /** Brings in what only the server can draw. Never under an action in progress,
+     *  also if one started during the fetch: the next poll comes back to it. */
     const refresh = async () => {
       if (refreshing || acting()) return;
       refreshing = true;
@@ -257,24 +301,27 @@
         const parsed = new DOMParser().parseFromString(await response.text(), 'text/html');
         const fresh = parsed.querySelector('main[data-pending]');
         const shown = document.querySelector('main[data-pending]');
-        if (!fresh || !shown) return;
-        const said = shown.querySelector('#result');
-        const keep = fresh.querySelector('#result');
-        if (said && keep) {
-          keep.textContent = said.textContent;
-          keep.className = said.className;
+        if (!fresh || !shown || acting()) return;
+        const onPage = new Set(cards().map((card) => card.dataset.request));
+        const incoming = [...fresh.querySelectorAll('section.pending')];
+        const added = incoming.filter(
+          (card) => !onPage.has(card.dataset.request) && !over.has(card.dataset.request));
+        if (shown.dataset.pending === 'empty') {
+          if (!added.length) return;
+          for (const card of incoming) if (!added.includes(card)) card.remove();
+          swapMain(shown, fresh);
+        } else if (!incoming.length) {
+          // Nothing is waiting on the server. With live buttons here the next poll
+          // decides about them first.
+          if (!cards().some(live)) swapMain(shown, fresh);
+        } else {
+          for (const card of added) {
+            const node = document.importNode(card, true);
+            cards().pop().after(node);
+            for (const time of node.querySelectorAll('time[datetime]')) localTime(time);
+            wireCard(node, true);
+          }
         }
-        const active = document.activeElement;
-        const onButton = shown.contains(active) && active.closest('section.pending');
-        const focus = onButton
-          ? `section.pending[data-request="${CSS.escape(onButton.dataset.request)}"] button.${active.classList.contains('deny') ? 'deny' : 'approve'}`
-          : null;
-        const headed = shown.contains(active) && !onButton;
-        shown.replaceWith(document.importNode(fresh, true));
-        wire();
-        const target = focus && document.querySelector(focus);
-        if (target) target.focus();
-        else if (headed || focus) focusHeading();
       } catch (_) {
         // Offline or a bad answer: keep what is shown and try again later.
       } finally {
@@ -282,34 +329,35 @@
       }
     };
 
-    /** The request is gone: drop its card. Focus in it moves to the heading, and the
-     *  last card makes way for the server's empty state. */
-    const dropCard = (card) => {
-      const focused = card.contains(document.activeElement);
-      card.remove();
-      if (focused) focusHeading();
-      if (!cards().length) refresh();
+    /** With no live button left, the server's empty state can take over. */
+    const settle = () => {
+      if (!cards().some(live)) refresh();
     };
 
-    const setRemaining = (card, seconds) => {
-      deadlines.set(card, Date.now() + seconds * 1000);
-    };
-
-    const wireCard = (card) => {
+    const wireCard = (card, arm) => {
       const remaining = card.querySelector('.remaining');
       if (remaining) setRemaining(card, Number(remaining.dataset.remaining));
-      const approve = card.querySelector('button.approve');
-      const deny = card.querySelector('button.deny');
+      const [approve, deny] = buttons(card);
+      if (arm) {
+        busy([approve, deny], true);
+        window.setTimeout(() => {
+          if (live(card)) busy([approve, deny], false);
+        }, CARD_ARM_MS);
+      }
       const act = (action, done) => async () => {
+        card.dataset.acting = 'yes';
         busy([approve, deny], true);
         try {
           done(await post(`/pending/${encodeURIComponent(card.dataset.request)}/${action}`, {}));
         } catch (error) {
           show(error.message, false);
           // 404: decided, expired, cancelled or unknown by now.
-          if (error.status === 404) dropCard(card);
-          else busy([approve, deny], false);
+          if (error.status === 404) finish(card, 'ended');
+          else if (live(card)) busy([approve, deny], false);
+        } finally {
+          delete card.dataset.acting;
         }
+        settle();
       };
       // Opening gives this request a new approval link, and the old one stops
       // working; the decision is made on the page it leads to.
@@ -318,40 +366,55 @@
       }));
       deny.addEventListener('click', act('deny', (denied) => {
         show(denied.message, true);
-        dropCard(card);
+        finish(card, 'denied');
       }));
     };
 
-    const wire = () => {
-      for (const node of document.querySelectorAll('main time[datetime]')) localTime(node);
-      for (const card of cards()) wireCard(card);
-    };
-
-    /** Keeps "in N min" true, and drops a card when its request has expired. */
+    /** Keeps "in N min" true. A card whose time is up is marked by the clock alone
+     *  until the next answer settles it, as this device's clock may be wrong. */
     const tick = () => {
-      for (const card of cards()) {
+      for (const card of cards().filter(live)) {
         const left = Math.ceil((deadlines.get(card) - Date.now()) / 1000);
-        if (left <= 0) {
-          dropCard(card);
-          continue;
-        }
         const remaining = card.querySelector('.remaining');
-        if (remaining) remaining.textContent = `in ${Math.ceil(left / 60)} min`;
+        if (left > 0) {
+          if (remaining) remaining.textContent = `in ${Math.ceil(left / 60)} min`;
+        } else if (!card.dataset.acting) {
+          card.dataset.byClock = 'yes';
+          endCard(card, 'expired');
+        }
       }
     };
 
     const apply = async (data) => {
       const waiting = new Map((data.requests || []).map((r) => [r.id, r.remaining]));
       for (const card of cards()) {
-        if (waiting.has(card.dataset.request)) setRemaining(card, waiting.get(card.dataset.request));
-        else dropCard(card);
+        const id = card.dataset.request;
+        if (!waiting.has(id)) {
+          if (!over.has(id)) finish(card, card.dataset.byClock ? 'expired' : 'ended');
+        } else if (!over.has(id)) {
+          setRemaining(card, waiting.get(id));
+          if (card.dataset.byClock) {
+            delete card.dataset.byClock;
+            card.classList.remove('ended');
+            busy(buttons(card), false);
+          }
+        }
       }
       tick();
       const onPage = new Set(cards().map((card) => card.dataset.request));
-      const added = [...waiting.keys()].some((id) => !onPage.has(id));
-      const shown = document.querySelector('main[data-pending]');
-      const emptied = shown && shown.dataset.pending === 'list' && !onPage.size;
-      if (added || emptied) await refresh();
+      const added = [...waiting.keys()].some((id) => !onPage.has(id) && !over.has(id));
+      if (added || (cards().length && !cards().some(live))) await refresh();
+    };
+
+    /** Says when the list may be out of date. */
+    const reportLive = (state) => {
+      const note = document.getElementById('live-state');
+      if (!note) return;
+      note.textContent = {
+        ok: '',
+        failing: 'This list is not updating right now. warden keeps trying.',
+        stopped: 'This list has stopped updating. Reload the page to see what is waiting.',
+      }[state];
     };
 
     // Back from the approval page must not show this page as it was left: the
@@ -359,9 +422,17 @@
     window.addEventListener('pageshow', (event) => {
       if (event.persisted) window.location.reload();
     });
-    wire();
+    // Nothing can be tapped while the page is hidden, so the ended cards can go.
+    // Coming back polls at once, which brings in the empty state if it is due.
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') {
+        for (const card of cards()) if (!live(card)) card.remove();
+      }
+    });
+    for (const node of document.querySelectorAll('main time[datetime]')) localTime(node);
+    for (const card of cards()) wireCard(card, false);
     window.setInterval(tick, 1000);
-    pollEvery('/pending/live', apply);
+    pollEvery('/pending/live', apply, reportLive);
   };
 
   // --- live activity on the grants page --------------------------------------------

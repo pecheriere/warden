@@ -81,7 +81,8 @@ WCAG AA contrast in both modes.
   outline.
 - **Pending card**: a card per request with the agent, the access (and its badge),
   the goal, then fingerprint, asked window and expiry in `--muted`. Approve… and
-  Deny fill the bottom side by side, the same size at every width.
+  Deny fill the bottom side by side, the same size at every width. A card that ends
+  keeps its place and size, dimmed, with its buttons disabled.
 - **Live indicator**: `--accent` dot with a 2 px `--accent-edge` ring, plus
   `--soft-ink` text ("1 session open"). Under it, the live area of a grant
   card lists what is open, across the card below a `--line` divider.

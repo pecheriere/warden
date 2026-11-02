@@ -59,7 +59,9 @@ All notable changes to this project are recorded here. The format follows
   passkey is still required; the link in the notification stops working, and a page
   still open on it ends in the usual "no longer pending" outcome. This is audited as
   the new `approval_link_replaced` entry, which holds no token. A `warden-server`
-  older than this release refuses a log that holds one. See
+  older than this release refuses a log that holds one. Passkey prompts in progress
+  are now limited per request, to its 4 newest, with 8 for enrollment apart and 1024
+  approvals in all, in place of the shared 64. See
   [docs/notifications.md](docs/notifications.md#if-you-miss-a-notification).
 - `WARDEN_SECRET_BACKEND=local`: targets, API secrets and the SSH CA key from a
   policy file and private secret files on warden's host, with no 1Password account

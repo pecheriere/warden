@@ -673,12 +673,18 @@ from `GET /pending/live` (owner only, `Cache-Control: no-store`), under the same
 as the grants page: while the page is visible, one request at a time, stopping on a
 401 or 403, and keeping what is shown if a request fails. That route reads the
 database only, so it changes nothing and costs the secret backend nothing. A request
-missing from the answer loses its card, and the "in N min" of each card follows the
-answer and the clock, dropping the card when it reaches zero. A request without a card,
-or a list that has become empty, makes the script fetch `/pending` itself and replace
-`main` with what it gets, so all markup comes from the server. It keeps the status
-line, so what a denial said survives, including onto the empty state. The empty state
-polls as well. Without script, the page is what the server rendered. No refresh ever
+missing from the answer is marked as ended, and the "in N min" of each card follows the
+answer and the clock.
+
+A refresh must not change what a tap lands on, as Deny has no confirmation (nor does
+the one on the approval page). So a card that ends keeps its place and size, with its
+buttons disabled, and is removed only while the page is hidden or when no live card is
+left, where the server's empty state replaces `main`. A request without a card is
+fetched from `/pending` itself, so all markup comes from the server, and goes at the
+end, with its buttons disabled for its first second. Messages are overlaid at the
+bottom, letting taps through. No refresh moves focus or scrolls. The list says so when
+polling fails or has stopped. The empty state polls as well, and what a denial said
+survives onto it. Without script, the page is what the server rendered. No refresh ever
 replaces a token: only pressing Approve… does.
 
 ### Screenshots
@@ -697,11 +703,12 @@ outside the repository, as screenshots are never committed.
 `scripts/check-grants-live.py <out-dir>` checks the live refresh of the
 grants and pending pages the same way: it serves their fixtures with mocked
 answers and asserts, in headless Chrome on virtual time, that a 401 or 403
-stops polling, that a grant or request missing from the answer loses its
-card, that a grant with no card reloads the page exactly once, that a new
-request appears without a reload, also from the empty state, that the time
-left follows the answer, that polling posts nothing, and that what a denial
-said stays on screen when the last card goes.
+stops polling, that a grant missing from the answer loses its card, that a
+request missing from it is marked in place, that a grant with no card reloads
+the page exactly once, that a new request appears without a reload, also from
+the empty state, that no live update moves a card, that the list says when it
+stops updating, that the time left follows the answer, that polling posts
+nothing, and that what a denial said stays on screen when the last card goes.
 
 ## 10. Policy: 1Password as the source of truth
 

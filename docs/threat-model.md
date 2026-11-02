@@ -404,8 +404,12 @@ These were recorded during implementation and are accepted for this release.
   own room for 8, each costing a code from the server's command line. Whoever holds
   the owner's login can still keep cancelling the prompts of a request they keep
   beginning, as they can by replacing its link, but not those of another request.
-  1024 approval ceremonies at once are refused with a 429 to bound memory, which
-  takes 256 requests pending together.
+  Approval ceremonies as a whole stop at 1024, with a 429, to bound memory. A request
+  that has ended keeps its ceremonies until they expire, after 120 s, so ended requests
+  count too. With the default limits, reaching this takes the owner's login and about
+  26 agents each spending its 10 new requests within 2 minutes, and fewer agents where
+  the [request limits](configuration.md#request-limits) are raised. It would refuse new
+  approvals for up to 120 s, not enrollment. An agent's own limits are spent doing it.
 - **Cloned authenticators are detected, not prevented.** The broker keeps
   each passkey's signature counter in its own column and raises it with a
   single conditional update, so concurrent approvals can never store an older

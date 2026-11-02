@@ -46,9 +46,10 @@ const LABEL_MAX: usize = 64;
 /// however often it is begun, and the newest prompt on it always works.
 const MAX_CEREMONIES_PER_REQUEST: usize = 4;
 
-/// Approval ceremonies kept at once, only to bound memory. Each request's limit keeps
-/// this out of reach: it would take 256 requests pending together, and an agent may
-/// have 5 by default.
+/// Approval ceremonies kept at once, only to bound memory. A request that has ended
+/// keeps its ceremonies until they expire, so what counts is the requests begun in the
+/// last 120 s, 4 ceremonies each: with an agent's default 10 new requests per 10
+/// minutes, that takes about 26 agents all spending their allowance at once.
 const MAX_APPROVAL_CEREMONIES: usize = 1024;
 
 /// Enrollment ceremonies kept at once, apart from approvals: each one spends a code
