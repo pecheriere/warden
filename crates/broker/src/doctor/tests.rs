@@ -533,7 +533,7 @@ async fn data_paths_with_the_wrong_owner_or_mode_fail() {
 }
 
 #[tokio::test]
-async fn a_database_readable_by_others_is_fine_inside_a_private_directory() {
+async fn every_data_file_readable_by_others_fails() {
     let fake = Fake {
         facts: PathFacts {
             mode: 0o644,
@@ -541,12 +541,33 @@ async fn a_database_readable_by_others_is_fine_inside_a_private_directory() {
         },
         ..Fake::healthy()
     };
-    assert_eq!(status(&run(&fake).await, "data.database"), Status::Pass);
-    // A host key is not, and neither is the directory.
     let on = config(&[("WARDEN_RELAY_PUBLIC_ADDR", "relay.example:2222")]);
     let report = examine(&on, &fake, false).await;
-    assert_eq!(status(&report, "data.relay-host-key"), Status::Fail);
-    assert_eq!(status(&report, "data.directory"), Status::Fail);
+    for name in [
+        "data.directory",
+        "data.database",
+        "data.database-wal",
+        "data.database-shm",
+        "data.audit-log",
+        "data.audience",
+        "data.relay-host-key",
+    ] {
+        assert_eq!(status(&report, name), Status::Fail, "{name}");
+    }
+}
+
+#[tokio::test]
+async fn database_companions_are_checked_only_when_they_exist() {
+    let mut fake = Fake::healthy();
+    fake.paths
+        .insert("/data/warden.db-wal".into(), io::ErrorKind::NotFound);
+    fake.paths.insert(
+        "/data/warden.db-shm".into(),
+        io::ErrorKind::PermissionDenied,
+    );
+    let report = run(&fake).await;
+    assert!(!report.checks.iter().any(|c| c.name == "data.database-wal"));
+    assert_eq!(status(&report, "data.database-shm"), Status::CouldNotCheck);
 }
 
 #[tokio::test]

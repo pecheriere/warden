@@ -22,6 +22,7 @@ use warden_broker::identity::TailscaleServeIdentity;
 use warden_broker::notify::{ChannelSettings, Fallback, Notifier};
 use warden_broker::policy::local::{ACCESS_NOTE, Unverified, seal_policy_file};
 use warden_broker::policy::{LocalBackend, OnePasswordConnect, SecretBackend};
+use warden_broker::private_files::{self, DirectoryState};
 use warden_broker::proxy::CallSlots;
 use warden_broker::relay::host_key::RelayHostKey;
 use warden_broker::relay::{RelayEndpoint, RelayLimits, RelayServer, host_key};
@@ -528,7 +529,38 @@ async fn secret_backend(config: &Config, audit: &Arc<AuditLog>) -> Result<Arc<dy
     }
 }
 
+/// Make the data directory private if it is clearly warden's, and say what
+/// happened if not. Refuses to go on if others can write to it.
+async fn report_data_directory(config: &Config) -> Result<()> {
+    let directory = private_files::data_directory(&config.db_path);
+    let others = [
+        config.audit_path.as_path(),
+        config.audience_path.as_path(),
+        config.relay.host_key_path.as_path(),
+    ];
+    let state = private_files::tighten_data_directory(&config.db_path, &others).await?;
+    match state {
+        DirectoryState::Tightened => {
+            tracing::info!(path = %directory.display(), "data directory set to mode 0700");
+        }
+        DirectoryState::Readable { reason } => tracing::warn!(
+            path = %directory.display(),
+            %reason,
+            "others can list the data directory, and warden did not change it: they can see \
+             its files' names and sizes, not their contents. warden-server doctor fails it"
+        ),
+        DirectoryState::Unchecked { reason } => tracing::warn!(
+            path = %directory.display(),
+            %reason,
+            "warden could not check the data directory's mode"
+        ),
+        _ => {}
+    }
+    Ok(())
+}
+
 async fn build_app(config: &Arc<Config>) -> Result<App> {
+    report_data_directory(config).await?;
     let pool = store::open(&config.db_path).await?;
     let audit = Arc::new(
         AuditLog::open(&config.audit_path)

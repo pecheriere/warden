@@ -8,6 +8,17 @@ All notable changes to this project are recorded here. The format follows
 
 ### Security
 
+- warden keeps its files private to its user. The database and its `-wal` and
+  `-shm` files, the audit log and the audience are created 0600 and corrected at
+  start, and a symbolic link in place of one is refused. A file that cannot be
+  corrected stops warden with a message naming it. The data directory is set to
+  0700 when warden's non-root user owns it and nothing but warden's own files is
+  in it. Otherwise warden leaves it alone: it logs a warning, or refuses to start
+  if others can write to it. `warden-server doctor` fails on any of these with
+  group or other permissions. See
+  [docs/upgrading.md](docs/upgrading.md#private-files).
+- The image's `/data` directory has mode 0700 and belongs to warden's user, and CI
+  checks both in the built image.
 - The approval listener refuses every request that came through Tailscale Funnel
   with `401`, as the agent API does, instead of relying on such a request carrying
   no owner login.

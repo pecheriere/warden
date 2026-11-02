@@ -25,6 +25,7 @@ use warden_broker_proto::doctor::{Check, Report};
 use crate::config::{ALLOW_PLAIN_HTTP, BackendSettings, Config, ConfigError, UrlTransport};
 use crate::notify::{ChannelSettings, Doorbell, NotifyError};
 use crate::policy::{CaProbe, LocalProbe, VaultProbe};
+use crate::private_files;
 use crate::proxy::{Needles, redact};
 
 pub mod live;
@@ -552,22 +553,20 @@ struct PathRule<'a> {
     path: &'a Path,
     is_dir: bool,
     forbidden_mode: u32,
+    /// Whether starting the server removes those bits.
+    server_corrects: bool,
 }
 
 async fn data_checks(config: &Config, env: &dyn Environment, checks: &mut Vec<Check>) {
-    // These are what the server enforces or creates: the directory from the
-    // deployment guide (0700), the host key refused unless 0600, the rest
-    // refused or left unsafe if others may write. The database is 0644 by
-    // default and relies on the directory.
-    let directory = match config.db_path.parent() {
-        Some(dir) if !dir.as_os_str().is_empty() => dir,
-        _ => Path::new("."),
-    };
+    // These are what the server creates and keeps: everything private to its
+    // user. Doctor changes nothing, so it reports a loose mode the server would
+    // correct at its next start, and a directory the server could not correct.
     let mut rules = vec![PathRule {
         name: "data.directory",
-        path: directory,
+        path: private_files::data_directory(&config.db_path),
         is_dir: true,
         forbidden_mode: 0o077,
+        server_corrects: true,
     }];
     let files = [
         ("data.database", config.db_path.as_path()),
@@ -579,7 +578,8 @@ async fn data_checks(config: &Config, env: &dyn Environment, checks: &mut Vec<Ch
             name,
             path,
             is_dir: false,
-            forbidden_mode: 0o022,
+            forbidden_mode: 0o077,
+            server_corrects: true,
         });
     }
     if config.relay.public_addr.is_some() {
@@ -588,10 +588,29 @@ async fn data_checks(config: &Config, env: &dyn Environment, checks: &mut Vec<Ch
             path: &config.relay.host_key_path,
             is_dir: false,
             forbidden_mode: 0o077,
+            server_corrects: false,
         });
     }
     for rule in rules {
         let facts = env.path_facts(rule.path).await;
+        checks.push(path_check(&rule, facts, env.euid()));
+    }
+    // These come and go with the database, so only one that exists is checked.
+    for (name, suffix) in [("data.database-wal", "-wal"), ("data.database-shm", "-shm")] {
+        let mut path = config.db_path.clone().into_os_string();
+        path.push(suffix);
+        let path = Path::new(&path);
+        let facts = env.path_facts(path).await;
+        if matches!(&facts, Err(e) if e.kind() == io::ErrorKind::NotFound) {
+            continue;
+        }
+        let rule = PathRule {
+            name,
+            path,
+            is_dir: false,
+            forbidden_mode: 0o077,
+            server_corrects: true,
+        };
         checks.push(path_check(&rule, facts, env.euid()));
     }
 }
@@ -650,7 +669,15 @@ fn path_check(rule: &PathRule<'_>, facts: io::Result<PathFacts>, euid: u32) -> C
         return Check::fail(
             name,
             format!("{shown} has mode {mode:04o}; the bits {extra:03o} must be off."),
-            format!("chmod {:04o} {shown}", mode & !rule.forbidden_mode),
+            if rule.server_corrects {
+                format!(
+                    "Start the server, which corrects this when it can, or run chmod {:04o} on \
+                     the path as its owner.",
+                    mode & !rule.forbidden_mode
+                )
+            } else {
+                format!("chmod {:04o} {shown}", mode & !rule.forbidden_mode)
+            },
         );
     }
     Check::pass(

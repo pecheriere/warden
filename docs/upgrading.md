@@ -26,6 +26,27 @@ Then follow the steps for your setup, which include how to roll back:
 Do not let an automatic updater upgrade warden, because it would migrate the
 database without a backup.
 
+## Private files
+
+From the next release, warden keeps its files private to its user, and corrects
+their permissions when it starts. Most setups need do nothing, but check these:
+
+- **A tool reading warden's data as another non-root user**, such as a backup job
+  using group permissions, loses access. Run it as warden's user or as root. The
+  `rsync -a` commands in the deployment guides run as root and keep the modes, so
+  their copies stay private too.
+- **A symbolic link in place of the database, the audit log or the audience** is
+  refused. Point the setting at the file itself.
+- **A file warden cannot correct**, because another user owns it or it is on a
+  read-only mount, stops it at start with a message naming the file. Change it as
+  its owner or as root.
+- **A data directory others can write to** stops warden at start if warden cannot
+  correct it. See [which directories it corrects](configuration.md#the-data-directory).
+
+`warden-server doctor` reports all of these. Run it on the new version before
+switching over, as older versions have no `doctor`: for Docker, pull the new image
+and run `docker compose run --rm warden doctor`. It changes nothing.
+
 ## Plain http URLs
 
 From the next release, warden refuses to start when `WARDEN_OP_CONNECT_URL`,

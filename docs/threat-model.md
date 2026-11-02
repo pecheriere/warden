@@ -680,6 +680,35 @@ warden does not generate the SSH CA key with this backend. It would need write a
 to the directory holding the secrets, and a volume that failed to mount would silently
 yield a new CA. `ssh-keygen` does it in one command.
 
+## warden's files on disk
+
+warden keeps its files private to its user. The database and its `-wal`, `-shm` and
+`-journal` files, the audit log, the audience and the relay's host key are mode 0600.
+warden creates them that way, corrects a loose file when it opens it, and refuses to
+start if it cannot, or if a symbolic link is in the file's place. The relay's host key
+is refused rather than corrected. warden also refuses to start if others can write to
+the data directory and warden cannot call it its own, as they could replace the files
+in it. [The data directory](configuration.md#the-data-directory) has the rules.
+
+This does not cover:
+
+- **Anyone with warden's uid or with root.** That includes root on the host, and any
+  other container running as uid 65532 with the same volume mounted. The default user
+  of many distroless images has that uid, so do not share the volume.
+- **Encryption.** The files are in clear on disk. Protecting a stolen disk or backup
+  is the host's job.
+- **Copies.** A backup is as private as where it is put and how it is made.
+- **Changes while warden runs.** Modes are corrected when a file is opened, at start
+  and by server commands that change data. `warden-server doctor` and `audit verify`
+  only read, and change no mode. A file loosened afterwards stays so until the next
+  start; `warden-server doctor` reports it.
+- **Names and sizes in a directory warden leaves alone.** If others can read the data
+  directory, warden warns and starts: they can see the files' names, sizes and times,
+  not their contents.
+- **A file system that misreports modes.** warden relies on the mode the file system
+  reports. A network or shared file system that reports one mode and enforces another
+  is outside what warden can see.
+
 ## Deployment assumptions
 
 warden's guarantees depend on its environment being set up as follows.

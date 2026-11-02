@@ -44,6 +44,9 @@ pub enum AudienceError {
     /// The blocking file work could not run to completion.
     #[error("audience file: loading task failed")]
     Task,
+    /// The file could not be kept private to warden's user.
+    #[error(transparent)]
+    Private(#[from] crate::private_files::PrivateFileError),
 }
 
 /// Load the audience at `path`, creating it first if there is none. Runs the
@@ -60,17 +63,23 @@ pub async fn load_or_create(path: PathBuf) -> Result<Audience, AudienceError> {
 /// Load the audience at `path`, creating it first if there is none. An
 /// existing file is never overwritten; it must be a regular file (not a
 /// symbolic link) owned by this process's user, not writable by group or
-/// others, holding 32 lowercase hex characters.
+/// others, holding 32 lowercase hex characters. If others can read it, it is
+/// made private to this process's user.
 ///
 /// # Errors
 /// [`AudienceError::Io`] if the file or its directory cannot be read or
-/// written; [`AudienceError::Invalid`] if the file is not an audience.
+/// written; [`AudienceError::Invalid`] if the file is not an audience;
+/// [`AudienceError::Private`] if it cannot be made private.
 pub fn load_or_create_blocking(path: &Path) -> Result<Audience, AudienceError> {
     match load(path) {
         Err(AudienceError::Io { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
             create(path)
         }
-        loaded => loaded,
+        Ok(audience) => {
+            crate::private_files::make_existing_private(path)?;
+            Ok(audience)
+        }
+        failed => failed,
     }
 }
 
@@ -268,6 +277,16 @@ mod tests {
             assert_eq!(std::fs::read_to_string(&path).unwrap(), bad);
         }
         std::fs::write(&path, "40ad20029e94984d193159667b296d8a\n").unwrap();
+        // Readable by others: made private, and still the same audience.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        load_or_create_blocking(&path).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "40ad20029e94984d193159667b296d8a\n"
+        );
+        // Writable by others: it may have been changed, so it stays refused.
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o666)).unwrap();
         assert!(matches!(
             load_or_create_blocking(&path),
