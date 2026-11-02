@@ -15,7 +15,7 @@ use warden_broker_proto::doctor::{
 use super::{Environment, ListenerProbe, PasskeyProbe, PathFacts, examine, invalid_config_report};
 use crate::config::{Config, ConfigError};
 use crate::notify::{ChannelSettings, Doorbell, NotifyError};
-use crate::policy::{CaProbe, VaultProbe};
+use crate::policy::{CaProbe, LocalProbe, VaultProbe};
 
 const TOKEN: &str = "connect-token-do-not-leak-0123456789";
 const WEBHOOK_ID: &str = "webhook-id-do-not-leak-0123456789";
@@ -50,6 +50,7 @@ fn config(extra: &[(&str, &str)]) -> Config {
 struct Fake {
     vault: VaultProbe,
     ca: CaProbe,
+    local: LocalProbe,
     ring: fn(&str) -> Result<(), NotifyError>,
     passkeys: PasskeyProbe,
     listener: ListenerProbe,
@@ -66,6 +67,7 @@ impl Fake {
             ca: CaProbe::Loaded {
                 fingerprint: "SHA256:abc".to_owned(),
             },
+            local: LocalProbe::Unreadable("not asked for".to_owned()),
             ring: |_| Ok(()),
             passkeys: PasskeyProbe::Enrolled(1),
             listener: ListenerProbe::Accepted,
@@ -91,6 +93,10 @@ impl Environment for Fake {
     async fn ca(&self) -> CaProbe {
         *self.asked_for_ca.lock().unwrap() = true;
         self.ca.clone()
+    }
+
+    async fn local(&self) -> LocalProbe {
+        self.local.clone()
     }
 
     async fn ring(

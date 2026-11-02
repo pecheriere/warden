@@ -2,7 +2,7 @@ use sha2::{Digest as _, Sha256};
 use sqlx::{Row as _, SqlitePool};
 use warden_broker::agents::{self, AgentError, AgentPublicKey, AuthKind, PublicKeyError};
 use warden_broker::audit::{self, AuditLog};
-use warden_broker::config::{Config, ConfigError};
+use warden_broker::config::{BackendSettings, Config, ConfigError};
 use warden_broker::notify::{ChannelKind, ChannelSettings};
 use warden_broker::store;
 use warden_broker_proto::AgentName;
@@ -148,7 +148,10 @@ fn config_defaults_requires_notifier_and_redacts_secrets() {
     let cfg = Config::from_lookup(env).unwrap();
     assert_eq!(cfg.api_listen.to_string(), "127.0.0.1:8080");
     assert_eq!(cfg.approval_listen.to_string(), "127.0.0.1:8081");
-    assert_eq!(cfg.vault, "Warden");
+    let BackendSettings::OnePassword(connect) = &cfg.backend else {
+        panic!("a missing WARDEN_SECRET_BACKEND must mean 1Password");
+    };
+    assert_eq!(connect.vault, "Warden");
     let shown = format!("{cfg:?}");
     assert!(!shown.contains("connect-secret-token"));
     assert!(!shown.contains("secret-hook-id"));

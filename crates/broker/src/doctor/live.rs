@@ -13,10 +13,10 @@ use warden_broker_proto::doctor::Report;
 
 use super::{Environment, ListenerProbe, PasskeyProbe, PathFacts, examine, invalid_config_report};
 use crate::approval::passkeys;
-use crate::config::Config;
+use crate::config::{BackendSettings, Config};
 use crate::health::probe_target;
 use crate::notify::{ChannelSettings, Doorbell, NotifyError};
-use crate::policy::{CaProbe, OnePasswordConnect, VaultProbe};
+use crate::policy::{CaProbe, LocalBackend, LocalProbe, OnePasswordConnect, VaultProbe};
 
 /// How long a listener has to accept a connection.
 const LISTENER_TIMEOUT: Duration = Duration::from_secs(3);
@@ -38,18 +38,24 @@ pub async fn report(send_test_notification: bool) -> Report {
     }
 }
 
-struct Live {
-    connect: OnePasswordConnect,
+/// What [`examine`] would be told about a backend that is not the configured
+/// one. It never asks, and the answer must not read as a working backend.
+const NOT_CONFIGURED: &str = "this secret backend is not the configured one";
+
+enum Live {
+    OnePassword(OnePasswordConnect),
+    Local(LocalBackend),
 }
 
 impl Live {
     fn new(config: &Config) -> Self {
-        Self {
-            connect: OnePasswordConnect::new(
-                config.connect_url.clone(),
-                config.connect_token.clone(),
-                config.vault.clone(),
-            ),
+        match &config.backend {
+            BackendSettings::OnePassword(connect) => Self::OnePassword(OnePasswordConnect::new(
+                connect.url.clone(),
+                connect.token.clone(),
+                connect.vault.clone(),
+            )),
+            BackendSettings::Local(settings) => Self::Local(LocalBackend::unaudited(settings)),
         }
     }
 }
@@ -76,11 +82,24 @@ async fn count_passkeys(db: &Path) -> Result<usize, String> {
 #[async_trait]
 impl Environment for Live {
     async fn vault(&self) -> VaultProbe {
-        self.connect.probe_vault().await
+        match self {
+            Self::OnePassword(connect) => connect.probe_vault().await,
+            Self::Local(_) => VaultProbe::Unhealthy(NOT_CONFIGURED.to_owned()),
+        }
     }
 
     async fn ca(&self) -> CaProbe {
-        self.connect.probe_ca().await
+        match self {
+            Self::OnePassword(connect) => connect.probe_ca().await,
+            Self::Local(_) => CaProbe::Unknown(NOT_CONFIGURED.to_owned()),
+        }
+    }
+
+    async fn local(&self) -> LocalProbe {
+        match self {
+            Self::OnePassword(_) => LocalProbe::Unreadable(NOT_CONFIGURED.to_owned()),
+            Self::Local(backend) => backend.probe().await,
+        }
     }
 
     async fn ring(
@@ -150,13 +169,11 @@ mod tests {
     use crate::store;
 
     fn live() -> Live {
-        Live {
-            connect: crate::policy::OnePasswordConnect::new(
-                Url::parse("http://connect.invalid").unwrap(),
-                SecretString::from("unused"),
-                "Warden".to_owned(),
-            ),
-        }
+        Live::OnePassword(crate::policy::OnePasswordConnect::new(
+            Url::parse("http://connect.invalid").unwrap(),
+            SecretString::from("unused"),
+            "Warden".to_owned(),
+        ))
     }
 
     #[tokio::test]

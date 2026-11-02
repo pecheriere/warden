@@ -51,9 +51,10 @@ and secure by construction.
 - Revocation of already-issued certificates on target hosts (KRL
   distribution). Short windows are the mitigation; revoke stops new issuance
   and kills relay sessions.
-- Secret managers other than 1Password, and notifiers other than the built-in
-  Home Assistant Companion and ntfy channels. The interfaces must make adding
-  them easy; implementations are not in v1.
+- Secret managers other than 1Password (the other backend is
+  [local files](local-backend.md), which is weaker), and notifiers other than the
+  built-in Home Assistant Companion and ntfy channels. The interfaces must make
+  adding them easy; implementations are not in v1.
 - A generic MCP server. v1 ships a CLI; an MCP front-end can come later.
 - Replacing the owner's existing break-glass access. Whatever local path the
   owner already uses at their workstation keeps working and remains the
@@ -112,7 +113,8 @@ Components, all in one Rust workspace:
 - Shared crates for the protocol types and policy model.
 
 Backends/notifiers are traits (`SecretBackend`, `Notifier`) with the v1
-implementations `OnePasswordConnect`, `HaWebhook`, `Ntfy`. Notifier
+implementations `OnePasswordConnect`, `HaWebhook`, `Ntfy`, and
+`LocalBackend` for setups without 1Password. Notifier
 channels form a compile-time registry (`ChannelKind`); the operator lists the
 enabled ones in priority order in `WARDEN_NOTIFY`.
 

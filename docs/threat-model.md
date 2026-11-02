@@ -22,7 +22,9 @@ warden does **not** protect against:
   issue grants. The host is the root of trust: keep it as locked down as
   the most sensitive target warden reaches.
 - **Whoever controls the 1Password vault**, who decides what warden may hand
-  out and where secrets may go.
+  out and where secrets may go. With the [local backend](#the-local-secret-backend)
+  there is no vault: whoever can write its files decides that, and a compromised
+  host gets every secret at rest.
 - **A compromised agent machine, within its approvals.** Code running as the
   agent's OS user can make requests and use that agent's grants while they
   last. Each request still needs the owner's approval.
@@ -417,6 +419,70 @@ These were recorded during implementation and are accepted for this release.
 - **A session start is recorded first.** `relay_session_started` is written
   before the first byte reaches the target; if it cannot be written, the
   session does not start.
+
+## The local secret backend
+
+`WARDEN_SECRET_BACKEND=local` reads targets, API secrets and the SSH CA key from
+files on warden's host ([guide](local-backend.md)). It exists for setups without
+1Password, and **1Password stays the recommended backend**. The rest of this page
+describes 1Password; this section says what changes.
+
+What is lost, and cannot be regained by any setting:
+
+- **The vault's separation from the host. A compromised host gets the secrets.**
+  With 1Password, the secrets rest elsewhere, and a compromise of the host reaches
+  them through a token that can be revoked. With local files, they rest on the host:
+  an attacker with root, or with warden's user, reads every credential warden holds,
+  all at once, whether or not any agent ever asked for it. The only recovery is to
+  rotate each one on its service.
+- **Backups and disks hold the secrets**, unless they are encrypted some other way.
+- **There is no read-only token boundary.** warden's Connect token cannot change the
+  policy; nothing comparable stands in front of the policy file. Owning it by root
+  and mounting it and the secrets read-only stops a compromised warden *process*
+  from changing what it hands out or where secrets go, but not a compromised host,
+  and warden cannot verify that it was done beyond the file's owner and mode.
+- **No record of edits.** 1Password keeps item history and usage reports. warden
+  audits its own refusals, not who changed a file.
+- **Policy and secret are two reads.** With 1Password both come from one read of one
+  item. Here, a change touching both files is two steps, and a call can fall between
+  them: an old credential could go to a new destination. Writing a new secret under
+  a new file name, then replacing the policy atomically, avoids it
+  ([how](local-backend.md#rotating-a-secret)).
+- **Secrets from systemd credentials are copied at start**, so rotating or removing
+  one takes a restart. Removing the entry from the policy still applies at once.
+
+What holds, because the same code runs:
+
+- **Validation is as strict as for 1Password items**, through the same validators,
+  and stricter in places: an optional setting set blank is refused, where a 1Password
+  field takes its default. At startup the whole policy and every secret it names are
+  checked, and the server refuses to start on any problem, which 1Password items are
+  not.
+- **Fresh reads.** Nothing is cached: a policy edit, a removed entry or a removed
+  secret applies at the next request. Destination digests work as before, so an edit
+  invalidates a grant it no longer matches. A proxied call in flight, and a certificate
+  already issued, behave as described above.
+- **Fail closed, and audited.** A file that is invalid, unreadable, ambiguous or too
+  open refuses the request and writes an `error` event to the audit log, without
+  quoting any value. If the audit log cannot be written, the request is still refused.
+- **No following of links, no gap between check and use.** Each read walks from `/`
+  with `O_NOFOLLOW`, one component at a time, and checks owner and mode on what it
+  opened. A secret must be a private regular file with one name, in a private
+  directory, so a file reachable under wider permissions is refused. An entry names
+  only a file in the secrets directory, so a policy edit cannot point a credential at
+  another file on the host. Permissions are the file system's: anyone who passes them
+  (root, warden's user) reads the secret. ACLs are not examined; if the file system
+  has them, keep them off this directory. A read of a file that a process with those
+  rights is changing at that moment may see part of it, which fails validation or is
+  sent as is, so write secrets by creating a new file.
+- **Secrets stay in wiped memory** and out of logs, errors, the audit log and doctor's
+  output, as far as for 1Password. The same limits apply: a password passed to the SSH
+  library is a copy warden cannot wipe, and the kernel's page cache and the host's swap
+  are outside warden's control. Systemd credentials do not swap.
+
+warden does not generate the SSH CA key with this backend. It would need write access
+to the directory holding the secrets, and a volume that failed to mount would silently
+yield a new CA. `ssh-keygen` does it in one command.
 
 ## Deployment assumptions
 

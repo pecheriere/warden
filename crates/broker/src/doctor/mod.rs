@@ -22,12 +22,13 @@ use async_trait::async_trait;
 use secrecy::ExposeSecret;
 use warden_broker_proto::doctor::{Check, Report};
 
-use crate::config::{Config, ConfigError};
+use crate::config::{BackendSettings, Config, ConfigError};
 use crate::notify::{ChannelSettings, Doorbell, NotifyError};
-use crate::policy::{CaProbe, VaultProbe};
+use crate::policy::{CaProbe, LocalProbe, VaultProbe};
 use crate::proxy::{Needles, redact};
 
 pub mod live;
+mod local;
 
 /// Where the settings are documented, for the release this binary is from.
 const SETTINGS_DOC: &str = concat!(
@@ -89,6 +90,8 @@ pub trait Environment: Send + Sync {
     async fn vault(&self) -> VaultProbe;
     /// Load the SSH CA key and drop it.
     async fn ca(&self) -> CaProbe;
+    /// Read and validate everything the local backend would read.
+    async fn local(&self) -> LocalProbe;
     /// Send `doorbell` through one channel, and only that one.
     async fn ring(&self, channel: &ChannelSettings, doorbell: &Doorbell)
     -> Result<(), NotifyError>;
@@ -111,8 +114,13 @@ struct Scrubber(Vec<Needles>);
 
 impl Scrubber {
     fn new(config: &Config) -> Self {
-        let mut secrets = vec![config.connect_token.expose_secret()];
-        secrets.extend(config.connect_url.password());
+        let mut secrets = Vec::new();
+        // The local backend holds no secret to remove: what doctor reports
+        // about it is fixed text, and it keeps no secret file's content.
+        if let BackendSettings::OnePassword(connect) = &config.backend {
+            secrets.push(connect.token.expose_secret());
+            secrets.extend(connect.url.password());
+        }
         for channel in config.notify.iter() {
             match channel {
                 ChannelSettings::HomeAssistant { webhook_url } => {
@@ -204,12 +212,17 @@ pub async fn examine(
     send_test_notification: bool,
 ) -> Report {
     let mut checks = vec![Check::pass("config", "The settings are present and valid.")];
-    let vault_found = connect_checks(env.vault().await, &config.vault, &mut checks);
-    checks.push(ca_check(if vault_found {
-        Some(env.ca().await)
-    } else {
-        None
-    }));
+    match &config.backend {
+        BackendSettings::OnePassword(connect) => {
+            let vault_found = connect_checks(env.vault().await, &connect.vault, &mut checks);
+            checks.push(ca_check(if vault_found {
+                Some(env.ca().await)
+            } else {
+                None
+            }));
+        }
+        BackendSettings::Local(_) => local::checks(env.local().await, &mut checks),
+    }
     let effects = if send_test_notification {
         ring_every_channel(config, env, &mut checks).await
     } else {

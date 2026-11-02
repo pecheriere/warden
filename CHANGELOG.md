@@ -18,6 +18,14 @@ All notable changes to this project are recorded here. The format follows
 
 ### Added
 
+- `WARDEN_SECRET_BACKEND=local`: targets, API secrets and the SSH CA key from a
+  policy file and private secret files on warden's host, with no 1Password account
+  or Connect ([docs/local-backend.md](docs/local-backend.md)). It is weaker: a
+  compromised host gets every secret, and there is no read-only token boundary.
+  1Password stays the recommended backend and the default when the setting is
+  unset, so existing deployments do not change. Files with loose permissions, links
+  or invalid content refuse the server's start or the request, and refusals are
+  audited. `warden-server doctor` checks it. warden does not generate the CA key.
 - Project documents: `CONTRIBUTING.md` (where to discuss, reporting bugs, the
   test policy), `GOVERNANCE.md`, `CODE_OF_CONDUCT.md`, `docs/roadmap.md`,
   `docs/building.md` and `docs/upgrading.md`.
