@@ -370,14 +370,55 @@ warden_admin() {
   sudo -u warden sh -c 'umask 077; set -a; . /etc/warden/warden.conf
     WARDEN_DB_PATH=/var/lib/warden/warden.db
     WARDEN_AUDIT_PATH=/var/lib/warden/audit.jsonl
+    WARDEN_AUDIENCE_PATH=/var/lib/warden/audience
     exec /usr/local/bin/warden-server "$@"' warden-admin "$@"
 }
 ```
 
 Where other pages say `docker compose exec warden /warden-server <command>`, run
-`warden_admin <command>`, for example `warden_admin enroll` or
-`warden_admin audit verify`. None of these commands need the Connect token, so they
-do not read it.
+`warden_admin <command>`, for example `warden_admin enroll`, `warden_admin audit verify`
+or `warden_admin agent add build-agent --public-key '<line>' --server <url>`. These
+commands do not read the Connect token. **`doctor` is the exception**, below.
+
+### Doctor
+
+[`warden-server doctor`](configuration.md#checking-a-setup) needs the same secrets as the
+server, and those are in the unit's credentials. systemd keeps them in
+`/run/credentials/warden.service` while the service runs, and the `warden` user can read
+them there. So point doctor at those files, with one line per `LoadCredential` of your
+unit and drop-in. Remove the lines of the secrets you do not use:
+
+```sh
+warden_doctor() {
+  sudo -u warden sh -c 'umask 077; set -a; . /etc/warden/warden.conf
+    WARDEN_DB_PATH=/var/lib/warden/warden.db
+    WARDEN_AUDIT_PATH=/var/lib/warden/audit.jsonl
+    WARDEN_AUDIENCE_PATH=/var/lib/warden/audience
+    WARDEN_OP_CONNECT_TOKEN_FILE=/run/credentials/warden.service/op-connect-token
+    WARDEN_NOTIFY_HOMEASSISTANT_WEBHOOK_URL_FILE=/run/credentials/warden.service/ha-webhook-url
+    WARDEN_NOTIFY_NTFY_URL_FILE=/run/credentials/warden.service/ntfy-url
+    exec /usr/local/bin/warden-server doctor "$@"' warden-doctor "$@"
+}
+```
+
+Run `warden_doctor`, or `warden_doctor --send-test-notification`. What differs from the
+Docker setup:
+
+- **The service must be running.** When it is stopped, so that the files are gone, `config`
+  fails with `cannot read the file named by WARDEN_<...>_FILE: entity not found`, and
+  everything else is not checked. This means a service that fails to start cannot be
+  checked this way: read `journalctl -u warden.service`, which names the bad setting.
+- **Doctor runs outside the unit's sandbox.** Its `connect.*`, `ssh-ca` and `notify.*`
+  checks do not go through `IPAddressAllow`, so a pass does not show that the service can
+  reach the same address. A request that fails in the journal with `error sending request`
+  points at the allow list ([section 5](#5-limit-wardens-egress)). A test request, as in
+  [the first start](deployment.md#8-first-start), is what exercises the real path.
+- **Some of its advice mentions a container.** Where it says to run inside the container
+  or the `front` network, this means running `warden_doctor` on the host, with the
+  listeners on loopback.
+- **This cannot be made simpler with `systemd-run`.** A transient unit gets only the
+  credentials and settings you repeat on its command line, and none from your drop-in, so
+  it would be longer and would still not be the same sandbox.
 
 ## 8. Backups
 
@@ -453,6 +494,12 @@ container on arm64, with a binary built by the repository's Dockerfile. There:
   unit at 1.0.
 - warden started with every setting in the unit and read its secrets from credentials,
   which did not appear in `/proc/<pid>/environ` or `systemctl show`.
+- On 257, `warden_doctor` read the running unit's credentials and passed `config`,
+  `connect.*`, `ssh-ca`, `listener.*` and `data.*`, against a small fake Connect server on
+  loopback, and its failure with no passkey enrolled was right. With the flag it sent one
+  message to a fake ntfy server. It printed no secret, and with the service stopped it
+  failed as described in [section 7](#doctor). `warden_admin agent add` printed the
+  `warden login` command with the audience.
 - On 257, the `warden_admin` function printed an enrollment code, listed agents and
   verified the audit log.
 - On 257, the file steps of the upgrade and rollback worked, with the same binary under a

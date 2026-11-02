@@ -229,6 +229,65 @@ async fn e2e_request_api_approve_and_call() {
     assert_eq!(after.status.code(), Some(5));
 }
 
+/// A grant the local clock thinks is live but the broker says has expired
+/// ends `warden http` like having no grant: exit 5, with what to do next, and
+/// the dead record gone. Nothing is sent upstream.
+#[tokio::test(flavor = "multi_thread")]
+async fn e2e_http_grant_expired_on_the_broker_exits_5() {
+    let s = setup().await;
+    let req = request_and_approve(&s).await;
+    assert_eq!(req.status.code(), Some(0), "stderr: {}", text(&req.stderr));
+    let granted = text(&req.stdout);
+    let Some((grant, _)) = granted
+        .strip_prefix("approved: grant ")
+        .and_then(|r| r.split_once(" until "))
+    else {
+        panic!("unexpected stdout: {granted}");
+    };
+    s.broker.clock.advance(3600);
+
+    assert_ne!(s.cli.files_containing(grant), [] as [std::path::PathBuf; 0]);
+    let out = s
+        .cli
+        .run(&["http", SECRET_NAME, "GET", &s.upstream.url("/hello")]);
+    assert_eq!(out.status.code(), Some(5), "{}", text(&out.stderr));
+    assert_eq!(out.stdout, [] as [u8; 0]);
+    let stderr = text(&out.stderr);
+    assert!(
+        stderr.contains("expired")
+            && stderr.contains(grant)
+            && stderr.contains("warden request api"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains(SECRET), "{stderr}");
+    assert_eq!(s.cli.files_containing(grant), [] as [std::path::PathBuf; 0]);
+    assert!(s.upstream.received().is_empty());
+}
+
+/// A denied request says not to retry and whom to ask, and exits 2.
+#[tokio::test(flavor = "multi_thread")]
+async fn e2e_request_denied_says_what_to_do_next() {
+    let s = setup().await;
+    let child = spawn_request(&s.cli, &[]);
+    let token = CapturingNotifier::token(&s.broker.capture.next().await);
+    let denied = s.broker.deny(&token).await;
+    assert!(denied.status.is_success(), "{}", denied.body);
+    let out = tokio::task::spawn_blocking(move || child.wait_with_output())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2), "{}", text(&out.stderr));
+    assert_eq!(out.stdout, [] as [u8; 0]);
+    let stderr = text(&out.stderr);
+    assert!(
+        stderr.contains("denied")
+            && stderr.contains("Do not send the same request")
+            && stderr.contains("ask the owner"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains(SECRET), "{stderr}");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn e2e_http_without_grant_exits_5() {
     let s = setup().await;

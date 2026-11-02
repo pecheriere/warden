@@ -20,6 +20,8 @@ pub mod approval;
 pub mod audience;
 pub mod audit;
 pub mod config;
+pub mod doctor;
+pub mod enrollment;
 pub mod health;
 pub mod identity;
 pub mod notify;

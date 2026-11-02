@@ -2,6 +2,7 @@
 
 use std::io::IsTerminal as _;
 use std::path::PathBuf;
+use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -13,8 +14,7 @@ use tracing_subscriber::EnvFilter;
 use url::Url;
 use warden_broker::approval::passkeys::{self, Passkeys};
 use warden_broker::audit::AuditLog;
-use warden_broker::config::{Config, parse_public_url};
-use warden_broker::health;
+use warden_broker::config::{Config, DEFAULT_AUDIENCE_PATH, parse_public_url};
 use warden_broker::identity::TailscaleServeIdentity;
 use warden_broker::notify::{ChannelSettings, Fallback, Notifier};
 use warden_broker::policy::OnePasswordConnect;
@@ -22,7 +22,8 @@ use warden_broker::proxy::CallSlots;
 use warden_broker::relay::host_key::RelayHostKey;
 use warden_broker::relay::{RelayEndpoint, RelayLimits, RelayServer, host_key};
 use warden_broker::requests::{self, Clock as _, Requests, SystemClock};
-use warden_broker::{AppState, agents, audience, audit, build_routers, store};
+use warden_broker::{AppState, agents, audience, audit, build_routers, enrollment, store};
+use warden_broker::{doctor, health};
 use warden_broker_proto::AgentName;
 
 #[derive(Parser)]
@@ -42,6 +43,18 @@ enum Command {
     /// Inspect the audit log.
     #[command(subcommand)]
     Audit(AuditCommand),
+    /// Check the configuration and say what to fix. Read-only unless
+    /// --send-test-notification is given. Exits 1 when a check failed, otherwise
+    /// 0, listing what could not be checked and how to check it by hand.
+    Doctor {
+        /// Send a test notification through every channel: it reaches the
+        /// owner's phone.
+        #[arg(long)]
+        send_test_notification: bool,
+        /// Exit 7 when nothing failed but some check could not run.
+        #[arg(long)]
+        strict: bool,
+    },
     /// Print a one-time code (valid 10 minutes) for enrolling a passkey.
     Enroll,
     /// Probe the agent API's /healthz (for container health checks); exits 0
@@ -68,11 +81,15 @@ enum AuditCommand {
 
 #[derive(Subcommand)]
 enum AgentCommand {
-    /// Create an agent. With --public-key it signs its requests with that
-    /// SSH key and no bearer key is made; without, its bearer key is printed
-    /// once.
+    /// Create an agent and print the command to run on its machine. With
+    /// --public-key it signs its requests with that SSH key and no bearer
+    /// key is made; without, its bearer key is printed once, on stdout.
     Add {
         name: AgentName,
+        /// The agent API's URL, as agents reach it (not the approval UI's),
+        /// to put in the printed command.
+        #[arg(long, value_name = "URL", value_parser = enrollment::parse_agent_api_url)]
+        server: Option<Url>,
         /// The agent's OpenSSH public key line (ssh-ed25519 or
         /// ecdsa-sha2-nistp256), as in its .pub file.
         #[arg(long)]
@@ -105,6 +122,12 @@ fn audit_path() -> Result<PathBuf> {
     }
 }
 
+fn audience_path() -> PathBuf {
+    std::env::var_os("WARDEN_AUDIENCE_PATH")
+        .filter(|path| !path.is_empty())
+        .map_or_else(|| DEFAULT_AUDIENCE_PATH.into(), PathBuf::from)
+}
+
 fn public_url() -> Result<Url> {
     match std::env::var("WARDEN_PUBLIC_URL") {
         Ok(value) if !value.trim().is_empty() => Ok(parse_public_url(&value)?),
@@ -120,28 +143,40 @@ async fn open_audit() -> Result<AuditLog> {
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
-    let command = match Cli::parse().command {
-        Command::Agent(command) => command,
+async fn main() -> Result<ExitCode> {
+    match Cli::parse().command {
+        Command::Agent(command) => agent(command).await?,
         Command::Audit(AuditCommand::Verify) => {
             let path = audit_path()?;
             let count =
                 audit::verify(&path).with_context(|| format!("verifying {}", path.display()))?;
             println!("audit log ok: {count} entries");
-            return Ok(());
+        }
+        Command::Doctor {
+            send_test_notification,
+            strict,
+        } => {
+            let report = doctor::live::report(send_test_notification).await;
+            print!("{}", report.render(strict));
+            return Ok(ExitCode::from(report.exit_code(strict)));
         }
         Command::Healthcheck => {
             let listen = health::api_listen(|var| std::env::var(var).ok())?;
-            return health::probe(listen).await;
+            health::probe(listen).await?;
         }
-        Command::Serve => return serve().await,
-        Command::Enroll => return enroll().await,
-        Command::Passkey(command) => return passkey(command).await,
-    };
+        Command::Serve => serve().await?,
+        Command::Enroll => enroll().await?,
+        Command::Passkey(command) => passkey(command).await?,
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+async fn agent(command: AgentCommand) -> Result<()> {
     let pool = store::open(&db_path()?).await?;
     match command {
         AgentCommand::Add {
             name,
+            server,
             public_key: None,
         } => {
             let audit = open_audit().await?;
@@ -150,9 +185,11 @@ async fn main() -> Result<()> {
                 .with_context(|| format!("adding agent {name}"))?;
             eprintln!("warning: this key is shown once and cannot be recovered; store it now.");
             println!("{}", key.expose());
+            eprintln!("{}", enrollment::bearer_next_steps(&name, server.as_ref()));
         }
         AgentCommand::Add {
             name,
+            server,
             public_key: Some(line),
         } => {
             let key = agents::AgentPublicKey::parse(&line).context("refusing the public key")?;
@@ -163,6 +200,21 @@ async fn main() -> Result<()> {
             eprintln!(
                 "agent {name} added; it signs requests with key {}",
                 key.fingerprint()
+            );
+            // The agent exists by now: not reading the audience only leaves
+            // the pin out of the command.
+            let audience = audience::read_existing(audience_path())
+                .await
+                .inspect_err(|e| {
+                    eprintln!(
+                        "note: the command below does not pin the broker's audience ({e}); \
+                         login pins what the broker reports"
+                    );
+                })
+                .ok();
+            eprintln!(
+                "{}",
+                enrollment::key_next_steps(&name, server.as_ref(), audience.as_ref())
             );
         }
         AgentCommand::SetKey { name, public_key } => {

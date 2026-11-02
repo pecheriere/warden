@@ -17,6 +17,35 @@ All notable changes to this project are recorded here. The format follows
   and `WARDEN_NOTIFY_NTFY_TOKEN_FILE` read these secrets from a file, so that
   they can come from systemd credentials and stay out of the process
   environment.
+- `warden-server doctor` and `warden doctor` check a setup and report each
+  check as pass, fail or could-not-check, with what to do. They exit 1 when a
+  check failed and otherwise 0, and the summary lists what could not be checked
+  and how to check it by hand. With `--strict` those items make them exit 7.
+  They are read-only: only `warden-server doctor
+  --send-test-notification` sends anything, one message through each channel
+  to the owner's phone.
+- Releases attach `warden` CLI binaries for macOS arm64, Linux amd64 and
+  Linux arm64, so the CLI installs without Rust. The Linux binaries are
+  fully static. Each `.tar.gz` has a build-provenance attestation to check
+  with `gh attestation verify`.
+- `warden-server agent add` prints what to run on the agent's machine, on
+  stderr: the exact `warden login` command, with the broker's audience for a
+  key-signed agent. `--server <url>` gives it the agent API's URL. A bearer key
+  is still printed once, alone on stdout, and never in these instructions.
+- `docs/agent-instructions.md`, a block to paste into an agent's `AGENTS.md` or
+  `CLAUDE.md`, and `docs/agent-examples.md`, with an SSH deployment and an API
+  call end to end.
+
+### Changed
+
+- README: says who warden is for and how stable it is, names Tailscale, Docker
+  and 1Password as the recommended setup and what each part protects, and adds
+  a table of the setups supported today with their security cost. It also lists
+  the notification channel as a requirement.
+- `warden request` and `warden ssh`/`warden http` say what to do next when a
+  request is denied, expires or is revoked, or there is no active grant.
+- `warden http` now exits 5, not 1, when the broker says the grant has expired,
+  and removes its local record.
 
 ## [0.8.1] - 2026-11-01
 
