@@ -2,6 +2,7 @@ target
 .git
 .github
 docs/design
+fuzz
 site
 Dockerfile
 .dockerignore

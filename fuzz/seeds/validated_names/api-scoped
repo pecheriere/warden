@@ -1,0 +1,1 @@
+{"goal": "read", "access": {"kind": "api", "secret": "home-api", "methods": ["GET", "POST"], "path_prefix": "/v1/"}, "window": "1h"}

@@ -360,11 +360,11 @@ fails an unrelated pull request, and OpenSSF Scorecard reports weekly.
 
 ### Dependency age
 
-Every crate version in `Cargo.lock` must have been published on crates.io at
-least 7 days before it is added, so a compromised or broken release has time
-to be noticed and yanked. On each pull request,
+Every crate version in `Cargo.lock` and `fuzz/Cargo.lock` must have been
+published on crates.io at least 7 days before it is added, so a compromised or
+broken release has time to be noticed and yanked. On each pull request,
 [`.github/scripts/crate_age.py`](.github/scripts/crate_age.py) compares
-`Cargo.lock` with the base branch's and fails the build for a new or changed
+the lockfiles with the base branch's and fails the build for a new or changed
 version younger than 7 days; a lookup that fails fails the check. The release
 workflow runs the same check against the previous release tag, so a tag never
 ships a version that skipped it. Dependabot waits out the same 7 days.
