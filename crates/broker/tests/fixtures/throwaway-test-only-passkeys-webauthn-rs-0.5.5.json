@@ -1,0 +1,78 @@
+{
+  "comment": "Throwaway test data. Rows of the passkeys table as a broker on webauthn-rs 0.5.5 wrote them through its real routes, with the private keys of the test authenticators. Never regenerate with a newer library.",
+  "passkeys": [
+    {
+      "algorithm": "ES256",
+      "backup_eligible": true,
+      "backup_state": true,
+      "counter": 0,
+      "created_at": 1800000000,
+      "credential": "{\"cred\":{\"cred_id\":\"v-bD_t-Sr3DwoZWdIaSSQd8CgdLhXt8Ks_YbuAJzySU\",\"cred\":{\"type_\":\"ES256\",\"key\":{\"EC_EC2\":{\"curve\":\"SECP256R1\",\"x\":\"wH4XuBqv7Z0olOgjyKokLjDMQxweeZxhTwmOx_hJOnY\",\"y\":\"ZV30qGTm3bzaGLZeOfsWn5uruoPsHhC41XnVJnPUUHE\"}}},\"counter\":0,\"transports\":null,\"user_verified\":true,\"backup_eligible\":true,\"backup_state\":true,\"registration_policy\":\"required\",\"extensions\":{\"cred_protect\":\"Ignored\",\"hmac_create_secret\":\"NotRequested\",\"appid\":\"NotRequested\",\"cred_props\":{\"Unsigned\":{\"rk\":true}}},\"attestation\":{\"data\":\"None\",\"metadata\":\"None\"},\"attestation_format\":\"none\"}}",
+      "id": "cc274ec4ad46eda5a864fa15125332df",
+      "label": "es256-synced-never-used",
+      "shape": "es256-synced-never-used",
+      "signing_key_hex": "5b9cf50760158bd4e2fd8a6d5f8a4a5b245c9005bbbe745311670c686dfa37fe"
+    },
+    {
+      "algorithm": "ES256",
+      "backup_eligible": true,
+      "backup_state": true,
+      "counter": 0,
+      "created_at": 1800000000,
+      "credential": "{\"cred\":{\"cred_id\":\"BuUSacR6RDrlk53yA1QtBa5Qzz9IPDMhP_8o5tZua6c\",\"cred\":{\"type_\":\"ES256\",\"key\":{\"EC_EC2\":{\"curve\":\"SECP256R1\",\"x\":\"fE5Oc2F-Ok54V4izDd9PNjtwp8D4piljMLU7O3M0smA\",\"y\":\"WkUSlUdwX4JLX9DtECsyZxcPF4-waAS3ssWyWVnQM44\"}}},\"counter\":0,\"transports\":null,\"user_verified\":true,\"backup_eligible\":true,\"backup_state\":true,\"registration_policy\":\"required\",\"extensions\":{\"cred_protect\":\"Ignored\",\"hmac_create_secret\":\"NotRequested\",\"appid\":\"NotRequested\",\"cred_props\":{\"Unsigned\":{\"rk\":true}}},\"attestation\":{\"data\":\"None\",\"metadata\":\"None\"},\"attestation_format\":\"none\"}}",
+      "id": "791bb77e8669e6d4f6a146f0660fecc8",
+      "label": "es256-synced-used",
+      "shape": "es256-synced-used",
+      "signing_key_hex": "750d9f717373b8626f960aa7ff4fedea2eaf2ce82b0840cef1a6f037717158d7"
+    },
+    {
+      "algorithm": "ES256",
+      "backup_eligible": false,
+      "backup_state": false,
+      "counter": 8,
+      "created_at": 1800000000,
+      "credential": "{\"cred\":{\"cred_id\":\"ZAnGrF8RiMbh0PTwwhOPXgiLY2MyPCjRHpkNSww6MaM\",\"cred\":{\"type_\":\"ES256\",\"key\":{\"EC_EC2\":{\"curve\":\"SECP256R1\",\"x\":\"qsQtNynjbZJ7WvArCYvtkxINqpz6qNJh_KQ0nPreshE\",\"y\":\"c0VPX3dPvqXoxCh3tvibKxlvijgL5QCGmJ7UYIfp0bU\"}}},\"counter\":8,\"transports\":null,\"user_verified\":true,\"backup_eligible\":false,\"backup_state\":false,\"registration_policy\":\"required\",\"extensions\":{\"cred_protect\":{\"Set\":\"userVerificationRequired\"},\"hmac_create_secret\":\"NotRequested\",\"appid\":\"NotRequested\",\"cred_props\":{\"Unsigned\":{\"rk\":true}}},\"attestation\":{\"data\":\"None\",\"metadata\":\"None\"},\"attestation_format\":\"none\"}}",
+      "id": "b478f9dd9a08784075c1eb620d1a8eee",
+      "label": "es256-hardware-used",
+      "shape": "es256-hardware-used",
+      "signing_key_hex": "1791f1692d30a55db0694be7879935d2b6dd060012b63cae26ab680b63c08d0c"
+    },
+    {
+      "algorithm": "RS256",
+      "backup_eligible": false,
+      "backup_state": false,
+      "counter": 3,
+      "created_at": 1800000000,
+      "credential": "{\"cred\":{\"cred_id\":\"ZcYYMiiQVzQBsuhhYjEI6fab_Fjb69O_1G7ZikHjB8s\",\"cred\":{\"type_\":\"RS256\",\"key\":{\"RSA\":{\"n\":\"seh8uLhcSyw9N8v7P4B19MobD07JzWpdURjwaA9TANQelQ9TQKC9dxuV9PWXWEAXtDQRdag7VPkXWIP9PrEBGCSzBviTe2J0b19vOQnvk6Np2tttjOmngkSXqWtxmvdMYyWl31Bv89d8vXnKo9rF_0KuFGlEaPwV9zh5I8k7hESiZ9wFPTCt3jdOJEENZvNkx6IRIB9cQKCKTC-V1HCrw_ax__D-tdGvD0p9gVvJTPj3IMtZJoDrOZ7CL6q0g6k9Gzq_SX0HWonZKlXoQlQU4ZIU-s4uyxAPBaCPrPcdNC4L7wh_du2sytdTOBNV-KquV5JU1BUHb1YEEWSkogmAvw\",\"e\":[1,0,1]}}},\"counter\":3,\"transports\":null,\"user_verified\":true,\"backup_eligible\":false,\"backup_state\":false,\"registration_policy\":\"required\",\"extensions\":{\"cred_protect\":\"Ignored\",\"hmac_create_secret\":\"NotRequested\",\"appid\":\"NotRequested\",\"cred_props\":{\"Unsigned\":{\"rk\":true}}},\"attestation\":{\"data\":\"None\",\"metadata\":\"None\"},\"attestation_format\":\"none\"}}",
+      "id": "6b5d47b612d2750cfd3f2054b5d9a40d",
+      "label": "rs256-windows-hello",
+      "shape": "rs256-windows-hello",
+      "signing_key_hex": "308204bf020100300d06092a864886f70d0101010500048204a9308204a50201000282010100b1e87cb8b85c4b2c3d37cbfb3f8075f4ca1b0f4ec9cd6a5d5118f0680f5300d41e950f5340a0bd771b95f4f597584017b4341175a83b54f9175883fd3eb1011824b306f8937b62746f5f6f3909ef93a369dadb6d8ce9a7824497a96b719af74c6325a5df506ff3d77cbd79caa3dac5ff42ae14694468fc15f7387923c93b8444a267dc053d30adde374e24410d66f364c7a211201f5c40a08a4c2f95d470abc3f6b1fff0feb5d1af0f4a7d815bc94cf8f720cb592680eb399ec22faab483a93d1b3abf497d075a89d92a55e8425414e19214face2ecb100f05a08facf71d342e0bef087f76edaccad753381355f8aaae579254d415076f56041164a4a20980bf0203010001028201001ccd58b3c7151a0e7572bd1155fc841c37441e3c512b7256dd343e677a63a3b4b3a6ca2e5e3e27ae4ac7023b685f1f3137395ec23f942b73903602585377f0876a1999bd50931f235e8c82c3273aa41a469ee9fb585ed381a17d342e72dbf5c16623c830d922e6c5322ab2b6fdc4035e09fb88ce6a06dd18e947394573e4b0caee9bcdce5081abc06dd3ec3dd91a768328983440fc59de1ecd8fdb9e1b70fedb808ffa6435fa66685ae79cf9d00c2dd81f97466d71bcceb7ad5d5cdf7dcc9eadbfc6f8e1ce452327ef40676afad05a83ab712a8ffbf6b91bc7505e52d5777efc2eec57de60bfef54a630d9276e5e375a14fb6513f345e49b86628eda0b767b1102818100df5edd6b5b82ceecaaa378090570ebf0527038f227467f2145ba39d1685f7bfb2ec78987adf011c629ea480988eb4f8d40b84ee9dca6c59b17e41f96ad9c9f1e1d11ec979887a19649e280aaf1836ea0b918309cb28e214dec48c925a58434650e4fdb37ac0f906f5a75f4e80834ceb4072f2c09e9e0651a01c4b6b4522c430502818100cbe5841fa4020613b9a214d81cfe4a4c9242aa5b06a347c746258c3b408366fa41f7ffe3a2f034b85ddf6a5ef26d505dbb5845806a5eeffea6c9bdbb75d7583d3d117fd1e831206f78e1a878f477ec146790995481b8e09a631f90ca4dbaabd3a8571011648221d83198b4b5aa9210c3578aba651c7c813fa70b748c1fc9c7f302818100c239e0da6b16110ba54cc3214503ed84688a8059bf61034651351ef54186556e123d1b0f4965886f011f60483a30325a26be9c8fa977b237abcc86d3245f1dd4b77e50757901e6b5a1c53c106834dacb1267404de0ccc994d2327005362900ce2665b5be70f48fa8e3c5d190b92201e274a4c5ec50daf7ce675f3f670854c86902818100965e718e141a19f93a11ba65971c42172e5653e44584ed4e9d00dbe666b181a4563a5b50b9bd8463e376fcaf8101f51eeb27323a7e37fdae43bacc5e0f8dfcd94ccc3703cac550326567a6236dc77327a9290eab2feff454677dc3fe2e4cd8a383a691870224a669164a941ad5ec5ac8752b2e439b3a86e7367e503976c80cd902818100b610d3b4fe77753531a860d7bfe620f5c45573e80b21ef358ea58c2119fdc6cc15bb35cad24503726422c0b1e327b491751b712ad173ff64abc835a7a07c4c93397fac44ddcd597e2d8eb4f6ef20c0a1a67aeb12dc116b8bf439a3b3f8339823214ef0389e5dc91e81f2ea755cd4e86e96e0018bffba922e8d7afbd8d3383245"
+    },
+    {
+      "algorithm": "ES256",
+      "backup_eligible": false,
+      "backup_state": false,
+      "counter": 0,
+      "created_at": 1800000000,
+      "credential": "{\"cred\":{\"cred_id\":\"hXz8NlmCticcII590e8qHgHOD1oWewuAlKn0dRM5-wk\",\"cred\":{\"type_\":\"ES256\",\"key\":{\"EC_EC2\":{\"curve\":\"SECP256R1\",\"x\":\"DT4dR_I2aj66U2wAQjJqxnD_ioLRovhGxImRkaRie7w\",\"y\":\"GtPWYsNRRYpqX37n3-O5HOmAbZVDTHTSC-EHUP7gLGw\"}}},\"counter\":0,\"transports\":[\"usb\"],\"user_verified\":true,\"backup_eligible\":false,\"backup_state\":false,\"registration_policy\":\"required\",\"extensions\":{\"cred_protect\":\"Ignored\",\"hmac_create_secret\":\"NotRequested\",\"appid\":\"NotRequested\",\"cred_props\":{\"Unsigned\":{\"rk\":true}}},\"attestation\":{\"data\":\"Self_\",\"metadata\":\"None\"},\"attestation_format\":\"packed\"}}",
+      "id": "e1cba3ee675de20f52251367e049cae9",
+      "label": "es256-packed-self-attestation",
+      "shape": "es256-packed-self-attestation",
+      "signing_key_hex": "bd27962ba205ee01136efe7561200025f2908a3a93ea6769ac8b16cd5f132be5"
+    },
+    {
+      "algorithm": "ES256",
+      "backup_eligible": false,
+      "backup_state": false,
+      "counter": 1,
+      "created_at": 1800000000,
+      "credential": "{\"cred\":{\"cred_id\":\"fKkpUlX47_RDQSAs4w4KbOe0fr9pg-81zdKCB_CY9pE\",\"cred\":{\"type_\":\"ES256\",\"key\":{\"EC_EC2\":{\"curve\":\"SECP256R1\",\"x\":\"SklG7eeD3_O1rO2RzKB26Gcnj6KAd4PZDSKPv-IWVTM\",\"y\":\"za5kK-qJDCTYxeIIENyLB-27QsOHmABo3B2aQMjfhv0\"}}},\"counter\":1,\"transports\":[\"usb\"],\"user_verified\":true,\"backup_eligible\":false,\"backup_state\":false,\"registration_policy\":\"required\",\"extensions\":{\"cred_protect\":{\"Set\":\"userVerificationRequired\"},\"hmac_create_secret\":\"NotRequested\",\"appid\":\"NotRequested\",\"cred_props\":{\"Unsigned\":{\"rk\":true}}},\"attestation\":{\"data\":{\"Basic\":[\"MIIB8zCCAZqgAwIBAgIURc-LAXyqC1kk3hfteuiq0lgZtJ4wCgYIKoZIzj0EAwIwcDELMAkGA1UEBhMCU0UxGzAZBgNVBAoMEldhcmRlbiBUZXN0IFZlbmRvcjEiMCAGA1UECwwZQXV0aGVudGljYXRvciBBdHRlc3RhdGlvbjEgMB4GA1UEAwwXd2FyZGVuIHRlc3QgYXR0ZXN0YXRpb24wIBcNMjYxMTAyMTU1NzI5WhgPMjEyNjEwMDkxNTU3MjlaMHAxCzAJBgNVBAYTAlNFMRswGQYDVQQKDBJXYXJkZW4gVGVzdCBWZW5kb3IxIjAgBgNVBAsMGUF1dGhlbnRpY2F0b3IgQXR0ZXN0YXRpb24xIDAeBgNVBAMMF3dhcmRlbiB0ZXN0IGF0dGVzdGF0aW9uMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE--f18cLRIdENoNyGSBOHj5-Vq9DVX4To3FoYG8Y7-5FzfkeLJtLCOUk5vGFy-H-J-2yTIbsBVLZtrEXAyk3N1aMQMA4wDAYDVR0TAQH_BAIwADAKBggqhkjOPQQDAgNHADBEAiAkQyweYz-HNvRaTLUvKlQvLVmITPY7KmeXeDMRr2gxqAIgH2yQdi2q0u2G6mKUw1SmOxiA9cdsOeblBxey6XHtZX4\"]},\"metadata\":{\"Packed\":{\"aaguid\":\"00000000-0000-0000-0000-000000000000\"}}},\"attestation_format\":\"packed\"}}",
+      "id": "db7613870a9b93332e44d56ccad22f27",
+      "label": "es256-packed-x5c-attestation",
+      "shape": "es256-packed-x5c-attestation",
+      "signing_key_hex": "f910dbfdab14e0c898a5bf7b7de364bf5e0b8b23b9f3e396b5ce3ff9b9cf8935"
+    }
+  ],
+  "webauthn_rs": "0.5.5"
+}
