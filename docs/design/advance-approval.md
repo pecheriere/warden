@@ -489,7 +489,7 @@ what was approved.
 | Costs money, if the API bills per call. | **Bounded** by the count. |
 | Changes a query, body or header. | **Yes.** It supplies none of them. |
 | Reaches another path, method or origin. | **Yes.** |
-| Fires a fourth time, or after the end. | **Yes**, and this halts the approval. |
+| Fires a fourth time, or after the end. | **Yes.** A fourth use also halts the approval. |
 | Uses this to get a grant, a shell or a secret. | **Yes.** The secret stays in the broker, and the same redaction limits apply as in proxy mode. |
 | Asks for more, with a persuasive goal, at 03:00. | **Partly.** It is an ordinary request that rings and needs a passkey. A tired owner who approves it has approved it. It cannot extend the approval, so "please extend" is never real, and docs and the page should say so. |
 
