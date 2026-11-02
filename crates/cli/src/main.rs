@@ -18,7 +18,7 @@ use clap::{Parser, Subcommand};
 use ssh_key::rand_core::OsRng;
 use ssh_key::{Algorithm, Certificate, PrivateKey};
 use url::Url;
-use warden_broker_proto::doctor::EXIT_ALL_PASSED;
+use warden_broker_proto::doctor::EXIT_NOTHING_FAILED;
 use warden_broker_proto::signing::{Audience, PROTOCOL};
 use warden_broker_proto::{
     Access, AgentName, ApiGrant, CreateRequest, Goal, GrantAccess, GrantView, Id, RequestStatus,
@@ -143,10 +143,14 @@ enum Cmd {
         fail: bool,
     },
     /// Check this machine's setup without changing anything: server reachable,
-    /// audience pinned, key available, agent accepted. Exits 0 when every check
-    /// passed, 1 when one failed, 7 when none failed but one could not be
-    /// checked.
-    Doctor,
+    /// audience pinned, key available, agent accepted. Exits 1 when a check
+    /// failed, otherwise 0, listing what could not be checked and how to check
+    /// it by hand.
+    Doctor {
+        /// Exit 7 when nothing failed but some check could not run.
+        #[arg(long)]
+        strict: bool,
+    },
     /// Show local grants and the broker's view of this agent's grants.
     Status,
     /// Revoke a grant on the broker and stop its local agent.
@@ -227,7 +231,7 @@ impl std::error::Error for Exit {}
 async fn main() -> ExitCode {
     let cli = Cli::parse();
     // Doctor changes nothing, so not even the housekeeping runs before it.
-    if !matches!(cli.command, Cmd::Doctor) {
+    if !matches!(cli.command, Cmd::Doctor { .. }) {
         cleanup_state(unix_now());
     }
     match run(cli.command).await {
@@ -326,13 +330,13 @@ async fn run(cmd: Cmd) -> Result<()> {
             run_http(call, include, fail).await
         }
         Cmd::Ssh { target, command } => run_ssh(&target, &command),
-        Cmd::Doctor => {
+        Cmd::Doctor { strict } => {
             let report = doctor::examine(&doctor::Live).await;
-            print!("{}", report.render());
-            let code = report.exit_code();
+            print!("{}", report.render(strict));
+            let code = report.exit_code(strict);
             ensure!(
-                code == EXIT_ALL_PASSED,
-                Exit::new(code, "doctor: not every check passed; see the report above")
+                code == EXIT_NOTHING_FAILED,
+                Exit::new(code, "doctor: see the report above")
             );
             Ok(())
         }

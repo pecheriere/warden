@@ -2,18 +2,21 @@
 //! `warden doctor`: each check passed, failed or could not be checked, and
 //! the exit code says which of those the run ended with.
 //!
-//! Could-not-check is never a pass: it has its own label in the output and its
-//! own exit code, and a report without any check counts as could-not-check.
+//! Could-not-check is never a pass: it has its own label in the output, and
+//! the summary lists each one with what to do by hand. It only changes the exit
+//! code with `--strict`, so that a healthy setup can exit 0. A report without
+//! any check counts as could-not-check either way.
 
 use std::fmt::Write as _;
 
 use unicode_properties::{GeneralCategory, UnicodeGeneralCategory as _};
 
-/// Exit code: every check passed.
-pub const EXIT_ALL_PASSED: u8 = 0;
+/// Exit code: no check failed. Some may not have run: the report lists them.
+pub const EXIT_NOTHING_FAILED: u8 = 0;
 /// Exit code: at least one check failed.
 pub const EXIT_FAILED: u8 = 1;
-/// Exit code: no check failed, but at least one could not be checked. Not 2,
+/// Exit code, with `--strict` only: no check failed, but at least one could
+/// not be checked. Not 2,
 /// which is how the argument parser reports a usage error.
 pub const EXIT_COULD_NOT_CHECK: u8 = 7;
 
@@ -111,22 +114,24 @@ impl Report {
         self.checks.iter().filter(|c| c.status == status).count()
     }
 
-    /// The exit code of this report: see the `EXIT_*` constants.
+    /// The exit code of this report: see the `EXIT_*` constants. Only with
+    /// `strict` does a check that could not run change it, except that a
+    /// report with no check at all has shown nothing and never exits 0.
     #[must_use]
-    pub fn exit_code(&self) -> u8 {
+    pub fn exit_code(&self, strict: bool) -> u8 {
         if self.count(Status::Fail) > 0 {
             EXIT_FAILED
-        } else if self.count(Status::CouldNotCheck) > 0 || self.checks.is_empty() {
+        } else if self.checks.is_empty() || (strict && self.count(Status::CouldNotCheck) > 0) {
             EXIT_COULD_NOT_CHECK
         } else {
-            EXIT_ALL_PASSED
+            EXIT_NOTHING_FAILED
         }
     }
 
-    /// The report as text for a terminal or a log, without colour. All text
-    /// goes through [`sanitize`].
+    /// The report as text for a terminal or a log, without colour, with the
+    /// exit code `strict` gives. All text goes through [`sanitize`].
     #[must_use]
-    pub fn render(&self) -> String {
+    pub fn render(&self, strict: bool) -> String {
         let width = self
             .checks
             .iter()
@@ -152,8 +157,28 @@ impl Report {
             self.count(Status::Pass),
             self.count(Status::Fail),
             self.count(Status::CouldNotCheck),
-            self.exit_code()
+            self.exit_code(strict)
         );
+        let unchecked = self.count(Status::CouldNotCheck);
+        if unchecked > 0 {
+            let hint = if strict {
+                ""
+            } else {
+                " --strict makes them exit 7."
+            };
+            let _ = writeln!(
+                out,
+                "\nNot checked, so not passed: {unchecked}. Do these by hand.{hint}"
+            );
+            for check in self
+                .checks
+                .iter()
+                .filter(|c| c.status == Status::CouldNotCheck)
+            {
+                let action = check.action.as_deref().unwrap_or("Check this by hand.");
+                let _ = writeln!(out, "  {}: {}", sanitize(&check.name), sanitize(action));
+            }
+        }
         let _ = writeln!(out, "What this run did: {}", sanitize(&self.effects));
         out
     }
@@ -181,7 +206,7 @@ pub fn sanitize(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        Check, EXIT_ALL_PASSED, EXIT_COULD_NOT_CHECK, EXIT_FAILED, Report, Status, sanitize,
+        Check, EXIT_COULD_NOT_CHECK, EXIT_FAILED, EXIT_NOTHING_FAILED, Report, Status, sanitize,
     };
 
     fn report(checks: Vec<Check>) -> Report {
@@ -193,9 +218,10 @@ mod tests {
     }
 
     #[test]
-    fn all_passed_exits_zero() {
+    fn all_passed_exits_zero_even_when_strict() {
         let report = report(vec![Check::pass("a", "fine")]);
-        assert_eq!(report.exit_code(), EXIT_ALL_PASSED);
+        assert_eq!(report.exit_code(false), EXIT_NOTHING_FAILED);
+        assert_eq!(report.exit_code(true), EXIT_NOTHING_FAILED);
     }
 
     #[test]
@@ -205,21 +231,24 @@ mod tests {
             Check::fail("b", "bad", "fix"),
             Check::pass("c", "fine"),
         ]);
-        assert_eq!(report.exit_code(), EXIT_FAILED);
+        assert_eq!(report.exit_code(false), EXIT_FAILED);
+        assert_eq!(report.exit_code(true), EXIT_FAILED);
     }
 
     #[test]
-    fn could_not_check_never_exits_zero() {
+    fn could_not_check_exits_zero_unless_strict() {
         let report = report(vec![
             Check::pass("a", "fine"),
             Check::could_not_check("b", "unknown", "look"),
         ]);
-        assert_eq!(report.exit_code(), EXIT_COULD_NOT_CHECK);
+        assert_eq!(report.exit_code(false), EXIT_NOTHING_FAILED);
+        assert_eq!(report.exit_code(true), EXIT_COULD_NOT_CHECK);
     }
 
     #[test]
     fn an_empty_report_is_not_a_pass() {
-        assert_eq!(report(vec![]).exit_code(), EXIT_COULD_NOT_CHECK);
+        assert_eq!(report(vec![]).exit_code(false), EXIT_COULD_NOT_CHECK);
+        assert_eq!(report(vec![]).exit_code(true), EXIT_COULD_NOT_CHECK);
     }
 
     #[test]
@@ -231,23 +260,47 @@ mod tests {
 
     #[test]
     fn could_not_check_looks_different_from_a_pass() {
-        let text = report(vec![
+        let report = report(vec![
             Check::pass("first", "seen"),
             Check::could_not_check("second", "unknown", "look by hand"),
-        ])
-        .render();
-        let line = text.lines().find(|l| l.contains("second")).unwrap();
-        assert!(line.starts_with("COULD NOT CHECK"), "{line}");
-        assert!(text.contains("to do: look by hand"), "{text}");
+        ]);
+        for strict in [false, true] {
+            let text = report.render(strict);
+            let line = text.lines().find(|l| l.contains("second")).unwrap();
+            assert!(line.starts_with("COULD NOT CHECK"), "{line}");
+            assert!(text.contains("to do: look by hand"), "{text}");
+        }
+    }
+
+    #[test]
+    fn the_summary_lists_what_was_not_checked_even_when_exiting_zero() {
+        let report = report(vec![
+            Check::pass("first", "seen"),
+            Check::could_not_check("second", "unknown", "look by hand"),
+        ]);
+        let text = report.render(false);
         assert!(
-            text.contains("1 passed, 0 failed, 1 could not be checked. Exit code 7."),
+            text.contains("1 passed, 0 failed, 1 could not be checked. Exit code 0."),
             "{text}"
         );
+        assert!(text.contains("Not checked, so not passed: 1."), "{text}");
+        assert!(text.contains("  second: look by hand"), "{text}");
+        assert!(!text.contains("  first:"), "{text}");
+        assert!(text.contains("--strict"), "{text}");
+        let strict = report.render(true);
+        assert!(strict.contains("Exit code 7."), "{strict}");
+        assert!(strict.contains("  second: look by hand"), "{strict}");
+    }
+
+    #[test]
+    fn with_everything_checked_there_is_no_list() {
+        let text = report(vec![Check::pass("a", "fine")]).render(false);
+        assert!(!text.contains("Not checked"), "{text}");
     }
 
     #[test]
     fn render_says_what_the_run_did() {
-        let text = report(vec![Check::pass("a", "fine")]).render();
+        let text = report(vec![Check::pass("a", "fine")]).render(false);
         assert!(text.contains("What this run did: nothing"), "{text}");
     }
 
@@ -259,7 +312,7 @@ mod tests {
             detail: "bad\npass  forged\u{1b}[2J\u{202e}".to_owned(),
             action: Some("fix\r\nthis".to_owned()),
         };
-        let text = report(vec![check]).render();
+        let text = report(vec![check]).render(false);
         assert!(!text.contains('\u{1b}'), "{text}");
         assert!(!text.contains('\u{202e}'), "{text}");
         assert!(text.contains("bad?pass  forged?[2J?"), "{text}");

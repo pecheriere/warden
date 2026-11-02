@@ -8,7 +8,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use async_trait::async_trait;
-use warden_broker_proto::doctor::{Check, EXIT_COULD_NOT_CHECK, EXIT_FAILED, Report, Status};
+use warden_broker_proto::doctor::{
+    Check, EXIT_COULD_NOT_CHECK, EXIT_FAILED, EXIT_NOTHING_FAILED, Report, Status,
+};
 
 use super::{Environment, ListenerProbe, PasskeyProbe, PathFacts, examine, invalid_config_report};
 use crate::config::{Config, ConfigError};
@@ -171,7 +173,8 @@ async fn a_healthy_setup_passes_all_but_what_cannot_be_seen() {
             "tailscale.serve"
         ]
     );
-    assert_eq!(report.exit_code(), EXIT_COULD_NOT_CHECK);
+    assert_eq!(report.exit_code(false), EXIT_NOTHING_FAILED);
+    assert_eq!(report.exit_code(true), EXIT_COULD_NOT_CHECK);
     every_check_not_passing_says_what_to_do(&report);
 }
 
@@ -189,7 +192,8 @@ fn an_invalid_configuration_names_the_setting_and_its_documentation() {
             .contains("docs/configuration.md#server-environment-variables"),
         "{config:?}"
     );
-    assert_eq!(report.exit_code(), EXIT_FAILED);
+    assert_eq!(report.exit_code(false), EXIT_FAILED);
+    assert_eq!(report.exit_code(true), EXIT_FAILED);
     every_check_not_passing_says_what_to_do(&report);
     // Nothing that needs the configuration looks like it ran.
     for check in &report.checks[1..] {
@@ -341,7 +345,8 @@ async fn a_broken_fallback_is_not_hidden_by_a_working_primary() {
     assert_eq!(status(&report, "notify.homeassistant"), Status::Pass);
     assert_eq!(status(&report, "notify.ntfy"), Status::Fail);
     assert!(check(&report, "notify.ntfy").detail.contains("403"));
-    assert_eq!(report.exit_code(), EXIT_FAILED);
+    assert_eq!(report.exit_code(false), EXIT_FAILED);
+    assert_eq!(report.exit_code(true), EXIT_FAILED);
 }
 
 #[tokio::test]
@@ -528,7 +533,7 @@ async fn no_configured_secret_survives_into_the_report() {
         listener: ListenerProbe::Inconclusive(echo.clone()),
         ..Fake::healthy()
     };
-    let text = examine(&config(&[]), &fake, false).await.render();
+    let text = examine(&config(&[]), &fake, false).await.render(false);
     for secret in [TOKEN, WEBHOOK_ID, NTFY_TOKEN] {
         assert!(!text.contains(secret), "{text}");
     }

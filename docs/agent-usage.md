@@ -422,7 +422,7 @@ is reported once on stderr and never stops the command.
 | 4 | The grant was revoked: reported by `warden request`, or by `warden http` when the broker says the grant it used was revoked. `warden http` then removes the stale local record; request access again. |
 | 5 | `warden ssh` or `warden http` found no active grant (for `warden http`, none that covers the method and path; the message gives the `warden request api <secret> --methods <METHOD> …` command to run). |
 | 6 | The request was cancelled while `warden request` waited for it (`warden request cancel` from another terminal). |
-| 7 | `warden doctor` found no failure, but could not check everything: see [Checking an agent machine](configuration.md#checking-an-agent-machine). It exits 1 when a check failed. |
+| 7 | `warden doctor --strict` found no failure, but could not check everything: see [Checking an agent machine](configuration.md#checking-an-agent-machine). Without `--strict` it exits 0 and lists those items. It exits 1 when a check failed. |
 | 22 | `warden http --fail` got an upstream status of 400 or more. The body is still written to stdout. |
 | 130 | Interrupted with Ctrl-C while `warden request` waited; the pending request was cancelled (or, if the broker did not answer in time or Ctrl-C was pressed again, left to expire). Also Ctrl-C while an approved grant was being installed; the message names the grant to revoke. |
 

@@ -44,13 +44,16 @@ enum Command {
     #[command(subcommand)]
     Audit(AuditCommand),
     /// Check the configuration and say what to fix. Read-only unless
-    /// --send-test-notification is given. Exits 0 when every check passed, 1
-    /// when one failed, 7 when none failed but one could not be checked.
+    /// --send-test-notification is given. Exits 1 when a check failed, otherwise
+    /// 0, listing what could not be checked and how to check it by hand.
     Doctor {
         /// Send a test notification through every channel: it reaches the
         /// owner's phone.
         #[arg(long)]
         send_test_notification: bool,
+        /// Exit 7 when nothing failed but some check could not run.
+        #[arg(long)]
+        strict: bool,
     },
     /// Print a one-time code (valid 10 minutes) for enrolling a passkey.
     Enroll,
@@ -141,10 +144,11 @@ async fn main() -> Result<ExitCode> {
         }
         Command::Doctor {
             send_test_notification,
+            strict,
         } => {
             let report = doctor::live::report(send_test_notification).await;
-            print!("{}", report.render());
-            return Ok(ExitCode::from(report.exit_code()));
+            print!("{}", report.render(strict));
+            return Ok(ExitCode::from(report.exit_code(strict)));
         }
         Command::Healthcheck => {
             let listen = health::api_listen(|var| std::env::var(var).ok())?;

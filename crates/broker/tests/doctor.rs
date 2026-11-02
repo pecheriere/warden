@@ -137,13 +137,15 @@ fn content(dir: &Path, name: &str) -> Vec<u8> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_working_setup_exits_7_for_what_only_the_owner_can_check() {
+async fn a_working_setup_exits_0_and_lists_what_only_the_owner_can_check() {
     let deployment = Deployment::new().await;
     deployment.enroll_a_passkey().await;
     let output = deployment.command().arg("doctor").output().unwrap();
     let text = stdout(&output);
-    assert_eq!(output.status.code(), Some(7), "{text}");
+    assert_eq!(output.status.code(), Some(0), "{text}");
     assert!(!text.contains("FAIL"), "{text}");
+    assert!(text.contains("Not checked, so not passed: 4."), "{text}");
+    assert!(text.contains("\n  tailscale.funnel-off: "), "{text}");
     for check in [
         "config",
         "connect.vault",
@@ -160,6 +162,35 @@ async fn a_working_setup_exits_7_for_what_only_the_owner_can_check() {
         );
     }
     assert!(!text.contains(TOKEN), "{text}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn strict_exits_7_when_nothing_failed_but_something_was_not_checked() {
+    let deployment = Deployment::new().await;
+    deployment.enroll_a_passkey().await;
+    let output = deployment
+        .command()
+        .args(["doctor", "--strict"])
+        .output()
+        .unwrap();
+    let text = stdout(&output);
+    assert_eq!(output.status.code(), Some(7), "{text}");
+    assert!(!text.contains("FAIL"), "{text}");
+    assert!(text.contains("Exit code 7."), "{text}");
+    assert!(text.contains("\n  tailscale.funnel-off: "), "{text}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failure_exits_1_with_or_without_strict() {
+    // No passkey is enrolled.
+    let deployment = Deployment::new().await;
+    for args in [&["doctor"][..], &["doctor", "--strict"][..]] {
+        let output = deployment.command().args(args).output().unwrap();
+        let text = stdout(&output);
+        assert_eq!(output.status.code(), Some(1), "{args:?}: {text}");
+        assert!(line_of(&text, "passkey").starts_with("FAIL"), "{text}");
+        assert!(text.contains("Exit code 1."), "{text}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

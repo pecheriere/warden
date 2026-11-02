@@ -299,7 +299,9 @@ mod tests {
     use anyhow::{Context as _, anyhow};
     use url::Url;
     use warden_broker_proto::InfoResponse;
-    use warden_broker_proto::doctor::{Check, EXIT_COULD_NOT_CHECK, EXIT_FAILED, Report, Status};
+    use warden_broker_proto::doctor::{
+        Check, EXIT_COULD_NOT_CHECK, EXIT_FAILED, EXIT_NOTHING_FAILED, Report, Status,
+    };
     use warden_broker_proto::signing::{Audience, PROTOCOL};
     use zeroize::Zeroizing;
 
@@ -396,7 +398,8 @@ mod tests {
             };
             assert_eq!(c.status, expected, "{c:?}");
         }
-        assert_eq!(report.exit_code(), EXIT_COULD_NOT_CHECK);
+        assert_eq!(report.exit_code(false), EXIT_NOTHING_FAILED);
+        assert_eq!(report.exit_code(true), EXIT_COULD_NOT_CHECK);
         assert!(report.effects.contains("changed nothing"), "{report:?}");
     }
 
@@ -411,7 +414,8 @@ mod tests {
         for c in &report.checks[1..] {
             assert_eq!(c.status, Status::CouldNotCheck, "{c:?}");
         }
-        assert_eq!(report.exit_code(), EXIT_FAILED);
+        assert_eq!(report.exit_code(false), EXIT_FAILED);
+        assert_eq!(report.exit_code(true), EXIT_FAILED);
     }
 
     #[tokio::test]

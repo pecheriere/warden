@@ -785,8 +785,9 @@ docker compose exec warden /warden-server doctor
 docker compose exec warden /warden-server doctor --send-test-notification
 ```
 
-It exits 7 on a working deployment, because some checks can only be done by
-hand. On an agent machine,
+It exits 1 when a check failed, and otherwise 0. Exit 0 does not mean
+everything was checked: do the items its summary lists by hand. With `--strict`
+those items make it exit 7. On an agent machine,
 [`warden doctor`](configuration.md#checking-an-agent-machine) does the same.
 
 1. **Enroll the owner's passkey**, on the phone:

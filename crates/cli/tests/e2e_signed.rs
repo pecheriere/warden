@@ -405,9 +405,10 @@ fn doctor_line<'a>(report: &'a str, check: &str) -> &'a str {
         .unwrap_or_else(|| panic!("no line for {check} in {report}"))
 }
 
-/// `warden doctor` on this machine: exit 1 before login, exit 7 for only the
-/// version once logged in (the broker does not publish it), exit 1 when the
-/// key's agent is gone. It writes nothing.
+/// `warden doctor` on this machine: exit 1 before login; once logged in, exit
+/// 0 listing the version (the broker does not publish it), or 7 with
+/// `--strict`; exit 1 when the key's agent is gone, strict or not. It writes
+/// nothing.
 #[tokio::test(flavor = "multi_thread")]
 async fn e2e_doctor_reports_and_changes_nothing() {
     let broker = TestBroker::new().await;
@@ -431,7 +432,12 @@ async fn e2e_doctor_reports_and_changes_nothing() {
 
     let output = cli.run(&["doctor"]);
     let report = text(&output.stdout);
-    assert_eq!(output.status.code(), Some(7), "{report}");
+    assert_eq!(output.status.code(), Some(0), "{report}");
+    assert!(
+        report.contains("Not checked, so not passed: 1."),
+        "{report}"
+    );
+    assert!(report.contains("\n  version: "), "{report}");
     for check in [
         "config",
         "server.reachable",
@@ -448,22 +454,29 @@ async fn e2e_doctor_reports_and_changes_nothing() {
     );
     assert_eq!(cli.config(), config);
 
-    let output = cli
-        .command()
-        .env("SSH_AUTH_SOCK", cli.root.path().join("no-such-agent.sock"))
-        .arg("doctor")
-        .output()
-        .unwrap();
+    let output = cli.run(&["doctor", "--strict"]);
     let report = text(&output.stdout);
-    assert_eq!(output.status.code(), Some(1), "{report}");
-    assert!(
-        doctor_line(&report, "ssh-agent.key").starts_with("FAIL"),
-        "{report}"
-    );
-    assert!(
-        doctor_line(&report, "broker.accepts-agent").starts_with("COULD NOT CHECK"),
-        "{report}"
-    );
+    assert_eq!(output.status.code(), Some(7), "{report}");
+    assert!(report.contains("\n  version: "), "{report}");
+
+    for args in [&["doctor"][..], &["doctor", "--strict"][..]] {
+        let output = cli
+            .command()
+            .env("SSH_AUTH_SOCK", cli.root.path().join("no-such-agent.sock"))
+            .args(args)
+            .output()
+            .unwrap();
+        let report = text(&output.stdout);
+        assert_eq!(output.status.code(), Some(1), "{args:?}: {report}");
+        assert!(
+            doctor_line(&report, "ssh-agent.key").starts_with("FAIL"),
+            "{report}"
+        );
+        assert!(
+            doctor_line(&report, "broker.accepts-agent").starts_with("COULD NOT CHECK"),
+            "{report}"
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

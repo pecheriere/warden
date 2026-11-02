@@ -58,7 +58,7 @@ environment as the server. The image's default command is `serve`.
 | Command | What it does | Needs |
 |---------|--------------|-------|
 | `serve` | Runs the agent API, the approval UI and, when configured, the SSH relay. | All of the above. |
-| `doctor [--send-test-notification]` | Checks the configuration and says what to fix. See [Checking a setup](#checking-a-setup). | The same environment as `serve`. |
+| `doctor [--send-test-notification] [--strict]` | Checks the configuration and says what to fix. See [Checking a setup](#checking-a-setup). | The same environment as `serve`. |
 | `enroll` | Prints a one-time code (single use, valid 10 minutes) and the URL of the enrollment page, where the owner creates a passkey. | `WARDEN_DB_PATH`, `WARDEN_AUDIT_PATH`, `WARDEN_PUBLIC_URL` |
 | `passkey list` | Lists enrolled passkeys: id, label, creation time. | `WARDEN_DB_PATH` |
 | `passkey remove <id>` | Removes a passkey. | `WARDEN_DB_PATH`, `WARDEN_AUDIT_PATH` |
@@ -86,14 +86,16 @@ docker compose exec warden /warden-server doctor
 
 | Exit code | Meaning |
 |-----------|---------|
-| 0 | Every check passed. |
+| 0 | No check failed. Some may not have run: the report lists them. |
 | 1 | At least one check failed. |
 | 2 | Wrong arguments. |
-| 7 | No check failed, but at least one could not be checked. |
+| 7 | With `--strict` only: no check failed, but at least one could not be checked. |
 
-warden cannot see everything, so **a working deployment exits 7, not 0**: read
-the `COULD NOT CHECK` lines and do each by hand. A check that could not run
-never counts as passed.
+warden cannot see everything, so **exit 0 does not mean everything was
+checked**. A check that could not run never counts as passed: it is labelled
+`COULD NOT CHECK`, and the summary lists each one with what to do by hand. Do
+those. Because some of them can never run from inside the container, a working
+deployment exits 7 with `--strict`.
 
 | Check | Passes when | Reports `COULD NOT CHECK` when |
 |-------|-------------|--------------------------------|
@@ -174,7 +176,7 @@ cargo install --locked --git https://github.com/pecheriere/warden --tag v0.8.1 w
 | `warden request cancel <id>` | Withdraws one of this agent's pending requests. |
 | `warden ssh <target> [-- <command>…]` | Runs `ssh` through the active grant for the target that stays valid longest. |
 | `warden http <secret> <METHOD> <url> [-H 'Name: value']… [-d <body> \| --data-file <path\|->] [-i] [--fail]` | Makes one HTTPS call through an `api` grant. |
-| `warden doctor` | Checks this machine's setup and says what to fix. See [Checking an agent machine](#checking-an-agent-machine). |
+| `warden doctor [--strict]` | Checks this machine's setup and says what to fix. See [Checking an agent machine](#checking-an-agent-machine). |
 | `warden status` | Lists the grants on this machine and the broker's view of this agent's grants. |
 | `warden revoke <grant>` | Revokes a grant on the broker and stops its local `ssh-agent`. |
 
@@ -183,9 +185,10 @@ A window is `15m`, `30m`, `1h` or `4h`. Exit codes are in
 
 ### Checking an agent machine
 
-`warden doctor` reports each check as `pass`, `FAIL` or `COULD NOT CHECK`. It
-exits 0 when every check passed, 1 when one failed, 2 for wrong arguments, and
-7 when none failed but one could not be checked.
+`warden doctor` reports each check as `pass`, `FAIL` or `COULD NOT CHECK`, and
+the summary lists what could not be checked with what to do by hand. It exits 1
+when a check failed, 2 for wrong arguments, and otherwise 0. With `--strict` it
+exits 7 when nothing failed but a check could not run.
 
 | Check | Passes when | Reports `COULD NOT CHECK` when |
 |-------|-------------|--------------------------------|
@@ -197,7 +200,7 @@ exits 0 when every check passed, 1 when one failed, 2 for wrong arguments, and
 | `broker.accepts-agent` | The broker accepts one authenticated `GET /v1/grants`. A 4xx answer is a failure. | The credential is not available, or the broker is unreachable or answers 5xx. |
 | `version` | Never. | Always: the broker does not publish its version. Doctor prints the CLI's, to compare with `warden-server --version`. |
 
-Because of `version`, **a working machine exits 7, not 0**.
+Because of `version`, a working machine exits 0, and 7 with `--strict`.
 
 It changes nothing on the machine: unlike every other command, it does not even
 clean up ended grants first. The broker handles its `GET /v1/grants` like any
