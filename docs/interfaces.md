@@ -58,6 +58,7 @@ stable API for other clients. The code is in
 | `POST /approve/{token}/finish` | `{"ceremony","credential"}` | Verifies the assertion, and makes the grant. |
 | `POST /approve/{token}/deny` | `{}` | Denies the request. Takes no passkey. |
 | `GET /pending` | | The pending requests, each with Approve… and Deny buttons. |
+| `GET /pending/live` | | The pending requests' ids and seconds left, as JSON, for the page to refresh. Changes nothing. |
 | `POST /pending/{id}/open` | `{}` | Gives a pending request a new approval link, returned as `{"link"}`; the old link stops working. Approves nothing. 404 if the request is no longer pending. |
 | `POST /pending/{id}/deny` | `{}` | Denies a pending request, as `POST /approve/{token}/deny` does. Takes no passkey. 404 if the request is no longer pending. |
 | `GET /grants` | | Active grants, with a Revoke button and live activity. |
@@ -70,8 +71,9 @@ stable API for other clients. The code is in
 | `GET /static/warden.js`, `GET /static/warden.css` | | The only script and stylesheet. |
 | Any other path | | A 404 page. |
 
-A ceremony must be finished within 120 seconds and works once. At most 64 can be
-open at a time (429).
+A ceremony must be finished within 120 seconds and works once. A request keeps its 4
+newest, and opening it from the pending page drops them all. Enrollment has room for
+8 at a time, and approvals as a whole for 1024 (429 beyond those).
 
 ## SSH relay
 

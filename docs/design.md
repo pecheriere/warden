@@ -666,6 +666,21 @@ owner's page. Revoking an API grant refuses its new calls and stops those in
 flight; they are no longer listed once the grant has ended. Times are
 rendered as UTC and shown in the viewer's local time by the script.
 
+### Pending requests and live refresh
+
+The Pending page lists a card per pending request. `warden.js` refreshes it every 5 s
+from `GET /pending/live` (owner only, `Cache-Control: no-store`), under the same rules
+as the grants page: while the page is visible, one request at a time, stopping on a
+401 or 403, and keeping what is shown if a request fails. That route reads the
+database only, so it changes nothing and costs the secret backend nothing. A request
+missing from the answer loses its card, and the "in N min" of each card follows the
+answer and the clock, dropping the card when it reaches zero. A request without a card,
+or a list that has become empty, makes the script fetch `/pending` itself and replace
+`main` with what it gets, so all markup comes from the server. It keeps the status
+line, so what a denial said survives, including onto the empty state. The empty state
+polls as well. Without script, the page is what the server rendered. No refresh ever
+replaces a token: only pressing Approve… does.
+
 ### Screenshots
 
 The unit test `every_page_renders_self_contained` renders every approval page
@@ -680,10 +695,13 @@ is on screen without scrolling) and land in `<out-dir>/warden-pages/shots`
 outside the repository, as screenshots are never committed.
 
 `scripts/check-grants-live.py <out-dir>` checks the live refresh of the
-grants page the same way: it serves the `grants-live` fixture with a mocked
-`GET /grants/live` and asserts, in headless Chrome on virtual time, that a
-401 or 403 stops polling, that a grant missing from the answer loses its
-card, and that a grant with no card reloads the page exactly once.
+grants and pending pages the same way: it serves their fixtures with mocked
+answers and asserts, in headless Chrome on virtual time, that a 401 or 403
+stops polling, that a grant or request missing from the answer loses its
+card, that a grant with no card reloads the page exactly once, that a new
+request appears without a reload, also from the empty state, that the time
+left follows the answer, that polling posts nothing, and that what a denial
+said stays on screen when the last card goes.
 
 ## 10. Policy: 1Password as the source of truth
 

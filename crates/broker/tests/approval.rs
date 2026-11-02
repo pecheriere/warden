@@ -1040,6 +1040,7 @@ fn every_route(token: &str) -> Vec<(&'static str, String)> {
     let request = Id::random();
     vec![
         ("GET", "/pending".to_owned()),
+        ("GET", "/pending/live".to_owned()),
         ("POST", format!("/pending/{}/open", request.as_str())),
         ("POST", format!("/pending/{}/deny", request.as_str())),
         ("GET", format!("/approve/{token}")),

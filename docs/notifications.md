@@ -19,14 +19,15 @@ only reachable over the tailnet.
 A request stays pending for 10 minutes whether or not the notification was seen,
 and an agent asking again gets the same request back with no new notification. So
 open the **Pending** page of the approval UI (`/pending`) instead. It lists every
-pending request, with the same details to judge it by.
+pending request, with the same details to judge it by, and it keeps itself current
+while it is open, so you can wait on it.
 
 - **Deny** decides there and then.
 - **Approve…** opens the request's approval page, where you choose the window and
   use your passkey as usual. warden stores only a hash of each link, so it cannot
   show the old one again: it makes a new one, and **the link in the notification
-  stops working**, as does a page still open on it. They say the request is no
-  longer pending on that link, and point back to the list.
+  stops working**, as does a page still open on it. They say the link has nothing
+  to approve, and point back to the list.
 
 Opening a request twice leaves the newest link as the only valid one. Replacing a
 link is written to the audit log as `approval_link_replaced`, without the link. It

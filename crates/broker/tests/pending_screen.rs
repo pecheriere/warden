@@ -10,9 +10,15 @@ use axum::http::{Method, Request, StatusCode};
 use serde_json::{Value, json};
 use sqlx::Row as _;
 use ssh_key::Algorithm;
-use warden_broker::requests::sha256_hex;
+use warden_broker::approval::passkeys::{ApprovalBinding, PasskeyError};
+use warden_broker::audit::AuditEvent;
+use warden_broker::requests::Clock as _;
+use warden_broker::requests::{RequestError, sha256_hex};
 use warden_broker::testkit::{TEST_ORIGIN, TEST_OWNER, TestBroker, TestResponse};
-use warden_broker_proto::{AgentName, CreatedResponse, Id, RequestStatus, Window};
+use warden_broker_proto::{
+    AgentName, CreatedResponse, Fingerprint, GrantAccess, GrantView, Id, RequestStatus, SshGrant,
+    UnixUser, Window,
+};
 use webauthn_rs::prelude::{Passkey, RequestChallengeResponse};
 
 fn bot() -> AgentName {
@@ -109,6 +115,7 @@ async fn only_the_owner_reaches_the_screen() {
     for login in [None, Some("mallory@example.com"), Some("OWNER@example.com")] {
         for (method, path) in [
             (Method::GET, "/pending".to_owned()),
+            (Method::GET, "/pending/live".to_owned()),
             (Method::POST, format!("/pending/{id}/open")),
             (Method::POST, format!("/pending/{id}/deny")),
         ] {
@@ -223,7 +230,11 @@ async fn lists_what_is_pending_with_enough_to_judge_it() {
     let empty = broker.get("/pending").await;
     assert_eq!(empty.status, StatusCode::OK, "{}", empty.body);
     assert!(empty.body.contains("Nothing waiting"), "{}", empty.body);
-    assert!(!empty.body.contains("warden.js"), "{}", empty.body);
+    assert!(
+        empty.body.contains(r#"data-pending="empty""#),
+        "{}",
+        empty.body
+    );
 
     let goal = "fix <script>alert(1)</script> now";
     let (first, _) = broker
@@ -248,7 +259,7 @@ async fn lists_what_is_pending_with_enough_to_judge_it() {
         "ssh alice@pi (",
         "Asks for 30 min",
         "Asks for 1 h",
-        "(in 10 min)",
+        r#"<span class="remaining" data-remaining="600">in 10 min</span>"#,
         r#"<a href="/pending" aria-current="page">"#,
     ] {
         assert!(html.contains(needle), "{needle} missing from {html}");
@@ -311,6 +322,77 @@ async fn an_unreadable_stored_request_fails_the_page_closed() {
     let begin = broker.begin_approval_for(&token, Window::M15, "any").await;
     assert_eq!(begin.status, StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(grant_count(&broker).await, 0);
+}
+
+#[tokio::test]
+async fn refreshing_the_list_changes_nothing_and_shows_no_token() {
+    let (broker, created, token) = pending().await;
+    // Notified is the last thing a request writes.
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while !broker.audit_types().iter().any(|t| t == "notified") {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the request was notified");
+    broker.clock.advance(30);
+    let hash = stored_hash(&broker, &created.id).await;
+    let log = audit_text(&broker);
+
+    for path in ["/pending", "/pending/live", "/pending", "/pending/live"] {
+        let resp = broker.get(path).await;
+        assert_eq!(resp.status, StatusCode::OK, "{path}: {}", resp.body);
+        assert_eq!(resp.header("cache-control"), "no-store", "{path}");
+        assert!(!resp.body.contains(&token), "{path}: {}", resp.body);
+        assert!(!resp.body.contains(&hash), "{path}: {}", resp.body);
+    }
+    assert_eq!(stored_hash(&broker, &created.id).await, hash);
+    assert_eq!(audit_text(&broker), log, "reading writes nothing");
+    assert_eq!(status(&broker, &created.id).await, RequestStatus::Pending);
+    let page = broker.get(&format!("/approve/{token}")).await;
+    assert_eq!(page.status, StatusCode::OK, "the link still works");
+
+    let live = broker.get("/pending/live").await;
+    assert_eq!(
+        live.json(),
+        json!({"requests": [{"id": created.id, "remaining": 570}]})
+    );
+
+    // New requests appear in the answer, and ended ones leave it.
+    broker.add_agent("bot-2").await;
+    let (second, _) = broker
+        .create_request("bot-2", TestBroker::pi_request("second", Window::M15))
+        .await;
+    let ids = |live: &Value| -> Vec<String> {
+        live["requests"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["id"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let live = broker.get("/pending/live").await.json();
+    assert_eq!(
+        ids(&live),
+        [created.id.to_string(), second.id.to_string()],
+        "the page's order"
+    );
+    assert_eq!(deny(&broker, &created.id).await.status, StatusCode::OK);
+    let live = broker.get("/pending/live").await.json();
+    assert_eq!(ids(&live), [second.id.to_string()]);
+    broker.clock.advance(600);
+    let live = broker.get("/pending/live").await.json();
+    assert!(ids(&live).is_empty(), "{live}");
+}
+
+#[tokio::test]
+async fn refreshing_the_list_reads_no_policy() {
+    let (broker, created, _) = pending().await;
+    // With the backend out, a refresh that read it would have to say so.
+    broker.backend.set_target_outage(Some("connect refused"));
+    let live = broker.get("/pending/live").await;
+    assert_eq!(live.status, StatusCode::OK, "{}", live.body);
+    assert_eq!(live.json()["requests"][0]["id"], json!(created.id));
 }
 
 // --- replacing the link -----------------------------------------------------
@@ -382,28 +464,43 @@ async fn opening_replaces_the_link_and_the_old_one_dies() {
 async fn a_page_open_on_the_old_link_fails_safely() {
     let (broker, created, old) = pending().await;
     let mut auth = broker.enroll_soft_passkey().await;
-    // The old page began its passkey prompt before the link was replaced.
+    // The old page began its passkey prompt before the link was replaced. Opening
+    // drops the prompt, so tapping again says why nothing can happen.
     let begin = broker.begin_approval(&old, Window::H1).await;
     let (ceremony, credential) = TestBroker::sign(&mut auth, &begin);
     let new = opened_token(&broker, &created.id).await;
-
     let finish = broker.finish_approval(&old, &ceremony, &credential).await;
+    assert_eq!(finish.status, StatusCode::GONE, "{}", finish.body);
+    let again = broker.begin_approval_for(&old, Window::H1, "any").await;
+    assert_eq!(again.status, StatusCode::NOT_FOUND, "{}", again.body);
+    assert!(again.body.contains("newer link"), "{}", again.body);
+    assert_eq!(grant_count(&broker).await, 0);
+
+    // A prompt that outlives the replacement (it began as the link was being
+    // replaced) is refused as such, not as a cloned passkey.
+    let begin = broker.begin_approval(&new, Window::H1).await;
+    let (ceremony, credential) = TestBroker::sign(&mut auth, &begin);
+    let next = replaced_without_dropping_ceremonies(&broker, &created.id).await;
+    let finish = broker.finish_approval(&new, &ceremony, &credential).await;
     assert_eq!(finish.status, StatusCode::CONFLICT, "{}", finish.body);
     assert!(finish.body.contains("newer link"), "{}", finish.body);
-    assert_eq!(grant_count(&broker).await, 0);
+    assert!(
+        !finish.body.contains("open the request"),
+        "does not claim it is still waiting: {}",
+        finish.body
+    );
     assert_eq!(status(&broker, &created.id).await, RequestStatus::Pending);
     assert!(
         !broker
             .audit_types()
             .contains(&"passkey_counter_regressed".to_owned()),
-        "refused as replaced, not as a cloned passkey"
     );
 
-    // A prompt begun on the old link does not carry over to the new one, even
-    // with a signature made before the replacement.
-    let begin = broker.begin_approval(&new, Window::H1).await;
+    // It does not carry over to the new link either, even with a signature made
+    // before the replacement.
+    let begin = broker.begin_approval(&next, Window::H1).await;
     let (ceremony, credential) = TestBroker::sign(&mut auth, &begin);
-    let newest = opened_token(&broker, &created.id).await;
+    let newest = replaced_without_dropping_ceremonies(&broker, &created.id).await;
     let finish = broker
         .finish_approval(&newest, &ceremony, &credential)
         .await;
@@ -419,6 +516,98 @@ async fn a_page_open_on_the_old_link_fails_safely() {
         RequestStatus::Approved(_)
     ));
     assert_eq!(grant_count(&broker).await, 1);
+}
+
+/// The store's replacement alone, as when a `begin` on the old link lands just after
+/// the route dropped that link's ceremonies. Returns the new token.
+async fn replaced_without_dropping_ceremonies(broker: &TestBroker, id: &Id) -> String {
+    let link = broker.state().requests.replace_link(id).await.unwrap();
+    link.path().rsplit('/').next().unwrap().to_owned()
+}
+
+fn test_grant(now: i64) -> GrantView {
+    GrantView {
+        grant_id: Id::random(),
+        not_before: now,
+        not_after: now + 900,
+        access: GrantAccess::Ssh(SshGrant {
+            certificate: "ssh-ed25519-cert-v01@openssh.com AAAA".to_owned(),
+            host: "192.0.2.10".to_owned(),
+            port: 22,
+            user: UnixUser::try_from("alice".to_owned()).unwrap(),
+            host_keys: vec![],
+        }),
+    }
+}
+
+/// `mark_approved` for `token`, held with its entry being written: past its check
+/// of the token, not yet applied.
+async fn approval_past_its_check(
+    broker: &TestBroker,
+    token: &str,
+) -> (
+    warden_broker::audit::AppendStall,
+    tokio::task::JoinHandle<Result<(), RequestError>>,
+) {
+    let stall = broker
+        .state()
+        .audit
+        .stall_appends(|event| matches!(event, AuditEvent::Approved { .. }));
+    let approving = {
+        let requests = broker.state().requests.clone();
+        let (token, grant) = (token.to_owned(), test_grant(broker.clock.now()));
+        tokio::spawn(async move {
+            requests
+                .mark_approved(&token, Window::M15, grant, "passkey")
+                .await
+        })
+    };
+    stall.until_holding(1).await;
+    (stall, approving)
+}
+
+#[tokio::test]
+async fn an_approval_past_its_check_does_not_apply_on_a_replaced_token() {
+    let (broker, created, old) = pending().await;
+    let (stall, approving) = approval_past_its_check(&broker, &old).await;
+    // Only the database's own check is left to catch this. The replacement route
+    // cannot land here, as the next test shows, so write the hash directly.
+    sqlx::query("UPDATE requests SET approval_token_hash = ? WHERE id = ?")
+        .bind(sha256_hex("a newer token"))
+        .bind(created.id.as_str())
+        .execute(&broker.state().pool)
+        .await
+        .unwrap();
+    drop(stall);
+    let refused = approving.await.unwrap();
+    assert!(
+        matches!(refused, Err(RequestError::AlreadyDecided)),
+        "{refused:?}"
+    );
+    assert_eq!(grant_count(&broker).await, 0);
+    assert_eq!(status(&broker, &created.id).await, RequestStatus::Pending);
+    assert!(audit_text(&broker).contains("did not take effect"));
+}
+
+#[tokio::test]
+async fn a_replacement_waits_for_an_approval_past_its_check() {
+    let (broker, created, old) = pending().await;
+    let (stall, approving) = approval_past_its_check(&broker, &old).await;
+    let replacing = {
+        let requests = broker.state().requests.clone();
+        let id = created.id.clone();
+        tokio::spawn(async move { requests.replace_link(&id).await })
+    };
+    drop(stall);
+    approving.await.unwrap().unwrap();
+    // Whichever way the two were scheduled, the approval stands and no entry says
+    // its link was replaced under it.
+    assert!(matches!(
+        replacing.await.unwrap(),
+        Err(RequestError::NotFound)
+    ));
+    assert_eq!(grant_count(&broker).await, 1);
+    assert_eq!(replacements(&broker), 0);
 }
 
 #[tokio::test]
@@ -459,6 +648,144 @@ async fn no_link_is_replaced_without_its_audit_entry() {
     assert_eq!(stored_hash(&broker, &created.id).await, hash);
     let page = broker.get(&format!("/approve/{old}")).await;
     assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+}
+
+// --- the ceremony table -----------------------------------------------------
+
+#[tokio::test]
+async fn one_request_cannot_crowd_out_other_approvals_or_enrollment() {
+    let (broker, created, _) = pending().await;
+    let mut auth = broker.enroll_soft_passkey().await;
+    broker.add_agent("bot-2").await;
+    let (_, other_token) = broker
+        .create_request("bot-2", TestBroker::pi_request("other", Window::M15))
+        .await;
+    let other_begin = broker.begin_approval(&other_token, Window::M15).await;
+    let (other_ceremony, other_credential) = TestBroker::sign(&mut auth, &other_begin);
+
+    // Far more than the table once held, on one request, opened again each time.
+    let mut token = String::new();
+    for _ in 0..40 {
+        token = opened_token(&broker, &created.id).await;
+        for _ in 0..3 {
+            let begin = broker.begin_approval(&token, Window::M15).await;
+            assert_eq!(begin.status, StatusCode::OK, "{}", begin.body);
+        }
+    }
+
+    // The other request's prompt is untouched, and new ones and enrollment can begin.
+    let code = broker.enrollment_code().await;
+    let enroll = broker
+        .post_json("/enroll/begin", &json!({"code": code, "label": "laptop"}))
+        .await;
+    assert_eq!(enroll.status, StatusCode::OK, "{}", enroll.body);
+    let finish = broker
+        .finish_approval(&other_token, &other_ceremony, &other_credential)
+        .await;
+    assert_eq!(finish.status, StatusCode::OK, "{}", finish.body);
+    assert_eq!(grant_count(&broker).await, 1);
+
+    // The same request itself is never locked out: its newest prompt works.
+    let approved = broker.approve_with(&mut auth, &token, Window::M15).await;
+    assert_eq!(approved.status, StatusCode::OK, "{}", approved.body);
+}
+
+#[tokio::test]
+async fn a_request_keeps_only_its_newest_ceremonies() {
+    let (broker, created, token) = pending().await;
+    let mut auth = broker.enroll_soft_passkey().await;
+    let first = broker.begin_approval(&token, Window::M15).await;
+    let (first_ceremony, first_credential) = TestBroker::sign(&mut auth, &first);
+    // Three more fit next to it, whichever link they began on.
+    let mut last = None;
+    for _ in 0..3 {
+        last = Some(broker.begin_approval(&token, Window::M15).await);
+    }
+    let (held_ceremony, held_credential) = TestBroker::sign(&mut auth, &last.unwrap());
+    // One more drops the oldest, and only that one.
+    let newest = broker.begin_approval(&token, Window::M15).await;
+    assert_eq!(newest.status, StatusCode::OK, "{}", newest.body);
+    let dropped = broker
+        .finish_approval(&token, &first_ceremony, &first_credential)
+        .await;
+    assert_eq!(dropped.status, StatusCode::GONE, "{}", dropped.body);
+    let finish = broker
+        .finish_approval(&token, &held_ceremony, &held_credential)
+        .await;
+    assert_eq!(finish.status, StatusCode::OK, "{}", finish.body);
+    assert!(matches!(
+        status(&broker, &created.id).await,
+        RequestStatus::Approved(_)
+    ));
+}
+
+#[tokio::test]
+async fn many_enrollments_cannot_crowd_out_approvals() {
+    let (broker, created, token) = pending().await;
+    let mut auth = broker.enroll_soft_passkey().await;
+    // Begun and never finished, until the table refuses another.
+    let mut refused = None;
+    for _ in 0..20 {
+        let code = broker.enrollment_code().await;
+        let begin = broker
+            .post_json("/enroll/begin", &json!({"code": code, "label": "laptop"}))
+            .await;
+        if begin.status != StatusCode::OK {
+            refused = Some((begin, code));
+            break;
+        }
+    }
+    let (begin, code) = refused.expect("enrollment ceremonies are limited");
+    assert_eq!(
+        begin.status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "{}",
+        begin.body
+    );
+
+    let approved = broker.approve_with(&mut auth, &token, Window::M15).await;
+    assert_eq!(approved.status, StatusCode::OK, "{}", approved.body);
+    assert!(matches!(
+        status(&broker, &created.id).await,
+        RequestStatus::Approved(_)
+    ));
+
+    // The refusal did not spend the code: it works when a slot is free again.
+    broker.clock.advance(121);
+    let again = broker
+        .post_json("/enroll/begin", &json!({"code": code, "label": "laptop"}))
+        .await;
+    assert_eq!(again.status, StatusCode::OK, "{}", again.body);
+}
+
+#[tokio::test]
+async fn approval_ceremonies_as_a_whole_are_bounded_without_touching_enrollment() {
+    let broker = TestBroker::new().await;
+    broker.enroll_soft_passkey().await;
+    let binding = || ApprovalBinding {
+        request_id: Id::random(),
+        token_hash: "not a real hash".to_owned(),
+        window: Window::M15,
+        fingerprint: Fingerprint::try_from("abcd-ef01-2345".to_owned()).unwrap(),
+        destination_digest: "not a real digest".to_owned(),
+        request_expires_at: broker.clock.now() + 600,
+    };
+    let passkeys = &broker.state().passkeys;
+    for _ in 0..1024 {
+        passkeys.begin_approval(binding()).await.unwrap();
+    }
+    let refused = passkeys.begin_approval(binding()).await;
+    assert!(matches!(refused, Err(PasskeyError::Busy)), "{refused:?}");
+
+    let code = broker.enrollment_code().await;
+    let enroll = broker
+        .post_json("/enroll/begin", &json!({"code": code, "label": "laptop"}))
+        .await;
+    assert_eq!(enroll.status, StatusCode::OK, "{}", enroll.body);
+
+    // They expire, and then there is room again.
+    broker.clock.advance(121);
+    passkeys.begin_approval(binding()).await.unwrap();
 }
 
 // --- approving --------------------------------------------------------------

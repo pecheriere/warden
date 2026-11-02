@@ -378,15 +378,34 @@ These were recorded during implementation and are accepted for this release.
   the pending screen can issue a new token, holding the owner's login is enough to
   get one, so only the passkey separates the login from an approval. Whoever has the
   login, or can [forge it](#deployment-assumptions), still cannot approve anything.
-  They can deny any pending request without learning a link, and replace links so
-  that the one in a notification stops working, which keeps a request from being
-  approved from there until the owner opens it from the list. They could read the
-  same requests on `/history` already. Each replacement adds an audit entry at the
-  rate they can send requests. All of it is on the record, and it is why the tailnet
-  policy should give the approval listener only to the owner's phone. A device
-  logged in as the owner that the policy lets through, a workstation running an
-  agent for example, has this too. This is accepted: it can stop access being given,
-  never give it.
+  They can deny any pending request without learning a link, and replace links.
+  Replacing kills the link in a notification, and also any page the owner has open:
+  by repeating `POST /pending/{id}/open`, they can kill every page the owner opens
+  before the passkey finishes, for the whole life of the request, with an audit entry
+  each time, at the rate they can send requests. They could read the same requests on
+  `/history` already. All of it is on the record.
+
+  Stopping access is not the limit of it. Anyone with browser tools on a machine that
+  holds both the login and a passkey the owner can use, such as a synced passkey, can
+  now get a link from `/pending` and put a real passkey prompt in front of the owner,
+  where before they had to learn a link from a notification first. The prompt is for
+  warden's real origin, so an owner who taps it has approved. No credential is forged,
+  so the broker cannot tell this from the owner. The passkey's user verification is
+  what remains, and it does not help a tired owner. This is why the tailnet policy
+  should give the approval listener only to the owner's phone, and why the owner's
+  passkey and sessions should stay off machines that run agents: a device logged in
+  as the owner that the policy lets through, a workstation running an agent for
+  example, has everything above. See [the owner identity design](design/owner-identity.md).
+  Without that network layer, nothing but the owner's attention stands between an
+  agent with those browser tools and an approval.
+- **Passkey prompts in progress cannot crowd each other out.** A request keeps its
+  4 newest ceremonies, and beginning another drops its oldest, so one request cannot
+  fill the table, and replacing a link drops those of the old one. Enrollment has its
+  own room for 8, each costing a code from the server's command line. Whoever holds
+  the owner's login can still keep cancelling the prompts of a request they keep
+  beginning, as they can by replacing its link, but not those of another request.
+  1024 approval ceremonies at once are refused with a 429 to bound memory, which
+  takes 256 requests pending together.
 - **Cloned authenticators are detected, not prevented.** The broker keeps
   each passkey's signature counter in its own column and raises it with a
   single conditional update, so concurrent approvals can never store an older

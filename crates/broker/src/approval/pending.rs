@@ -12,7 +12,10 @@ use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 use warden_broker_proto::Id;
 
-use super::{DENIED_UNAUDITED, done, internal_page, json_error, pages, request_error};
+use super::{
+    DENIED_UNAUDITED, done, internal, internal_page, json_error, pages, passkey_error,
+    request_error,
+};
 use crate::AppState;
 use crate::requests::{AuditOutcome, RequestError};
 
@@ -25,6 +28,20 @@ const NOT_PENDING: &str = "this request is no longer pending";
 struct Opened {
     /// The request's new approval link.
     link: String,
+}
+
+/// Body of `GET /pending/live`.
+#[derive(Serialize)]
+struct LivePending {
+    requests: Vec<LiveRequest>,
+}
+
+/// A request still waiting, in the page's order.
+#[derive(Serialize)]
+struct LiveRequest {
+    id: Id,
+    /// Seconds until it expires.
+    remaining: i64,
 }
 
 fn refusal(error: &RequestError) -> Response {
@@ -42,15 +59,40 @@ pub(super) async fn page(State(state): State<AppState>) -> Response {
     }
 }
 
-/// `POST /pending/{id}/open`: a new approval link for a pending request.
-pub(super) async fn open(State(state): State<AppState>, Path(id): Path<Id>) -> Response {
-    match state.requests.replace_link(&id).await {
-        Ok(link) => Json(Opened {
-            link: link.to_string(),
+/// `GET /pending/live`: which requests are waiting right now, for the page to
+/// refresh without reloading. Reads the database only: it changes nothing, and it
+/// reads no policy, so polling costs the secret backend nothing.
+pub(super) async fn live(State(state): State<AppState>) -> Response {
+    let now = state.clock.now();
+    match state.requests.pending_expiries().await {
+        Ok(expiries) => Json(LivePending {
+            requests: expiries
+                .into_iter()
+                .map(|(id, expires_at)| LiveRequest {
+                    id,
+                    remaining: (expires_at - now).max(0),
+                })
+                .collect(),
         })
         .into_response(),
-        Err(e) => refusal(&e),
+        Err(e) => internal("pending live", &e),
     }
+}
+
+/// `POST /pending/{id}/open`: a new approval link for a pending request. Ceremonies
+/// begun on the old link can no longer finish, so they stop taking up room.
+pub(super) async fn open(State(state): State<AppState>, Path(id): Path<Id>) -> Response {
+    let link = match state.requests.replace_link(&id).await {
+        Ok(link) => link,
+        Err(e) => return refusal(&e),
+    };
+    if let Err(e) = state.passkeys.forget_request(&id) {
+        return passkey_error(&e);
+    }
+    Json(Opened {
+        link: link.to_string(),
+    })
+    .into_response()
 }
 
 /// `POST /pending/{id}/deny`: what `POST /approve/{token}/deny` does.

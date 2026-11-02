@@ -143,8 +143,8 @@ clippy on the crate from `fuzz/`, which `--workspace` does not reach.
 - **Approval UI pages** follow `docs/design-language.md`. Render and
   screenshot them with `scripts/screenshot-pages.sh <out-dir>` at the sizes
   the PR template lists, light and dark, and attach the screenshots.
-  `scripts/check-grants-live.py <out-dir>` checks the grants page's live
-  refresh.
+  `scripts/check-grants-live.py <out-dir>` checks the live refresh of the
+  grants and pending pages.
 
 ## Sign-off (DCO)
 

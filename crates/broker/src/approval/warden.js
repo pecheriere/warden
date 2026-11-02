@@ -1,5 +1,5 @@
 // warden approval UI: WebAuthn glue for the enrollment, approval and grants
-// pages, and the live activity of the grants page. Served as
+// pages, and the live refresh of the pending and grants pages. Served as
 // /static/warden.js; the pages carry no inline script.
 'use strict';
 
@@ -172,34 +172,132 @@
     }
   };
 
-  // --- pending page -------------------------------------------------------------
+  // --- polling ------------------------------------------------------------------
 
-  const setupPending = () => {
-    const cards = document.querySelectorAll('section.pending');
-    if (!cards.length) return;
-    for (const node of document.querySelectorAll('main time[datetime]')) localTime(node);
-    // Back from the approval page must not show this page as it was left: the
-    // list and the buttons may be out of date by then.
-    window.addEventListener('pageshow', (event) => {
-      if (event.persisted) window.location.reload();
-    });
+  const LIVE_PERIOD_MS = 5000;
 
-    /** The request is gone: drop its card. Focus goes to the page heading, or
-     *  the page reloads for the server's empty state after the last card. */
-    const dropCard = (card) => {
-      card.remove();
-      if (!document.querySelector('section.pending')) {
-        window.location.reload();
-        return;
-      }
-      const heading = document.querySelector('main h1');
-      if (heading) {
-        heading.setAttribute('tabindex', '-1');
-        heading.focus();
+  /** Polls `path` while the page is visible, with one request at a time, and hands
+   *  each answer to `apply`. A 401 or 403 stops it, and so does calling the `stop`
+   *  it returns. Offline or a bad answer keeps what is shown and tries again. */
+  const pollEvery = (path, apply) => {
+    let timer = null;
+    let inFlight = false;
+    let stopped = false;
+
+    const schedule = () => {
+      window.clearTimeout(timer);
+      timer = null;
+      if (!stopped && document.visibilityState === 'visible') {
+        timer = window.setTimeout(poll, LIVE_PERIOD_MS);
       }
     };
 
-    for (const card of cards) {
+    async function poll() {
+      if (inFlight || stopped) return;
+      inFlight = true;
+      try {
+        const response = await fetch(path, {
+          credentials: 'same-origin',
+          cache: 'no-store',
+          headers: { Accept: 'application/json' },
+        });
+        if (response.status === 401 || response.status === 403) {
+          stopped = true;
+        } else if (response.ok) {
+          await apply(await response.json());
+        }
+      } catch (_) {
+        // Offline or a bad answer: keep what is shown and try again later.
+      } finally {
+        inFlight = false;
+        schedule();
+      }
+    }
+
+    document.addEventListener('visibilitychange', () => {
+      window.clearTimeout(timer);
+      timer = null;
+      if (document.visibilityState === 'visible') poll();
+    });
+    schedule();
+    return () => {
+      stopped = true;
+    };
+  };
+
+  // --- pending page -------------------------------------------------------------
+  // Polling only reads which requests are waiting; it changes nothing, and no token
+  // is replaced except by the owner pressing Approve…. The markup always comes from
+  // the server: anything the answer cannot express is fetched as the page itself,
+  // which keeps the status line, so what a denial said is never lost.
+
+  const setupPending = () => {
+    if (!document.querySelector('main[data-pending]')) return;
+    const deadlines = new WeakMap();
+    let refreshing = false;
+
+    const cards = () => [...document.querySelectorAll('section.pending')];
+    const acting = () => Boolean(document.querySelector('section.pending button:disabled'));
+
+    const focusHeading = () => {
+      const heading = document.querySelector('main h1');
+      if (!heading) return;
+      heading.setAttribute('tabindex', '-1');
+      heading.focus();
+    };
+
+    /** Replaces the page's `main` with a fresh copy from the server. Not under an
+     *  action in progress: the next poll comes back to it. */
+    const refresh = async () => {
+      if (refreshing || acting()) return;
+      refreshing = true;
+      try {
+        const response = await fetch('/pending', { credentials: 'same-origin', cache: 'no-store' });
+        if (!response.ok) return;
+        const parsed = new DOMParser().parseFromString(await response.text(), 'text/html');
+        const fresh = parsed.querySelector('main[data-pending]');
+        const shown = document.querySelector('main[data-pending]');
+        if (!fresh || !shown) return;
+        const said = shown.querySelector('#result');
+        const keep = fresh.querySelector('#result');
+        if (said && keep) {
+          keep.textContent = said.textContent;
+          keep.className = said.className;
+        }
+        const active = document.activeElement;
+        const onButton = shown.contains(active) && active.closest('section.pending');
+        const focus = onButton
+          ? `section.pending[data-request="${CSS.escape(onButton.dataset.request)}"] button.${active.classList.contains('deny') ? 'deny' : 'approve'}`
+          : null;
+        const headed = shown.contains(active) && !onButton;
+        shown.replaceWith(document.importNode(fresh, true));
+        wire();
+        const target = focus && document.querySelector(focus);
+        if (target) target.focus();
+        else if (headed || focus) focusHeading();
+      } catch (_) {
+        // Offline or a bad answer: keep what is shown and try again later.
+      } finally {
+        refreshing = false;
+      }
+    };
+
+    /** The request is gone: drop its card. Focus in it moves to the heading, and the
+     *  last card makes way for the server's empty state. */
+    const dropCard = (card) => {
+      const focused = card.contains(document.activeElement);
+      card.remove();
+      if (focused) focusHeading();
+      if (!cards().length) refresh();
+    };
+
+    const setRemaining = (card, seconds) => {
+      deadlines.set(card, Date.now() + seconds * 1000);
+    };
+
+    const wireCard = (card) => {
+      const remaining = card.querySelector('.remaining');
+      if (remaining) setRemaining(card, Number(remaining.dataset.remaining));
       const approve = card.querySelector('button.approve');
       const deny = card.querySelector('button.deny');
       const act = (action, done) => async () => {
@@ -222,14 +320,53 @@
         show(denied.message, true);
         dropCard(card);
       }));
-    }
+    };
+
+    const wire = () => {
+      for (const node of document.querySelectorAll('main time[datetime]')) localTime(node);
+      for (const card of cards()) wireCard(card);
+    };
+
+    /** Keeps "in N min" true, and drops a card when its request has expired. */
+    const tick = () => {
+      for (const card of cards()) {
+        const left = Math.ceil((deadlines.get(card) - Date.now()) / 1000);
+        if (left <= 0) {
+          dropCard(card);
+          continue;
+        }
+        const remaining = card.querySelector('.remaining');
+        if (remaining) remaining.textContent = `in ${Math.ceil(left / 60)} min`;
+      }
+    };
+
+    const apply = async (data) => {
+      const waiting = new Map((data.requests || []).map((r) => [r.id, r.remaining]));
+      for (const card of cards()) {
+        if (waiting.has(card.dataset.request)) setRemaining(card, waiting.get(card.dataset.request));
+        else dropCard(card);
+      }
+      tick();
+      const onPage = new Set(cards().map((card) => card.dataset.request));
+      const added = [...waiting.keys()].some((id) => !onPage.has(id));
+      const shown = document.querySelector('main[data-pending]');
+      const emptied = shown && shown.dataset.pending === 'list' && !onPage.size;
+      if (added || emptied) await refresh();
+    };
+
+    // Back from the approval page must not show this page as it was left: the
+    // buttons may still be disabled.
+    window.addEventListener('pageshow', (event) => {
+      if (event.persisted) window.location.reload();
+    });
+    wire();
+    window.setInterval(tick, 1000);
+    pollEvery('/pending/live', apply);
   };
 
   // --- live activity on the grants page --------------------------------------------
   // Mirrors `live_area` in pages.rs, which renders the same markup for the
   // first paint and for viewers without script.
-
-  const LIVE_PERIOD_MS = 5000;
 
   /** `bytes` in pages.rs: powers of 1000, rounded down to a tenth. */
   const bytes = (n) => {
@@ -340,9 +477,7 @@
     for (const node of document.querySelectorAll('main time[datetime]')) localTime(node);
 
     const shown = new Map();
-    let timer = null;
-    let inFlight = false;
-    let stopped = false;
+    let stop = () => {};
 
     const apply = (data) => {
       const byGrant = new Map((data.grants || []).map((live) => [live.grant_id, live]));
@@ -364,7 +499,7 @@
       // The last card went: reload for the server's empty state, which
       // has no live area and so no polling.
       if (!document.querySelector('.live-area[data-grant]')) {
-        stopped = true;
+        stop();
         window.location.reload();
         return;
       }
@@ -374,52 +509,12 @@
         [...document.querySelectorAll('.live-area[data-grant]')].map((area) => area.dataset.grant));
       const added = [...byGrant.keys()].filter((id) => !onPage.has(id));
       if (added.length && !document.querySelector('button.revoke:disabled') && reloadOnceFor(added)) {
-        stopped = true;
+        stop();
         window.location.reload();
       }
     };
 
-    const schedule = () => {
-      window.clearTimeout(timer);
-      timer = null;
-      if (!stopped && document.visibilityState === 'visible') {
-        timer = window.setTimeout(poll, LIVE_PERIOD_MS);
-      }
-    };
-
-    async function poll() {
-      if (inFlight || stopped) return;
-      inFlight = true;
-      try {
-        const response = await fetch('/grants/live', {
-          credentials: 'same-origin',
-          cache: 'no-store',
-          headers: { Accept: 'application/json' },
-        });
-        if (response.status === 401 || response.status === 403) {
-          stopped = true;
-        } else if (response.ok) {
-          apply(await response.json());
-        }
-      } catch (_) {
-        // Offline or a bad answer: keep what is shown and try again later.
-      } finally {
-        inFlight = false;
-        schedule();
-      }
-    }
-
-    document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible') {
-        window.clearTimeout(timer);
-        timer = null;
-        poll();
-      } else {
-        window.clearTimeout(timer);
-        timer = null;
-      }
-    });
-    schedule();
+    stop = pollEvery('/grants/live', apply);
   };
 
   // --- enrollment page ------------------------------------------------------------

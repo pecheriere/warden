@@ -78,6 +78,24 @@ impl Requests {
         Ok(entries)
     }
 
+    /// The id and expiry of every request [`Requests::pending_requests`] lists, in
+    /// its order. Reads no stored request and no policy.
+    ///
+    /// # Errors
+    /// Storage failures or unreadable stored rows.
+    pub async fn pending_expiries(&self) -> Result<Vec<(Id, i64)>, RequestError> {
+        let rows = sqlx::query(
+            "SELECT id, expires_at FROM requests \
+             WHERE status = 'pending' AND expires_at > ? ORDER BY expires_at, rowid",
+        )
+        .bind(self.clock.now())
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter()
+            .map(|row| Ok((parse(row, "id")?, row.try_get("expires_at")?)))
+            .collect()
+    }
+
     /// The current policy of what `request` asks for.
     pub(super) async fn destination(
         &self,
@@ -189,5 +207,42 @@ impl Requests {
             this.finish_denial(tx, &id, now).await
         })
         .await
+    }
+}
+
+#[cfg(all(test, feature = "testkit"))]
+mod tests {
+    use warden_broker_proto::Window;
+
+    use crate::audit::AuditEvent;
+    use crate::testkit::TestBroker;
+
+    /// An approval checks the link, writes its entry, then applies, all under
+    /// `recorded_change`. A replacement that did not hold it through its own check,
+    /// entry and update could land in the middle of one.
+    #[tokio::test]
+    async fn replacing_a_link_holds_out_approvals_until_it_is_applied() {
+        let broker = TestBroker::new().await;
+        broker.add_agent("bot").await;
+        let (created, _) = broker
+            .create_request("bot", TestBroker::pi_request("goal", Window::M15))
+            .await;
+        let state = broker.state();
+        let stall = state
+            .audit
+            .stall_appends(|event| matches!(event, AuditEvent::ApprovalLinkReplaced { .. }));
+        let replacing = {
+            let requests = state.requests.clone();
+            let id = created.id.clone();
+            tokio::spawn(async move { requests.replace_link(&id).await })
+        };
+        stall.until_holding(1).await;
+        assert!(
+            state.requests.recorded_change.try_lock().is_err(),
+            "held while the entry is being written"
+        );
+        drop(stall);
+        replacing.await.unwrap().unwrap();
+        assert!(state.requests.recorded_change.try_lock().is_ok());
     }
 }

@@ -9,6 +9,7 @@
 //! failure). User verification is required for registration and approval.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -40,8 +41,19 @@ const BASE32: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 /// Longest passkey label, in characters.
 const LABEL_MAX: usize = 64;
 
-/// Ceremonies kept at once; the owner never needs more than a few.
-const MAX_CEREMONIES: usize = 64;
+/// Approval ceremonies one request can have at once; beginning another drops its
+/// oldest. The owner needs one at a time, so a request cannot crowd out the others,
+/// however often it is begun, and the newest prompt on it always works.
+const MAX_CEREMONIES_PER_REQUEST: usize = 4;
+
+/// Approval ceremonies kept at once, only to bound memory. Each request's limit keeps
+/// this out of reach: it would take 256 requests pending together, and an agent may
+/// have 5 by default.
+const MAX_APPROVAL_CEREMONIES: usize = 1024;
+
+/// Enrollment ceremonies kept at once, apart from approvals: each one spends a code
+/// that only the server's command line makes.
+const MAX_REGISTRATION_CEREMONIES: usize = 8;
 
 /// `WebAuthn` user handle of the owner. There is exactly one user, so it is a
 /// constant; it identifies nothing beyond "the warden owner".
@@ -106,7 +118,9 @@ pub enum PasskeyError {
 /// What an approval ceremony is bound to, fixed when it begins.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApprovalBinding {
-    /// SHA-256 (hex) of the approval token: identifies the request.
+    /// The request.
+    pub request_id: Id,
+    /// SHA-256 (hex) of the approval token the ceremony began on.
     pub token_hash: String,
     /// The window the owner chose.
     pub window: Window,
@@ -159,6 +173,18 @@ enum Ceremony {
 struct Pending {
     ceremony: Ceremony,
     expires_at: i64,
+    /// Order of beginning: the clock has only whole seconds.
+    begun: u64,
+}
+
+impl Pending {
+    fn is_registration(&self) -> bool {
+        matches!(self.ceremony, Ceremony::Registration { .. })
+    }
+
+    fn is_approval_of(&self, request: &Id) -> bool {
+        matches!(&self.ceremony, Ceremony::Approval { binding, .. } if binding.request_id == *request)
+    }
 }
 
 /// Passkey enrollment and approval ceremonies.
@@ -168,6 +194,7 @@ pub struct Passkeys {
     audit: Arc<AuditLog>,
     clock: Arc<dyn Clock>,
     ceremonies: Mutex<HashMap<Id, Pending>>,
+    begun: AtomicU64,
 }
 
 impl Passkeys {
@@ -198,6 +225,7 @@ impl Passkeys {
             audit,
             clock,
             ceremonies: Mutex::new(HashMap::new()),
+            begun: AtomicU64::new(0),
         })
     }
 
@@ -251,7 +279,7 @@ impl Passkeys {
     ) -> Result<(Id, CreationChallengeResponse), PasskeyError> {
         let label = valid_label(label)?;
         let now = self.clock.now();
-        self.ensure_room(now)?;
+        self.ensure_registration_room(now)?;
         let spent = sqlx::query(
             "UPDATE enrollment_codes SET used_at = ?1 \
              WHERE code_hash = ?2 AND used_at IS NULL AND expires_at > ?1",
@@ -344,7 +372,8 @@ impl Passkeys {
         Ok(id)
     }
 
-    /// Start an approval ceremony bound to `binding`.
+    /// Start an approval ceremony bound to `binding`, dropping the oldest one of the
+    /// same request if it has [`MAX_CEREMONIES_PER_REQUEST`].
     ///
     /// # Errors
     /// [`PasskeyError::NoPasskeys`], [`PasskeyError::Busy`], storage failures.
@@ -353,7 +382,6 @@ impl Passkeys {
         binding: ApprovalBinding,
     ) -> Result<(Id, RequestChallengeResponse), PasskeyError> {
         let now = self.clock.now();
-        self.ensure_room(now)?;
         let passkeys: Vec<Passkey> = self.stored().await?.into_iter().map(|(_, p)| p).collect();
         if passkeys.is_empty() {
             return Err(PasskeyError::NoPasskeys);
@@ -364,6 +392,16 @@ impl Passkeys {
             .map_err(PasskeyError::Verification)?;
         let id = self.insert(Ceremony::Approval { binding, state }, now)?;
         Ok((id, options))
+    }
+
+    /// Drop every approval ceremony of `request`: its approval link was replaced,
+    /// so none of them can finish.
+    ///
+    /// # Errors
+    /// [`PasskeyError::Internal`] if the ceremony table is unusable.
+    pub fn forget_request(&self, request: &Id) -> Result<(), PasskeyError> {
+        self.lock()?.retain(|_, p| !p.is_approval_of(request));
+        Ok(())
     }
 
     /// Take approval `ceremony` out for finishing, so that its binding can be
@@ -509,11 +547,12 @@ impl Passkeys {
             .map_err(|_| PasskeyError::Internal("ceremony table lock poisoned"))
     }
 
-    /// Drop expired ceremonies and fail if no slot is free.
-    fn ensure_room(&self, now: i64) -> Result<(), PasskeyError> {
+    /// Drop expired ceremonies and fail if no enrollment can begin, before a code is
+    /// spent on one.
+    fn ensure_registration_room(&self, now: i64) -> Result<(), PasskeyError> {
         let mut map = self.lock()?;
         map.retain(|_, p| p.expires_at > now);
-        if map.len() >= MAX_CEREMONIES {
+        if registrations(&map) >= MAX_REGISTRATION_CEREMONIES {
             return Err(PasskeyError::Busy);
         }
         Ok(())
@@ -521,8 +560,19 @@ impl Passkeys {
 
     fn insert(&self, ceremony: Ceremony, now: i64) -> Result<Id, PasskeyError> {
         let mut map = self.lock()?;
-        if map.len() >= MAX_CEREMONIES {
-            return Err(PasskeyError::Busy);
+        map.retain(|_, p| p.expires_at > now);
+        match &ceremony {
+            Ceremony::Registration { .. } => {
+                if registrations(&map) >= MAX_REGISTRATION_CEREMONIES {
+                    return Err(PasskeyError::Busy);
+                }
+            }
+            Ceremony::Approval { binding, .. } => {
+                make_room_for_approval(&mut map, &binding.request_id);
+                if map.len() - registrations(&map) >= MAX_APPROVAL_CEREMONIES {
+                    return Err(PasskeyError::Busy);
+                }
+            }
         }
         let id = Id::random();
         map.insert(
@@ -530,6 +580,7 @@ impl Passkeys {
             Pending {
                 ceremony,
                 expires_at: now + CEREMONY_TTL_SECS,
+                begun: self.begun.fetch_add(1, Ordering::Relaxed),
             },
         );
         Ok(id)
@@ -545,6 +596,24 @@ impl Passkeys {
             return Err(PasskeyError::CeremonyExpired);
         }
         Ok(pending.ceremony)
+    }
+}
+
+fn registrations(map: &HashMap<Id, Pending>) -> usize {
+    map.values().filter(|p| p.is_registration()).count()
+}
+
+/// Drop the oldest ceremonies of `request` until another one fits its limit.
+fn make_room_for_approval(map: &mut HashMap<Id, Pending>, request: &Id) {
+    let mut own: Vec<(u64, Id)> = map
+        .iter()
+        .filter(|(_, p)| p.is_approval_of(request))
+        .map(|(id, p)| (p.begun, id.clone()))
+        .collect();
+    own.sort_unstable_by_key(|(begun, _)| *begun);
+    let excess = (own.len() + 1).saturating_sub(MAX_CEREMONIES_PER_REQUEST);
+    for (_, id) in own.into_iter().take(excess) {
+        map.remove(&id);
     }
 }
 

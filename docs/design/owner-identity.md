@@ -52,12 +52,12 @@ Three limits matter once Tailscale is gone:
   peer address at all. Only signed requests have a body-read timer
   (`BodyReadTimeout` in [`signed.rs`](../../crates/broker/src/signed.rs)). The
   approval listener has a 64 KiB body limit and no timer.
-- **The passkey ceremony table is small and shared.** `MAX_CEREMONIES` is 64
-  with a 120 s lifetime, shared by enrollment and approval, and refuses when
-  full (`PasskeyError::Busy` in
+- **The passkey ceremony table is bounded per request and per kind.** Ceremonies
+  live 120 s. A request keeps its 4 newest, enrollment has 8 slots of its own, and
+  approvals as a whole stop at 1024 (`PasskeyError::Busy` in
   [`passkeys.rs`](../../crates/broker/src/approval/passkeys.rs)). Today only the
-  owner can reach it. An unauthenticated login route using the same table could
-  be filled at about 0.5 requests per second.
+  owner can reach it. An unauthenticated login route would need limits of its own:
+  nothing here ties a ceremony to a request for it to be bounded by.
 
 `IdentitySource::caller` takes only the headers and is synchronous, so it can
 read a cookie but cannot query the database. `Owner` compares its answer with
@@ -180,8 +180,9 @@ endpoint and rotated about every six weeks.
 
 The columns describe an attacker with no credentials and no enrollment code. In
 every cell, they cannot approve a request. "Forge" means sending the header or
-token that names the owner, which gives read access to `/grants`, `/history` and
-any pending request whose link is known, plus revoke and deny.
+token that names the owner, which gives read access to `/pending`, `/grants`,
+`/history` and any pending request's approval page, since `/pending` hands out a new
+link for it, plus revoke, deny and replacing approval links.
 
 | Option | Attacker on the LAN | Agent on the same host (unprivileged, another OS user) | Internet attacker |
 |---|---|---|---|
@@ -324,11 +325,12 @@ Without the first:
 - With no browser access to the owner's session or passkey, an agent gets the
   login page and nothing else. It does not have the approval token either.
 - With browser tools on a machine holding a synced passkey or a signed-in
-  session, which is the case the design calls out, the agent can read history and
-  revoke grants. If it also learns a link (a notifier client on that machine), it
-  can put a real passkey prompt in front of the owner, on the machine it controls.
-  A tired owner who taps it has approved. This is the anti-goal "phone-only
-  approval" exists to prevent, and a session does not replace it.
+  session, which is the case the design calls out, the agent can read history,
+  revoke grants and deny requests. It can also get a link for any pending request
+  from `/pending`, with no notifier client needed, and put a real passkey prompt in
+  front of the owner, on the machine it controls. A tired owner who taps it has
+  approved. This is the anti-goal "phone-only approval" exists to prevent, and a
+  session does not replace it.
 
 So a replacement for the network layer stays a requirement, not a suggestion.
 What replaces the tailnet policy, strongest first:

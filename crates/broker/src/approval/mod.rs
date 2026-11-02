@@ -72,8 +72,10 @@ const REVOKED_UNAUDITED: &str = "Revoked: access has stopped. But the audit log 
 const DENIED_UNAUDITED: &str = "Denied. But the audit log could not be written, so this is not \
                                 on record yet. Check the server's log.";
 
-/// A ceremony's approval link was replaced before it finished.
-const LINK_REPLACED: &str = "a newer link replaced this one; open the request from Pending";
+/// A ceremony's approval link was replaced before it finished. The request may
+/// have ended since, so this does not say it is still waiting.
+const LINK_REPLACED: &str = "a newer link replaced this one, so it approves nothing. If the \
+                             request is still waiting, it is under Pending";
 
 /// Recorded as `by` when the owner revokes a grant from the UI.
 const REVOKED_BY_OWNER: &str = "owner";
@@ -86,6 +88,7 @@ pub fn router(state: AppState) -> Router {
         .route("/approve/{token}/finish", post(approve_finish))
         .route("/approve/{token}/deny", post(deny))
         .route("/pending", get(pending::page))
+        .route("/pending/live", get(pending::live))
         .route("/pending/{id}/open", post(pending::open))
         .route("/pending/{id}/deny", post(pending::deny))
         .route("/grants", get(grants_page))
@@ -535,6 +538,7 @@ async fn approve_begin(
         return json_error(StatusCode::BAD_REQUEST, message);
     }
     let binding = ApprovalBinding {
+        request_id: view.id,
         token_hash: sha256_hex(&token),
         window: body.window,
         fingerprint: view.fingerprint,

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Check the grants page's live refresh (warden.js) in headless Chrome.
+"""Check the live refresh of the grants and pending pages (warden.js) in headless
+Chrome.
 
 Usage: scripts/check-grants-live.py <out-dir>
   Renders the page fixtures into <out-dir>/warden-live-check/ (the only
@@ -12,6 +13,17 @@ Usage: scripts/check-grants-live.py <out-dir>
     moves to the Revoke button of the card that stays;
   - a grant with no card makes the page reload exactly once, even when the
     answer keeps listing it (no reload loop).
+
+  And the "pending" and "pending-empty" fixtures, with a mocked GET /pending/live
+  and GET /pending:
+
+  - a 401 or 403 answer stops polling after the first request;
+  - a request missing from the answer loses its card, and polling goes on;
+  - a new request appears without a reload, also from the empty state;
+  - the last card going leaves the empty state, which polls on;
+  - the time left on a card follows the answer;
+  - polling never posts anything;
+  - what a denial said stays on screen when the last card goes.
 
 Chrome runs on virtual time, so 30 s of polling take about a second.
 Needs: cargo, Google Chrome (override with CHROME=...).
@@ -36,7 +48,31 @@ PAGE = "/grants-live.html"
 # Grant ids of the "grants-live" fixture (crates/broker/src/approval/pages.rs).
 RELAY, API, CERT = (f"{n:032x}" for n in (5, 4, 2))
 NEW = f"{9:032x}"
+PENDING_PAGE = "/pending.html"
+PENDING_EMPTY_PAGE = "/pending-empty.html"
+# Request ids of the "pending" fixture.
+PENDING_IDS = [f"{n:032x}" for n in (2, 5, 8, 9)]
+NEW_REQUEST = f"{10:032x}"
 FOCUS_PAGE = "/focus.html"
+DENY_PAGE = "/deny.html"
+DENIED_SAYS = "Denied. But the audit log could not be written"
+# Test harness only, never served by the broker: frames a fixture of one card,
+# denies it, and reports the status line once the empty state is showing.
+DENY_HARNESS = """<!doctype html><meta charset="utf-8">
+<iframe id="page" src="/pending-last.html" width="400" height="900"></iframe><pre id="out"></pre>
+<script>
+const frame = document.getElementById('page');
+frame.addEventListener('load', () => {
+  frame.contentDocument.querySelector('section.pending button.deny').click();
+  setTimeout(() => {
+    const doc = frame.contentDocument;
+    const main = doc.querySelector('main[data-pending]');
+    document.getElementById('out').textContent =
+      'state:' + main.dataset.pending + ' said:' + doc.getElementById('result').textContent;
+  }, 3000);
+}, { once: true });
+</script>
+"""
 # Test harness only, never served by the broker: frames the fixture, focuses
 # the first card's Revoke button, and reports what has focus 8 s later.
 FOCUS_HARNESS = f"""<!doctype html><meta charset="utf-8">
@@ -67,16 +103,21 @@ def live_body(*grant_ids):
     return f'{{"grants":[{grants}]}}'.encode()
 
 
+def pending_body(*ids, remaining=300):
+    requests = ",".join(f'{{"id":"{i}","remaining":{remaining}}}' for i in ids)
+    return f'{{"requests":[{requests}]}}'.encode()
+
+
 class Mock:
-    """What GET /grants/live answers, and every path requested."""
+    """What the live routes and GET /pending answer, and every path requested."""
 
     def __init__(self):
         self.lock = threading.Lock()
-        self.status, self.body, self.paths = 200, b"", []
+        self.status, self.body, self.page, self.paths = 200, b"", b"", []
 
-    def set(self, status, body):
+    def set(self, status, body, page=b""):
         with self.lock:
-            self.status, self.body, self.paths = status, body, []
+            self.status, self.body, self.page, self.paths = status, body, page, []
 
     def count(self, path):
         with self.lock:
@@ -92,13 +133,34 @@ class Handler(SimpleHTTPRequestHandler):
         with self.mock.lock:
             self.mock.paths.append(self.path)
             status, body = self.mock.status, self.mock.body
-        if self.path != "/grants/live":
+        if self.path == "/pending":
+            with self.mock.lock:
+                page = self.mock.page
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(page)))
+            self.end_headers()
+            self.wfile.write(page)
+            return
+        if self.path not in ("/grants/live", "/pending/live"):
             super().do_GET()
             return
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_POST(self):
+        with self.mock.lock:
+            self.mock.paths.append(f"POST {self.path}")
+        length = int(self.headers.get("Content-Length", 0))
+        self.rfile.read(length)
+        body = f'{{"message":"{DENIED_SAYS}"}}'.encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
 
@@ -138,6 +200,10 @@ def cards(dom):
     return re.findall(r'class="live-area" data-grant="([0-9a-f]+)"', dom)
 
 
+def pending_cards(dom):
+    return re.findall(r'data-request="([0-9a-f]+)"', dom)
+
+
 def main():
     try:
         return run()
@@ -174,6 +240,15 @@ def run():
         raise CheckError(f"rendering the page fixtures failed (cargo exit {rendered.returncode})")
     shutil.copy(ROOT / "crates/broker/src/approval/warden.js", out / "static/warden.js")
     (out / FOCUS_PAGE.lstrip("/")).write_text(FOCUS_HARNESS)
+    (out / DENY_PAGE.lstrip("/")).write_text(DENY_HARNESS)
+    listed = (out / PENDING_PAGE.lstrip("/")).read_text()
+    empty = (out / PENDING_EMPTY_PAGE.lstrip("/")).read_text().encode()
+    with_new = listed.replace(PENDING_IDS[3], NEW_REQUEST).encode()
+    # One card: the fixture's first, cut out of the page around it.
+    first = listed.index("<section class=\"card pending\"")
+    second = listed.index("<section class=\"card pending\"", first + 1)
+    end = listed.rindex("</section>") + len("</section>")
+    (out / "pending-last.html").write_text(listed[:second] + listed[end:])
 
     mock = Mock()
     server = ThreadingHTTPServer(
@@ -217,6 +292,56 @@ def run():
         load(url, 12_000)
         loads = mock.count(PAGE)
         check("matching grants do not reload", loads == 1, f"{loads} page loads")
+
+        pending_url = f"{origin}{PENDING_PAGE}"
+        for status in (401, 403):
+            mock.set(status, b'{"error":"forbidden"}')
+            load(pending_url, 30_000)
+            polls = mock.count("/pending/live")
+            check(f"pending: a {status} stops polling", polls == 1, f"{polls} requests")
+
+        mock.set(200, pending_body(*PENDING_IDS[:3]), with_new)
+        dom = load(pending_url, 12_000)
+        shown = pending_cards(dom)
+        check("pending: an ended request loses its card", shown == PENDING_IDS[:3], shown)
+        polls = mock.count("/pending/live")
+        check("pending: polling goes on after a removal", polls >= 2, f"{polls} requests")
+        check("pending: a removal fetches no page", mock.count("/pending") == 0,
+              f"{mock.count('/pending')} fetches")
+
+        mock.set(200, pending_body(*PENDING_IDS[:3], NEW_REQUEST), with_new)
+        dom = load(pending_url, 12_000)
+        shown = pending_cards(dom)
+        check("pending: a new request appears", NEW_REQUEST in shown, shown)
+        loads = mock.count(PENDING_PAGE)
+        check("pending: a new request does not reload", loads == 1, f"{loads} page loads")
+        fetched = mock.count("/pending")
+        check("pending: it is fetched once", fetched == 1, f"{fetched} fetches")
+
+        mock.set(200, pending_body(), empty)
+        dom = load(pending_url, 22_000)
+        check("pending: the last card going leaves the empty state",
+              'data-pending="empty"' in dom and not pending_cards(dom), pending_cards(dom))
+        polls = mock.count("/pending/live")
+        check("pending: the empty state polls on", polls >= 2, f"{polls} requests")
+
+        mock.set(200, pending_body(NEW_REQUEST), with_new)
+        dom = load(f"{origin}{PENDING_EMPTY_PAGE}", 12_000)
+        check("pending: a request appears from the empty state", NEW_REQUEST in pending_cards(dom),
+              pending_cards(dom))
+
+        mock.set(200, pending_body(*PENDING_IDS, remaining=240), listed.encode())
+        dom = load(pending_url, 7_000)
+        check("pending: the time left follows the answer", "in 4 min" in dom, "no \"in 4 min\"")
+        posts = sum(1 for path in mock.paths if path.startswith("POST"))
+        check("pending: polling posts nothing", posts == 0, f"{posts} posts")
+
+        mock.set(200, pending_body(), empty)
+        dom = load(f"{origin}{DENY_PAGE}", 10_000)
+        said = re.search(r"state:(\w+) said:([^<]*)", dom)
+        said = said.groups() if said else ("nothing reported", "")
+        check("pending: what a denial said stays on the empty state",
+              said[0] == "empty" and DENIED_SAYS in said[1], said)
     finally:
         server.shutdown()
 

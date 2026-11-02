@@ -5,7 +5,7 @@ use maud::{Markup, html};
 use warden_broker_proto::Access;
 
 use super::{
-    Chip, Nav, clock, destination_access, empty_icon, end_state, icon, key_icon, layout,
+    Chip, Nav, clock, destination_access, empty_icon, end_state_parts, icon, key_icon, layout,
     window_words,
 };
 use crate::requests::PendingEntry;
@@ -30,6 +30,7 @@ fn card(entry: &PendingEntry, now: i64) -> Markup {
     let who = format!("agent-{}", entry.id);
     let fingerprint = format!("fingerprint-{}", entry.id);
     let described_by = format!("{who} {fingerprint}");
+    let remaining = (entry.expires_at - now).max(0);
     html! {
         section.card.pending data-request=(entry.id) {
             div.field {
@@ -51,8 +52,12 @@ fn card(entry: &PendingEntry, now: i64) -> Markup {
                 span #(fingerprint) { "Fingerprint " code { (entry.fingerprint) } }
                 span { "Asks for " (window_words(entry.request.window)) }
                 span {
-                    "Expires " (clock(entry.expires_at))
-                    " (in " (((entry.expires_at - now).max(0) + 59) / 60) " min)"
+                    "Expires " (clock(entry.expires_at)) " ("
+                    // The script keeps this phrase current.
+                    span.remaining data-remaining=(remaining) {
+                        "in " ((remaining + 59) / 60) " min"
+                    }
+                    ")"
                 }
             }
             div.btns {
@@ -65,11 +70,13 @@ fn card(entry: &PendingEntry, now: i64) -> Markup {
     }
 }
 
-/// Every request waiting for a decision, soonest expiry first.
+/// Every request waiting for a decision, soonest expiry first. `data-pending` is
+/// what the script refreshes, from the empty state as well; it replaces this `main`
+/// with a fresh copy, keeping `#result`, so both forms have one.
 #[must_use]
 pub fn pending(entries: &[PendingEntry], now: i64) -> Markup {
     if entries.is_empty() {
-        let content = end_state(
+        let parts = end_state_parts(
             &Chip {
                 icon: empty_icon(),
                 text: "Nothing waiting",
@@ -78,10 +85,17 @@ pub fn pending(entries: &[PendingEntry], now: i64) -> Markup {
             &html! { "No request is waiting for you. A request shows here until it is decided or expires." },
             None,
         );
-        return layout("Pending requests", Some(Nav::Pending), false, &content);
+        let content = html! {
+            main.done data-pending="empty" {
+                // First, so that what a denial said is on screen on a small phone.
+                p.result #result role="status" {}
+                (parts)
+            }
+        };
+        return layout("Pending requests", Some(Nav::Pending), true, &content);
     }
     let content = html! {
-        main.wide {
+        main.wide data-pending="list" {
             h1 { "Pending requests" }
             p.lead {
                 "Approve… opens the request's approval page on a new link. "

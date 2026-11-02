@@ -94,6 +94,8 @@ font-weight:700;font-size:15px;font-family:inherit;cursor:pointer}
 .pending .meta{display:flex;flex-wrap:wrap;gap:6px 14px;color:var(--muted);font-size:14px}
 .pending .meta code{white-space:nowrap;word-break:normal}
 .pending .btns{grid-template-columns:repeat(2,minmax(0,1fr))}
+/* What a denial said, above the empty state, across its columns on a short screen. */
+main.done .result{grid-column:1/-1}
 /* Form inputs: 48 px high, a boundary with 3:1 contrast, 17 px text (no zoom on focus on phones). */
 .input{width:100%;height:48px;padding:0 14px;border:1px solid var(--muted);border-radius:12px;
 background:var(--ground);color:var(--ink);font:inherit;font-size:17px}

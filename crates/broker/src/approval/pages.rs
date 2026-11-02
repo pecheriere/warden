@@ -350,22 +350,25 @@ struct Chip<'a> {
 /// A finished or empty state: the large mascot in a halo, a status chip, a
 /// heading, a short message and, if given, a link onward.
 fn end_state(chip: &Chip<'_>, heading: &str, message: &Markup, link: Option<&Link>) -> Markup {
-    html! {
-        main.done {
-            div.halo { (mascot()) }
-            span.chip.center { (icon(14, "2.4", &chip.icon)) " " (chip.text) }
-            h1 { (heading) }
-            p { (message) }
-            @if let Some(link) = link {
-                a.btn.ghost.block href=(link.href) { (link.text) }
-            }
-        }
-    }
+    html! { main.done { (end_state_parts(chip, heading, message, link)) } }
 }
 
-/// A tick in a circle: the request is over.
-fn done_icon() -> Markup {
-    html! { circle cx="12" cy="12" r="9" {} path d="m8 12 3 3 5-6" {} }
+/// What [`end_state`] puts in its `main`.
+fn end_state_parts(
+    chip: &Chip<'_>,
+    heading: &str,
+    message: &Markup,
+    link: Option<&Link>,
+) -> Markup {
+    html! {
+        div.halo { (mascot()) }
+        span.chip.center { (icon(14, "2.4", &chip.icon)) " " (chip.text) }
+        h1 { (heading) }
+        p { (message) }
+        @if let Some(link) = link {
+            a.btn.ghost.block href=(link.href) { (link.text) }
+        }
+    }
 }
 
 /// A crossed circle: withdrawn, or nothing there.
@@ -379,22 +382,23 @@ fn empty_icon() -> Markup {
 }
 
 /// The request behind a link is unknown, decided or expired, or a newer link
-/// replaced this one. Says nothing about which, so links reveal nothing.
+/// replaced this one. Says nothing about which, so links reveal nothing, and
+/// words everything to hold in each case: the request may still be waiting.
 #[must_use]
 pub fn not_pending() -> Markup {
     let content = end_state(
         &Chip {
-            icon: done_icon(),
-            text: "No longer pending",
+            icon: none_icon(),
+            text: "Link not active",
         },
-        "Nothing to approve",
+        "Nothing to approve on this link",
         &html! {
             "This request is no longer pending on this link: it was decided or expired, a newer "
-            "link replaced this one, or it never existed. Anything still waiting is under Pending."
+            "link replaced this one, or it never existed. A request still waiting is under Pending."
         },
         Some(&TO_PENDING),
     );
-    layout("Nothing to approve", None, false, &content)
+    layout("Nothing to approve on this link", None, false, &content)
 }
 
 /// The agent withdrew the request behind a link. Shown only to the owner,
@@ -1133,6 +1137,11 @@ mod tests {
             ("enroll", enroll()),
             ("pending-empty", super::pending(&[], NOW)),
             ("pending", super::pending(&pending_entries(), NOW)),
+            // The screenshots show the viewport only: these two first.
+            (
+                "pending-modify-and-outage",
+                super::pending(&pending_entries()[2..], NOW),
+            ),
         ]
     }
 
@@ -1249,6 +1258,10 @@ mod tests {
 
         let html = super::pending(&[], NOW).into_string();
         assert!(html.contains("Nothing waiting"), "{html}");
+        // The empty state refreshes too, and has room for what a denial said.
+        assert!(html.contains(r#"data-pending="empty""#), "{html}");
+        assert!(html.contains(r#"<p class="result" id="result""#), "{html}");
+        assert!(html.contains("/static/warden.js"), "{html}");
         assert_eq!(
             html.matches(r#"<a href="/pending" aria-current="page">"#)
                 .count(),
