@@ -30,7 +30,7 @@ fn config(extra: &[(&str, &str)]) -> Config {
         ("WARDEN_AUDIT_PATH", "/data/audit.jsonl"),
         ("WARDEN_PUBLIC_URL", "https://warden.example.ts.net"),
         ("WARDEN_OWNER_LOGIN", "owner@example.com"),
-        ("WARDEN_OP_CONNECT_URL", "http://192.0.2.1:8080"),
+        ("WARDEN_OP_CONNECT_URL", "http://172.31.251.11:8080"),
         ("WARDEN_OP_CONNECT_TOKEN", TOKEN),
         ("WARDEN_NOTIFY", "homeassistant,ntfy"),
         ("WARDEN_NOTIFY_HOMEASSISTANT_WEBHOOK_URL", webhook.as_str()),
@@ -188,6 +188,52 @@ async fn a_healthy_setup_passes_all_but_what_cannot_be_seen() {
     assert_eq!(report.exit_code(false), EXIT_NOTHING_FAILED);
     assert_eq!(report.exit_code(true), EXIT_COULD_NOT_CHECK);
     every_check_not_passing_says_what_to_do(&report);
+}
+
+#[tokio::test]
+async fn plain_http_to_a_local_host_passes_and_is_named() {
+    let report = examine(&config(&[]), &Fake::healthy(), false).await;
+    let plain_http = check(&report, "plain-http");
+    assert_eq!(plain_http.status, Status::Pass, "{plain_http:?}");
+    assert!(
+        plain_http.detail.contains("WARDEN_OP_CONNECT_URL"),
+        "{plain_http:?}"
+    );
+    assert!(plain_http.detail.contains("in clear"), "{plain_http:?}");
+}
+
+#[tokio::test]
+async fn only_https_passes_without_naming_a_variable() {
+    let config = config(&[("WARDEN_OP_CONNECT_URL", "https://connect.example.com")]);
+    let report = examine(&config, &Fake::healthy(), false).await;
+    let plain_http = check(&report, "plain-http");
+    assert_eq!(plain_http.status, Status::Pass, "{plain_http:?}");
+    assert!(!plain_http.detail.contains("WARDEN_"), "{plain_http:?}");
+}
+
+/// The opt-in is the owner's call, so it is no failure, but doctor must not
+/// call that path safe. It names the variable and never the URL.
+#[tokio::test]
+async fn allowed_remote_plain_http_is_not_a_pass() {
+    let config = config(&[
+        ("WARDEN_ALLOW_PLAIN_HTTP", "WARDEN_NOTIFY_NTFY_URL"),
+        (
+            "WARDEN_NOTIFY_NTFY_URL",
+            "http://ntfy.example.com/private-topic",
+        ),
+    ]);
+    let report = examine(&config, &Fake::healthy(), false).await;
+    let plain_http = check(&report, "plain-http");
+    assert_eq!(plain_http.status, Status::CouldNotCheck, "{plain_http:?}");
+    assert!(
+        plain_http.detail.contains("WARDEN_NOTIFY_NTFY_URL"),
+        "{plain_http:?}"
+    );
+    assert!(
+        !plain_http.detail.contains("private-topic"),
+        "{plain_http:?}"
+    );
+    assert!(plain_http.action.is_some(), "{plain_http:?}");
 }
 
 #[test]
@@ -487,7 +533,7 @@ async fn data_paths_with_the_wrong_owner_or_mode_fail() {
 }
 
 #[tokio::test]
-async fn a_database_readable_by_others_is_fine_inside_a_private_directory() {
+async fn every_data_file_readable_by_others_fails() {
     let fake = Fake {
         facts: PathFacts {
             mode: 0o644,
@@ -495,12 +541,33 @@ async fn a_database_readable_by_others_is_fine_inside_a_private_directory() {
         },
         ..Fake::healthy()
     };
-    assert_eq!(status(&run(&fake).await, "data.database"), Status::Pass);
-    // A host key is not, and neither is the directory.
     let on = config(&[("WARDEN_RELAY_PUBLIC_ADDR", "relay.example:2222")]);
     let report = examine(&on, &fake, false).await;
-    assert_eq!(status(&report, "data.relay-host-key"), Status::Fail);
-    assert_eq!(status(&report, "data.directory"), Status::Fail);
+    for name in [
+        "data.directory",
+        "data.database",
+        "data.database-wal",
+        "data.database-shm",
+        "data.audit-log",
+        "data.audience",
+        "data.relay-host-key",
+    ] {
+        assert_eq!(status(&report, name), Status::Fail, "{name}");
+    }
+}
+
+#[tokio::test]
+async fn database_companions_are_checked_only_when_they_exist() {
+    let mut fake = Fake::healthy();
+    fake.paths
+        .insert("/data/warden.db-wal".into(), io::ErrorKind::NotFound);
+    fake.paths.insert(
+        "/data/warden.db-shm".into(),
+        io::ErrorKind::PermissionDenied,
+    );
+    let report = run(&fake).await;
+    assert!(!report.checks.iter().any(|c| c.name == "data.database-wal"));
+    assert_eq!(status(&report, "data.database-shm"), Status::CouldNotCheck);
 }
 
 #[tokio::test]

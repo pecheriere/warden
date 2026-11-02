@@ -15,10 +15,13 @@ use tracing_subscriber::EnvFilter;
 use url::Url;
 use warden_broker::approval::passkeys::{self, Passkeys};
 use warden_broker::audit::AuditLog;
-use warden_broker::config::{BackendSettings, Config, DEFAULT_AUDIENCE_PATH, parse_public_url};
+use warden_broker::config::{
+    BackendSettings, Config, DEFAULT_AUDIENCE_PATH, UrlTransport, parse_public_url,
+};
 use warden_broker::identity::TailscaleServeIdentity;
 use warden_broker::notify::{ChannelSettings, Fallback, Notifier};
 use warden_broker::policy::{LocalBackend, OnePasswordConnect, SecretBackend};
+use warden_broker::private_files::{self, DirectoryState};
 use warden_broker::relay::host_key::RelayHostKey;
 use warden_broker::relay::{RelayEndpoint, RelayLimits, RelayServer, host_key};
 use warden_broker::requests::{self, AuditOutcome, Clock, Requests, SystemClock};
@@ -377,6 +380,22 @@ fn build_notifier(config: &Config) -> Result<Arc<dyn Notifier>> {
     Ok(Arc::new(Fallback::new(primary, fallbacks)))
 }
 
+/// Say at startup which service URLs send tokens and secrets without TLS. Only
+/// the variable, because a URL can hold a secret.
+fn log_plain_http(config: &Config) {
+    for (variable, transport) in config.plain_http_urls() {
+        if transport == UrlTransport::PlainRemote {
+            tracing::warn!(
+                variable,
+                "plain http to a host that is not clearly local or private: tokens and secrets \
+                 cross that path in clear"
+            );
+        } else {
+            tracing::info!(variable, "plain http to a local or private host");
+        }
+    }
+}
+
 /// Where agents reach the relay and the relay's host key (loaded, and
 /// created on first use), or `None` when `WARDEN_RELAY_PUBLIC_ADDR` is unset.
 async fn relay_endpoint(config: &Config) -> Result<Option<(RelayEndpoint, RelayHostKey)>> {
@@ -468,7 +487,38 @@ async fn secret_backend(config: &Config, audit: &Arc<AuditLog>) -> Result<Arc<dy
     }
 }
 
+/// Make the data directory private if it is clearly warden's, and say what
+/// happened if not. Refuses to go on if others can write to it.
+async fn report_data_directory(config: &Config) -> Result<()> {
+    let directory = private_files::data_directory(&config.db_path);
+    let others = [
+        config.audit_path.as_path(),
+        config.audience_path.as_path(),
+        config.relay.host_key_path.as_path(),
+    ];
+    let state = private_files::tighten_data_directory(&config.db_path, &others).await?;
+    match state {
+        DirectoryState::Tightened => {
+            tracing::info!(path = %directory.display(), "data directory set to mode 0700");
+        }
+        DirectoryState::Readable { reason } => tracing::warn!(
+            path = %directory.display(),
+            %reason,
+            "others can list the data directory, and warden did not change it: they can see \
+             its files' names and sizes, not their contents. warden-server doctor fails it"
+        ),
+        DirectoryState::Unchecked { reason } => tracing::warn!(
+            path = %directory.display(),
+            %reason,
+            "warden could not check the data directory's mode"
+        ),
+        _ => {}
+    }
+    Ok(())
+}
+
 async fn build_app(config: &Arc<Config>) -> Result<App> {
+    report_data_directory(config).await?;
     let pool = store::open(&config.db_path).await?;
     let audit = Arc::new(
         AuditLog::open(&config.audit_path)
@@ -552,6 +602,7 @@ async fn serve() -> Result<()> {
     let approval_listener = TcpListener::bind(config.approval_listen)
         .await
         .with_context(|| format!("binding the approval UI on {}", config.approval_listen))?;
+    log_plain_http(&config);
     match &config.backend {
         BackendSettings::OnePassword(connect) => tracing::info!(
             api = %config.api_listen,

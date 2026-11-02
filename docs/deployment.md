@@ -294,9 +294,10 @@ Behaviour to know:
 #### Never use Funnel
 
 Never publish either Service with Tailscale Funnel. Funnel puts a name on
-the public internet. warden refuses every agent API request that came
-through Funnel (`401`), and the approval UI needs the owner's login, which a
-Funnel request never carries. Do not rely on those refusals: keep Funnel off.
+the public internet. warden refuses every request to either listener that
+came through Funnel (`401`), and the approval UI also needs the owner's login,
+which a Funnel request never carries. Do not rely on those refusals: keep Funnel
+off.
 
 - In the tailnet policy, give no `nodeAttrs` entry with the `funnel`
   attribute to `tag:warden-host` (or to `tag:warden` in the sidecar layout).
@@ -516,7 +517,22 @@ see [Verifying a release](verifying-releases.md).
 You can also build it from this repository:
 `docker buildx build -t warden:dev --load .`.
 
-The image runs as uid 65532, has no shell, and writes only to `/data`.
+The image runs as uid 65532, has no shell, and writes only to `/data`, which it
+ships with mode 0700 and owned by that user. What `/data` is at runtime depends
+on how it is mounted:
+
+- **A new named or anonymous volume** takes the owner and mode from the image.
+- **A bind mount** keeps the owner and mode of the host's directory. If the
+  directory does not exist, Docker creates it owned by root, and warden cannot
+  start: create it first, as [the steps below](#the-compose-file) do.
+
+warden keeps its files private to its user, whichever you use, and corrects
+`/data` itself at start when it holds nothing but warden's files.
+[The data directory](configuration.md#the-data-directory) has the rules. Tools that
+read these files must run as warden's user or as root. Run doctor inside the
+container: Docker Desktop's file sharing can show a bind-mounted directory with one
+mode on the host and another in the container, and the container's is what warden
+sees.
 
 ### Networks
 
@@ -611,6 +627,10 @@ WARDEN_OP_CONNECT_TOKEN=<written there in section 3>
 WARDEN_NOTIFY_HOMEASSISTANT_WEBHOOK_URL=https://ha.example.com/api/webhook/<id>
 WARDEN_NOTIFY_NTFY_URL=https://ntfy.example.com/warden-<random>
 ```
+
+Plain `http` in these URLs and in `WARDEN_OP_CONNECT_URL` is accepted only
+[to a local or private host](configuration.md#plain-http); warden refuses to start
+on any other.
 
 Every variable is described in [Configuration](configuration.md).
 

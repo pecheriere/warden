@@ -240,7 +240,7 @@ change.
   audience, which a client reads before it can sign), and signed requests of
   key-signed agents (below). The header is set by Tailscale Serve after it
   authenticates the peer. The CLI never sets it.
-- **No exemption reaches the internet.** Every route of the agent API,
+- **No exemption reaches the internet.** Every route of both listeners,
   `GET /healthz` and `GET /v1/info` included, refuses with
   `401 {"error":"unauthorized"}` a request carrying the
   `Tailscale-Funnel-Request` header, which Serve sets on requests that came
@@ -248,8 +248,9 @@ change.
   it carries; a signed one's body is not read. The exemptions above assume
   a tailnet peer: published through Funnel by mistake, the API would let
   anyone on the internet read the audience and try signed requests. The
-  approval UI needs the owner's login, which Funnel requests never carry; it
-  has no Funnel check of its own, so it relies on Serve for this.
+  approval UI also needs the owner's login, which Funnel requests never carry.
+  Both refusals rely on Serve to set its headers, so neither protects a
+  listener reached without Serve.
 - Agent endpoints also require the agent to authenticate, in one of two ways.
   A request with any `Warden-*` header is authenticated by its signature or
   refused; it is never treated as a bearer request.
@@ -431,10 +432,16 @@ These were recorded during implementation and are accepted for this release.
 - **Certificate logins are not audited.** They go straight to the target. warden
   records the approval and the certificate, and the target's `sshd` logs the login
   with the certificate's key id. Ship those logs if you need that trail.
-- **Connect and notifiers can be configured over plain HTTP.** warden does not
-  require `https` for `WARDEN_OP_CONNECT_URL` or the notifier URLs, because Connect
-  on its own network and a local Home Assistant commonly use `http`. On a network
-  that is not private, that exposes the Connect token and everything it reads.
+- **Connect and notifiers can be configured over plain HTTP.** warden accepts
+  `http` for `WARDEN_OP_CONNECT_URL` and the notifier URLs when the URL shows a
+  local or private host, because Connect on its own network and a local Home
+  Assistant commonly use it, and refuses any other host unless the variable is
+  listed in `WARDEN_ALLOW_PLAIN_HTTP` ([rules](configuration.md#plain-http)).
+  Anyone else on that network can read the Connect token and everything it reads.
+  The check reads the URL and resolves no name, so a local-looking name that
+  resolves elsewhere is not caught, and it cannot see who shares a private network
+  or whether a `100.64.0.0/10` address, which is also carrier NAT, is on your tailnet.
+  With the opt-in, warden logs a warning at startup and doctor does not pass it.
 - **Secrets in the environment.** Unless given through a `_FILE` variable (see
   [Configuration](configuration.md#secrets-in-files)), the Connect token and the
   notifier secrets are in the process environment, readable by root and the same
@@ -675,6 +682,35 @@ What holds, because the same code runs:
 warden does not generate the SSH CA key with this backend. It would need write access
 to the directory holding the secrets, and a volume that failed to mount would silently
 yield a new CA. `ssh-keygen` does it in one command.
+
+## warden's files on disk
+
+warden keeps its files private to its user. The database and its `-wal`, `-shm` and
+`-journal` files, the audit log, the audience and the relay's host key are mode 0600.
+warden creates them that way, corrects a loose file when it opens it, and refuses to
+start if it cannot, or if a symbolic link is in the file's place. The relay's host key
+is refused rather than corrected. warden also refuses to start if others can write to
+the data directory and warden cannot call it its own, as they could replace the files
+in it. [The data directory](configuration.md#the-data-directory) has the rules.
+
+This does not cover:
+
+- **Anyone with warden's uid or with root.** That includes root on the host, and any
+  other container running as uid 65532 with the same volume mounted. The default user
+  of many distroless images has that uid, so do not share the volume.
+- **Encryption.** The files are in clear on disk. Protecting a stolen disk or backup
+  is the host's job.
+- **Copies.** A backup is as private as where it is put and how it is made.
+- **Changes while warden runs.** Modes are corrected when a file is opened, at start
+  and by server commands that change data. `warden-server doctor` and `audit verify`
+  only read, and change no mode. A file loosened afterwards stays so until the next
+  start; `warden-server doctor` reports it.
+- **Names and sizes in a directory warden leaves alone.** If others can read the data
+  directory, warden warns and starts: they can see the files' names, sizes and times,
+  not their contents.
+- **A file system that misreports modes.** warden relies on the mode the file system
+  reports. A network or shared file system that reports one mode and enforces another
+  is outside what warden can see.
 
 ## Deployment assumptions
 

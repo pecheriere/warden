@@ -22,9 +22,10 @@ use async_trait::async_trait;
 use secrecy::ExposeSecret;
 use warden_broker_proto::doctor::{Check, Report};
 
-use crate::config::{BackendSettings, Config, ConfigError};
+use crate::config::{ALLOW_PLAIN_HTTP, BackendSettings, Config, ConfigError, UrlTransport};
 use crate::notify::{ChannelSettings, Doorbell, NotifyError};
 use crate::policy::{CaProbe, LocalProbe, VaultProbe};
+use crate::private_files;
 use crate::proxy::{Needles, redact};
 
 pub mod live;
@@ -184,6 +185,7 @@ pub fn invalid_config_report(error: &ConfigError) -> Report {
         format!("Fix this setting and run doctor again; there may be more. See {SETTINGS_DOC}"),
     )];
     for name in [
+        "plain-http",
         "connect",
         "ssh-ca",
         "notify",
@@ -214,7 +216,10 @@ pub async fn examine(
     env: &dyn Environment,
     send_test_notification: bool,
 ) -> Report {
-    let mut checks = vec![Check::pass("config", "The settings are present and valid.")];
+    let mut checks = vec![
+        Check::pass("config", "The settings are present and valid."),
+        plain_http_check(config),
+    ];
     match &config.backend {
         BackendSettings::OnePassword(connect) => {
             let vault_found = connect_checks(env.vault().await, &connect.vault, &mut checks);
@@ -249,6 +254,45 @@ pub async fn examine(
         checks,
         effects,
     })
+}
+
+/// Which service URLs send their tokens and secrets without TLS. warden can
+/// tell what a URL says, not what the network under it is.
+fn plain_http_check(config: &Config) -> Check {
+    const NAME: &str = "plain-http";
+    let urls = config.plain_http_urls();
+    let named = |wanted: UrlTransport| {
+        urls.iter()
+            .filter(|(_, transport)| *transport == wanted)
+            .map(|(var, _)| *var)
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let (remote, local) = (
+        named(UrlTransport::PlainRemote),
+        named(UrlTransport::PlainLocal),
+    );
+    if !remote.is_empty() {
+        return Check::could_not_check(
+            NAME,
+            format!(
+                "{remote}: plain http to a host that is not clearly local or private, allowed by \
+                 {ALLOW_PLAIN_HTTP}. Tokens and secrets cross that path in clear, and warden \
+                 cannot see whether it is safe."
+            ),
+            "Use https or a tailnet address. If that path really is private, keep the setting.",
+        );
+    }
+    if local.is_empty() {
+        return Check::pass(NAME, "Every service URL uses https.");
+    }
+    Check::pass(
+        NAME,
+        format!(
+            "{local}: plain http to a local or private host, judged from the URL alone. Tokens \
+             and secrets cross that network in clear, so share it only with the service."
+        ),
+    )
 }
 
 /// The checks from a Connect answer. Returns whether the vault was found, the
@@ -509,22 +553,20 @@ struct PathRule<'a> {
     path: &'a Path,
     is_dir: bool,
     forbidden_mode: u32,
+    /// Whether starting the server removes those bits.
+    server_corrects: bool,
 }
 
 async fn data_checks(config: &Config, env: &dyn Environment, checks: &mut Vec<Check>) {
-    // These are what the server enforces or creates: the directory from the
-    // deployment guide (0700), the host key refused unless 0600, the rest
-    // refused or left unsafe if others may write. The database is 0644 by
-    // default and relies on the directory.
-    let directory = match config.db_path.parent() {
-        Some(dir) if !dir.as_os_str().is_empty() => dir,
-        _ => Path::new("."),
-    };
+    // These are what the server creates and keeps: everything private to its
+    // user. Doctor changes nothing, so it reports a loose mode the server would
+    // correct at its next start, and a directory the server could not correct.
     let mut rules = vec![PathRule {
         name: "data.directory",
-        path: directory,
+        path: private_files::data_directory(&config.db_path),
         is_dir: true,
         forbidden_mode: 0o077,
+        server_corrects: true,
     }];
     let files = [
         ("data.database", config.db_path.as_path()),
@@ -536,7 +578,8 @@ async fn data_checks(config: &Config, env: &dyn Environment, checks: &mut Vec<Ch
             name,
             path,
             is_dir: false,
-            forbidden_mode: 0o022,
+            forbidden_mode: 0o077,
+            server_corrects: true,
         });
     }
     if config.relay.public_addr.is_some() {
@@ -545,10 +588,29 @@ async fn data_checks(config: &Config, env: &dyn Environment, checks: &mut Vec<Ch
             path: &config.relay.host_key_path,
             is_dir: false,
             forbidden_mode: 0o077,
+            server_corrects: false,
         });
     }
     for rule in rules {
         let facts = env.path_facts(rule.path).await;
+        checks.push(path_check(&rule, facts, env.euid()));
+    }
+    // These come and go with the database, so only one that exists is checked.
+    for (name, suffix) in [("data.database-wal", "-wal"), ("data.database-shm", "-shm")] {
+        let mut path = config.db_path.clone().into_os_string();
+        path.push(suffix);
+        let path = Path::new(&path);
+        let facts = env.path_facts(path).await;
+        if matches!(&facts, Err(e) if e.kind() == io::ErrorKind::NotFound) {
+            continue;
+        }
+        let rule = PathRule {
+            name,
+            path,
+            is_dir: false,
+            forbidden_mode: 0o077,
+            server_corrects: true,
+        };
         checks.push(path_check(&rule, facts, env.euid()));
     }
 }
@@ -607,7 +669,15 @@ fn path_check(rule: &PathRule<'_>, facts: io::Result<PathFacts>, euid: u32) -> C
         return Check::fail(
             name,
             format!("{shown} has mode {mode:04o}; the bits {extra:03o} must be off."),
-            format!("chmod {:04o} {shown}", mode & !rule.forbidden_mode),
+            if rule.server_corrects {
+                format!(
+                    "Start the server, which corrects this when it can, or run chmod {:04o} on \
+                     the path as its owner.",
+                    mode & !rule.forbidden_mode
+                )
+            } else {
+                format!("chmod {:04o} {shown}", mode & !rule.forbidden_mode)
+            },
         );
     }
     Check::pass(

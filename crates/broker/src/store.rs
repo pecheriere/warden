@@ -6,13 +6,21 @@ use anyhow::{Context, Result};
 use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 
+use crate::private_files;
+
 /// Open (creating if missing) the database at `path` in WAL mode with foreign
-/// keys enforced, and apply all pending migrations.
+/// keys enforced, and apply all pending migrations. The database and the files
+/// `SQLite` keeps next to it are private to this process's user.
 ///
 /// # Errors
 ///
-/// Fails if the database cannot be opened or a migration cannot be applied.
+/// Fails if the database cannot be made private or opened, or a migration
+/// cannot be applied.
 pub async fn open(path: &Path) -> Result<SqlitePool> {
+    let owned = path.to_owned();
+    tokio::task::spawn_blocking(move || private_files::prepare_database(&owned))
+        .await
+        .context("preparing the database file")??;
     let options = SqliteConnectOptions::new()
         .filename(path)
         .create_if_missing(true)

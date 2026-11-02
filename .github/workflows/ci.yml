@@ -233,14 +233,25 @@ jobs:
           context: .
           platforms: ${{ matrix.platform }}
           push: false
-          outputs: type=local,dest=${{ runner.temp }}/image
+          # A tar rather than type=local: only its entries keep the image's owners.
+          outputs: type=tar,dest=${{ runner.temp }}/image.tar
           cache-from: type=gha,scope=${{ matrix.platform }}
           cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
+      - name: Check the owner and mode of /data in the built image
+        run: |
+          entry=$(tar --numeric-owner --no-recursion -tvf "$RUNNER_TEMP/image.tar" data/)
+          read -r mode owner _ <<< "$entry"
+          if [ "$mode" != "drwx------" ] || [ "$owner" != "65532/65532" ]; then
+            echo "::error::/data is $mode $owner in the image, not drwx------ 65532/65532"
+            exit 1
+          fi
       # The demo's startup banner is in its binary, so this also catches the
       # demo linked into warden-server under another name.
       - name: Refuse the demo in the built image
         run: |
           image="$RUNNER_TEMP/image"
+          mkdir "$image"
+          tar -xf "$RUNNER_TEMP/image.tar" -C "$image"
           test -x "$image/warden-server"
           if find "$image" -name '*demo*' | grep .; then
             echo "::error::the image contains the demo"

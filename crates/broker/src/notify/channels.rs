@@ -17,7 +17,7 @@ use secrecy::SecretString;
 use url::Url;
 
 use super::{HaWebhook, Notifier, NotifyError, Ntfy};
-use crate::config::{ConfigError, SecretUrl};
+use crate::config::{AllowedPlainHttp, ConfigError, SecretUrl, parse_service_url};
 
 /// The variable that lists the enabled channels.
 const LIST_VAR: &str = "WARDEN_NOTIFY";
@@ -82,6 +82,15 @@ impl ChannelKind {
         Self::ALL.into_iter().find(|k| k.name() == name)
     }
 
+    /// The variable holding the channel's URL.
+    #[must_use]
+    pub const fn url_variable(self) -> &'static str {
+        match self {
+            Self::HomeAssistant => HA_WEBHOOK_URL,
+            Self::Ntfy => NTFY_URL,
+        }
+    }
+
     /// Every `WARDEN_NOTIFY_<KIND>_*` variable the channel reads.
     const fn variables(self) -> &'static [&'static str] {
         match self {
@@ -129,6 +138,16 @@ impl ChannelSettings {
         }
     }
 
+    /// The channel's URL; for Home Assistant it holds a secret, so handle it
+    /// with care.
+    #[must_use]
+    pub const fn url(&self) -> &Url {
+        match self {
+            Self::HomeAssistant { webhook_url } => webhook_url.expose_url(),
+            Self::Ntfy { url, .. } => url,
+        }
+    }
+
     /// Create the notifier for these settings.
     ///
     /// # Errors
@@ -144,14 +163,16 @@ impl ChannelSettings {
     fn parse(
         kind: ChannelKind,
         get: &impl Fn(&'static str) -> Option<String>,
+        allowed: &AllowedPlainHttp,
     ) -> Result<Self, ConfigError> {
         let required = |var: &'static str| get(var).ok_or(ConfigError::Missing(var));
+        let url = |var: &'static str| parse_service_url(var, &required(var)?, allowed);
         match kind {
             ChannelKind::HomeAssistant => Ok(Self::HomeAssistant {
-                webhook_url: SecretUrl::new(parse_url(HA_WEBHOOK_URL, &required(HA_WEBHOOK_URL)?)?),
+                webhook_url: SecretUrl::new(url(HA_WEBHOOK_URL)?),
             }),
             ChannelKind::Ntfy => Ok(Self::Ntfy {
-                url: parse_url(NTFY_URL, &required(NTFY_URL)?)?,
+                url: url(NTFY_URL)?,
                 token: get(NTFY_TOKEN).map(SecretString::from),
             }),
         }
@@ -185,13 +206,6 @@ impl ChannelList {
     }
 }
 
-fn parse_url(var: &'static str, value: &str) -> Result<Url, ConfigError> {
-    Url::parse(value).map_err(|_| ConfigError::Invalid {
-        var,
-        reason: "not a valid URL",
-    })
-}
-
 /// `name` when it is safe to show back to the operator.
 fn echoable(name: &str) -> Option<String> {
     let plain = (1..=NAME_ECHO_LIMIT).contains(&name.len())
@@ -207,10 +221,12 @@ fn echoable(name: &str) -> Option<String> {
 /// # Errors
 ///
 /// [`ConfigError`] when a removed variable is set, the list is empty, names an
-/// unknown or repeated channel, a listed channel lacks a setting, or a
-/// setting of an unlisted channel is present.
+/// unknown or repeated channel, a listed channel lacks a setting or has a URL
+/// that `allowed` does not accept, or a setting of an unlisted channel is
+/// present.
 pub fn parse_channels(
     lookup: &impl Fn(&str) -> Option<String>,
+    allowed: &AllowedPlainHttp,
 ) -> Result<ChannelList, ConfigError> {
     let get = |var: &'static str| lookup(var).filter(|v| !v.trim().is_empty());
     for (var, replacement) in REMOVED {
@@ -252,7 +268,7 @@ pub fn parse_channels(
     }
     let mut settings = kinds
         .into_iter()
-        .map(|kind| ChannelSettings::parse(kind, &get));
+        .map(|kind| ChannelSettings::parse(kind, &get, allowed));
     let primary = settings.next().ok_or(ConfigError::NoChannels)??;
     Ok(ChannelList {
         primary,

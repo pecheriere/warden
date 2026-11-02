@@ -25,6 +25,7 @@ pub mod health;
 pub mod identity;
 pub mod notify;
 pub mod policy;
+pub mod private_files;
 pub mod proxy;
 pub mod relay;
 pub mod requests;

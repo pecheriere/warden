@@ -18,7 +18,7 @@ Values are never echoed in errors.
 | `WARDEN_AUDIT_PATH` | The audit log, for example `/data/audit.jsonl`. |
 | `WARDEN_PUBLIC_URL` | The approval UI's URL: `https`, a domain name (not an IP address), no path, query or credentials. Its host is the WebAuthn relying party: changing it invalidates every enrolled passkey. Notifications link to it. |
 | `WARDEN_OWNER_LOGIN` | The owner's Tailscale login (as Tailscale Serve reports it in `Tailscale-User-Login`). Only this login may use the approval UI or a bearer agent key. |
-| `WARDEN_OP_CONNECT_URL` | The 1Password Connect API, for example `http://172.31.251.11:8080`. Plain `http` is accepted, and exposes the token and all it reads to that network: use it only on the [private network](deployment.md#3-1password) that Connect shares with warden. Not with `WARDEN_SECRET_BACKEND=local`. |
+| `WARDEN_OP_CONNECT_URL` | The 1Password Connect API, for example `http://172.31.251.11:8080`. Plain `http` exposes the token and all it reads to that network, so it is accepted [only to a local or private host](#plain-http): use it only on the [private network](deployment.md#3-1password) that Connect shares with warden. Not with `WARDEN_SECRET_BACKEND=local`. |
 | `WARDEN_OP_CONNECT_TOKEN` | The Connect token. Read-only, for the warden vault only. Secret; can be [read from a file](#secrets-in-files). Not with `WARDEN_SECRET_BACKEND=local`. |
 | `WARDEN_NOTIFY` | The notification channels in priority order, comma-separated, lowercase: `homeassistant`, `ntfy`. See [Notifications](notifications.md). |
 
@@ -33,6 +33,7 @@ Values are never echoed in errors.
 | `WARDEN_SECRET_BACKEND` | `1password` | Where targets, API secrets and the SSH CA key come from: `1password`, recommended, or `local`, [files on this host](local-backend.md), where a compromised host gets every secret. |
 | `WARDEN_LOCAL_POLICY_FILE` | | Required with `WARDEN_SECRET_BACKEND=local`, and refused without it: the [policy file](local-backend.md#the-policy-file), an absolute path. |
 | `WARDEN_LOCAL_SECRETS_DIR` | | Required with `WARDEN_SECRET_BACKEND=local`, and refused without it: the [only directory secrets are read from](local-backend.md#the-secret-files), an absolute path. |
+| `WARDEN_ALLOW_PLAIN_HTTP` | | The URL settings that may use [plain `http`](#plain-http) to a host that is not clearly local or private, comma-separated. |
 | `WARDEN_NOTIFY_HOMEASSISTANT_WEBHOOK_URL` | | Required when `homeassistant` is listed. Secret. |
 | `WARDEN_NOTIFY_NTFY_URL` | | Required when `ntfy` is listed: the topic URL. |
 | `WARDEN_NOTIFY_NTFY_TOKEN` | | An ntfy access token, sent as `Authorization: Bearer`. Secret. |
@@ -158,6 +159,7 @@ deployment exits 7 with `--strict`.
 | Check | Passes when | Reports `COULD NOT CHECK` when |
 |-------|-------------|--------------------------------|
 | `config` | The settings are present and valid. A failure names the first bad setting and links this page; there may be more. | Never. When it fails, everything below except `tailscale.*` is not checked. |
+| `plain-http` | Every service URL is `https`, or goes to a host that is clearly local or private; the detail names those that use plain `http`. | A variable in `WARDEN_ALLOW_PLAIN_HTTP` sends plain `http` to any other host: warden cannot see whether that path is safe. |
 | `connect.reachable` | Connect answers. | The vault name is unusable. |
 | `connect.token` | Connect accepts the token. | Connect gave no useful answer. |
 | `connect.vault` | The token can see `WARDEN_OP_VAULT`. | Connect gave no useful answer, or refused the token. |
@@ -171,8 +173,9 @@ deployment exits 7 with `--strict`.
 | `audit.waiting` | No audit log entries are waiting in the database. They wait there when the log could not take them; a running server writes them once it can. | The database exists but cannot be read. |
 | `listener.api`, `listener.approval`, `listener.relay` | A process accepts TCP connections on the address, and the address is not `0.0.0.0` or `::`. This does not prove the process is warden. The relay is checked only when it is on. | The connection neither succeeds nor is refused. |
 | `data.directory` | The database's directory belongs to doctor's user, with no group or other permissions (0700). | The path cannot be read. |
-| `data.database`, `data.audit-log`, `data.audience` | Each is a regular file (not a symbolic link) of doctor's user, not writable by group or others. | The path cannot be read. |
-| `data.relay-host-key` | The same, with no group or other permissions (0600). Only when the relay is on. | The path cannot be read. |
+| `data.database`, `data.audit-log`, `data.audience` | Each is a regular file (not a symbolic link) of doctor's user, with no group or other permissions (0600). The server corrects the permissions when it starts, or refuses to start if it cannot. | The path cannot be read. |
+| `data.database-wal`, `data.database-shm` | The same, for each that exists. | The path cannot be read. |
+| `data.relay-host-key` | The same, and the server refuses to start rather than correct it. Only when the relay is on. | The path cannot be read. |
 | `tailscale.funnel-off`, `tailscale.serve` | Never. | Always: from inside its container warden cannot see Tailscale's configuration. The output says what to run on the host. |
 
 What doctor does and does not do:
@@ -197,6 +200,31 @@ What doctor does and does not do:
   configured secrets from everything it prints in case an upstream echoed one
   into an error, and replaces control characters.
 
+## Plain http
+
+`WARDEN_OP_CONNECT_URL`, `WARDEN_NOTIFY_HOMEASSISTANT_WEBHOOK_URL` and
+`WARDEN_NOTIFY_NTFY_URL` carry tokens and secrets, so each must be `https`, or
+plain `http` to a host that the URL shows to be local or private:
+
+| Kind of host | Accepted for plain `http` |
+|---|---|
+| IPv4 address | Loopback, private (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), link-local, and `100.64.0.0/10`. That is the tailnet range and also carrier NAT, so it is accepted as an address warden cannot check belongs to your tailnet |
+| IPv6 address | `::1`, unique local `fc00::/7`, which holds tailnet addresses, link-local `fe80::/10`, and the IPv4 addresses above written as IPv6 |
+| Name | One without a dot, such as a Docker service name, and `localhost` and names ending in `.localhost`, `.local`, `.home.arpa`, `.internal` or `.lan`. Not `.ts.net`: it is publicly delegated, so use `https` with those names, or the opt-in below |
+
+Anything else stops the server at startup, and `warden-server doctor` reports
+it, naming the variable and never the URL. Prefer `https`. If the path to that
+host is safe in a way the URL cannot show, list the variable in
+`WARDEN_ALLOW_PLAIN_HTTP`, for example
+`WARDEN_ALLOW_PLAIN_HTTP=WARDEN_NOTIFY_NTFY_URL`. The server then logs a warning
+at each start, and doctor reports `plain-http` as not checked. An entry that
+names another variable, an unset one, or one that does not need it is refused,
+so that a forgotten entry cannot later let a mistyped URL through.
+
+This judges the URL as written and resolves no name: a name that looks local
+but resolves to a public address is not caught. Nor can warden see who else is
+on a private network. Any other scheme is refused.
+
 ## Server data
 
 | Path (default) | Holds |
@@ -209,6 +237,35 @@ What doctor does and does not do:
 See [Backups and upgrades](deployment.md#9-backups-and-upgrades). To replace a
 key or token, see [Replacing credentials](assurance-case.md#7-replacing-credentials).
 
+### The files
+
+warden keeps its files private to its user. It creates the database and its
+companion files, the audit log and the audience 0600. At start, it corrects any it
+finds with group or other permissions. It refuses to start, with a message naming the
+file, if a file cannot be corrected, for example because another user owns it or it
+is on a read-only mount, or if a symbolic link is in its place. A file that is already
+private needs no change, so it can be on a read-only mount, though warden has to write
+to the database and the audit log. The relay's host key is refused rather than
+corrected.
+
+### The data directory
+
+The data directory is the one holding `WARDEN_DB_PATH`. **warden sets it to 0700 only
+when warden's non-root user owns it and nothing but warden's own files is in it.** So
+`/data`, in a new volume or one warden has been using, is corrected, and `$HOME` holding
+a database is not. warden's own files are those in the table above and its temporary
+files for them.
+
+If warden leaves a directory with group or other permissions alone:
+
+| Others can | warden | Why |
+|---|---|---|
+| Write to it | Refuses to start, and says why | They could replace the files in it, whatever the files' modes. |
+| Only read it | Logs a warning, and starts | They can see the files' names, sizes and times, not their contents. |
+
+`warden-server doctor` fails `data.directory` in both cases. To fix it, give warden a
+directory of its own, or change this one's mode yourself: warden will not.
+
 ## Server endpoints
 
 | Listener | Path | Who |
@@ -218,7 +275,7 @@ key or token, see [Replacing credentials](assurance-case.md#7-replacing-credenti
 | Agent API | `/v1/requests…`, `/v1/grants…` | Agents. See [the agent protocol](agent-protocol.md#6-endpoints). |
 | Approval UI | `/approve/<token>`, `/grants`, `/history`, `/enroll` and their actions; [full list](interfaces.md#approval-ui) | The owner (`WARDEN_OWNER_LOGIN`). |
 
-Every request to the agent API that came through Tailscale Funnel is
+Every request to either listener that came through Tailscale Funnel is
 refused with `401`.
 
 ## CLI commands

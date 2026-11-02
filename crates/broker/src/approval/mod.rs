@@ -22,7 +22,7 @@ use warden_broker_proto::{
 use webauthn_rs::prelude::{PublicKeyCredential, RegisterPublicKeyCredential};
 
 use crate::AppState;
-use crate::identity::Owner;
+use crate::identity::{Owner, refuse_funnel};
 use crate::policy::{ApiScope, ApiSecretPolicy, CaKey, SshMode, SshTarget};
 use crate::proxy::CallInfo;
 use crate::relay::{LiveSessionInfo, RelayEndpoint};
@@ -97,6 +97,7 @@ pub fn router(state: AppState) -> Router {
             require_same_origin_json,
         ))
         .layer(middleware::from_fn_with_state(state.clone(), require_owner))
+        .layer(middleware::from_fn(refuse_funnel))
         .layer(middleware::map_response(security_headers))
         .with_state(state)
 }
