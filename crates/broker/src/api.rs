@@ -451,7 +451,8 @@ impl CallRecord {
 /// Make the call and record its result. A call that finds the agent or the
 /// broker at its limit of calls in flight is refused (429) before anything
 /// is sent, and recorded like any other refused call. If the result entry cannot be
-/// written, the agent gets an internal error instead of the response. A
+/// written, the agent gets an internal error instead of the response; the end of a
+/// call that was stopped has no response to hold back, and waits for the log. A
 /// call whose pre-flight entry could not be written was never sent and gets
 /// no result entry either.
 async fn audited_call(
@@ -498,6 +499,10 @@ async fn audited_call(
         outcome,
         aborted: record.aborted,
     };
+    if record.aborted.is_some() {
+        state.requests.record_stopped_call(event).await;
+        return result;
+    }
     if let Err(e) = state.audit.append(event).await {
         tracing::error!(grant = %grant_id, error = %e, "could not audit a proxy call");
         return Err(Failure::Request(RequestError::Audit(e)));

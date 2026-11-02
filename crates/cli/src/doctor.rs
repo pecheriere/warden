@@ -99,6 +99,7 @@ fn without_key(error: CallError, key: Option<&Zeroizing<String>>) -> CallError {
         CallError::Refused(m) => CallError::Refused(clean(m)),
         CallError::Revoked(m) => CallError::Revoked(clean(m)),
         CallError::Expired(m) => CallError::Expired(clean(m)),
+        CallError::CallStopped(m) => CallError::CallStopped(clean(m)),
     }
 }
 
@@ -265,11 +266,13 @@ fn accepted_check(config: &Config, accepted: Result<(), CallError>) -> Check {
             ),
         ),
         // Unreachable or failing on its side: the broker gave no verdict.
-        Err(CallError::Unavailable(reason)) => Check::could_not_check(
-            NAME,
-            reason,
-            "Get the broker answering, then run doctor again.",
-        ),
+        Err(CallError::Unavailable(reason) | CallError::CallStopped(reason)) => {
+            Check::could_not_check(
+                NAME,
+                reason,
+                "Get the broker answering, then run doctor again.",
+            )
+        }
         Err(
             CallError::Refused(reason) | CallError::Revoked(reason) | CallError::Expired(reason),
         ) => Check::fail(

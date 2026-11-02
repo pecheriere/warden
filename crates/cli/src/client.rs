@@ -307,14 +307,20 @@ pub enum CallError {
     /// The broker says the grant expired (409), maybe while the call was
     /// out. Trying again will not help: access has to be requested again.
     Expired(String),
+    /// The broker stopped the call while it was out, as it could not tell if the
+    /// grant still holds (503). The grant may work again, but the upstream may
+    /// have acted on this call, so repeating it blindly could repeat a change.
+    CallStopped(String),
 }
 
 impl fmt::Display for CallError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Unavailable(m) | Self::Refused(m) | Self::Revoked(m) | Self::Expired(m) => {
-                f.write_str(m)
-            }
+            Self::Unavailable(m)
+            | Self::Refused(m)
+            | Self::Revoked(m)
+            | Self::Expired(m)
+            | Self::CallStopped(m) => f.write_str(m),
         }
     }
 }
@@ -345,6 +351,9 @@ const GRANT_REVOKED: &str = "grant revoked";
 /// grant expired, or sees it expire while it was out).
 const GRANT_EXPIRED: &str = "grant expired";
 
+/// The broker's 503 for a call it stopped because it could not read the grant.
+const GRANT_STATE_UNAVAILABLE: &str = "grant state unavailable during the call";
+
 /// The server's error for a failed call, classified by its status, with
 /// the broker's message made safe to print.
 async fn failure(resp: Response) -> CallError {
@@ -359,10 +368,15 @@ async fn failure(resp: Response) -> CallError {
         Some(body) => format!("{what} ({status}): {}", sanitize(&body.error)),
         None => format!("{what} ({status})"),
     };
-    let conflict = body
-        .filter(|_| status == StatusCode::CONFLICT)
-        .map_or_else(String::new, |b| b.error);
-    if status.is_server_error() {
+    let error = body.map_or_else(String::new, |b| b.error);
+    let conflict = if status == StatusCode::CONFLICT {
+        error.as_str()
+    } else {
+        ""
+    };
+    if status == StatusCode::SERVICE_UNAVAILABLE && error == GRANT_STATE_UNAVAILABLE {
+        CallError::CallStopped(message)
+    } else if status.is_server_error() {
         CallError::Unavailable(message)
     } else if conflict.starts_with(GRANT_REVOKED) {
         CallError::Revoked(message)
@@ -423,6 +437,26 @@ mod tests {
 
     fn client(url: &url::Url) -> Client {
         Client::new(url, bearer(&format!("wdn_{}", "S".repeat(43)))).unwrap()
+    }
+
+    #[tokio::test]
+    async fn only_the_stopped_call_503_is_told_apart_from_an_outage() {
+        let stopped = client(
+            &answering(
+                503,
+                r#"{"error":"grant state unavailable during the call"}"#,
+            )
+            .await,
+        );
+        assert!(matches!(
+            stopped.revoke(&Id::random()).await,
+            Err(CallError::CallStopped(_))
+        ));
+        let outage = client(&answering(503, r#"{"error":"connect down"}"#).await);
+        assert!(matches!(
+            outage.revoke(&Id::random()).await,
+            Err(CallError::Unavailable(_))
+        ));
     }
 
     #[tokio::test]

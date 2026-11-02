@@ -2,8 +2,9 @@
 //! matters more than recording it.
 //!
 //! Revoking, denying, cancelling and expiring store their audit entries in
-//! `unwritten_audit`, in the transaction that makes the change. The entries are
-//! then written to the log and removed from that table. So the log cannot delay
+//! `unwritten_audit`, in the transaction that makes the change, and the end of a
+//! proxied call stopped because its grant ended is stored there too. The entries
+//! are then written to the log and removed from that table. So the log cannot delay
 //! the change, and an entry it could not take is not lost: it waits in the
 //! database, and every sweep tries again. The grants page warns the owner for as
 //! long as any is waiting. A writer claims a row before writing it, so two
@@ -119,18 +120,21 @@ pub async fn count_waiting_read_only(db: &Path) -> Result<i64, String> {
 }
 
 /// Write the waiting entries in order, each claimed first and removed once it is
-/// in the log. The time is read after each write, which may take long.
+/// in the log. The time is read after each write, which may take long. Returns the
+/// last row it saw: one stored after that is for whoever stored it to report.
 async fn write_waiting(
     pool: &SqlitePool,
     audit: &AuditLog,
     clock: &dyn Clock,
-) -> Result<(), RequestError> {
+) -> Result<i64, RequestError> {
     let claim = Id::random();
+    let mut last_seen = 0;
     let rows = sqlx::query("SELECT id, event, took_effect_at FROM unwritten_audit ORDER BY id")
         .fetch_all(pool)
         .await?;
     for row in &rows {
         let id: i64 = row.try_get("id")?;
+        last_seen = id;
         let took_effect_at: i64 = row.try_get("took_effect_at")?;
         let event: AuditEvent = serde_json::from_str(row.try_get("event")?)?;
         let now = clock.now();
@@ -159,7 +163,7 @@ async fn write_waiting(
             .execute(pool)
             .await?;
     }
-    Ok(())
+    Ok(last_seen)
 }
 
 /// Write `event`, followed by a note when it is late: its own time is when it was
@@ -202,20 +206,27 @@ async fn write_bounded(
             write_waiting(&pool, &audit, clock.as_ref()).await
         })
     };
-    let cause = match tokio::time::timeout(WRITE_WAIT, task).await {
-        Ok(Ok(Ok(()))) => None,
-        Ok(Ok(Err(e))) => Some(e.to_string()),
-        Ok(Err(e)) => Some(e.to_string()),
-        Err(_) => Some(format!(
-            "the audit log did not answer within {} s",
-            WRITE_WAIT.as_secs()
-        )),
+    let (cause, last_seen) = match tokio::time::timeout(WRITE_WAIT, task).await {
+        Ok(Ok(Ok(last_seen))) => (None, last_seen),
+        Ok(Ok(Err(e))) => (Some(e.to_string()), i64::MAX),
+        Ok(Err(e)) => (Some(e.to_string()), i64::MAX),
+        Err(_) => (
+            Some(format!(
+                "the audit log did not answer within {} s",
+                WRITE_WAIT.as_secs()
+            )),
+            i64::MAX,
+        ),
     };
-    // An entry another writer has claimed is that writer's to report.
-    let unclaimed =
-        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM unwritten_audit WHERE claim IS NULL")
-            .fetch_one(pool)
-            .await;
+    // An entry another writer has claimed is that writer's to report, and so is
+    // one stored since: a call that a revocation just stopped stores its end while
+    // the revocation's own entry is being written, and that is no failure of the log.
+    let unclaimed = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM unwritten_audit WHERE claim IS NULL AND id <= ?",
+    )
+    .bind(last_seen)
+    .fetch_one(pool)
+    .await;
     let outcome = match (&cause, unclaimed) {
         (None, Ok(0)) => AuditOutcome::Recorded,
         (_, Err(e)) => {
@@ -251,6 +262,35 @@ impl Requests {
             );
         }
         written.outcome
+    }
+
+    /// Record how a proxied call that was stopped ended. Access is gone already, so
+    /// as for the change that ended it, the log cannot hold this up: the entry
+    /// waits in the database if the log does not take it within [`WRITE_WAIT`]. A
+    /// call stopped because the database cannot be read may find it still cannot
+    /// store the entry, and then goes straight to the log. The entry is lost only if
+    /// both fail, which is logged.
+    pub async fn record_stopped_call(&self, event: AuditEvent) {
+        let stored = async {
+            let row = serde_json::to_string(&event)?;
+            sqlx::query("INSERT INTO unwritten_audit (event, took_effect_at) VALUES (?, ?)")
+                .bind(row)
+                .bind(self.clock.now())
+                .execute(&self.pool)
+                .await?;
+            Ok::<_, RequestError>(())
+        };
+        match stored.await {
+            Ok(()) => {
+                self.settle_entries().await;
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "could not store the end of a stopped call; writing it to the log");
+                if let Err(e) = self.audit.append(event.clone()).await {
+                    tracing::error!(error = %e, ?event, "the end of a stopped call is not on record");
+                }
+            }
+        }
     }
 
     /// Try again to write the entries still waiting, unless a write is under way.

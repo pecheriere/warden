@@ -827,8 +827,9 @@ Errors:
   `grant is not for API access`, `policy changed; request access again` (the
   owner changed the secret's policy after approval), or, when this happens
   while the call is out, `grant revoked during the call` / `grant expired
-  during the call` (the call is stopped and nothing of its response is returned;
-  the upstream may still have acted on it). Request access again.
+  during the call` (the call is stopped and nothing of its response is returned).
+  Its outcome upstream is unknown: the upstream may have acted on it, so do not
+  repeat a call that changes something without finding out. Request access again.
 - `413`: the JSON body is over 2 MiB.
 - `429` `too many concurrent calls`: at most 4 calls per agent (16 overall)
   may be in flight; wait for one to finish.
@@ -836,8 +837,9 @@ Errors:
   compressed or oversized (over 1 MiB by default) response; the message is
   fixed and never quotes the upstream.
 - `503` `grant state unavailable during the call`: the broker could not read the
-  grant for 10 s while the call was out, so it stopped the call. The upstream may
-  have acted on it.
+  grant for 10 s while the call was out, so it stopped the call. Its outcome
+  upstream is unknown, as above. The grant may still be good, so a client that
+  retries 503s must not retry this one blindly. `warden http` exits 8 for it.
 - `500`, `503`, and section 5.
 
 Every call is recorded in the broker's audit log (method, origin and path,

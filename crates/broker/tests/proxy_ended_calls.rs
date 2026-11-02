@@ -11,8 +11,9 @@ use axum::http::StatusCode;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use serde_json::{Value, json};
+use warden_broker::audit::AuditEvent;
 use warden_broker::proxy::{CallEnd, CallInfo};
-use warden_broker::requests::{AuditOutcome, Clock as _};
+use warden_broker::requests::{AuditOutcome, Clock as _, unwritten_entries};
 use warden_broker::testkit::{HttpsUpstream, TestBroker, TestResponse};
 use warden_broker_proto::{AgentName, Id, RequestStatus, Window};
 
@@ -295,12 +296,12 @@ async fn a_revocation_by_another_process_stops_the_call() {
     within("the connection closing", s.upstream.wait_for_abandoned(1)).await;
 }
 
-/// An answer racing a revocation that no slot heard of: whether the call's check
-/// or the answer comes first, the agent gets nothing of it.
+/// An answer that arrives after a revocation no slot heard of is checked once
+/// more, and withheld. The upstream answers only once the database says revoked.
 #[tokio::test]
-async fn an_answer_that_races_a_revocation_is_withheld() {
+async fn an_answer_after_a_revocation_is_withheld() {
     let s = setup().await;
-    let (resp, ()) = tokio::join!(within("the call ending", get(&s, "/delayed")), async {
+    let (resp, ()) = tokio::join!(within("the call ending", get(&s, "/held")), async {
         reached(&s, 1).await;
         warden_broker::requests::revoke_agent(
             &s.broker.state().pool,
@@ -309,6 +310,7 @@ async fn an_answer_that_races_a_revocation_is_withheld() {
         )
         .await
         .unwrap();
+        s.upstream.release_held();
     });
     assert_eq!(resp.status, StatusCode::CONFLICT, "{}", resp.body);
     assert_eq!(resp.body, r#"{"error":"grant revoked during the call"}"#);
@@ -357,12 +359,55 @@ async fn a_grant_state_that_stays_unreadable_stops_the_call() {
     within("the connection closing", s.upstream.wait_for_abandoned(1)).await;
 }
 
-/// A stalled audit log holds up neither the revocation nor the end of the call:
-/// the connection closes while the log still does not answer.
+/// The call is told before the revocation goes near the log, which here does not
+/// answer, so a revocation can still be waiting for it when the slot hears. Polling
+/// the revocation first catches an order that tells the call only after the log:
+/// on this single-threaded runtime it would then be finished by the time the slot
+/// wakes.
 #[tokio::test]
-async fn a_stalled_log_does_not_keep_a_revoked_call_going() {
+async fn a_stalled_log_cannot_delay_telling_the_calls() {
     let s = setup().await;
-    let (resp, ()) = tokio::join!(within("the call ending", get(&s, "/hang")), async {
+    let requests = &s.broker.state().requests;
+    let hold = |agent: &str, grant: &Id| {
+        let agent = AgentName::try_from(agent.to_owned()).unwrap();
+        let info = CallInfo::new(grant.clone(), "GET".to_owned(), "/".to_owned(), 0);
+        requests.proxy_calls().try_acquire(&agent, info).unwrap()
+    };
+    s.broker.add_agent("other").await;
+    let other_grant = approve(&s.broker, "other").await;
+    let by_grant = hold("bot", &s.grant);
+    let by_agent = hold("other", &other_grant);
+    let holder = std::fs::File::open(s.broker.audit_path()).unwrap();
+    holder.lock().unwrap();
+
+    let revoking = requests.revoke_grant(&s.grant, "owner");
+    tokio::pin!(revoking);
+    tokio::select! {
+        biased;
+        _ = &mut revoking => panic!("the revocation finished before telling the call"),
+        end = by_grant.ended() => assert_eq!(end, CallEnd::Revoked),
+    }
+    assert_eq!(revoking.await.unwrap(), AuditOutcome::Missing);
+
+    let other = AgentName::try_from("other".to_owned()).unwrap();
+    let revoking = requests.revoke_agent(&other);
+    tokio::pin!(revoking);
+    tokio::select! {
+        biased;
+        _ = &mut revoking => panic!("the revocation finished before telling the call"),
+        end = by_agent.ended() => assert_eq!(end, CallEnd::Revoked),
+    }
+    assert_eq!(revoking.await.unwrap(), AuditOutcome::Missing);
+    drop(holder);
+}
+
+/// A log that does not answer holds up neither the end of the call nor its answer,
+/// and the entry of how it ended is not lost: it waits in the database, and
+/// reaches the log once the log works.
+#[tokio::test]
+async fn a_stalled_log_does_not_keep_a_call_going_or_lose_its_end() {
+    let s = setup().await;
+    let (resp, holder) = tokio::join!(within("the call ending", get(&s, "/hang")), async {
         reached(&s, 1).await;
         let holder = std::fs::File::open(s.broker.audit_path()).unwrap();
         holder.lock().unwrap();
@@ -375,9 +420,51 @@ async fn a_stalled_log_does_not_keep_a_revoked_call_going() {
             .unwrap();
         assert_eq!(revoked, AuditOutcome::Missing);
         within("the connection closing", s.upstream.wait_for_abandoned(1)).await;
-        drop(holder);
+        holder
     });
-    assert_ne!(resp.status, StatusCode::OK, "{}", resp.body);
+    assert_eq!(resp.status, StatusCode::CONFLICT, "{}", resp.body);
+    assert_eq!(resp.body, r#"{"error":"grant revoked during the call"}"#);
+
+    // The log has not moved: the agent's answer did not wait for it.
+    assert_eq!(audit_events(&s.broker, "proxy_call"), [] as [Value; 0]);
+    let waiting = unwritten_entries(&s.broker.state().pool).await.unwrap();
+    assert!(
+        waiting.iter().any(|entry| matches!(
+            entry,
+            AuditEvent::ProxyCall {
+                aborted: Some(CallEnd::Revoked),
+                ..
+            }
+        )),
+        "{waiting:?}"
+    );
+    assert_ne!(
+        s.broker
+            .state()
+            .requests
+            .unwritten_entry_count()
+            .await
+            .unwrap(),
+        0
+    );
+
+    drop(holder);
+    within("the entry reaching the log", async {
+        while s
+            .broker
+            .state()
+            .requests
+            .unwritten_entry_count()
+            .await
+            .unwrap()
+            > 0
+        {
+            s.broker.state().requests.flush_waiting_entries().await;
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    assert_eq!(the_call(&s.broker)["aborted"], "revoked");
 }
 
 /// A call that ends by itself is not affected, and its entry has no `aborted`.

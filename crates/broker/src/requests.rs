@@ -421,20 +421,6 @@ impl Requests {
         }
     }
 
-    /// Allow `max_per_agent` proxied calls in flight per agent and `max_total`
-    /// overall, instead of the default [`ProxyLimits`].
-    #[must_use]
-    pub fn with_call_limits(mut self, max_per_agent: usize, max_total: usize) -> Self {
-        self.proxy_calls = CallSlots::new(max_per_agent, max_total);
-        self
-    }
-
-    /// The proxied calls in flight.
-    #[must_use]
-    pub const fn proxy_calls(&self) -> &Arc<CallSlots> {
-        &self.proxy_calls
-    }
-
     /// The live relay sessions.
     pub(crate) const fn live_sessions(&self) -> &Arc<LiveSessions> {
         &self.sessions

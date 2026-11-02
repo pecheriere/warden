@@ -166,7 +166,8 @@ change.
   leave an owner unable to end access they have decided to end, and a compromise is
   when both are most likely to matter. So revoking, denying, cancelling and expiring
   store their entries in the database, in the transaction that makes the change, and
-  only then write them to the log, waiting 2 s at most.
+  only then write them to the log, waiting 2 s at most. The end of a proxied call
+  stopped because its grant ended goes the same way, just after.
   - Access stops as usual. A revoked grant or agent is revoked in the database,
     pending requests of a revoked agent end, relay sessions close, and proxied calls
     and the agent's key are refused. A call or session waiting to record its start
@@ -481,7 +482,17 @@ These were recorded during implementation and are accepted for this release.
     useful: a state-changing call it has received may take effect, in part or in
     full. The call's `proxy_call` entry has `aborted` with the reason, and the
     status and bytes received so far, which show how far the answer came, not what
-    the upstream did. Check there when the call could have changed something.
+    the upstream did. Check there when the call could have changed something. The
+    agent is told the same: the outcome is unknown, and `warden http` says to find
+    out before repeating the call.
+  - **The log does not hold this up.** A stopped call's `proxy_call` entry is treated
+    like the revocation's (see "Ending access does not wait for the log"): stored in
+    the database, then written to the log, waiting 2 s at most, and the agent gets its
+    answer either way. It is lost only in a crash before it is stored, or if neither
+    the database nor the log can take it, which is what the server log's error then
+    holds; `proxy_call_started` is still there. The entry of a call that ran to its
+    end is different: if it cannot be written, the agent gets an error and no response,
+    and only `proxy_call_started` remains.
   - **How fast.** Through this broker it is at once. A revoke made by another process
     (the server CLI) and the end of the window are found by a check every second, so
     about 1 s, or about 2.5 s if the check is slow. If the grant's state cannot be

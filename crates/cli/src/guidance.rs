@@ -53,10 +53,32 @@ pub fn no_api_grant(name: &SecretName) -> String {
 /// The error for a call refused because `grant` was revoked. `broker` is the
 /// broker's message.
 pub fn api_grant_revoked(grant: &Id, name: &SecretName, broker: &str) -> String {
+    // Only a call already out can have reached the API; one refused at the door
+    // cannot have.
+    let out = if broker.ends_with(DURING_THE_CALL) {
+        " No response was returned, and the call was already out, so it may have taken \
+         effect: find out before repeating it."
+    } else {
+        ""
+    };
     format!(
-        "grant {grant} for {name} was revoked on the broker ({broker}). The owner may have \
+        "grant {grant} for {name} was revoked on the broker ({broker}).{out} The owner may have \
          ended it on purpose: check with them, then if the task still needs it use: warden \
          request api {name} --for <window> --goal <goal> ({REQUEST_PLACEHOLDERS})"
+    )
+}
+
+/// How the broker's message ends for a grant that ended while the call was out.
+const DURING_THE_CALL: &str = "during the call";
+
+/// The error for a call the broker stopped while it was out, as it could not
+/// tell if `grant` still holds. `broker` is the broker's message.
+pub fn api_call_stopped(grant: &Id, name: &SecretName, broker: &str) -> String {
+    format!(
+        "the broker stopped this call using grant {grant} for {name} ({broker}). No response was \
+         returned, and the call was already out, so it may have taken effect: find out before \
+         repeating it. The broker could not read the grant's state: if it stays this way, tell \
+         the owner."
     )
 }
 
@@ -76,9 +98,33 @@ mod tests {
     use clap::Parser as _;
     use warden_broker_proto::{Id, RequestStatus};
 
-    use super::{api_grant_expired, api_grant_revoked, no_api_grant, no_ssh_grant, request_ended};
+    use super::{
+        api_call_stopped, api_grant_expired, api_grant_revoked, no_api_grant, no_ssh_grant,
+        request_ended,
+    };
     use crate::Cli;
     use crate::config::Config;
+
+    #[test]
+    fn only_a_call_already_out_warns_it_may_have_taken_effect() {
+        let id = Id::random();
+        let name = warden_broker_proto::SecretName::try_from("svc".to_owned()).unwrap();
+        let warning = "may have taken effect";
+        let refused = api_grant_revoked(&id, &name, "broker refused (409): grant revoked");
+        assert!(!refused.contains(warning), "{refused}");
+        let stopped = api_grant_revoked(
+            &id,
+            &name,
+            "broker refused (409): grant revoked during the call",
+        );
+        assert!(stopped.contains(warning), "{stopped}");
+        let unknown = api_call_stopped(
+            &id,
+            &name,
+            "broker error (503 Service Unavailable): grant state unavailable during the call",
+        );
+        assert!(unknown.contains(warning), "{unknown}");
+    }
 
     #[test]
     fn denied_says_not_to_retry_and_whom_to_ask() {

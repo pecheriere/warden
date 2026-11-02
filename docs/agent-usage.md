@@ -474,9 +474,10 @@ within seconds.
   expire: the target checks them offline. Short windows limit that, so
   revoke as soon as you finish. A login already open continues even after the
   certificate expires, so end your sessions and what they started.
-- **A proxied API call already in flight stops**, with a 409 and none of its
-  response, even if a response had started to arrive. The API may still have acted
-  on the call, so check before you repeat one that changes something.
+- **A proxied API call already in flight stops**, with none of its response, even if
+  a response had started to arrive (`warden http` exits 4 for a revoke and 5 for
+  expiry). The outcome upstream is unknown: the API may have acted on the call, so
+  find out before you repeat one that changes something.
 
 Every `warden` run also cleans up expired grants and stops their agents, and
 removes temporary files abandoned for over ten minutes by an interrupted
@@ -495,6 +496,7 @@ is reported once on stderr and never stops the command.
 | 5 | `warden ssh` or `warden http` found no active grant (for `warden http`, none that covers the method and path), or the broker said the grant `warden http` used has expired, whose local record is then removed. The message gives the `warden request …` command to run if the task needs it. |
 | 6 | The request was cancelled while `warden request` waited for it (`warden request cancel` from another terminal). |
 | 7 | `warden doctor --strict` found no failure, but could not check everything: see [Checking an agent machine](configuration.md#checking-an-agent-machine). Without `--strict` it exits 0 and lists those items. It exits 1 when a check failed. |
+| 8 | The broker stopped a `warden http` call that was out, because it could not read the grant's state. No response came back, and the API may have acted on the call: find out before repeating one that changes something. The grant stays; if this repeats, tell the owner. |
 | 22 | `warden http --fail` got an upstream status of 400 or more. The body is still written to stdout. |
 | 64 | Wrong arguments: nothing ran. The message on stderr shows the usage. Fix the command and run it again. |
 | 130 | Interrupted with Ctrl-C while `warden request` waited; the pending request was cancelled (or, if the broker did not answer in time or Ctrl-C was pressed again, left to expire). Also Ctrl-C while an approved grant was being installed; the message names the grant to revoke. |

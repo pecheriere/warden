@@ -43,8 +43,10 @@ All notable changes to this project are recorded here. The format follows
   the grant's window does the same, a revocation by another process is found within
   seconds, and a call whose grant state cannot be read for 10 s ends with a 503. A
   revocation waits for none of this. The upstream may still have acted on a call
-  it received. The `proxy_call` audit entry of a stopped call gains `aborted`, with
-  the reason, and has the status and bytes received so far. As with any new audit
+  it received, so the outcome is unknown: `warden http` says to find out before
+  repeating such a call, and exits 8 for the 503. The `proxy_call` audit entry of a
+  stopped call gains `aborted`, with the reason, and has the status and bytes received
+  so far, and it waits in the database if the log cannot take it. As with any new audit
   field, a `warden-server` older than this release refuses a log that holds one.
 
 ### Added

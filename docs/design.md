@@ -541,8 +541,10 @@ written after the call ends, whatever the outcome; if that write fails, the
 agent gets a 500 and no response. It records: grant, method, origin and path
 (never the query string, which may carry the agent's own data), status,
 response size, redaction count and outcome. If the broker stopped the call, the
-entry also has `aborted` (`revoked`, `expired` or `grant_state_unavailable`), and
-the status and size are as far as the answer had come. The secret never appears. The call
+entry also has `aborted` (`revoked`, `expired` or `grant_state_unavailable`), the
+status and size are as far as the answer had come, and it is written like a
+revocation's entry: stored in the database first, so the log can neither delay the
+agent's answer nor lose it. The secret never appears. The call
 runs on its own task, so an agent that disconnects can neither stop it halfway
 nor keep it out of the log.
 

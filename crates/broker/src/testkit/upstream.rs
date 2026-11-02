@@ -67,6 +67,7 @@ pub struct Received {
 ///   `Content-Length`;
 /// - `/slow`: [`SLOW_PREFIX`], then nothing for a minute;
 /// - `/delayed` and any path under it: `late answer`, after [`DELAY`];
+/// - `/held`: `late answer`, once [`HttpsUpstream::release_held`] is called;
 /// - `/hang`: no answer at all, until the caller closes the connection;
 /// - `/drip`: `200`, the `Authorization` value in clear, then a chunk every few
 ///   milliseconds without end, until the caller closes the connection;
@@ -79,6 +80,7 @@ pub struct HttpsUpstream {
     ca_pem: String,
     received: Arc<Mutex<Vec<Received>>>,
     abandoned: Arc<watch::Sender<u64>>,
+    released: Arc<watch::Sender<bool>>,
     server: AbortHandle,
 }
 
@@ -96,6 +98,8 @@ struct Shared {
     log: Log,
     /// How many `/hang` and `/drip` calls the caller walked away from.
     abandoned: Arc<watch::Sender<u64>>,
+    /// Whether `/held` may answer.
+    released: Arc<watch::Sender<bool>>,
 }
 
 /// Counts one abandoned call when dropped, which is what happens to a handler
@@ -128,9 +132,11 @@ impl HttpsUpstream {
         let port = listener.local_addr().expect("upstream address").port();
         let received: Log = Arc::default();
         let abandoned = Arc::new(watch::Sender::new(0));
+        let released = Arc::new(watch::Sender::new(false));
         let router = Router::new().fallback(handle).with_state(Shared {
             log: received.clone(),
             abandoned: abandoned.clone(),
+            released: released.clone(),
         });
         let server = tokio::spawn(serve(listener, acceptor, router)).abort_handle();
         Self {
@@ -138,6 +144,7 @@ impl HttpsUpstream {
             ca_pem,
             received,
             abandoned,
+            released,
             server,
         }
     }
@@ -200,6 +207,11 @@ impl HttpsUpstream {
             .wait_for(|abandoned| *abandoned >= count)
             .await
             .expect("the upstream holds the sender");
+    }
+
+    /// Let calls to `/held` answer.
+    pub fn release_held(&self) {
+        self.released.send_replace(true);
     }
 
     /// How many calls to `/hang` or `/drip` have lost their caller so far.
@@ -283,6 +295,15 @@ async fn handle(State(shared): State<Shared>, req: Request) -> Response {
         "/slow" => respond(StatusCode::OK, &[], slow()),
         path if path == "/delayed" || path.starts_with("/delayed/") => {
             tokio::time::sleep(DELAY).await;
+            respond(StatusCode::OK, &[], Body::from("late answer"))
+        }
+        "/held" => {
+            // The sender lives in `shared`, so this cannot fail.
+            let _ = shared
+                .released
+                .subscribe()
+                .wait_for(|released| *released)
+                .await;
             respond(StatusCode::OK, &[], Body::from("late answer"))
         }
         "/hang" => {

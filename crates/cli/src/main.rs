@@ -46,6 +46,9 @@ const EXIT_NO_GRANT: u8 = 5;
 /// Exit code: a request was cancelled (by the agent, from another terminal)
 /// while this command waited for it.
 const EXIT_CANCELLED: u8 = 6;
+/// Exit code: the broker stopped a `warden http` call that was out, and cannot
+/// say whether the grant holds. The upstream may have acted on the call.
+const EXIT_CALL_STOPPED: u8 = 8;
 /// Exit code: `warden http --fail` got an upstream status of 400 or more
 /// (curl's code for the same condition).
 const EXIT_HTTP_FAIL: u8 = 22;
@@ -890,7 +893,8 @@ where
             Err(
                 CallError::Refused(message)
                 | CallError::Revoked(message)
-                | CallError::Expired(message),
+                | CallError::Expired(message)
+                | CallError::CallStopped(message),
             ) => return Err(message),
             Err(CallError::Unavailable(message)) => {
                 let pause = delay.min(left);
@@ -1088,6 +1092,14 @@ async fn run_http(call: HttpCall, include: bool, fail: bool) -> Result<()> {
             )
             .into());
         }
+        Err(CallError::CallStopped(message)) => {
+            // The grant may well still be good: its record stays.
+            return Err(Exit::new(
+                EXIT_CALL_STOPPED,
+                guidance::api_call_stopped(&grant.grant_id, secret, &message),
+            )
+            .into());
+        }
         Err(e) => return Err(e.into()),
     };
     let reply = http::decode(&resp)?;
@@ -1192,9 +1204,10 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::{
-        CallError, EXIT_CANCELLED, EXIT_DENIED, EXIT_ERROR, EXIT_EXPIRED, EXIT_HTTP_FAIL,
-        EXIT_INTERRUPTED, EXIT_NO_GRANT, EXIT_REVOKED, EXIT_USAGE, check_scope_not_wider,
-        local_subject, next_retry_delay, ssh_setup, terminal_exit_code, wait_for_decision,
+        CallError, EXIT_CALL_STOPPED, EXIT_CANCELLED, EXIT_DENIED, EXIT_ERROR, EXIT_EXPIRED,
+        EXIT_HTTP_FAIL, EXIT_INTERRUPTED, EXIT_NO_GRANT, EXIT_REVOKED, EXIT_USAGE,
+        check_scope_not_wider, local_subject, next_retry_delay, ssh_setup, terminal_exit_code,
+        wait_for_decision,
     };
     use crate::agent::{GrantRecord, Route};
 
@@ -1211,6 +1224,7 @@ mod tests {
             EXIT_NO_GRANT,
             EXIT_CANCELLED,
             EXIT_COULD_NOT_CHECK,
+            EXIT_CALL_STOPPED,
             EXIT_HTTP_FAIL,
             EXIT_USAGE,
             EXIT_INTERRUPTED,

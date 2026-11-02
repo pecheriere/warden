@@ -217,7 +217,7 @@
         </div>
         <div class="field">
           <p class="label">Limit</p>
-          <p>Redaction is defence in depth and cannot catch every transformation. Within the window the agent can make any call you allowed, and a revoke does not stop a call in flight (<a href="https://github.com/pecheriere/warden/issues/44">#44</a>).</p>
+          <p>Redaction is defence in depth and cannot catch every transformation. Within the window the agent can make any call you allowed, and a revoke stops a call in flight but cannot undo what the API already did with it.</p>
         </div>
       </article>
       <article class="card use">
@@ -275,7 +275,7 @@
           <li><strong>A grant used for another task.</strong> Grants are not tied to a task, so everything running as that OS user can use them (<a href="https://github.com/pecheriere/warden/issues/49">#49</a>).</li>
           <li><strong>A misleading goal you approve.</strong> warden shows the goal, the scope and a fingerprint. It cannot judge whether the goal is honest.</li>
           <li><strong>What happens during the window.</strong> An approved shell or API scope can do anything it permits until the grant ends.</li>
-          <li><strong>Instant revocation everywhere.</strong> Issued certificates last until they expire, open logins to those hosts continue after that, and API calls in flight finish.</li>
+          <li><strong>Instant revocation everywhere.</strong> Issued certificates last until they expire, open logins to those hosts continue after that, and stopping an API call in flight does not undo what the API already did.</li>
           <li><strong>An audit log rewritten whole.</strong> Whoever can rewrite the whole file can rewrite the chain, so ship the log somewhere the server cannot modify.</li>
         </ul>
       </div>

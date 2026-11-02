@@ -123,6 +123,8 @@ impl CallProgress {
 struct LiveCall {
     info: CallInfo,
     agent: AgentName,
+    /// Only tests read this from the registry; the call has its own handle.
+    #[cfg(feature = "testkit")]
     progress: Arc<CallProgress>,
     /// Why the call must stop, once it must.
     end: watch::Sender<Option<CallEnd>>,
@@ -210,6 +212,7 @@ impl CallSlots {
             LiveCall {
                 info: call,
                 agent: agent.clone(),
+                #[cfg(feature = "testkit")]
                 progress: Arc::clone(&progress),
                 end,
             },
