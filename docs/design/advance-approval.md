@@ -29,11 +29,11 @@ command, a request whose details it learns during the work) stays stopped.
 
 **If the owner goes ahead, the recommendation is fixed API actions.** They are
 the narrowest option that is still useful, they meet every hard rule on the
-recommended layout, and the agent writes no part of the request. **Server-side automation is not the
-answer to this need.** It does not help with an unforeseen prompt either, and it
-holds a standing credential that runs until someone removes it, which is the
-always-on access warden exists to avoid. It is worth comparing only for a job
-that truly runs on a schedule.
+recommended layout, and the agent writes no part of the request. **Server-side
+automation is not the answer to this need.** It does not help with an unforeseen
+prompt either, and it holds a standing credential that runs until someone
+removes it, which is the always-on access warden exists to avoid. It is worth
+comparing only for a job that truly runs on a schedule.
 
 **The choice is the owner's.** [The real cost of each is
 below](#the-choice-for-the-owner). In short, fixed actions cost new code in a
@@ -291,7 +291,7 @@ unforeseen prompt.**
 
 | Choice | What it gets | What it costs |
 |---|---|---|
-| **Fixed API actions** (recommended if going ahead) | An agent can carry on past requests that were written down before bed, within hard limits, with passkey consent for that night and every use in warden's audit. | A table, a route, a CLI command, a page, a new kind of notification and a wider threat model, in a security broker, for every owner. A vault item for each action, and a passkey step each night, which can become a habit. An agent that can fire each action at the worst moment, every allowed time, with nobody watching ([What could go wrong](#what-could-go-wrong)). A halt can be used as a pretext. Sessions of one agent share it (#49). Unforeseen prompts remain stuck. |
+| **Fixed API actions** (recommended if going ahead) | An agent can carry on past requests that were written down before bed, within hard limits, with passkey consent for that night and every use in warden's audit. | A table, a route, a CLI command, a page, a new kind of notification and a wider threat model, in a security broker, for every owner. A vault item for each action, and a passkey step each night, which can become a habit. An agent that can fire each action at the worst moment, every allowed time, with nobody watching ([What could go wrong](#what-could-go-wrong)). A halt can be used as a pretext. Sessions of one agent share it (#49). The agent needs a non-exportable key, which warden cannot verify. Unforeseen prompts remain stuck. |
 | **A read-only first version of the same** | The same for `GET` and `HEAD`, with the harm limited to what those endpoints return. | The same code. Starting a job stays stuck. |
 | **No change** | Every request keeps needing a person, and nothing new can go wrong. | An agent stops at any prompt nobody answers, and the work waits for morning. The need stays unmet. |
 
@@ -405,7 +405,10 @@ what keeps the default unchanged, and it should have a test.
      < max AND not_after > now AND ended_at IS NULL`) and audit its start, using
      `audit_and_commit`.
   4. Ring the owner where required (below).
-  5. Send, then audit the result.
+  5. Check again that the approval is still live, since a ring can take several
+     seconds and the owner may revoke meanwhile. If it has ended, audit that and
+     send nothing.
+  6. Send, then audit the result.
 
   Spending comes first, so a crash loses a use and never grants an extra one. A
   failed call has spent its use. An outage at step 2 refuses without spending.
@@ -432,12 +435,13 @@ The page is visibly different from an ordinary approval and follows
   asking again", and needs the passkey.
 
 **Binding.** The digest covers the agent and, for every action, the name, the
-secret's destination digest, the method, path, query, body hash, content type,
-`max_uses` and `ring`. It is embedded in the page, compared when the ceremony
-begins, and added to `ApprovalBinding` with the duration. The action items are
-re-read at finish, and any difference asks the owner to reload. Editing an item
-or its secret after approval ends the use of that action, as with
-`destination_digest` today.
+secret's destination digest, the description, the method, path, query, body
+hash, content type, `max_uses` and `ring`, which is everything the page shows
+about it. It is embedded in the page, compared when the ceremony begins, and
+added to `ApprovalBinding` with the duration. The action items are re-read at
+finish, and any difference asks the owner to reload. Editing an item or its
+secret after approval ends the use of that action, as with `destination_digest`
+today.
 
 **The limit of that binding.** As with every approval today, the passkey proves
 the owner answered this ceremony, not what the page displayed. Whatever
@@ -448,9 +452,30 @@ An advance approval raises the value of that swap, and it matters more if
 
 ### Who can use it
 
-**One named agent, with a signing key.** A bearer-key agent is refused: a stolen
-bearer key can be replayed from any host with the owner's login, and this is not
-the place to extend that.
+**One named agent, with a signing key that cannot be copied.** A bearer-key
+agent is refused: a stolen bearer key can be replayed from any host with the
+owner's login.
+
+**A plain signing key in a file is a stronger case for refusal than that.** It
+is a credential on the agent's disk. A copy can fire every approved action,
+unattended, from any device the network policy lets reach the API, because
+signed requests need no owner login ("Key-signed agents need no owner login" in
+the threat model). And nobody is watching at the time. So an agent may use
+advance approvals only with a non-exportable key, such as one in the Secure
+Enclave, a TPM or a PIV token.
+
+**warden cannot verify this.** Enrolment takes a public key line (Ed25519 or
+ECDSA P-256, `agents.rs`), which says nothing about where the private half
+lives, and the protocol carries no attestation. So the rule rests on the owner's
+word: an agent is enrolled for this with an explicit flag, off by default, such
+as `warden-server agent add --non-exportable-key`, and the approval page repeats
+that statement. A false statement cannot be detected. Whether to allow plain
+keys anyway, with the risk stated, is a question for the owner below; the
+recommendation is no.
+
+Hardware does not stop code on the agent's machine, which can ask the key to
+sign for as long as it runs there. It leaves that attacker nothing to take away,
+and revoking the agent ends it.
 
 **[#49](https://github.com/pecheriere/warden/issues/49) is not solved here, and
 this must be said plainly.** Every session and process running as the agent's OS
@@ -461,10 +486,10 @@ per-grant key held in process memory, or a separate OS user, can.
 This is acceptable for the first version **because of how narrow it is**.
 Another session can only send the same fixed requests, so what it can take is a
 use, and what it can do is fire an action early. A separate agent, with its own
-OS user and a hardware-backed key, is the recommended setup for overnight work;
-warden cannot detect whether it is used. **If this ever gains parameters or SSH,
-proof of possession from #49 becomes a prerequisite**, since sessions could then
-do different things.
+OS user, is the recommended setup for overnight work; warden cannot detect
+whether it is used. **If this ever gains parameters or SSH, proof of possession
+from #49 becomes a prerequisite**, since sessions could then do different
+things.
 
 ### While it runs
 
@@ -492,8 +517,9 @@ approval link.
   approval requests: a phone that buzzes all night gets muted, and then the
   agent's next real request goes unseen. The issue asks for a notice for each
   use, so this is an open question below.
-- **The end always rings**, whatever the reason, with a link to the summary on
-  `/grants`.
+- **The end always rings**, whatever the reason, and like every notice here it
+  carries no link, so that it cannot lead a tired owner to the step that clears
+  the lockout below. The owner reads what happened on `/history`.
 
 **Stopping on something unusual.** warden cannot recognise abuse, because the
 requests are the approved ones. It can recognise a few things that a
@@ -520,8 +546,8 @@ that story is true. Using up the count works the same way. So:
 - **No new advance request is accepted after an approval ends**, for any reason,
   until its original end time. It is refused and nobody is notified, so the
   agent cannot put that prompt in front of the owner. The owner can clear this
-  on `/grants`, with a passkey, after reading what happened. Nothing the agent
-  sends leads there, and a halt notice carries no link to approve.
+  on `/grants`, with a passkey, after reading what happened. They have to go
+  there themselves: neither a notice nor anything the agent sends links to it.
 - **The notice says so:** "This may be the agent's doing. Nothing needs you
   tonight. Read the history first."
 - **Every approval page for that agent shows a banner** until that end time,
@@ -564,9 +590,10 @@ The implementation needs a test for each of these:
   approval, an agent can only name existing actions, and the route takes an
   empty body.
 - Let an action's use produce a grant, certificate or relay session.
-- Ask for an advance approval through an advance approval: an action is a
-  request to a secret's origin, and warden's own API is not to be one. An item
-  whose origin is warden's own public URL is refused.
+- Reach warden itself. An item whose origin is the approval UI, the one address
+  warden knows (`WARDEN_PUBLIC_URL`), is refused. warden does not know the name
+  its agent API is published under, so it cannot refuse that by itself; a call
+  the broker sends there carries no agent signature and is refused with a 401.
 
 ## What could go wrong
 
@@ -711,7 +738,9 @@ These go in with the implementation, not before.
 - **In short:** "Every grant needs the owner's passkey" stays true, but add that
   an owner can approve fixed actions that then run with nobody watching. Add to
   the list of what warden does not protect against: what an approved action
-  does, when the agent fires it, within its count.
+  does, when the agent fires it, within its count. "A compromised agent machine,
+  within its approvals" says each request still needs the owner's approval: a
+  use of an action does not.
 - **Actors and trust:**
   - Agent: "Bounded by its stated goal, the approved window" gains the advance
     approval.
@@ -726,13 +755,22 @@ These go in with the implementation, not before.
     queries and bodies never reach notifiers.
 - **Approval binding:** add the set's digest, the re-read at finish, and that
   the assertion binds the ceremony and not the scope, as for every approval.
-- **Authentication of callers:** the new route, signed agents only.
+- **Authentication of callers:** the new route, signed agents enrolled as
+  holding a non-exportable key, which warden cannot verify. "Key-signed agents
+  need no owner login" gains a new consequence: a copied key can fire approved
+  actions.
 - **Accepted residual risks:**
   - "Certificates cannot be revoked" stays as it is, and its "at most four
     hours" must stay true: nothing in this design issues a certificate.
   - "Grants are not tied to a task": add that advance approvals share this, why
     that is tolerable, and what would change it.
   - "Goals are free text": the goal does not decide the scope here.
+  - "Signing protects the key, not the machine": its defences are that "every
+    request still needs the owner's passkey approval" and that grants are short,
+    and neither holds for a use of an action. Its statement that a plain key
+    file can be copied and used from anywhere that can reach the API now covers
+    unattended actions, and hardware moves from recommended to required for this
+    feature.
 - **Proxy mode residual risks:**
   - "Within the window, the agent can make any allowed call": not so for
     actions; add the difference.
@@ -786,30 +824,34 @@ uses, 60 s, 4 KiB. They are starting points for the owner to change.
 1. **Go ahead with fixed actions, knowing they leave unforeseen prompts stuck?**
    See [the choice](#the-choice-for-the-owner). The remaining questions apply if
    so.
-2. **Is it acceptable that an agent's other sessions share it (#49),** given the
+2. **Must the key be non-exportable?** The recommendation is yes: otherwise a
+   copied key file fires every approved action, unattended, with no owner login.
+   It rests on the owner's statement at enrolment, and it excludes an agent that
+   has only a key file.
+3. **Is it acceptable that an agent's other sessions share it (#49),** given the
    argument above? Or should #49's proof of possession come first, at the cost
    of a long-running process holding a key?
-3. **Should modifying actions be allowed in a first version at all?** A
+4. **Should modifying actions be allowed in a first version at all?** A
    read-only version is safer by a long way, and limits the harm to reads,
    though it gives up the closest case in the comparison, a job the agent
    triggers. It would be easy to widen later.
-4. **Are the limits right,** especially 12 hours? It covers one night and does
+5. **Are the limits right,** especially 12 hours? It covers one night and does
    not cover a weekend, on purpose.
-5. **Should `ring = first` exist?** The issue asks for a notice for each use. It
+6. **Should `ring = first` exist?** The issue asks for a notice for each use. It
    protects the channel that carries real approvals, at the cost of fewer
    notices.
-6. **Should a notifier failure halt the approval?** The recommendation is yes.
+7. **Should a notifier failure halt the approval?** The recommendation is yes.
    It costs availability.
-7. **Is a one-shot, agent-drafted request (option D) wanted later?** It covers
+8. **Is a one-shot, agent-drafted request (option D) wanted later?** It covers
    what cannot be declared in advance, at the price of the owner reading an
    agent's text.
-8. **Should an SSH version follow,** given it needs the relay and #49? Only an
+9. **Should an SSH version follow,** given it needs the relay and #49? Only an
    owner who runs a relay layout can say whether it is worth it.
-9. **Should the assertion ever be independently verifiable?** Deriving the
-   WebAuthn challenge from the scope's digest would allow re-checking an
-   approval against the audit log without trusting the database. webauthn-rs's
-   API does not offer that today, the host is a root of trust anyway, and the
-   recommendation is not to pursue it.
+10. **Should the assertion ever be independently verifiable?** Deriving the
+    WebAuthn challenge from the scope's digest would allow re-checking an
+    approval against the audit log without trusting the database. webauthn-rs's
+    API does not offer that today, the host is a root of trust anyway, and the
+    recommendation is not to pursue it.
 
 Related: [#49](https://github.com/pecheriere/warden/issues/49) (grants shared by
 an agent's sessions), [#35](https://github.com/pecheriere/warden/issues/35)
