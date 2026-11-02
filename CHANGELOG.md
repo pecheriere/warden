@@ -25,7 +25,11 @@ All notable changes to this project are recorded here. The format follows
   1Password stays the recommended backend and the default when the setting is
   unset, so existing deployments do not change. Files with loose permissions, links
   or invalid content refuse the server's start or the request, and refusals are
-  audited. `warden-server doctor` checks it. warden does not generate the CA key.
+  audited. A policy file must end with `[end_of_policy]`, so that one cut short is
+  refused. `warden-server doctor` checks it. warden does not generate the CA key.
+- CI measures test coverage with `cargo llvm-cov`, including the Linux-only
+  relay tests, and reports it in each run's summary. No threshold fails the
+  build yet.
 - Project documents: `CONTRIBUTING.md` (where to discuss, reporting bugs, the
   test policy), `GOVERNANCE.md`, `CODE_OF_CONDUCT.md`, `docs/roadmap.md`,
   `docs/building.md` and `docs/upgrading.md`.

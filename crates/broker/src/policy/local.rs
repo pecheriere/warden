@@ -39,6 +39,14 @@ mod files;
 
 use files::{Refusal, check_file_name, one_line, read_policy, read_secret};
 
+/// The line a policy file must end with. A file cut at any byte has lost it,
+/// or part of it, so it cannot pass for a complete one: a prefix of a valid
+/// policy can otherwise be a valid and wider policy, because leaving out a
+/// setting takes its default. TOML allows the table once, and an occurrence
+/// inside an unfinished string does not parse, so no earlier cut can end with
+/// this line and still load.
+const END_MARKER: &str = "[end_of_policy]";
+
 /// What the audit log calls this backend.
 const AUDIT_CONTEXT: &str = "local secret backend";
 
@@ -52,7 +60,14 @@ struct PolicyFile {
     targets: BTreeMap<String, TargetEntry>,
     #[serde(default)]
     api_secrets: BTreeMap<String, ApiEntry>,
+    /// Holds nothing: see [`END_MARKER`].
+    #[serde(rename = "end_of_policy")]
+    _end_of_policy: EndOfPolicy,
 }
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EndOfPolicy {}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -171,6 +186,26 @@ impl LocalProbe {
     }
 }
 
+/// A complete policy file, or what is wrong with it. The parser's message is
+/// never used: it can quote the file, and a secret may have been pasted into it.
+fn parse_policy(text: &str) -> Result<PolicyFile, String> {
+    if text.trim_end().rsplit('\n').next() != Some(END_MARKER) {
+        return Err(format!(
+            "does not end with the line {END_MARKER}, so it may be cut short"
+        ));
+    }
+    toml::from_str(text).map_err(|e| {
+        let line = e
+            .span()
+            .and_then(|span| text.get(..span.start))
+            .map_or(1, |before| before.matches('\n').count() + 1);
+        format!(
+            "cannot be used, at line {line}: a syntax error, an unknown or missing setting, a \
+             repeated key or a wrong type"
+        )
+    })
+}
+
 /// The two paths, and who this process is. Everything here blocks.
 #[derive(Clone)]
 struct Files {
@@ -180,21 +215,11 @@ struct Files {
 }
 
 impl Files {
-    /// The policy file, parsed. The parser's message is never used: it can
-    /// quote the file, and someone may have pasted a secret into it.
+    /// The policy file, parsed.
     fn policy(&self) -> Result<PolicyFile, PolicyError> {
         let shown = |what: String| PolicyError::Unavailable(format!("the policy file {what}"));
         let text = read_policy(&self.policy_file, self.euid).map_err(|e| shown(e.to_string()))?;
-        toml::from_str(&text).map_err(|e| {
-            let line = e
-                .span()
-                .and_then(|span| text.get(..span.start))
-                .map_or(1, |before| before.matches('\n').count() + 1);
-            shown(format!(
-                "cannot be used, at line {line}: a syntax error, an unknown or missing setting, \
-                 a repeated key or a wrong type"
-            ))
-        })
+        parse_policy(&text).map_err(shown)
     }
 
     /// The secret file `name`, for `field` of `item`.

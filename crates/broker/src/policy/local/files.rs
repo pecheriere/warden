@@ -9,7 +9,7 @@
 //! Nothing here returns a path or a file's content in an error.
 
 use std::fmt;
-use std::fs::File;
+use std::fs::{File, Metadata};
 use std::io::{self, Read as _};
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Component, Path};
@@ -158,13 +158,32 @@ pub(super) fn read_policy(path: &Path, euid: u32) -> Result<Zeroizing<String>, R
     };
     let directory = open_directory(parent, euid)?;
     let (file, meta) = open_regular(&directory, Path::new(name))?;
+    check_policy_file(&meta, euid)?;
+    read_limited(file, MAX_POLICY_BYTES)
+}
+
+/// The rules for what was opened as the policy file. It must have exactly one
+/// name. None means it was replaced or removed after this path was bound to it:
+/// a bind mount of the single file keeps showing the old content after a rename
+/// over the source, and obeying that would ignore a revocation. A second name
+/// is refused too, because it would hide that from this check.
+fn check_policy_file(meta: &Metadata, euid: u32) -> Result<(), Refusal> {
+    if meta.nlink() == 0 {
+        return Err(Refusal::Rule(
+            "was replaced or removed, and this path still shows the old file; mount the directory \
+             holding it, not the single file",
+        ));
+    }
+    if meta.nlink() != 1 {
+        return Err(Refusal::Rule("has more than one name (a hard link)"));
+    }
     if !trusted_owner(meta.uid(), euid) {
         return Err(Refusal::Rule("belongs to another user"));
     }
     if meta.mode() & GROUP_OTHER_WRITE != 0 {
         return Err(Refusal::Rule("can be written by group or others"));
     }
-    read_limited(file, MAX_POLICY_BYTES)
+    Ok(())
 }
 
 /// The secret file `name` in `directory`. The directory and the file must
@@ -250,8 +269,8 @@ mod tests {
     use zeroize::Zeroizing;
 
     use super::{
-        MAX_POLICY_BYTES, MAX_SECRET_BYTES, Refusal, check_file_name, one_line, read_policy,
-        read_secret,
+        MAX_POLICY_BYTES, MAX_SECRET_BYTES, Refusal, check_file_name, check_policy_file, one_line,
+        read_policy, read_secret,
     };
 
     const SECRET: &[u8] = b"not-a-real-secret-value\n";
@@ -455,6 +474,32 @@ mod tests {
         );
         chmod(&dir, 0o1777);
         assert!(read_policy(&path, euid()).is_ok());
+    }
+
+    /// What a bind mount of the single file shows after a rename over its
+    /// source: an open file with no name left. Mounting needs root, so this
+    /// takes the same state from an open file whose name was removed.
+    #[test]
+    fn a_policy_with_no_name_left_is_refused() {
+        let (_guard, dir) = private_dir();
+        let path = write(&dir, "policy.toml", b"", 0o600);
+        let open = fs::File::open(&path).unwrap();
+        assert!(check_policy_file(&open.metadata().unwrap(), euid()).is_ok());
+        fs::remove_file(&path).unwrap();
+        let meta = open.metadata().unwrap();
+        let refusal = check_policy_file(&meta, euid()).unwrap_err();
+        assert!(refusal.to_string().contains("was replaced"), "{refusal}");
+    }
+
+    #[test]
+    fn a_policy_with_a_second_name_is_refused() {
+        let (_guard, dir) = private_dir();
+        let path = write(&dir, "policy.toml", b"", 0o600);
+        fs::hard_link(&path, dir.join("second-name")).unwrap();
+        assert_eq!(
+            rule(read_policy(&path, euid())),
+            "has more than one name (a hard link)"
+        );
     }
 
     #[test]

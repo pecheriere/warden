@@ -3,6 +3,7 @@
 //! doctor.
 
 use std::fs::{self, Permissions};
+use std::io::{BufRead as _, BufReader};
 use std::net::TcpListener;
 use std::os::unix::fs::{PermissionsExt as _, symlink};
 use std::path::{Path, PathBuf};
@@ -54,8 +55,13 @@ impl Files {
         }
     }
 
+    /// Write a complete policy file: `text` and the end marker.
     fn policy(&self, text: &str) {
-        fs::write(&self.settings.policy_file, text).unwrap();
+        fs::write(
+            &self.settings.policy_file,
+            format!("{text}\n[end_of_policy]\n"),
+        )
+        .unwrap();
         chmod(&self.settings.policy_file, 0o600);
     }
 
@@ -508,6 +514,61 @@ async fn doctor_fails_loose_permissions_and_a_missing_policy() {
         line_of(&text, "local.entries").starts_with("COULD NOT CHECK"),
         "{text}"
     );
+}
+
+/// Runs `command` until it says it listens, stops it, and returns that line.
+fn listening_line(mut command: Command) -> String {
+    let mut child = command.stdout(Stdio::piped()).spawn().unwrap();
+    let lines = BufReader::new(child.stdout.take().unwrap()).lines();
+    let line = lines
+        .map(Result::unwrap)
+        .find(|line| line.contains("warden-server listening"));
+    child.kill().unwrap();
+    child.wait().unwrap();
+    line.expect("the server exited without listening")
+}
+
+/// The startup line of an existing 1Password setup stays what it was.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_startup_line_names_the_vault_or_the_local_backend() {
+    let server = Server::new().await;
+    server.files.policy(API_ONLY);
+    server.files.secret("svc-token", CREDENTIAL);
+    // Doctor's fixture is an empty file; the server creates its own.
+    fs::remove_file(server.files.root.join("audience")).unwrap();
+    let mut local = server.command(&["serve"]);
+    local
+        .env("WARDEN_API_LISTEN", "127.0.0.1:0")
+        .env("WARDEN_APPROVAL_LISTEN", "127.0.0.1:0");
+    let line = listening_line(local);
+    assert!(line.contains("secret_backend"), "{line}");
+    assert!(!line.contains("vault="), "{line}");
+
+    let mut connect = server.command(&["serve"]);
+    connect
+        .env_remove("WARDEN_SECRET_BACKEND")
+        .env_remove("WARDEN_LOCAL_POLICY_FILE")
+        .env_remove("WARDEN_LOCAL_SECRETS_DIR")
+        .env("WARDEN_OP_CONNECT_URL", "http://192.0.2.1:8080")
+        .env("WARDEN_OP_CONNECT_TOKEN", "connect-token-not-used")
+        .env("WARDEN_API_LISTEN", "127.0.0.1:0")
+        .env("WARDEN_APPROVAL_LISTEN", "127.0.0.1:0");
+    let line = listening_line(connect);
+    assert!(line.contains("vault=Warden"), "{line}");
+    assert!(!line.contains("secret_backend"), "{line}");
+}
+
+/// A policy file cut short stops the real server, whatever it still parses as.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_server_refuses_to_start_on_a_policy_cut_short() {
+    let server = Server::new().await;
+    server.files.secret("svc-token", CREDENTIAL);
+    fs::write(&server.files.settings.policy_file, API_ONLY).unwrap();
+    chmod(&server.files.settings.policy_file, 0o600);
+    let output = server.command(&["serve"]).output().unwrap();
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("cut short"), "{}", stderr(&output));
+    assert!(server.audit().contains("cut short"), "{}", server.audit());
 }
 
 /// The weaker backend needs asking for: without the setting its files mean

@@ -448,6 +448,17 @@ What is lost, and cannot be regained by any setting:
   them: an old credential could go to a new destination. Writing a new secret under
   a new file name, then replacing the policy atomically, avoids it
   ([how](local-backend.md#rotating-a-secret)).
+- **Partial writes are the writer's problem.** A 1Password item is read whole. A file
+  can be read while it is being written. A policy cut at any byte is refused, because
+  it must end with `[end_of_policy]`, so a cut can never yield a wider policy. An
+  overwrite in place that mixes new and old content cannot be detected: replace the
+  file by renaming. A secret file cut short is sent as what it is, to the destination
+  its entry allows.
+- **Single-file mounts go stale.** A policy file mounted alone stays on the old file
+  after a rename on the host. warden refuses a file left with no name, failing closed
+  until a restart. A file that still has another name elsewhere cannot be told from a
+  current one, so a policy file with a second name is refused at every read, and the
+  directory is what must be mounted.
 - **Secrets from systemd credentials are copied at start**, so rotating or removing
   one takes a restart. Removing the entry from the policy still applies at once.
 

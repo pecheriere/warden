@@ -76,7 +76,16 @@ credential_file = "home-api"
 max_window = "30m"
 methods = ["GET", "POST"]
 path_prefix = "/api/"
+
+[end_of_policy]
 ```
+
+### `[end_of_policy]`
+
+The last line of the file must be exactly `[end_of_policy]`. A file cut short at any
+point, by a full disk or an interrupted write, has lost that line and is refused.
+Without it, a cut file could still be valid and **wider** than the one it came from:
+cut before `path_prefix`, the entry above would allow every path.
 
 ### `[targets.<name>]`
 
@@ -137,7 +146,7 @@ check and the read.
 | What | Rule |
 |---|---|
 | Every directory on either path, from `/` | Owned by root or warden's user. Not writable by group or others, unless sticky (as `/tmp` is). Not a symbolic link, so give real paths. Readable by warden's user. |
-| The policy file | A regular file, not a link. Owned by root or warden's user. Not writable by group or others. At most 1 MiB. |
+| The policy file | A regular file, not a link, with exactly one name. Owned by root or warden's user. Not writable by group or others. At most 1 MiB. Its last line is `[end_of_policy]`. |
 | The secrets directory | Owned by warden's user, with no access for group or others (`0700` or `0500`). |
 | Each secret file | A regular file, not a link, with one name (no hard links). Owned by warden's user, with no access for group or others (`0600` or `0400`). Not blank, valid UTF-8, at most 32 KiB. |
 
@@ -167,25 +176,36 @@ needs both files is two steps, and a call can fall between them. So when a
 credential moves to another destination, do not rewrite its file: write the new
 credential under **a new file name**, then point the policy at it in one atomic
 step, by writing a temporary file in the same directory and renaming it over the
-policy file. Editors that write in place may be read half written, which at worst
-refuses a request.
+policy file.
+
+Always replace the policy file that way. A write in place can be read part way
+through. A file cut short is refused, whatever it still parses as, but overwriting
+without truncating can show the start of the new file with the end of the old one,
+and that the end marker cannot detect.
 
 ## Where the files go
 
 ### With Docker
 
-Mount both read-only, so that a compromised warden process cannot change them:
+Mount both directories read-only, so that a compromised warden process cannot change
+them:
 
 ```yaml
     volumes:
       - warden-data:/data
-      - /etc/warden/policy.toml:/etc/warden/policy.toml:ro
+      - /etc/warden/policy:/policy:ro
       - /etc/warden/secrets:/secrets:ro
     environment:
       WARDEN_SECRET_BACKEND: local
-      WARDEN_LOCAL_POLICY_FILE: /etc/warden/policy.toml
+      WARDEN_LOCAL_POLICY_FILE: /policy/policy.toml
       WARDEN_LOCAL_SECRETS_DIR: /secrets
 ```
+
+**Mount the directory, never the single file.** A mount of one file stays on the old
+file after a rename over it, so an edit or a revocation on the host would not reach
+the container. warden refuses a policy file left with no name in that way, and every
+request fails until it is restarted, but mounting the directory is what makes edits
+apply at once. The same goes for a single-file `BindReadOnlyPaths=` under systemd.
 
 On the host, `/etc/warden/secrets` and its files belong to the image's user (uid
 65532), mode `0700` and `0600`. Compose's own `secrets:` do not fit, because the

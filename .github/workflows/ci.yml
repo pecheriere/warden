@@ -55,6 +55,73 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
 
+  coverage:
+    # Measures and reports; no threshold fails it yet, and it is not a required
+    # check (#97). On pull requests and main only: a release does not wait for it.
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      # Test helpers, which never ship, are not code to cover.
+      COVERAGE_IGNORE: crates/broker/src/testkit|/tests\.rs$
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@d124f86f28ff42855784ff3319f48ac182c248f8 # 1.99.1
+        with:
+          toolchain: "1.99"
+      # In the checkout, so the component lands on the toolchain
+      # rust-toolchain.toml selects, as the cli job does for its target.
+      - name: Add llvm-tools
+        run: |
+          rustup toolchain install
+          rustup component add llvm-tools
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      # From crates.io at a fixed version and with its own lockfile. Dependabot
+      # does not see this version: raise it by hand, to a release at least 7
+      # days old.
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov --version 0.9.1 --locked
+      # The same setup as the check job, for the Linux-only relay tests: they
+      # fail without it, and the number means little without them. Keep the two
+      # in step. A shared composite action cannot hold it: zizmor refuses a
+      # GITHUB_ENV write there, where it cannot see the workflow's triggers.
+      - name: Install OpenSSH
+        run: |
+          sudo apt-get update && sudo apt-get install -y openssh-server openssh-client
+          sudo systemctl disable --now ssh.socket ssh.service
+          if ss -Hltn 'sport = :22' | grep -q .; then
+            echo "something still listens on port 22" >&2
+            exit 1
+          fi
+      - name: Give the runner account a login password
+        run: |
+          password="$(openssl rand -hex 24)"
+          echo "::add-mask::$password"
+          echo "$USER:$password" | sudo chpasswd
+          echo "WARDEN_TEST_LOGIN_PASSWORD=$password" >> "$GITHUB_ENV"
+      - name: Run the tests with coverage
+        run: cargo llvm-cov --workspace --all-features --locked --no-report
+      # An explicit bash has pipefail on, so a broken report fails through the tee.
+      - name: Report coverage
+        shell: bash
+        run: |
+          cargo llvm-cov report --ignore-filename-regex "$COVERAGE_IGNORE" \
+            --json --summary-only --output-path "$RUNNER_TEMP/coverage.json"
+          cargo llvm-cov report --ignore-filename-regex "$COVERAGE_IGNORE" \
+            --lcov --output-path "$RUNNER_TEMP/coverage.lcov"
+          python3 -I .github/scripts/coverage_summary.py "$RUNNER_TEMP/coverage.json" \
+            --root "$GITHUB_WORKSPACE" | tee -a "$GITHUB_STEP_SUMMARY"
+      # Kept on GitHub, for finding the gaps line by line; nothing goes to a
+      # third party.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-lcov
+          path: ${{ runner.temp }}/coverage.lcov
+          if-no-files-found: error
+          retention-days: 14
+
   deny:
     runs-on: ubuntu-latest
     steps:

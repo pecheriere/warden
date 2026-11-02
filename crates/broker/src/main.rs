@@ -492,13 +492,22 @@ async fn serve() -> Result<()> {
     let approval_listener = TcpListener::bind(config.approval_listen)
         .await
         .with_context(|| format!("binding the approval UI on {}", config.approval_listen))?;
-    tracing::info!(
-        api = %config.api_listen,
-        approval = %config.approval_listen,
-        public_url = %config.public_url,
-        secret_backend = config.backend.name(),
-        "warden-server listening"
-    );
+    match &config.backend {
+        BackendSettings::OnePassword(connect) => tracing::info!(
+            api = %config.api_listen,
+            approval = %config.approval_listen,
+            public_url = %config.public_url,
+            vault = %connect.vault,
+            "warden-server listening"
+        ),
+        BackendSettings::Local(_) => tracing::info!(
+            api = %config.api_listen,
+            approval = %config.approval_listen,
+            public_url = %config.public_url,
+            secret_backend = config.backend.name(),
+            "warden-server listening"
+        ),
+    }
 
     let (stop, stop_rx) = watch::channel(false);
     let relay = match &relay_key {
