@@ -373,7 +373,7 @@ impl Passkeys {
     }
 
     /// Start an approval ceremony bound to `binding`, dropping the oldest one of the
-    /// same request if it has [`MAX_CEREMONIES_PER_REQUEST`].
+    /// same request if it already has as many as a request may keep.
     ///
     /// # Errors
     /// [`PasskeyError::NoPasskeys`], [`PasskeyError::Busy`], storage failures.
