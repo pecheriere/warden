@@ -207,9 +207,9 @@ plain `http` to a host that the URL shows to be local or private:
 
 | Kind of host | Accepted for plain `http` |
 |---|---|
-| IPv4 address | Loopback, private (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), link-local, and `100.64.0.0/10`, which holds tailnet addresses |
+| IPv4 address | Loopback, private (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), link-local, and `100.64.0.0/10`. That is the tailnet range and also carrier NAT, so it is accepted as an address warden cannot check belongs to your tailnet |
 | IPv6 address | `::1`, unique local `fc00::/7`, which holds tailnet addresses, link-local `fe80::/10`, and the IPv4 addresses above written as IPv6 |
-| Name | One without a dot, such as a Docker service name, and `localhost` and names ending in `.localhost`, `.local`, `.home.arpa`, `.internal`, `.lan` or `.ts.net` |
+| Name | One without a dot, such as a Docker service name, and `localhost` and names ending in `.localhost`, `.local`, `.home.arpa`, `.internal` or `.lan`. Not `.ts.net`: it is publicly delegated, so use `https` with those names, or the opt-in below |
 
 Anything else stops the server at startup, and `warden-server doctor` reports
 it, naming the variable and never the URL. Prefer `https`. If the path to that

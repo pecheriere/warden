@@ -440,7 +440,8 @@ These were recorded during implementation and are accepted for this release.
   listed in `WARDEN_ALLOW_PLAIN_HTTP` ([rules](configuration.md#plain-http)).
   Anyone else on that network can read the Connect token and everything it reads.
   The check reads the URL and resolves no name, so a local-looking name that
-  resolves elsewhere is not caught, and it cannot see who shares a private network.
+  resolves elsewhere is not caught, and it cannot see who shares a private network
+  or whether a `100.64.0.0/10` address, which is also carrier NAT, is on your tailnet.
   With the opt-in, warden logs a warning at startup and doctor does not pass it.
 - **Secrets in the environment.** Unless given through a `_FILE` variable (see
   [Configuration](configuration.md#secrets-in-files)), the Connect token and the

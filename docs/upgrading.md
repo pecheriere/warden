@@ -35,7 +35,8 @@ variable.
 
 Nothing changes for `https` URLs, for private and tailnet addresses such as
 `http://172.31.251.11:8080`, or for names such as `http://connect:8080` and
-`http://homeassistant.local:8123`: see the
+`http://homeassistant.local:8123`. A plain `http` URL with a `.ts.net` name is
+refused: use `https`, as the documented setups do, or a tailnet address. See the
 [full list](configuration.md#plain-http). `warden-server doctor` shows what a
 setup uses, in its `plain-http` check, so run it on the new version before
 switching over.

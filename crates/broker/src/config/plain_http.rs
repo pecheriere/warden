@@ -5,8 +5,8 @@
 //! crosses. That is an accepted choice on a network warden shares only with
 //! the service, and nothing else is: a typo or a remote host would expose them
 //! with no sign of it. So `http` is accepted when the URL plainly stays on a
-//! local or private network, or crosses the tailnet's encrypted tunnel, and
-//! otherwise only for a variable listed in [`ALLOW_PLAIN_HTTP`].
+//! local or private network, and otherwise only for a variable listed in
+//! [`ALLOW_PLAIN_HTTP`].
 //!
 //! This reads the URL as written. It resolves no name, so a name that looks
 //! local and resolves elsewhere is not caught.
@@ -21,19 +21,12 @@ use crate::notify::ChannelKind;
 /// The variable listing the URL settings that may use plain `http` to any host.
 pub const ALLOW_PLAIN_HTTP: &str = "WARDEN_ALLOW_PLAIN_HTTP";
 
-/// Name suffixes that stay on a local or private network, or on the tailnet.
-/// `.localhost`, `.local` and `.home.arpa` are reserved for this (RFC 6761,
-/// 6762, 8375), and so is `.internal` (ICANN). `.lan` is not delegated, and is
-/// what home routers commonly hand out. `.ts.net` is Tailscale's: traffic to
-/// those names crosses the tailnet's `WireGuard` tunnel.
-const LOCAL_SUFFIXES: [&str; 6] = [
-    ".localhost",
-    ".local",
-    ".home.arpa",
-    ".internal",
-    ".lan",
-    ".ts.net",
-];
+/// Name suffixes that stay on a local or private network. `.localhost`, `.local`
+/// and `.home.arpa` are reserved for this (RFC 6761, 6762, 8375), and so is
+/// `.internal` (ICANN). `.lan` is not delegated, and is what home routers commonly
+/// hand out. `.ts.net` is not here: it is publicly delegated, and only this host
+/// being on that tailnet would keep such a name off the public internet.
+const LOCAL_SUFFIXES: [&str; 5] = [".localhost", ".local", ".home.arpa", ".internal", ".lan"];
 
 /// How a service URL's traffic travels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,8 +72,9 @@ fn is_local_name(name: &str) -> bool {
     }
 }
 
-/// Loopback, RFC 1918, link-local, or the shared range (RFC 6598) that holds
-/// tailnet addresses.
+/// Loopback, RFC 1918, link-local, or the shared range (RFC 6598). That range
+/// holds tailnet addresses and is also carrier NAT, and an address in it may not
+/// belong to this host's tailnet: it is accepted without that being checked.
 fn is_local_ipv4(ip: Ipv4Addr) -> bool {
     let [first, second, ..] = ip.octets();
     ip.is_loopback()
@@ -254,7 +248,6 @@ mod tests {
             "http://ha.home.arpa",
             "http://connect.internal",
             "http://ha.lan",
-            "http://warden-connect.example.ts.net",
         ] {
             assert_eq!(transport(url), UrlTransport::PlainLocal, "{url}");
         }
@@ -282,6 +275,8 @@ mod tests {
             "http://mylan.example",
             "http://xlocalhost.example",
             "http://ts.net",
+            "http://warden-connect.example.ts.net",
+            "http://warden-connect.example.ts.net.",
             "http://home.arpa",
             "http://notlocal.example",
             "http://example-ts.net",
@@ -299,6 +294,26 @@ mod tests {
         assert_eq!(*var, CONNECT_URL);
         assert!(reason.contains(ALLOW_PLAIN_HTTP), "{reason}");
         assert!(!err.to_string().contains("connect.example.com"), "{err}");
+    }
+
+    /// A tailnet name can be another tailnet's, or a public Funnel host, so it
+    /// takes the opt-in, and the refusal says so.
+    #[test]
+    fn a_ts_net_name_over_plain_http_needs_the_opt_in() {
+        const TAILNET_NAME: &str = "http://warden-connect.example.ts.net";
+        let err =
+            parse_service_url(CONNECT_URL, TAILNET_NAME, &AllowedPlainHttp::default()).unwrap_err();
+        assert!(err.to_string().contains(ALLOW_PLAIN_HTTP), "{err}");
+        let allowed = allowed(CONNECT_URL).unwrap();
+        assert!(parse_service_url(CONNECT_URL, TAILNET_NAME, &allowed).is_ok());
+        assert!(
+            parse_service_url(
+                CONNECT_URL,
+                "https://warden-connect.example.ts.net",
+                &AllowedPlainHttp::default()
+            )
+            .is_ok()
+        );
     }
 
     #[test]

@@ -14,8 +14,9 @@ All notable changes to this project are recorded here. The format follows
 - warden refuses to start when `WARDEN_OP_CONNECT_URL` or a notifier URL is plain
   `http` to a host that is not clearly local or private, or uses another scheme.
   Private and tailnet addresses, names without a dot, and names such as
-  `homeassistant.local` keep working unchanged. List a variable in the new
-  `WARDEN_ALLOW_PLAIN_HTTP` to keep plain `http` to another host; warden then warns
+  `homeassistant.local` keep working unchanged. `.ts.net` names are not among them.
+  List a variable in the new `WARDEN_ALLOW_PLAIN_HTTP` to keep plain `http` to
+  another host; warden then warns
   at each start. A new `plain-http` check in `warden-server doctor` shows what a
   setup uses. See [docs/upgrading.md](docs/upgrading.md#plain-http-urls).
 - The `warden` CLI no longer links `rsa` or `crypto-bigint` 0.5, and the broker
