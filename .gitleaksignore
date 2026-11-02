@@ -17,3 +17,12 @@ crates/broker/src/policy/onepassword.rs:private-key:293
 # Throwaway Ed25519 key that makes the signed-request test vectors in
 # docs/agent-protocol.md reproducible. It protects nothing and is not a secret.
 crates/proto/tests/fixtures/throwaway-test-only-signing-ed25519.key:private-key:1
+
+# Throwaway passkey rows generated only for tests (stored credentials must survive
+# a webauthn-rs upgrade). The signing keys protect nothing and are not secrets.
+crates/broker/tests/fixtures/throwaway-test-only-passkeys-webauthn-rs-0.5.5.json:generic-api-key:14
+crates/broker/tests/fixtures/throwaway-test-only-passkeys-webauthn-rs-0.5.5.json:generic-api-key:26
+crates/broker/tests/fixtures/throwaway-test-only-passkeys-webauthn-rs-0.5.5.json:generic-api-key:38
+crates/broker/tests/fixtures/throwaway-test-only-passkeys-webauthn-rs-0.5.5.json:generic-api-key:50
+crates/broker/tests/fixtures/throwaway-test-only-passkeys-webauthn-rs-0.5.5.json:generic-api-key:62
+crates/broker/tests/fixtures/throwaway-test-only-passkeys-webauthn-rs-0.5.5.json:generic-api-key:74

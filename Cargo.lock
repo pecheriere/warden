@@ -4556,6 +4556,7 @@ dependencies = [
  "proptest",
  "rcgen",
  "reqwest",
+ "rsa",
  "russh",
  "rustix",
  "rustls-pki-types",

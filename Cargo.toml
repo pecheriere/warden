@@ -101,6 +101,9 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 
 # Test-only
 wiremock = "0.6.5"
+# Test only: signs as an RS256 authenticator in `passkey_compat.rs`. The version
+# russh pins; warden itself holds no RSA private key (see `deny.toml`).
+rsa = { version = "=0.10.0-rc.18", default-features = false, features = ["std", "encoding", "sha2"] }
 tempfile = "3.20.0"
 tower = { version = "0.5.2", features = ["util"] }
 http-body-util = { version = "0.1.5", features = ["channel"] }
