@@ -38,7 +38,7 @@ use base64::engine::general_purpose::STANDARD;
 use p256::ecdsa::signature::Verifier as _;
 use sha2::{Digest as _, Sha256};
 use sqlx::SqlitePool;
-use ssh_encoding::{Decode as _, Reader as _};
+use ssh_encoding::{Decode as _, Encode as _, Reader as _};
 use ssh_key::public::{EcdsaPublicKey, KeyData};
 use ssh_key::{HashAlg, Mpint, PublicKey, SshSig};
 use warden_broker_proto::signing::{
@@ -222,7 +222,7 @@ fn single<'a>(headers: &'a HeaderMap, name: &str) -> Result<&'a str, Refusal> {
 }
 
 /// Decode a `Warden-Signature` value: canonical standard base64 of exactly
-/// one SSHSIG blob.
+/// one SSHSIG blob, itself in its only valid encoding.
 fn decode_signature(value: &str) -> Result<SshSig, Refusal> {
     if value.len() > MAX_SIGNATURE_LEN {
         return Err(Refusal::Unauthorized("Warden-Signature too long"));
@@ -235,6 +235,14 @@ fn decode_signature(value: &str) -> Result<SshSig, Refusal> {
         .map_err(|_| Refusal::Unauthorized("Warden-Signature is not an SSHSIG"))?;
     if !reader.is_finished() {
         return Err(Refusal::Unauthorized("Warden-Signature has trailing bytes"));
+    }
+    // One signature, one encoding: the blob is what the parsed value encodes to.
+    let mut canonical = Vec::with_capacity(blob.len());
+    signature
+        .encode(&mut canonical)
+        .map_err(|_| Refusal::Unauthorized("Warden-Signature cannot be re-encoded"))?;
+    if canonical != blob {
+        return Err(Refusal::Unauthorized("Warden-Signature is not canonical"));
     }
     Ok(signature)
 }
@@ -462,6 +470,37 @@ async fn authenticate(
 
     parts.extensions.insert(SignedAgent(agent));
     Ok(Request::from_parts(parts, Body::from(bytes)))
+}
+
+/// The pure steps of [`verify`], for the fuzz targets in `fuzz/`: they need no
+/// database, clock or server. On their own they skip the agent lookup, the
+/// clock and the nonce, so they exist only behind the `fuzzing` feature, which
+/// nothing that ships enables.
+#[cfg(feature = "fuzzing")]
+pub mod fuzzing {
+    use axum::http::HeaderMap;
+    use ssh_key::PublicKey;
+    use warden_broker_proto::AgentName;
+    use warden_broker_proto::signing::Nonce;
+
+    use super::{SignatureHeaders, check_signature, decode_signature};
+
+    /// Step 1: the agent, timestamp and nonce of well-formed headers, or
+    /// `None` if they are refused.
+    #[must_use]
+    pub fn parse_headers(headers: &HeaderMap) -> Option<(AgentName, i64, Nonce)> {
+        let parsed = SignatureHeaders::parse(headers).ok()?;
+        Some((parsed.agent, parsed.timestamp, parsed.nonce))
+    }
+
+    /// Step 5 for a `Warden-Signature` value: whether it decodes and is a
+    /// signature over `message` by exactly `key`.
+    #[must_use]
+    pub fn signature_accepted(value: &str, key: &PublicKey, message: &[u8]) -> bool {
+        decode_signature(value)
+            .and_then(|signature| check_signature(key, &signature, message))
+            .is_ok()
+    }
 }
 
 /// Record that `agent` used `nonce` at `now`; `false` if it already had.

@@ -1,0 +1,171 @@
+name: repeatable build
+
+# Builds each release output twice on separate runners, from checkouts at
+# different paths, and fails if the two differ by a single bit. It uses the same
+# script and Dockerfile as release.yml. The image's options differ in two ways: it
+# writes an OCI archive rather than pushing, and it has no provenance, whose times
+# never repeat. docs/reproducing-builds.md says what this does and does not show.
+# It is too slow for every pull request, so a change to the sources alone waits for
+# the weekly run, which also catches a change in the runner images.
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/repeatable-build.yml
+      - .github/workflows/release.yml
+      - scripts/package-cli.sh
+      - Dockerfile
+      - .dockerignore
+      - Cargo.toml
+      - Cargo.lock
+      - crates/*/Cargo.toml
+      - crates/*/build.rs
+      - rust-toolchain.toml
+  schedule:
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cli:
+    name: cli (${{ matrix.build.platform }}, ${{ matrix.attempt.name }})
+    runs-on: ${{ matrix.build.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        attempt:
+          - name: first
+            checkout: one
+          - name: second
+            checkout: another/nested/copy
+        build:
+          - platform: macos-arm64
+            target: aarch64-apple-darwin
+            runner: macos-15
+          - platform: linux-amd64
+            target: x86_64-unknown-linux-musl
+            runner: ubuntu-24.04
+          - platform: linux-arm64
+            target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+    defaults:
+      run:
+        working-directory: ${{ matrix.attempt.checkout }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: ${{ matrix.attempt.checkout }}
+      - uses: dtolnay/rust-toolchain@d124f86f28ff42855784ff3319f48ac182c248f8 # 1.99.1
+        with:
+          toolchain: "1.99"
+      - name: Add the build target
+        env:
+          TARGET: ${{ matrix.build.target }}
+        run: |
+          rustup toolchain install
+          rustup target add "$TARGET"
+      - name: Install the musl C toolchain
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Build and pack the CLI
+        env:
+          TARGET: ${{ matrix.build.target }}
+          PLATFORM: ${{ matrix.build.platform }}
+        run: scripts/package-cli.sh "$TARGET" "$PLATFORM" dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cli-${{ matrix.build.platform }}-${{ matrix.attempt.name }}
+          path: ${{ matrix.attempt.checkout }}/dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 3
+
+  image:
+    name: image (${{ matrix.build.slug }}, ${{ matrix.attempt.name }})
+    runs-on: ${{ matrix.build.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        attempt:
+          - name: first
+            checkout: one
+          - name: second
+            checkout: another/nested/copy
+        build:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+            slug: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            slug: arm64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: ${{ matrix.attempt.checkout }}
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          driver-opts: image=moby/buildkit:v0.34.1@sha256:99368f3e46177c6405b9740e4461d91cee004128daeecca78d4ceac50ec1da5c
+      - id: epoch
+        name: Use the commit's time for the image
+        working-directory: ${{ matrix.attempt.checkout }}
+        run: printf 'epoch=%s\n' "$(git log -1 --format=%ct)" >> "$GITHUB_OUTPUT"
+      - id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        env:
+          SOURCE_DATE_EPOCH: ${{ steps.epoch.outputs.epoch }}
+        with:
+          context: ${{ matrix.attempt.checkout }}
+          platforms: ${{ matrix.build.platform }}
+          outputs: type=oci,dest=image.tar,rewrite-timestamp=true
+          provenance: false
+          sbom: false
+          no-cache: true
+      - name: Record the digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          FILE: digest-${{ matrix.build.slug }}-${{ matrix.attempt.name }}
+        run: |
+          if [ -z "$DIGEST" ]; then
+            echo "::error::the build reported no digest"
+            exit 1
+          fi
+          printf '%s\n' "$DIGEST" > "$FILE"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: digest-${{ matrix.build.slug }}-${{ matrix.attempt.name }}
+          path: digest-${{ matrix.build.slug }}-${{ matrix.attempt.name }}
+          retention-days: 3
+
+  compare:
+    needs: [cli, image]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: builds
+      - name: Compare the two builds of each output
+        working-directory: builds
+        run: |
+          status=0
+          compare() {
+            if cmp "$2" "$3"; then
+              echo "same: $1: $(sha256sum "$2" | cut -d' ' -f1)"
+            else
+              echo "::error::$1 differs between the two builds"
+              status=1
+            fi
+          }
+          for platform in macos-arm64 linux-amd64 linux-arm64; do
+            compare "cli $platform" "cli-$platform-first/"*.tar.gz "cli-$platform-second/"*.tar.gz
+          done
+          for slug in amd64 arm64; do
+            compare "image $slug" "digest-$slug-first/digest-$slug-first" "digest-$slug-second/digest-$slug-second"
+            cat "digest-$slug-first/digest-$slug-first"
+          done
+          exit "$status"

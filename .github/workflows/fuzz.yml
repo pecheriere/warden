@@ -1,0 +1,59 @@
+name: fuzz
+
+# Runs each cargo-fuzz target for a short, fixed time: every night, and on a pull
+# request that changes the fuzzing setup itself, not on every pull request. A
+# crash fails the job. Fix it and add the input to fuzz/seeds/<target>.
+#
+# This repository is public, so scripts/fuzz.sh --quiet keeps the crashing input
+# and the stack trace out of the log, and nothing is uploaded. The log shows
+# which target failed and its seed. Handle a crash in a security-relevant target
+# as SECURITY.md describes.
+
+on:
+  schedule:
+    - cron: "41 3 * * *"
+  pull_request:
+    paths:
+      - fuzz/**
+      - scripts/fuzz.sh
+      - .github/workflows/fuzz.yml
+  workflow_dispatch:
+
+permissions: {}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Reads fuzz/rust-toolchain.toml, the only place the nightly is pinned.
+      - name: Install the pinned nightly
+        working-directory: fuzz
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          workspaces: fuzz
+          cache-bin: "false"
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --version 0.13.2 --locked
+      # cargo-fuzz has no --locked, so check first that it will not change
+      # fuzz/Cargo.lock, whose versions the crate-age check has seen.
+      - name: Check the fuzz crate's lockfile, formatting and lints
+        working-directory: fuzz
+        run: |
+          cargo metadata --locked --format-version 1 > /dev/null
+          cargo fmt --check
+          cargo clippy --all-targets --locked -- -D warnings
+      - name: Build the targets
+        working-directory: fuzz
+        run: cargo fuzz build
+      - name: Fuzz each target for 3 minutes
+        run: scripts/fuzz.sh --quiet 180

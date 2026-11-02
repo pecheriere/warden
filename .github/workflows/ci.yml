@@ -44,6 +44,8 @@ jobs:
           echo "$USER:$password" | sudo chpasswd
           echo "WARDEN_TEST_LOGIN_PASSWORD=$password" >> "$GITHUB_ENV"
       - run: cargo fmt --check
+      - name: Refuse a stale fuzz/Cargo.lock
+        run: cargo metadata --locked --manifest-path fuzz/Cargo.toml --format-version 1 > /dev/null
       - name: Refuse reqwest decompression features
         run: scripts/check-no-reqwest-decompression.sh
       - name: Refuse the demo in anything that ships
@@ -130,6 +132,11 @@ jobs:
           persist-credentials: false
       - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
         with:
+          command: check
+      # The fuzz crate is its own workspace, with its own Cargo.lock.
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
+        with:
+          manifest-path: fuzz/Cargo.toml
           command: check
 
   crate-age:
