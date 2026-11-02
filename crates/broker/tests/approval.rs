@@ -1082,6 +1082,44 @@ async fn non_owner_gets_403_everywhere() {
     assert_eq!(status(&broker, &created.id).await, RequestStatus::Pending);
 }
 
+/// Every route refuses a request that came through Funnel, whatever login it
+/// carries, on its own check and not because a login is missing. The refusal
+/// carries the page's security headers like any other answer.
+#[tokio::test]
+async fn funnel_requests_refused_on_every_approval_route() {
+    let (broker, created, token) = pending().await;
+    for (method, path) in every_route(&token) {
+        for login in [Some(TEST_OWNER), None] {
+            for funnel in ["?1", ""] {
+                let mut req = Request::builder()
+                    .method(method)
+                    .uri(&path)
+                    .header("Tailscale-Funnel-Request", funnel)
+                    .header("Origin", TEST_ORIGIN)
+                    .header("Content-Type", "application/json");
+                if let Some(login) = login {
+                    req = req.header("Tailscale-User-Login", login);
+                }
+                let resp = broker.send(req.body(Body::from("{}")).unwrap()).await;
+                assert_eq!(
+                    resp.status,
+                    StatusCode::UNAUTHORIZED,
+                    "{method} {path} login={login:?} funnel={funnel:?}: {resp:?}"
+                );
+                assert_eq!(resp.header("content-security-policy"), CSP, "{path}");
+            }
+        }
+    }
+    assert_eq!(status(&broker, &created.id).await, RequestStatus::Pending);
+}
+
+/// The same requests without the header reach the owner's page.
+#[tokio::test]
+async fn the_funnel_refusal_does_not_touch_tailnet_requests() {
+    let (broker, _, _) = pending().await;
+    assert_eq!(broker.get("/grants").await.status, StatusCode::OK);
+}
+
 #[tokio::test]
 async fn cross_origin_post_rejected() {
     let (broker, created, token) = pending().await;

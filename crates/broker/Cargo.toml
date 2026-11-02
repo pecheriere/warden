@@ -91,5 +91,6 @@ tempfile.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 wiremock.workspace = true
+rsa.workspace = true
 percent-encoding.workspace = true
 proptest.workspace = true

@@ -43,6 +43,7 @@ On the approval listener (`WARDEN_APPROVAL_LISTEN`). The caller must be the owne
 answer is `403 {"error":"forbidden"}`. Each `POST` must also carry the exact
 `Origin` of `WARDEN_PUBLIC_URL` (otherwise 403) and
 `Content-Type: application/json` (otherwise 415), with a body of at most 64 KiB.
+A request that came through Tailscale Funnel gets `401` before any of this.
 Every response has a strict Content-Security-Policy, `Referrer-Policy: no-referrer`,
 `Cache-Control: no-store` and `X-Content-Type-Options: nosniff`.
 
