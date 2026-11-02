@@ -29,7 +29,7 @@ error.
 | `mode`       | `cert` or `relay`. |
 | `users`      | Comma-separated Unix accounts that may be requested, each matching `^[a-z_][a-z0-9_-]{0,31}$`. |
 | `max_window` | Longest window that may be granted: `15m`, `30m`, `1h` or `4h`. |
-| `host_keys`  | One or more OpenSSH public key lines (`ssh-ed25519 AAAA...`), newline-separated. Any key algorithm is accepted: these are the target's host keys. They are pinned: there is no trust on first use. Required for both modes; for relay targets the onward connection negotiates only the algorithms of these keys. |
+| `host_keys`  | One or more OpenSSH public key lines (`ssh-ed25519 AAAA...`), newline-separated. Any key algorithm is accepted: these are the target's host keys. warden does not check an RSA key's length, so pin one of at least 2048 bits. They are pinned: there is no trust on first use. Required for both modes; for relay targets the onward connection negotiates only the algorithms of these keys. |
 | `private_key` | Relay targets only: the private key warden logs in to the target with. See below. |
 | `password`    | Relay targets only: the password warden logs in to the target with. See below. |
 
