@@ -75,9 +75,12 @@ fn agent_revoke_works_with_a_broken_audit_log_and_exits_with_an_error() {
     let revoked = server.run(&["agent", "revoke", "build-agent"]);
     let stderr = text(&revoked.stderr);
     assert!(!revoked.status.success(), "{stderr}");
-    assert!(stderr.contains("cannot open the audit log"), "{stderr}");
+    assert!(stderr.contains("opening audit log"), "{stderr}");
     assert!(stderr.contains("is revoked"), "{stderr}");
     assert!(stderr.contains("NOT in the audit log"), "{stderr}");
+    // With no server log here, what is missing is printed.
+    assert!(stderr.contains(r#""type":"agent_revoked""#), "{stderr}");
+    assert!(stderr.contains("build-agent"), "{stderr}");
     assert!(server.agents().contains("revoked@"), "{}", server.agents());
 }
 

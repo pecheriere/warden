@@ -5,8 +5,8 @@
 //! cannot interrupt it) in one `BEGIN IMMEDIATE` transaction whose audit
 //! entry is appended before the commit, so the audit trail never misses a
 //! transition (a failed commit can at worst leave an entry for a change that
-//! did not happen). Revocations are the exception: they take effect even if
-//! their entry cannot be written, see [`AuditOutcome`]. After the commit the affected request ids are published
+//! did not happen). Revocations are the exception: they do not wait for the
+//! log, see [`revocation`]. After the commit the affected request ids are published
 //! on the [`StatusBus`] so long-polls wake up, and relay sessions of revoked
 //! grants are ended.
 
@@ -32,11 +32,13 @@ use crate::policy::{ApiSecretPolicy, PolicyError, SecretBackend, SshMode, SshTar
 use crate::relay::{LiveSessions, RelayEndpoint};
 use crate::ssh_ca;
 
+pub mod revocation;
 mod transition;
 
-pub use self::transition::AuditOutcome;
+use self::revocation::commit_with_entries;
+pub use self::revocation::{AuditOutcome, EntriesWritten, unwritten_entries, write_entries};
+use self::transition::detached;
 pub(crate) use self::transition::{CommitError, audit_and_commit, begin};
-use self::transition::{commit_even_if_unaudited, detached};
 
 /// How long a request waits for the owner, in seconds.
 const PENDING_TTL_SECS: i64 = 600;
@@ -404,6 +406,8 @@ pub struct Requests {
     relay: Option<Arc<RelayEndpoint>>,
     /// Live relay sessions, ended when their grant is revoked.
     sessions: Arc<LiveSessions>,
+    /// Held while writing the entries of revocations to the audit log.
+    entry_writer: Arc<tokio::sync::Mutex<()>>,
 }
 
 /// Which pending requests an expiry pass looks at.
@@ -437,6 +441,7 @@ impl Requests {
             clock,
             relay: relay.map(Arc::new),
             sessions: LiveSessions::new(),
+            entry_writer: Arc::default(),
         }
     }
 
@@ -1044,9 +1049,9 @@ impl Requests {
         }
     }
 
-    /// End a grant now, even if the audit log cannot record it (the owner is
-    /// then told, and this returns [`AuditOutcome::Missing`]). Revoking an
-    /// already revoked grant does nothing.
+    /// End a grant now, whatever state the audit log is in: if its entry cannot
+    /// be written, the owner is told and this returns [`AuditOutcome::Missing`].
+    /// Revoking an already revoked grant changes nothing, and reports the same.
     ///
     /// # Errors
     /// [`RequestError::NotFound`] if no such grant exists; storage failures,
@@ -1066,12 +1071,13 @@ impl Requests {
         grant_id: &Id,
         by: &str,
     ) -> Result<AuditOutcome, RequestError> {
+        let now = self.clock.now();
         let mut tx = begin(&self.pool).await?;
         let Some(row) = sqlx::query(
             "UPDATE grants SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL \
              RETURNING request_id",
         )
-        .bind(self.clock.now())
+        .bind(now)
         .bind(grant_id.as_str())
         .fetch_optional(&mut *tx)
         .await?
@@ -1082,12 +1088,10 @@ impl Requests {
                 .await?;
             // Revoked already, perhaps by another process: its sessions end
             // now rather than at the relay's next check.
-            if exists.is_some() {
-                self.sessions.revoke_grant(grant_id);
-            }
-            return exists
-                .map(|_| AuditOutcome::Recorded)
-                .ok_or(RequestError::NotFound);
+            drop(tx);
+            exists.ok_or(RequestError::NotFound)?;
+            self.sessions.revoke_grant(grant_id);
+            return Ok(self.settle_entries().await);
         };
         let request_id: Id = parse(&row, "request_id")?;
         sqlx::query("UPDATE requests SET status = 'revoked' WHERE id = ? AND status = 'approved'")
@@ -1098,14 +1102,9 @@ impl Requests {
             grant_id: grant_id.clone(),
             by: by.to_owned(),
         };
-        let outcome = commit_even_if_unaudited(
-            Some(&self.audit),
-            tx,
-            vec![revoked],
-            &format!("revocation of grant {grant_id}"),
-        )
-        .await?;
+        commit_with_entries(tx, vec![revoked], now).await?;
         self.sessions.revoke_grant(grant_id);
+        let outcome = self.settle_entries().await;
         self.bus.publish(&request_id);
         if outcome == AuditOutcome::Missing {
             self.tell_owner_unaudited(format!("Revoking grant {grant_id}"));
@@ -1113,8 +1112,9 @@ impl Requests {
         Ok(outcome)
     }
 
-    /// Revoke an agent and everything it holds, even if the audit log cannot
-    /// record it (the owner is then told); see [`revoke_agent`].
+    /// Revoke an agent and everything it holds, whatever state the audit log is
+    /// in (the owner is told if its entries cannot be written); see
+    /// [`revoke_agent`].
     ///
     /// # Errors
     /// [`RequestError::UnknownAgent`] or storage failures.
@@ -1122,16 +1122,16 @@ impl Requests {
         let this = self.clone();
         let name = name.clone();
         detached(async move {
-            let revoked =
-                revoke_agent(&this.pool, Some(&this.audit), &name, this.clock.now()).await?;
+            let affected = revoke_agent(&this.pool, &name, this.clock.now()).await?;
             this.sessions.revoke_agent(&name);
-            for id in &revoked.affected {
+            let outcome = this.settle_entries().await;
+            for id in &affected {
                 this.bus.publish(id);
             }
-            if revoked.audit == AuditOutcome::Missing {
+            if outcome == AuditOutcome::Missing {
                 this.tell_owner_unaudited(format!("Revoking agent {name}"));
             }
-            Ok(revoked.audit)
+            Ok(outcome)
         })
         .await
     }
@@ -1461,19 +1461,13 @@ async fn check_key_unbound(
     Ok(())
 }
 
-/// What [`revoke_agent`] did.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RevokedAgent {
-    /// Every affected request, so a running server can wake their long-polls.
-    pub affected: Vec<Id>,
-    /// Whether it is on record. The caller must tell the owner if not.
-    pub audit: AuditOutcome,
-}
-
 /// Revoke agent `name` at `now` in one transaction: its key stops working,
 /// its pending requests end as revoked, and its active grants are revoked
-/// (their requests too). This takes effect even if `audit` cannot record it,
-/// or is `None` because the log could not be opened.
+/// (their requests too). Returns the ids of every affected request so a
+/// running server can wake their long-polls.
+///
+/// This does not touch the audit log: the entries wait in the database, and the
+/// caller then writes them with [`write_entries`] and reports what it could not.
 ///
 /// When this runs in another process (the `agent revoke` admin command), the
 /// server's in-process [`StatusBus`] is not told; its long-polls see
@@ -1485,10 +1479,9 @@ pub struct RevokedAgent {
 /// (nothing changes then).
 pub async fn revoke_agent(
     pool: &SqlitePool,
-    audit: Option<&AuditLog>,
     name: &AgentName,
     now: i64,
-) -> Result<RevokedAgent, RequestError> {
+) -> Result<Vec<Id>, RequestError> {
     let mut tx = begin(pool).await?;
     agents::revoke(&mut *tx, name, now)
         .await
@@ -1536,9 +1529,8 @@ pub async fn revoke_agent(
         });
         affected.push(request_id);
     }
-    let transition = format!("revocation of agent {name}");
-    let audit = commit_even_if_unaudited(audit, tx, events, &transition).await?;
-    Ok(RevokedAgent { affected, audit })
+    commit_with_entries(tx, events, now).await?;
+    Ok(affected)
 }
 
 /// Wait for a bus message about `id`. `true` means re-read (it changed or
@@ -1659,6 +1651,7 @@ pub async fn sweep_loop(
                 if let Err(e) = requests.sweep_nonces().await {
                     tracing::error!(error = %e, "nonce sweep failed");
                 }
+                requests.flush_revocation_entries().await;
             }
             // Any change, or the sender going away, means stop.
             _ = shutdown.changed() => return,

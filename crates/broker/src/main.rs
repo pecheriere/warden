@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
+use sqlx::SqlitePool;
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tracing_subscriber::EnvFilter;
@@ -21,7 +22,7 @@ use warden_broker::policy::OnePasswordConnect;
 use warden_broker::proxy::CallSlots;
 use warden_broker::relay::host_key::RelayHostKey;
 use warden_broker::relay::{RelayEndpoint, RelayLimits, RelayServer, host_key};
-use warden_broker::requests::{self, Clock as _, Requests, SystemClock};
+use warden_broker::requests::{self, AuditOutcome, Clock as _, Requests, SystemClock};
 use warden_broker::{AppState, agents, audience, audit, build_routers, enrollment, store};
 use warden_broker::{doctor, health};
 use warden_broker_proto::AgentName;
@@ -135,6 +136,9 @@ fn public_url() -> Result<Url> {
     }
 }
 
+/// Longest `agent revoke` waits to open the audit log, which verifies all of it.
+const AUDIT_OPEN_WAIT: Duration = Duration::from_secs(30);
+
 async fn open_audit() -> Result<AuditLog> {
     let path = audit_path()?;
     AuditLog::open(&path)
@@ -244,31 +248,51 @@ async fn agent(command: AgentCommand) -> Result<()> {
             }
         }
         AgentCommand::Revoke { name } => {
-            // Stopping access matters more than recording it: a log that
-            // cannot even be opened does not stop the revocation.
-            let audit = match open_audit().await {
-                Ok(audit) => Some(audit),
-                Err(e) => {
-                    eprintln!("error: cannot open the audit log: {e:#}");
-                    None
-                }
-            };
-            let revoked = requests::revoke_agent(&pool, audit.as_ref(), &name, SystemClock.now())
+            // Stop access first: nothing about the audit log can prevent this.
+            let now = SystemClock.now();
+            let affected = requests::revoke_agent(&pool, &name, now)
                 .await
                 .with_context(|| format!("revoking agent {name}"))?;
-            eprintln!(
-                "agent {name} revoked; {} request(s) ended",
-                revoked.affected.len()
-            );
-            if revoked.audit == requests::AuditOutcome::Missing {
-                bail!(
-                    "agent {name} is revoked, but this is NOT in the audit log, which could not \
-                     be written"
-                );
-            }
+            eprintln!("agent {name} revoked; {} request(s) ended", affected.len());
+            record_revocation(&pool, &name, now).await;
         }
     }
     Ok(())
+}
+
+/// Write the entries of a revocation that has taken effect to the audit log. If
+/// that fails, print what is missing, as this command has no server log, and exit
+/// with an error. A running server writes those entries once the log works.
+async fn record_revocation(pool: &SqlitePool, name: &AgentName, now: i64) {
+    let cause = match tokio::time::timeout(AUDIT_OPEN_WAIT, open_audit()).await {
+        Ok(Ok(audit)) => {
+            let written = requests::write_entries(pool, &Arc::new(audit), now).await;
+            if written.outcome == AuditOutcome::Recorded {
+                return;
+            }
+            written
+                .cause
+                .unwrap_or_else(|| "entries are still waiting".to_owned())
+        }
+        Ok(Err(e)) => format!("{e:#}"),
+        Err(_) => format!("opening it took over {} s", AUDIT_OPEN_WAIT.as_secs()),
+    };
+    eprintln!("error: agent {name} is revoked, but this is NOT in the audit log: {cause}");
+    match requests::unwritten_entries(pool).await {
+        Ok(entries) => {
+            eprintln!("these entries are waiting in the database for the log to work:");
+            for entry in entries {
+                match serde_json::to_string(&entry) {
+                    Ok(line) => eprintln!("{line}"),
+                    Err(e) => eprintln!("(an entry cannot be shown: {e})"),
+                }
+            }
+        }
+        Err(e) => eprintln!("the waiting entries cannot be read: {e}"),
+    }
+    // Not by returning: the runtime waits for blocking work when it shuts down,
+    // so an audit volume that has stalled would keep this process from ending.
+    std::process::exit(1);
 }
 
 async fn enroll() -> Result<()> {

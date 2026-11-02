@@ -247,10 +247,14 @@ async fn the_owner_can_revoke_an_api_grant_when_the_log_cannot_be_written() {
         .post_json(&format!("/grants/{grant}/revoke"), &json!({}))
         .await;
     assert_eq!(revoked.status, StatusCode::OK, "{}", revoked.body);
-    assert_eq!(revoked.json()["unaudited"], true);
     let message = revoked.json()["message"].as_str().unwrap().to_owned();
     assert!(message.contains("access has stopped"), "{message}");
     assert!(message.contains("not on record"), "{message}");
+    // A repeat says the same while the entry is missing.
+    let again = broker
+        .post_json(&format!("/grants/{grant}/revoke"), &json!({}))
+        .await;
+    assert_eq!(again.json()["message"], revoked.json()["message"]);
 
     // Access has stopped everywhere the broker decides.
     assert_eq!(status(&broker, &created).await, RequestStatus::Revoked);
@@ -356,4 +360,100 @@ async fn a_revocation_the_log_accepts_is_recorded_as_before() {
             .iter()
             .all(|bell| !bell.title.contains("audit log failed"))
     );
+}
+
+/// The grants page, as the owner gets it.
+async fn grants_page(broker: &TestBroker) -> String {
+    let page = broker.get("/grants").await;
+    assert_eq!(page.status, StatusCode::OK);
+    page.body
+}
+
+#[tokio::test]
+async fn the_warning_stays_on_the_page_until_the_entry_is_in_the_log() {
+    let (broker, _key, _created, grant) = api_grant().await;
+    assert!(!grants_page(&broker).await.contains("Not in the audit log"));
+    let good = break_audit_log(&broker);
+    let revoked = broker
+        .post_json(&format!("/grants/{grant}/revoke"), &json!({}))
+        .await;
+    assert_eq!(revoked.status, StatusCode::OK, "{}", revoked.body);
+
+    // However often the page reloads, and although no grant is left on it. A new
+    // grant does not clear it either.
+    for _ in 0..2 {
+        assert!(grants_page(&broker).await.contains("Not in the audit log"));
+    }
+    broker.state().requests.flush_revocation_entries().await;
+    assert!(grants_page(&broker).await.contains("Not in the audit log"));
+
+    // Once the log works, the sweep writes the entry, noting it is late.
+    broker.clock.advance(120);
+    repair_audit_log(&broker, &good);
+    broker.state().requests.flush_revocation_entries().await;
+    assert!(!grants_page(&broker).await.contains("Not in the audit log"));
+    let events = audit_events(&broker);
+    let at = events
+        .iter()
+        .position(|e| e["type"] == "grant_revoked")
+        .expect("the entry was written");
+    assert_eq!(events[at]["grant_id"], grant.as_str());
+    let note = events[at + 1]["message"].as_str().unwrap();
+    assert!(note.contains("written late"), "{note}");
+    warden_broker::audit::verify(broker.audit_path()).unwrap();
+}
+
+#[tokio::test]
+async fn an_audit_log_that_has_stalled_does_not_stop_a_revocation() {
+    let (broker, key, created, grant) = api_grant().await;
+    // Another writer holds the log's lock: appends wait, as on a stalled volume.
+    let holder = std::fs::File::open(broker.audit_path()).unwrap();
+    holder.lock().unwrap();
+
+    let outcome = broker
+        .state()
+        .requests
+        .revoke_grant(&grant, "owner")
+        .await
+        .unwrap();
+    assert_eq!(outcome, AuditOutcome::Missing);
+    assert_eq!(status(&broker, &created).await, RequestStatus::Revoked);
+    let refused = call(&broker, &key, &grant).await;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.body);
+
+    // The entry follows once the log answers.
+    drop(holder);
+    tokio::time::timeout(Duration::from_secs(20), async {
+        while broker
+            .state()
+            .requests
+            .unwritten_entry_count()
+            .await
+            .unwrap()
+            > 0
+        {
+            broker.state().requests.flush_revocation_entries().await;
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the entry was written");
+    assert!(broker.audit_types().iter().any(|t| t == "grant_revoked"));
+}
+
+#[tokio::test]
+async fn a_revocation_survives_a_restart_with_its_entry_still_waiting() {
+    let (broker, _key, created, grant) = api_grant().await;
+    let good = break_audit_log(&broker);
+    broker
+        .state()
+        .requests
+        .revoke_grant(&grant, "owner")
+        .await
+        .unwrap();
+    repair_audit_log(&broker, &good);
+    let broker = broker.restart().await;
+    broker.state().requests.flush_revocation_entries().await;
+    assert!(broker.audit_types().iter().any(|t| t == "grant_revoked"));
+    assert_eq!(status(&broker, &created).await, RequestStatus::Revoked);
 }

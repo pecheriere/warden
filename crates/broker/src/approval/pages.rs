@@ -553,10 +553,27 @@ fn live_area(grant: &ActiveGrant, live: Option<&LiveGrant<'_>>) -> Markup {
     }
 }
 
+/// The warning that revocations took effect but are not in the audit log yet.
+/// It comes from the server's state, so it lasts until they are, whatever the
+/// page reloads for.
+fn unwritten_warning(unwritten: i64) -> Markup {
+    html! {
+        @if unwritten > 0 {
+            p.warning role="alert" {
+                strong { "Not in the audit log. " }
+                "Access was revoked, but " (unwritten)
+                " audit log entries could not be written. warden keeps trying. Check the \
+                 server's log and the disk that holds the audit log."
+            }
+        }
+    }
+}
+
 /// Active grants, one card each, with what each is doing now (`live`, one
-/// entry per grant) and revoke buttons.
+/// entry per grant) and revoke buttons, under a warning if `unwritten` audit
+/// entries of revocations are waiting for the log.
 #[must_use]
-pub fn grants(grants: &[ActiveGrant], live: &[LiveGrant<'_>], now: i64) -> Markup {
+pub fn grants(grants: &[ActiveGrant], live: &[LiveGrant<'_>], now: i64, unwritten: i64) -> Markup {
     if grants.is_empty() {
         let content = end_state(
             &Chip {
@@ -567,11 +584,13 @@ pub fn grants(grants: &[ActiveGrant], live: &[LiveGrant<'_>], now: i64) -> Marku
             &html! { "No active grants. A grant shows here once you approve a request." },
             None,
         );
+        let content = html! { (unwritten_warning(unwritten)) (content) };
         return layout("Active grants", Some(Nav::Grants), false, &content);
     }
     let content = html! {
         main.wide {
             h1 { "Active grants" }
+            (unwritten_warning(unwritten))
             @for grant in grants {
                 section.card.grant {
                     div.field.tight {
@@ -1049,9 +1068,11 @@ mod tests {
             ("not-found", not_found()),
             ("unavailable", unavailable("The broker is starting up.")),
             ("internal-error", internal_error()),
-            ("grants-empty", grants(&[], &[], NOW)),
-            ("grants", grants(&active, &idle(&active), NOW)),
-            ("grants-live", grants(&live_grants, &live, NOW)),
+            ("grants-empty", grants(&[], &[], NOW, 0)),
+            ("grants-empty-unwritten", grants(&[], &[], NOW, 2)),
+            ("grants", grants(&active, &idle(&active), NOW, 0)),
+            ("grants-unwritten", grants(&active, &idle(&active), NOW, 2)),
+            ("grants-live", grants(&live_grants, &live, NOW, 0)),
             ("history-empty", history(&[])),
             ("history", history(&history_entries())),
             ("enroll", enroll()),
@@ -1100,6 +1121,16 @@ mod tests {
     }
 
     #[test]
+    fn the_grants_page_warns_only_while_entries_are_waiting() {
+        let quiet = grants(&[], &[], NOW, 0).into_string();
+        assert!(!quiet.contains("Not in the audit log"), "{quiet}");
+        let html = grants(&[], &[], NOW, 3).into_string();
+        assert!(html.contains("Not in the audit log"), "{html}");
+        assert!(html.contains("3 audit log entries"), "{html}");
+        assert!(html.contains(r#"role="alert""#), "{html}");
+    }
+
+    #[test]
     fn every_page_renders_self_contained() {
         let out = std::env::var_os("WARDEN_RENDER_PAGES_DIR").map(PathBuf::from);
         if let Some(dir) = &out {
@@ -1139,7 +1170,7 @@ mod tests {
 
     #[test]
     fn marks_the_current_page_in_the_navigation() {
-        let html = grants(&[], &[], NOW).into_string();
+        let html = grants(&[], &[], NOW, 0).into_string();
         // Both the inline links and the menu's copy mark it.
         assert_eq!(
             html.matches(r#"<a href="/grants" aria-current="page">"#)
@@ -1256,7 +1287,7 @@ mod tests {
             ("not_found", not_found()),
             ("unavailable", unavailable("x")),
             ("internal_error", internal_error()),
-            ("grants_empty", grants(&[], &[], NOW)),
+            ("grants_empty", grants(&[], &[], NOW, 0)),
             ("history_empty", history(&[])),
         ] {
             let html = page.into_string();
@@ -1291,7 +1322,7 @@ mod tests {
     #[test]
     fn grants_are_cards_with_the_revoke_hook() {
         let active = active_grants();
-        let html = grants(&active, &idle(&active), NOW).into_string();
+        let html = grants(&active, &idle(&active), NOW, 0).into_string();
         assert_eq!(
             html.matches(r#"<section class="card grant">"#).count(),
             4,
@@ -1325,7 +1356,7 @@ mod tests {
     #[test]
     fn grants_show_live_activity_under_each_grant() {
         let (active, live) = live_grants_fixture();
-        let html = grants(&active, &live, NOW).into_string();
+        let html = grants(&active, &live, NOW, 0).into_string();
         let (relay, api, cert) = (id(5), id(4), id(2));
         assert!(
             html.contains(&format!(
@@ -1357,7 +1388,7 @@ mod tests {
     #[test]
     fn idle_grants_say_nothing_is_live() {
         let active = active_grants();
-        let html = grants(&active, &idle(&active), NOW).into_string();
+        let html = grants(&active, &idle(&active), NOW, 0).into_string();
         assert_eq!(
             html.matches(r#"<div class="live-area""#).count(),
             4,
@@ -1373,7 +1404,7 @@ mod tests {
         );
         assert_eq!(html.matches("No calls in flight").count(), 2, "{html}");
         // A grant missing from the live entries renders as idle.
-        let html = grants(&active, &[], NOW).into_string();
+        let html = grants(&active, &[], NOW, 0).into_string();
         assert_eq!(html.matches("No calls in flight").count(), 2, "{html}");
     }
 
@@ -1400,7 +1431,7 @@ mod tests {
                 },
             ],
         }];
-        let html = grants(&active, &live, NOW).into_string();
+        let html = grants(&active, &live, NOW, 0).into_string();
         assert!(
             html.contains(r#"<p class="live">1 session open · 2 calls in flight</p>"#),
             "{html}"

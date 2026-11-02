@@ -152,35 +152,39 @@ must not happen without its entry. An action that takes access away is the
 exception: stopping access matters more than recording it.
 
 - **Written first, or the action does not happen.** Creating, approving,
-  denying, cancelling and expiring requests, adding an agent or changing its key, enrolling or removing a passkey and making an
+  denying, cancelling and expiring requests, adding an agent or changing its
+  key, enrolling or removing a passkey and making an
   enrollment code write their entries before the database commit. A proxied
   call and a relay session write theirs before anything reaches the target. If
   the entry cannot be written, the change is rolled back and the caller gets an
   error. A bearer agent's row is written first and revoked if its entry cannot
   be written; its key is shown only after that entry, so the row cannot be used.
-- **Revoking works without the log (deliberate).** Revoking a grant or an
-  agent takes effect even if its entries cannot be written, or, for
-  `warden-server agent revoke`, if the log cannot even be opened. A failing log
-  must not leave an owner unable to end access they have decided to end, and a
-  compromise is when both are most likely to matter. The entries are still
-  written first, so a normal revocation reads as before. If that fails:
+- **Revoking does not wait for the log (deliberate).** A failing log must not
+  leave an owner unable to end access they have decided to end, and a compromise
+  is when both are most likely to matter. So a revocation stores its entries in
+  the database, in the transaction that revokes, and only then writes them to the
+  log, waiting 2 s at most. A log that fails, stalls or cannot be opened cannot
+  stop it:
   - Access stops as usual. The grant or agent is revoked in the database, pending
     requests of a revoked agent end, relay sessions close, and proxied calls and
     the agent's key are refused. A certificate already issued stays valid until
     it expires, as it does for any revocation.
-  - The owner sees it. The grants page says that access has stopped and that it
-    is not on record, and stays on that message. A notification goes out too, as
-    the agent may have revoked its own grant, which needs no owner. It holds the
-    grant id or agent name. `warden-server agent revoke` prints the same and exits
-    with an error, after revoking.
-  - The evidence is weaker. The missing entries go to the server log at error
-    level, and `revoked_at` stays in the database, so the revocation can still be
-    found, but neither has the audit log's hash chain. An entry that was missed
-    is not written later, and revoking again does nothing.
+  - The entry is not lost. It waits in the database, and every sweep (each 15 s)
+    tries again, so it reaches the log once the log works, with a note if it is
+    over a minute late. Until then it has no hash chain, and whoever controls the
+    host could remove it. A crash just after writing one can write it twice.
+  - The owner sees it. The grants page warns for as long as any entry is waiting,
+    whatever the page reloads for. A notification goes out too, with the grant id
+    or agent name, because an agent can revoke its own grant with no owner there.
+    The server log has an error with the entries at each attempt.
+    `warden-server agent revoke` has no server log, so it prints the entries and
+    exits with an error, after revoking.
   - Only a database that cannot commit stops a revocation: it then did not happen,
     and the caller gets an error. The relay ends its sessions by itself if it
     cannot read the database for 10 s (see "Fail closed when state cannot be
     read").
+  - Entries of revocations are therefore written just after the commit, so a
+    session that a revocation ends can log its end before the revocation's entry.
 - **`cert_issued` fails closed.** A certificate cannot be revoked before it
   expires, so one with no entry would be access with no evidence and no way to
   take it back. `cert_issued` is therefore written with `approved`, before the
@@ -379,9 +383,6 @@ These were recorded during implementation and are accepted for this release.
 - **Certificate logins are not audited.** They go straight to the target. warden
   records the approval and the certificate, and the target's `sshd` logs the login
   with the certificate's key id. Ship those logs if you need that trail.
-- **A certificate's `cert_issued` entry can be missing.** The approval is committed
-  and audited first. If writing the entry for the certificate then fails, this is
-  logged and the grant stands. The `approved` entry still names the grant.
 - **Connect and notifiers can be configured over plain HTTP.** warden does not
   require `https` for `WARDEN_OP_CONNECT_URL` or the notifier URLs, because Connect
   on its own network and a local Home Assistant commonly use `http`. On a network

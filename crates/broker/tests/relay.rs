@@ -2272,18 +2272,17 @@ async fn db_revoke_with_no_audit_log_closes_session_from_another_process() {
     let s = key_target().await;
     let agent = approved_agent(&s.broker, "bot").await;
     let (c, _channel) = hold_session(&s, &agent.key).await;
-    // `warden-server agent revoke` when it could not open the audit log.
+    break_audit_log(&s.broker);
+    // `warden-server agent revoke`, which never needs the log to revoke.
     let state = s.broker.state();
     let revoked = Instant::now();
-    let done = warden_broker::requests::revoke_agent(
+    warden_broker::requests::revoke_agent(
         &state.pool,
-        None,
         &AgentName::try_from("bot".to_owned()).unwrap(),
         state.clock.now(),
     )
     .await
     .unwrap();
-    assert_eq!(done.audit, AuditOutcome::Missing);
     assert_both_sides_closed(&s, &c, 0, revoked + Duration::from_secs(5)).await;
 }
 
@@ -2347,7 +2346,6 @@ async fn db_revoke_from_another_process_closes_session() {
     let revoked = Instant::now();
     warden_broker::requests::revoke_agent(
         &state.pool,
-        Some(&state.audit),
         &AgentName::try_from("bot".to_owned()).unwrap(),
         state.clock.now(),
     )

@@ -193,14 +193,6 @@ struct Done {
     message: String,
 }
 
-/// A revocation that took effect but could not be recorded. The page stays
-/// on this message instead of reloading.
-#[derive(Serialize)]
-struct RevokedUnaudited {
-    message: &'static str,
-    unaudited: bool,
-}
-
 #[derive(Serialize)]
 struct Enrolled {
     message: String,
@@ -391,14 +383,16 @@ async fn approve_page(State(state): State<AppState>, Path(token): Path<String>) 
 }
 
 async fn grants_page(State(state): State<AppState>) -> Response {
-    match state.requests.active_grants().await {
-        Ok(grants) => {
+    let grants = state.requests.active_grants().await;
+    let unwritten = state.requests.unwritten_entry_count().await;
+    match (grants, unwritten) {
+        (Ok(grants), Ok(unwritten)) => {
             let sessions = state.requests.live_sessions().snapshot();
             let calls = state.proxy_calls.snapshot();
             let live = live_grants(&grants, &sessions, &calls);
-            pages::grants(&grants, &live, state.clock.now()).into_response()
+            pages::grants(&grants, &live, state.clock.now(), unwritten).into_response()
         }
-        Err(e) => internal_page("grants page", &e),
+        (Err(e), _) | (_, Err(e)) => internal_page("grants page", &e),
     }
 }
 
@@ -777,11 +771,7 @@ async fn deny(State(state): State<AppState>, Path(token): Path<String>) -> Respo
 async fn revoke_grant(State(state): State<AppState>, Path(id): Path<Id>) -> Response {
     match state.requests.revoke_grant(&id, REVOKED_BY_OWNER).await {
         Ok(AuditOutcome::Recorded) => done("Revoked."),
-        Ok(AuditOutcome::Missing) => Json(RevokedUnaudited {
-            message: REVOKED_UNAUDITED,
-            unaudited: true,
-        })
-        .into_response(),
+        Ok(AuditOutcome::Missing) => done(REVOKED_UNAUDITED),
         Err(RequestError::NotFound) => json_error(StatusCode::NOT_FOUND, "no such grant"),
         Err(e) => request_error(&e),
     }

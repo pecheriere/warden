@@ -99,11 +99,12 @@ All notable changes to this project are recorded here. The format follows
   `warden-server audit verify` from an older release.
 - A failed agent creation or key change that had already written an audit entry
   now records that it did not take effect.
-- Revoking a grant or an agent now takes effect even if the audit log cannot be
-  written or opened: stopping access matters more than recording it. Before, the
-  revocation was refused. The owner is told on the grants page and by a
-  notification, the entries go to the server log, and `warden-server agent
-  revoke` exits with an error after revoking.
+- Revoking a grant or an agent no longer depends on the audit log: stopping access
+  matters more than recording it. Before, it was refused if the entry could not be
+  written, and could hang if the log stalled. Its entries now wait in the database
+  and reach the log once it works. Until then the grants page warns and a
+  notification goes out, and `warden-server agent revoke` prints them and exits with
+  an error after revoking. New migration `0007_unwritten_audit`.
 
 ## [0.8.1] - 2026-11-01
 

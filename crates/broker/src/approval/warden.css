@@ -42,6 +42,8 @@ code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:14px;word
 font-size:14px;font-weight:700;border:1.5px solid}
 .readonly{background:var(--soft);color:var(--soft-ink);border-color:var(--primary)}
 .modify{background:var(--warn-bg);color:var(--warn-ink);border-color:var(--warn-line)}
+.warning{background:var(--warn-bg);color:var(--warn-ink);border:1px solid var(--warn-line);border-radius:10px;padding:12px 14px;margin:12px auto 0;width:calc(100% - 32px);max-width:42rem}
+main.wide>.warning{margin:0 0 16px;width:auto;max-width:none}
 .fp{border-radius:18px;padding:12px 16px;background:var(--fp-bg);border:2px dashed var(--primary);
 display:flex;flex-direction:column;gap:4px}
 .fp .fingerprint{font-size:clamp(18px,6.2vw,25px);font-weight:700;letter-spacing:.06em;white-space:nowrap;word-break:normal}
