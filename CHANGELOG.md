@@ -18,6 +18,9 @@ All notable changes to this project are recorded here. The format follows
 
 ### Added
 
+- Contributions now need a Developer Certificate of Origin sign-off
+  (`git commit -s`). A new `dco` check reads every commit of a pull request, and
+  `CONTRIBUTING.md` explains the rule, including merge commits and Dependabot.
 - CI measures test coverage with `cargo llvm-cov`, including the Linux-only
   relay tests, and reports it in each run's summary. No threshold fails the
   build yet.
@@ -61,6 +64,12 @@ All notable changes to this project are recorded here. The format follows
 - A landing page in `site/`, published to GitHub Pages by
   `.github/workflows/pages.yml`. It is static, with no scripts or external
   resources.
+- `docs/assurance-case.md` (trust boundaries, design principles, how common
+  weaknesses are countered, cryptography, how to replace each credential, including
+  a procedure for the SSH CA key), `docs/security-assessment.md` (a dated ranking
+  of the most likely and most damaging problems; the project's own, not an
+  independent review) and `docs/interfaces.md` (every external interface, with the
+  approval UI's routes and the SSH relay).
 
 ### Changed
 

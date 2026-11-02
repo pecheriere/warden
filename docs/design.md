@@ -4,7 +4,9 @@ This document records the intent and design of warden. It describes the full
 v1 design; the current release (0.8.1) implements the SSH certificate mode
 (§8.1), the SSH relay mode (§8.2) and the HTTP proxy mode (§8.3). Where the
 implementation deviates from this design, the
-[threat model](threat-model.md) says how and why.
+[threat model](threat-model.md) says how and why. The
+[assurance case](assurance-case.md) points at the code for each security property,
+and [External interfaces](interfaces.md) lists everything warden accepts and calls.
 
 ## 1. Intent
 
@@ -19,7 +21,9 @@ warden is a small, self-hosted **approval broker**. The agent asks for access
 with a stated goal; the owner gets a notification on their phone that shows
 *why* (the goal) and *exactly what* is being granted; the owner approves with
 a passkey for a time window; the agent then gets the access **without ever
-holding a long-lived secret in clear**.
+holding a long-lived credential for the target or API**. It holds only its own
+identity key, which can ask for access and use active grants but cannot approve
+anything.
 
 It is an open-source project, so it must be clean, generic in its interfaces,
 and secure by construction.
@@ -37,11 +41,14 @@ and secure by construction.
 2. One approval covers a **goal for a time window**, not each command.
 3. The agent never receives a reusable secret: SSH uses ephemeral keys and
    short-lived certificates; relay and proxy credentials never leave the
-   broker.
-4. Every request, decision, grant and use is recorded in an audit log.
-5. The approval is cryptographically bound to the exact request and window
-   (passkey signature), and only the owner's devices can reach the approval
-   page (Tailscale).
+   broker. Its own identity key (§9) is the one thing it keeps.
+4. Every request, decision and grant, and every use that passes through warden,
+   is recorded in an audit log. Certificate logins go straight to the target, so
+   only the target's `sshd` logs them.
+5. The approval is bound to the exact request and window (a passkey assertion
+   checked against state the server keeps for that request and window; see
+   [Approval binding](threat-model.md#approval-binding)), and only the owner's
+   devices can reach the approval page (Tailscale).
 
 ## 3. Non-goals (v1)
 
@@ -49,8 +56,9 @@ and secure by construction.
 - Multiple approvers, quorum, teams, RBAC.
 - Keystroke/session recording for SSH (session start/end and bytes only).
 - Revocation of already-issued certificates on target hosts (KRL
-  distribution). Short windows are the mitigation; revoke stops new issuance
-  and kills relay sessions.
+  distribution). Short windows limit new logins; revoke stops new issuance
+  and kills relay sessions. A login already open on a certificate target outlives
+  both, as `sshd` checks a certificate only when it authenticates.
 - Secret managers other than 1Password, and notifiers other than the built-in
   Home Assistant Companion and ntfy channels. The interfaces must make adding
   them easy; implementations are not in v1.
@@ -81,11 +89,27 @@ and secure by construction.
 | Actor | Trust |
 |---|---|
 | Owner (phone, workstation) | Root of trust. Holds the passkey. Edits 1Password. |
-| Agent (an automated agent on the workstation) | Semi-trusted: well-intentioned but may be prompt-injected. Bounded by goal, window, targets and destination rules. |
-| warden server | Trusted; holds the SSH CA key (in memory) and a **read-only** 1Password Connect token. Compromise = compromise of everything it brokers; hardened accordingly. |
+| Operator (whoever runs the host; usually the owner) | Root of trust, with the warden host: can read everything warden holds. |
+| Agent (an automated agent on the workstation or an agent host) | Semi-trusted: well-intentioned but may be prompt-injected. Bounded by goal, window, targets and destination rules. |
+| warden server | Trusted; holds a **read-only** 1Password Connect token, and reads the SSH CA key at each approval. Compromise = compromise of everything it brokers; hardened accordingly. |
 | 1Password Connect | Trusted secret backend; reachable only from warden. |
 | Notifiers (Home Assistant Companion, ntfy) | Untrusted doorbells: receive goal text and a link only. |
 | Tailscale | Transport and network-level identity; the tailnet policy is the outer access control. |
+| SSH targets, API origins | Reached only as approved. warden trusts a target only once it proves a pinned host key, and an origin only through verified TLS. Their answers are untrusted. |
+
+Who does what, and through which interface:
+
+| Actor | Action | Through |
+|---|---|---|
+| Agent | Ask for access; follow, withdraw or end it; use a grant | Agent API, SSH relay, or `ssh` straight to a certificate target; `warden` wraps them |
+| Agent's operator | Set an agent up and check it | `warden login`, `warden doctor` |
+| Owner | Approve (passkey), deny, revoke, read grants and history | Approval UI |
+| Owner | Enroll a passkey, with a code from the operator | Approval UI |
+| Owner | Decide targets, secrets, where they may go; hold the CA key | 1Password vault |
+| Operator | Configure and run the broker; check it | Environment or files; `warden-server serve`, `doctor`, `healthcheck` |
+| Operator | Manage agents and passkeys; verify the audit log | `warden-server agent`, `enroll`, `passkey`, `audit verify` |
+| Broker | Read policy and secrets; notify; sign certificates; make calls and sessions; record everything | Connect, notifiers, API origins, relay targets, audit log |
+| Notifiers | Pass a notification to the phone | Their own push services |
 
 ## 6. Architecture
 
@@ -103,13 +127,19 @@ phone ── HTTPS (tailnet) ─────────────▶ approval
 
 Components, all in one Rust workspace:
 
-- **`warden-server`** (one binary, run as a container): request API, approval
-  web UI, SSH CA, SSH relay, HTTP injecting proxy, notifier dispatch, audit
-  log.
-- **`warden` CLI** (workstation): submits requests, waits for the decision,
-  manages the ephemeral SSH key and certificate in an ssh-agent, wraps `ssh`
-  and proxied HTTP calls.
-- Shared crates for the protocol types and policy model.
+- **`warden-server`** (one binary, run as a container or a
+  [systemd service](deployment-systemd.md)): request API, approval web UI, SSH
+  CA, SSH relay, HTTP injecting proxy, notifier dispatch, audit log, and the
+  operator's commands, among them `doctor`, which checks a setup and says what
+  to fix.
+- **`warden` CLI** (workstation or agent host): submits requests, waits for the
+  decision, manages the ephemeral SSH key and certificate in an ssh-agent, wraps
+  `ssh` and proxied HTTP calls, and checks its own setup with `warden doctor`.
+- **`warden-demo`** ([local demo](demo.md)): the broker's code with the Tailscale
+  identity, 1Password and notifiers replaced, for trying the flow on one machine.
+  Not secure for real use, never published and never in the image, which
+  `scripts/check-demo-not-shipped.sh` enforces in CI.
+- A shared crate for the protocol types and request signing.
 
 Backends/notifiers are traits (`SecretBackend`, `Notifier`) with the v1
 implementations `OnePasswordConnect`, `HaWebhook`, `Ntfy`. Notifier
@@ -124,8 +154,10 @@ enabled ones in priority order in `WARDEN_NOTIFY`.
    duration ≤ target max) and rejects invalid requests immediately with a
    clear error.
 2. **Pending.** Stored with a random request id and a single-use approval
-   token. One pending request per (agent, target, kind) at a time; duplicates
-   return the existing pending id. Pending requests expire after **10 min**.
+   token. One pending request per (agent, target) for SSH and per (agent, secret,
+   resolved scope) for an API at a time; duplicates return the existing pending
+   id. Nothing else limits how many requests an agent makes. Pending requests
+   expire after **10 min**.
 3. **Notify.** Doorbell via the first configured channel (for example Home
    Assistant Companion); if it does not accept within a short timeout (≈5 s)
    or errors, the same doorbell goes through the next channel in the
@@ -134,10 +166,12 @@ enabled ones in priority order in `WARDEN_NOTIFY`.
 4. **Review.** The approval page (HTTPS on the tailnet name) shows goal, kind,
    target, user/secret, destination rules, requested duration, and a duration
    picker (15 m / 30 m / 1 h / 4 h, capped by the target's max).
-5. **Approve / deny.** Approve = WebAuthn assertion whose challenge is the
-   hash of the canonical request **plus the chosen duration**. The server
-   verifies the assertion, the challenge binding, the token's single use and
-   that the requester identity (see §9) is the owner. Deny needs no passkey.
+5. **Approve / deny.** Approve = WebAuthn assertion for a ceremony the server
+   began for this request **and the chosen duration**. The challenge is the
+   WebAuthn library's own; the binding is the state the server keeps for the
+   ceremony ([Approval binding](threat-model.md#approval-binding)). The server
+   verifies the assertion, the binding, the token's single use and that the
+   requester identity (see §9) is the owner. Deny needs no passkey.
    The requesting agent can instead **cancel** its own pending request
    (`POST /v1/requests/{id}/cancel`, `warden request cancel <id>`, or Ctrl-C
    in the waiting CLI): the request becomes `cancelled`, audited as
@@ -151,14 +185,18 @@ enabled ones in priority order in `WARDEN_NOTIFY`.
    - relay: the relay's address and host key (the agent logs in with the
      approved ephemeral key);
    - proxy: a grant id usable for proxied calls until expiry.
-7. **Use.** Every use (SSH cert issuance, relay session start/end, proxied
-   call: method, URL, status, bytes) is audited against the grant.
+7. **Use.** Every use warden takes part in (SSH cert issuance, relay session
+   start/end, proxied call: method, URL, status, bytes) is audited against the
+   grant. The logins made with a certificate are not: warden is not on that path. For relay
+   sessions and proxied calls the entry comes first, and without it nothing
+   happens. A certificate's entry comes after the audited approval, and if it
+   cannot be written, this is only logged.
 8. **End.** Expiry or revoke (button on the page; also listed on an index of
    active grants). Revoke kills relay sessions and invalidates proxy grants
    immediately; issued certificates stay valid until their (short) expiry.
 
 The CLI always gets a terminal state: `approved`, `denied`, `expired`,
-`cancelled`, or `error` with a message.
+`cancelled`, `revoked`, or `error` with a message.
 
 ## 8. Access modes
 
@@ -167,6 +205,10 @@ The CLI always gets a terminal state: `approved`, `denied`, `expired`,
 - The CLI generates an **ephemeral Ed25519 key in memory**, adds it to an
   ssh-agent with a lifetime equal to the window (`ssh-add -t` semantics), and
   never writes it to disk.
+- The window limits new logins only. `sshd` checks a certificate when it
+  authenticates, so a session already open continues after the window, and warden
+  cannot see or end it. Relay sessions (§8.2) and API calls (§8.3) do end with the
+  window.
 - warden signs the public key: principal = `warden:<target>:<user>`; targets
   map it via AuthorizedPrincipalsFile or a cert-authority principals= option
   (so an approval is valid only on the approved target), validity
@@ -181,8 +223,8 @@ The CLI always gets a terminal state: `approved`, `denied`, `expired`,
 - The CLI provides `warden ssh <target> [cmd]` which uses the grant's agent
   and the target's address/user.
 - **One certificate per grant** (decision): the ephemeral public key is part
-  of the request and of the hashed approval challenge, so the passkey signs
-  the exact key. The grant cannot mint further certificates; the grant id is
+  of the request and of its fingerprint, and the approval is bound to the
+  request, so the certificate is for that exact key. The grant cannot mint further certificates; the grant id is
   not a bearer credential for issuance. The CLI keeps the key alive for the
   window in a dedicated per-grant ssh-agent process (lifetime = window,
   socket under a 0700 runtime dir), which later `warden ssh` calls reuse. If
@@ -499,7 +541,8 @@ nor keep it out of the log.
 - **Passkey** (`webauthn-rs`): one-time enrollment via a code printed by
   `warden-server enroll` (CLI inside the container), valid 10 min, single use.
   Multiple passkeys may be enrolled (for example a phone and a synced
-  passkey); listing and removal via the same server CLI.
+  passkey); listing and removal via the same server CLI. Making a code is not
+  audited; enrolling a passkey with it is.
 - **Phone-only approval** (decision): the approval UI port is granted in the
   tailnet policy to the owner's phone only, never to the workstation the agent
   runs on. The agent may have browser tools there, and synced passkeys may
@@ -528,18 +571,19 @@ agent, in one of two ways:
   128 KiB/s: 10 s for 16 KiB, 16 s for the 2 MiB of a proxied call; 408),
   the signature and then the nonce, in that
   order; it records a nonce only once the signature
-  verified, keeps it 10 minutes and sweeps it with the request sweeper. No
-  reusable secret is stored on the agent's machine and a captured request
-  cannot be replayed. **Key-signed agents do not need the owner's
+  verified, keeps it 10 minutes and sweeps it with the request sweeper. A
+  key in hardware cannot be copied off the agent's machine, a key in a file can,
+  and a captured request cannot be replayed. **Key-signed agents do not need the owner's
   `Tailscale-User-Login`** (tagged devices have none): who may reach the API
   is decided by the tailnet policy (see the threat model).
 - **Agent keys** (bearer, legacy): one per agent (e.g. `laptop`), created
-  with `warden-server agent add <name>`, 256-bit random, shown once, stored
+  with `warden-server agent add <name>`, 256-bit random, shown once on stdout
+  (what to run on the agent's machine goes to stderr, without the key), stored
   server-side only as a hash, sent as `Authorization: Bearer` on every API
   call, and accepted only together with the owner's Serve identity header.
   A request carrying both a bearer key and `Warden-*` headers is refused. The
-  agent is allowed to know its key: it can only request access, never
-  approve.
+  agent is allowed to know its key: it can request access and use the agent's
+  grants, never approve. See the threat model for what a copied key can do.
 - **Never through Funnel.** The agent API is for tailnet peers only. Every
   route of its listener, `/healthz` and `/v1/info` included, refuses with
   401 a request carrying `Tailscale-Funnel-Request` (set by Serve on
@@ -554,7 +598,8 @@ agent, in one of two ways:
   immediately, cancels its pending requests, ends its grants and kills its
   relay sessions.
 - For a bearer key on macOS, the CLI reads the key from the Keychain (not a
-  config file); a signing key leaves nothing secret on the machine.
+  config file); a signing key in hardware leaves nothing on the machine that can
+  be copied.
 
 The approval page, the notification (Home Assistant and ntfy) and the
 `request_created` audit summary say whether an API request can modify
@@ -626,8 +671,8 @@ token can read (read-only). Item conventions (documented in
   (scheme+host+port, exact), allowed header and format (default
   `Authorization: Bearer {{secret}}`), allowed methods, optional path prefix,
   optional pinned CA, max window.
-- **CA item**: the SSH CA private key. Loaded into memory, zeroized on drop.
-  (CA rotation procedure: documented, not automated.)
+- **CA item**: the SSH CA private key. Read at each approval, zeroized on drop.
+  (CA rotation: [documented](assurance-case.md#the-ssh-ca-key), not automated.)
 
 warden reads policy from Connect on each request; an item without required
 fields is unusable (fail closed). Only the owner, in 1Password, can change
@@ -648,6 +693,8 @@ no longer resolves, or a second 404 is reported as unavailable: no retry loop.
   the server cannot modify (never secret values; goals are owner-visible free
   text).
 - The approval UI has a read-only history view.
+- `warden-server audit verify` checks the chain. The server's commands append
+  while the server runs, under a file lock, so there is one chain.
 
 ## 12. State
 
@@ -711,14 +758,21 @@ enrolled passkeys and agents (re-enroll them).
 - Egress is limited to what warden needs: Connect, the notifiers, the
   origins of the API secrets and the relay targets.
 - Secrets for warden itself (Connect token, notifier URLs and tokens) are
-  passed from a secret manager, never written into the image or a repository.
+  passed from a secret manager, or in files named by `*_FILE` variables
+  ([Secrets in files](configuration.md#secrets-in-files)), never written into the
+  image or a repository.
+- `warden-server doctor` checks all this from inside, as far as it can. It reports
+  what it cannot see, such as the tailnet policy, as not checked and never as
+  passed.
 
 ## 14. CLI and agent integration
 
-- `warden request ssh <target> --user <u> --for 30m --goal "…"`,
+- `warden login …`, `warden doctor`,
+  `warden request ssh <target> --user <u> --for 30m --goal "…"`,
   `warden request api <secret> [--methods GET,POST] [--path /prefix] --for
-  30m --goal "…"`, `warden status`,
-  `warden ssh …`, `warden http …`, `warden revoke <grant>`.
+  30m --goal "…"`, `warden request cancel <id>`, `warden status`,
+  `warden ssh …`, `warden http …`, `warden revoke <grant>`. The full list is in
+  [Configuration](configuration.md#cli-commands).
 - `warden http <secret> <METHOD> <url> [-H 'Name: value']… [-d <body> | --data-file <path|->] [-i] [--fail]`
   calls an API through the `api` grant for the secret that covers the method
   and the path (the one that stays valid longest, if several do). The response
