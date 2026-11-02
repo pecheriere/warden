@@ -27,6 +27,15 @@ All notable changes to this project are recorded here. The format follows
 - Project documents: `CONTRIBUTING.md` (where to discuss, reporting bugs, the
   test policy), `GOVERNANCE.md`, `CODE_OF_CONDUCT.md`, `docs/roadmap.md`,
   `docs/building.md` and `docs/upgrading.md`.
+- Each agent is limited in how many requests it can make, so that it cannot
+  flood the owner: by default 5 pending at once and 10 new ones per 10 minutes,
+  cancelled ones included. Over a limit it gets `429` with `Retry-After`, the
+  refusal is audited as `request_limited`, and the owner gets one notification
+  per agent per hour at most. Set them with
+  `WARDEN_REQUEST_MAX_PENDING_PER_AGENT`, `WARDEN_REQUEST_MAX_NEW_PER_AGENT` and
+  `WARDEN_REQUEST_LIMIT_WINDOW_SECS`. New migration `0006_requests_agent_index`.
+  Audit logs with these entries cannot be read by `warden-server audit verify`
+  from an older release.
 - Release builds are meant to be repeatable from the next release:
   [docs/reproducing-builds.md](docs/reproducing-builds.md) says how to rebuild one
   and what must match, and a workflow builds each output twice and compares them.

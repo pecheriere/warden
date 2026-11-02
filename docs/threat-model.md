@@ -298,12 +298,50 @@ These were recorded during implementation and are accepted for this release.
   mitigations today: one request per task, revoking each grant when its task
   ends, and separate agents (separate OS users and keys) for work that must
   not share grants.
-- **Nothing limits how many requests an agent makes.** One pending request per
-  target (or per secret and scope) is the only bound. An agent that holds a valid
-  key can vary the path prefix, or cancel and ask again, and each new request
-  notifies the owner. That can wear the owner down and make a careless approval
-  more likely, and the `requests` table and audit log grow without limit. Revoking
-  the agent stops it.
+- **An agent can still send the owner some notifications.** A flood of requests
+  makes a careless approval more likely and can hide one that matters, so each
+  agent may have 5 requests pending and make 10 new ones per 10 minutes by
+  default ([configuration](configuration.md#request-limits)). The counts come
+  from the database, in the transaction that would store the request: creates
+  cannot race past them, a restart does not reset them, and a database that
+  cannot be read refuses the request. Every stored request counts, so cancelling
+  and asking again gains nothing, but a duplicate of a pending request does not,
+  as it stores nothing and rings nobody. Within the limits an agent can still
+  cause up to 60 notifications an hour. An owner who sees that should revoke the
+  agent. Requests that end in `error` because no notification channel worked
+  count too, so an outage of the channels can use up an agent's allowance for
+  one window.
+  - **The limits cannot block anyone else for long.** The counts are per agent,
+    and there is no shared limit, so one agent cannot use up another's allowance
+    or stop the owner from deciding. An agent that uses up its own waits at most
+    the window (an hour at the highest setting) for a new request, or 10 minutes
+    for a pending slot. A key that is stolen can only block its own agent.
+  - **A clock set back is not a long block.** Requests dated ahead of the clock
+    do not count towards the window, so a step back gives an agent one fresh
+    allowance rather than holding the limit until the clock catches up. Pending
+    requests dated ahead of it do count, as they really are pending until they
+    expire: `Retry-After` then gives that longer wait, and the agent can cancel
+    one to free a slot at once. After a small step back, `Retry-After` for the rate
+    limit can be too short, as requests dated ahead start to count again when the
+    clock reaches them; the next refusal gives the new wait. An agent cannot move
+    the broker's clock.
+  - **Refusals cannot fill the audit log.** An agent can send refused requests as
+    fast as it can sign them. The first is audited as `request_limited` and the
+    rest are counted and written at most once a minute; the count is written by
+    the periodic sweep and at shutdown even if the agent stops. A crash can lose
+    the count of up to a minute of repeats, never the fact of the first refusal.
+    If an entry cannot be written, the request is still refused and the count is
+    tried again a minute later, so an audit outage does not flood the server log. The owner gets one notice per agent per hour at most, with the
+    agent's name and no text the agent chose. A notice that cannot be delivered
+    is audited and not retried until that hour has passed.
+  - **Refused requests are not free.** The request is checked against the policy
+    first, so each refused request still reads the item from 1Password Connect
+    and, for a signed request, verifies a signature and stores a nonce. This is
+    bounded by who the tailnet policy lets reach the API, as for other refused
+    requests. A flooding agent can affect others in two ways: by slowing 1Password
+    Connect, which they also read, and through the shared database, whose write
+    lock each refused request takes. The server log has one warning per agent per
+    minute at most.
 - **Certificate logins are not audited.** They go straight to the target. warden
   records the approval and the certificate, and the target's `sshd` logs the login
   with the certificate's key id. Ship those logs if you need that trail.
