@@ -16,8 +16,8 @@ pub const EXIT_NOTHING_FAILED: u8 = 0;
 /// Exit code: at least one check failed.
 pub const EXIT_FAILED: u8 = 1;
 /// Exit code, with `--strict` only: no check failed, but at least one could
-/// not be checked. Not 2,
-/// which is how the argument parser reports a usage error.
+/// not be checked. Not 2, which is how `warden-server` reports a usage error
+/// and `warden` a denied request.
 pub const EXIT_COULD_NOT_CHECK: u8 = 7;
 
 /// What one check found.
@@ -253,7 +253,8 @@ mod tests {
 
     #[test]
     fn the_exit_code_cannot_be_mistaken_for_a_usage_error() {
-        // clap exits 2 on a usage error.
+        // `warden-server` keeps clap's exit 2 for a usage error; `warden` tests
+        // its own code, 64, against this one.
         assert_ne!(EXIT_COULD_NOT_CHECK, 2);
         assert_ne!(EXIT_FAILED, 2);
     }

@@ -40,13 +40,17 @@ openssl = "0.10.81"
 webauthn-authenticator-rs = { version = "=0.5.5", features = ["softpasskey"] }
 # Only what parsing public keys needs (`warden-broker-proto` validates
 # signing keys with it); the broker and CLI add the crypto they use.
-ssh-key = { version = "0.6.7", default-features = false, features = ["alloc", "ecdsa"] }
+# Never turn on its `std`, `crypto`, `rsa` or `p*` features (nor take a crate
+# that does, as ssh-agent-lib did): those bring rsa 0.9 and crypto-bigint 0.5
+# (RUSTSEC-2023-0071, RUSTSEC-2026-0387). `std` compiles neither, but its weak
+# features (`rsa?/std`, `p256?/std`) keep them in Cargo.lock, where scanners
+# report them. `crates/proto/tests/lockfile.rs` fails if they come back.
+ssh-key ={ version = "0.6.7", default-features = false, features = ["alloc", "ecdsa"] }
 # The SSH wire-format traits `ssh-key` 0.6 implements (`Decode` for `SshSig`):
 # the broker decodes a `Warden-Signature` blob with them. Must stay the
 # version `ssh-key` itself uses, or the traits would not match.
 ssh-encoding = "0.2.0"
 ed25519-dalek = { version = "2.2.0", default-features = false, features = ["pkcs8", "pem", "zeroize"] }
-ssh-agent-lib = "0.6.0"
 # SSH relay: server for agents, client to targets. The aws-lc-rs crypto
 # backend (already in the tree through rustls). `rsa` lets the relay verify
 # targets' pinned RSA host keys (public-key operations only: warden holds
@@ -55,6 +59,10 @@ ssh-agent-lib = "0.6.0"
 # negotiated hash, so a holder of the pinned key could still sign with
 # SHA-1. No DSA, no compression.
 russh = { version = "=0.65.0", default-features = false, features = ["aws-lc-rs", "rsa"] }
+# Verifies agents' ECDSA P-256 request signatures. 0.14, not the 0.13 behind
+# `ssh-key` 0.6's `p256` feature: 0.13 needs crypto-bigint 0.5, which
+# RUSTSEC-2026-0387 affects and no release fixes. russh already links 0.14.
+p256 = { version = "0.14.0", default-features = false, features = ["ecdsa"] }
 sha2 = "0.11.1"
 zeroize = "1.9.1"
 subtle = "2.6.1"

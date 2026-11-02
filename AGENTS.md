@@ -63,6 +63,9 @@ python3 -I .github/scripts/crate_age.py --base main
 uvx zizmor@1.31.1 .   # when a workflow or the Dependabot config changes
 ```
 
+- CI's `coverage` job also measures test coverage with `cargo llvm-cov`,
+  shown in the run's summary with the lcov file as an artifact. It is not a
+  required check and no threshold fails it yet (#97).
 - The toolchain is pinned in `rust-toolchain.toml`. Clippy `all` and
   `pedantic` are denied workspace-wide and `unsafe_code` is forbidden.
 - On Linux, the relay's password-target tests need
@@ -89,9 +92,9 @@ uvx zizmor@1.31.1 .   # when a workflow or the Dependabot config changes
   `CHANGELOG.md` ([Keep a Changelog](https://keepachangelog.com/en/1.1.0/)).
 - When behaviour changes, update the docs in the same pull request: the
   README, `docs/configuration.md`, `docs/deployment.md`,
-  `docs/agent-usage.md`, `docs/agent-protocol.md`,
-  `docs/threat-model.md` and `site/index.html` must stay consistent with the
-  code.
+  `docs/agent-usage.md`, `docs/agent-protocol.md`, `docs/building.md`,
+  `docs/upgrading.md`, `docs/threat-model.md` and `site/index.html` must stay
+  consistent with the code.
 - **Approval UI pages** follow `docs/design-language.md`. Render and
   screenshot them with `scripts/screenshot-pages.sh <out-dir>` at the sizes
   the PR template lists, light and dark, and attach the screenshots.
