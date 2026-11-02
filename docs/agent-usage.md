@@ -44,8 +44,8 @@ install -m 0755 "warden-$version-$platform/warden" ~/.local/bin/warden
 ```
 
 `~/.local/bin` must be on your `PATH`. On macOS, download with `curl` as above
-rather than a browser: the binary is not notarized, so Gatekeeper refuses a
-browser download.
+rather than a browser: the binary is not notarized, and macOS may block one
+that a browser downloaded.
 
 For v0.8.1 and earlier, or on another platform, build it instead, with Rust
 1.99 or later:
