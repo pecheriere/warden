@@ -102,7 +102,7 @@ fn demo_config(
         "WARDEN_APPROVAL_LISTEN" => Some(approval_listen.to_string()),
         "WARDEN_PUBLIC_URL" => Some("https://localhost".to_owned()),
         "WARDEN_OWNER_LOGIN" => Some(OWNER_LOGIN.to_owned()),
-        "WARDEN_OP_CONNECT_URL" => Some("http://connect.invalid".to_owned()),
+        "WARDEN_OP_CONNECT_URL" => Some("https://connect.invalid".to_owned()),
         "WARDEN_OP_CONNECT_TOKEN" => Some("unused-by-the-demo".to_owned()),
         "WARDEN_NOTIFY" => Some("ntfy".to_owned()),
         "WARDEN_NOTIFY_NTFY_URL" => Some("https://ntfy.invalid/warden".to_owned()),

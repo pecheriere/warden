@@ -69,13 +69,14 @@ impl IntoResponse for AuthRejection {
 }
 
 /// Middleware: refuse with 401 `{"error":"unauthorized"}` every request
-/// that arrived through Tailscale Funnel, whatever its credentials. The
-/// agent API is for tailnet peers only; publishing it through Funnel would
+/// that arrived through Tailscale Funnel, whatever its credentials. Both
+/// listeners are for tailnet peers only; publishing one through Funnel would
 /// put it on the public internet, so such requests never reach a handler
-/// (and a signed one's body is never read).
+/// (and a signed one's body is never read). The path is not logged: on the
+/// approval listener it can hold an approval token.
 pub async fn refuse_funnel(req: Request, next: Next) -> Response {
     if req.headers().contains_key(TAILSCALE_FUNNEL_HEADER) {
-        tracing::warn!(path = %req.uri().path(), "request through Tailscale Funnel refused");
+        tracing::warn!("request through Tailscale Funnel refused");
         return AuthRejection::Unauthorized.into_response();
     }
     next.run(req).await

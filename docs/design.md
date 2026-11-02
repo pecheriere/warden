@@ -589,8 +589,8 @@ agent, in one of two ways:
   A request carrying both a bearer key and `Warden-*` headers is refused. The
   agent is allowed to know its key: it can request access and use the agent's
   grants, never approve. See the threat model for what a copied key can do.
-- **Never through Funnel.** The agent API is for tailnet peers only. Every
-  route of its listener, `/healthz` and `/v1/info` included, refuses with
+- **Never through Funnel.** Both listeners are for tailnet peers only. Every
+  route, `/healthz` and `/v1/info` included, refuses with
   401 a request carrying `Tailscale-Funnel-Request` (set by Serve on
   requests from the public internet through Tailscale Funnel), before any
   credential or body is looked at.

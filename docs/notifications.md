@@ -52,7 +52,8 @@ Name the channel `homeassistant` and set
 `WARDEN_NOTIFY_HOMEASSISTANT_WEBHOOK_URL` to the webhook URL, for example
 `http://homeassistant.local:8123/api/webhook/<webhook_id>`. The webhook id is a
 secret: warden redacts the URL in logs and errors and does not follow
-redirects.
+redirects. Plain `http` is for a [local or private host](configuration.md#plain-http);
+use `https` for any other, which also applies to the ntfy URL.
 
 warden POSTs JSON `{"title": "...", "message": "...", "url": "..."}`. Create
 an automation that triggers on the webhook and forwards it to the phone:

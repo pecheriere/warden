@@ -18,7 +18,7 @@ Values are never echoed in errors.
 | `WARDEN_AUDIT_PATH` | The audit log, for example `/data/audit.jsonl`. |
 | `WARDEN_PUBLIC_URL` | The approval UI's URL: `https`, a domain name (not an IP address), no path, query or credentials. Its host is the WebAuthn relying party: changing it invalidates every enrolled passkey. Notifications link to it. |
 | `WARDEN_OWNER_LOGIN` | The owner's Tailscale login (as Tailscale Serve reports it in `Tailscale-User-Login`). Only this login may use the approval UI or a bearer agent key. |
-| `WARDEN_OP_CONNECT_URL` | The 1Password Connect API, for example `http://172.31.251.11:8080`. Plain `http` is accepted, and exposes the token and all it reads to that network: use it only on the [private network](deployment.md#3-1password) that Connect shares with warden. Not with `WARDEN_SECRET_BACKEND=local`. |
+| `WARDEN_OP_CONNECT_URL` | The 1Password Connect API, for example `http://172.31.251.11:8080`. Plain `http` exposes the token and all it reads to that network, so it is accepted [only to a local or private host](#plain-http): use it only on the [private network](deployment.md#3-1password) that Connect shares with warden. Not with `WARDEN_SECRET_BACKEND=local`. |
 | `WARDEN_OP_CONNECT_TOKEN` | The Connect token. Read-only, for the warden vault only. Secret; can be [read from a file](#secrets-in-files). Not with `WARDEN_SECRET_BACKEND=local`. |
 | `WARDEN_NOTIFY` | The notification channels in priority order, comma-separated, lowercase: `homeassistant`, `ntfy`. See [Notifications](notifications.md). |
 
@@ -33,6 +33,7 @@ Values are never echoed in errors.
 | `WARDEN_SECRET_BACKEND` | `1password` | Where targets, API secrets and the SSH CA key come from: `1password`, recommended, or `local`, [files on this host](local-backend.md), where a compromised host gets every secret. |
 | `WARDEN_LOCAL_POLICY_FILE` | | Required with `WARDEN_SECRET_BACKEND=local`, and refused without it: the [policy file](local-backend.md#the-policy-file), an absolute path. |
 | `WARDEN_LOCAL_SECRETS_DIR` | | Required with `WARDEN_SECRET_BACKEND=local`, and refused without it: the [only directory secrets are read from](local-backend.md#the-secret-files), an absolute path. |
+| `WARDEN_ALLOW_PLAIN_HTTP` | | The URL settings that may use [plain `http`](#plain-http) to a host that is not clearly local or private, comma-separated. |
 | `WARDEN_NOTIFY_HOMEASSISTANT_WEBHOOK_URL` | | Required when `homeassistant` is listed. Secret. |
 | `WARDEN_NOTIFY_NTFY_URL` | | Required when `ntfy` is listed: the topic URL. |
 | `WARDEN_NOTIFY_NTFY_TOKEN` | | An ntfy access token, sent as `Authorization: Bearer`. Secret. |
@@ -158,6 +159,7 @@ deployment exits 7 with `--strict`.
 | Check | Passes when | Reports `COULD NOT CHECK` when |
 |-------|-------------|--------------------------------|
 | `config` | The settings are present and valid. A failure names the first bad setting and links this page; there may be more. | Never. When it fails, everything below except `tailscale.*` is not checked. |
+| `plain-http` | Every service URL is `https`, or goes to a host that is clearly local or private; the detail names those that use plain `http`. | A variable in `WARDEN_ALLOW_PLAIN_HTTP` sends plain `http` to any other host: warden cannot see whether that path is safe. |
 | `connect.reachable` | Connect answers. | The vault name is unusable. |
 | `connect.token` | Connect accepts the token. | Connect gave no useful answer. |
 | `connect.vault` | The token can see `WARDEN_OP_VAULT`. | Connect gave no useful answer, or refused the token. |
@@ -197,6 +199,31 @@ What doctor does and does not do:
   configured secrets from everything it prints in case an upstream echoed one
   into an error, and replaces control characters.
 
+## Plain http
+
+`WARDEN_OP_CONNECT_URL`, `WARDEN_NOTIFY_HOMEASSISTANT_WEBHOOK_URL` and
+`WARDEN_NOTIFY_NTFY_URL` carry tokens and secrets, so each must be `https`, or
+plain `http` to a host that the URL shows to be local or private:
+
+| Kind of host | Accepted for plain `http` |
+|---|---|
+| IPv4 address | Loopback, private (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), link-local, and `100.64.0.0/10`. That is the tailnet range and also carrier NAT, so it is accepted as an address warden cannot check belongs to your tailnet |
+| IPv6 address | `::1`, unique local `fc00::/7`, which holds tailnet addresses, link-local `fe80::/10`, and the IPv4 addresses above written as IPv6 |
+| Name | One without a dot, such as a Docker service name, and `localhost` and names ending in `.localhost`, `.local`, `.home.arpa`, `.internal` or `.lan`. Not `.ts.net`: it is publicly delegated, so use `https` with those names, or the opt-in below |
+
+Anything else stops the server at startup, and `warden-server doctor` reports
+it, naming the variable and never the URL. Prefer `https`. If the path to that
+host is safe in a way the URL cannot show, list the variable in
+`WARDEN_ALLOW_PLAIN_HTTP`, for example
+`WARDEN_ALLOW_PLAIN_HTTP=WARDEN_NOTIFY_NTFY_URL`. The server then logs a warning
+at each start, and doctor reports `plain-http` as not checked. An entry that
+names another variable, an unset one, or one that does not need it is refused,
+so that a forgotten entry cannot later let a mistyped URL through.
+
+This judges the URL as written and resolves no name: a name that looks local
+but resolves to a public address is not caught. Nor can warden see who else is
+on a private network. Any other scheme is refused.
+
 ## Server data
 
 | Path (default) | Holds |
@@ -218,7 +245,7 @@ key or token, see [Replacing credentials](assurance-case.md#7-replacing-credenti
 | Agent API | `/v1/requests…`, `/v1/grants…` | Agents. See [the agent protocol](agent-protocol.md#6-endpoints). |
 | Approval UI | `/approve/<token>`, `/grants`, `/history`, `/enroll` and their actions; [full list](interfaces.md#approval-ui) | The owner (`WARDEN_OWNER_LOGIN`). |
 
-Every request to the agent API that came through Tailscale Funnel is
+Every request to either listener that came through Tailscale Funnel is
 refused with `401`.
 
 ## CLI commands

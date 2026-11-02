@@ -396,3 +396,32 @@ async fn a_refused_token_fails_and_is_not_printed() {
     );
     assert!(!text.contains(TOKEN), "{text}");
 }
+
+/// A URL warden refuses is doctor's first failure, in words that say what to do.
+#[tokio::test]
+async fn remote_plain_http_fails_the_config_check() {
+    let deployment = Deployment::new().await;
+    let output = deployment
+        .command()
+        .env("WARDEN_OP_CONNECT_URL", "http://connect.example.com:8080")
+        .arg("doctor")
+        .output()
+        .unwrap();
+    let text = stdout(&output);
+    let config = line_of(&text, "config");
+    assert!(config.starts_with("FAIL"), "{text}");
+    assert!(config.contains("WARDEN_OP_CONNECT_URL"), "{text}");
+    assert!(config.contains("WARDEN_ALLOW_PLAIN_HTTP"), "{text}");
+    assert!(!text.contains("connect.example.com"), "{text}");
+}
+
+#[tokio::test]
+async fn doctor_names_plain_http_to_a_local_host() {
+    let deployment = Deployment::new().await;
+    let output = deployment.command().arg("doctor").output().unwrap();
+    let text = stdout(&output);
+    let line = line_of(&text, "plain-http");
+    assert!(line.starts_with("pass"), "{text}");
+    assert!(line.contains("WARDEN_OP_CONNECT_URL"), "{text}");
+    assert!(!text.contains(&deployment.connect.uri()), "{text}");
+}
