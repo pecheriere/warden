@@ -1180,6 +1180,20 @@ async fn open_target(
         };
         record_end(&shared.audit, &grant.grant_id, &outcome).await;
     };
+    // Writing the log can take long, and a revocation does not wait for it: the
+    // grant may have ended meanwhile, and then nothing reaches the target.
+    let ended = grant_query(shared.requests.clone(), vec![grant.grant_id.clone()]).await;
+    let ending = match ended {
+        Ok(ended) => ended.first().map(|(_, end)| match end {
+            GrantEnd::Revoked => session::reason::REVOKED,
+            GrantEnd::Expired => session::reason::EXPIRED,
+        }),
+        Err(_) => Some(session::reason::GRANT_STATE_UNAVAILABLE),
+    };
+    if let Some(ending) = ending {
+        ended_early(ending).await;
+        return Err(session::reason::notice(ending).unwrap_or(NO_LONGER_VALID));
+    }
     let timeout = shared.limits.onward_timeout;
     let onward = async {
         onward::connect(&target, &grant.user, credential, timeout)

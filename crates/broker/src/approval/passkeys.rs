@@ -23,7 +23,7 @@ use webauthn_rs::prelude::{
 };
 
 use crate::audit::{AuditError, AuditEvent, AuditLog};
-use crate::requests::{Clock, CommitError, audit_and_commit, begin};
+use crate::requests::{Clock, begin, note_if_not_applied, record};
 
 /// How long a begun ceremony may be finished, in seconds.
 pub const CEREMONY_TTL_SECS: i64 = 120;
@@ -101,15 +101,6 @@ pub enum PasskeyError {
     /// A local resource (randomness, a lock) is unusable.
     #[error("internal error: {0}")]
     Internal(&'static str),
-}
-
-impl From<CommitError> for PasskeyError {
-    fn from(e: CommitError) -> Self {
-        match e {
-            CommitError::Db(e) => Self::Db(e),
-            CommitError::Audit(e) => Self::Audit(e),
-        }
-    }
 }
 
 /// What an approval ceremony is bound to, fixed when it begins.
@@ -224,24 +215,27 @@ impl Passkeys {
             .iter()
             .map(|b| char::from(BASE32[usize::from(b % 32)]))
             .collect();
-        let mut tx = begin(&self.pool).await?;
-        sqlx::query("DELETE FROM enrollment_codes WHERE expires_at <= ?")
-            .bind(now)
-            .execute(&mut *tx)
-            .await?;
         let expires_at = now + ENROLLMENT_TTL_SECS;
-        sqlx::query("INSERT INTO enrollment_codes (code_hash, expires_at) VALUES (?, ?)")
-            .bind(code_hash(&code))
-            .bind(expires_at)
-            .execute(&mut *tx)
-            .await?;
-        audit_and_commit(
-            &self.audit,
-            tx,
-            vec![AuditEvent::EnrollmentCodeCreated { expires_at }],
-            "creation of an enrollment code",
-        )
-        .await?;
+        let transition = "creation of an enrollment code";
+        let created = AuditEvent::EnrollmentCodeCreated { expires_at };
+        record(&self.audit, vec![created], transition).await?;
+        let applied: Result<(), PasskeyError> = async {
+            let mut tx = begin(&self.pool).await?;
+            sqlx::query("DELETE FROM enrollment_codes WHERE expires_at <= ?")
+                .bind(now)
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query("INSERT INTO enrollment_codes (code_hash, expires_at) VALUES (?, ?)")
+                .bind(code_hash(&code))
+                .bind(expires_at)
+                .execute(&mut *tx)
+                .await?;
+            tx.commit().await?;
+            Ok(())
+        }
+        .await;
+        note_if_not_applied(&self.audit, &applied, transition).await;
+        applied?;
         Ok(code)
     }
 
@@ -303,39 +297,50 @@ impl Passkeys {
             .finish_passkey_registration(cred, &state)
             .map_err(PasskeyError::Verification)?;
         let id = Id::random().to_string();
-        let mut tx = begin(&self.pool).await?;
-        let existing = sqlx::query("SELECT credential FROM passkeys")
-            .fetch_all(&mut *tx)
-            .await?;
-        for row in &existing {
-            let stored: Passkey = serde_json::from_str(row.try_get("credential")?)?;
-            if stored.cred_id() == passkey.cred_id() {
-                return Err(PasskeyError::AlreadyEnrolled);
-            }
+        // Checked here so a refusal writes nothing, and again where it is stored.
+        if self
+            .stored()
+            .await?
+            .iter()
+            .any(|(_, stored)| stored.cred_id() == passkey.cred_id())
+        {
+            return Err(PasskeyError::AlreadyEnrolled);
         }
         let credential = serde_json::to_string(&passkey)?;
-        // The counter column mirrors the one inside the credential from the
-        // start (normally 0 at registration).
-        sqlx::query(
-            "INSERT INTO passkeys (id, label, credential, created_at, counter) \
-             VALUES (?1, ?2, ?3, ?4, COALESCE(json_extract(?3, '$.cred.counter'), 0))",
-        )
-        .bind(&id)
-        .bind(&label)
-        .bind(credential)
-        .bind(self.clock.now())
-        .execute(&mut *tx)
-        .await?;
+        let transition = format!("enrollment of passkey {id}");
         let enrolled = AuditEvent::PasskeyEnrolled {
             passkey_id: id.clone(),
         };
-        audit_and_commit(
-            &self.audit,
-            tx,
-            vec![enrolled],
-            &format!("enrollment of passkey {id}"),
-        )
-        .await?;
+        record(&self.audit, vec![enrolled], &transition).await?;
+        let applied: Result<(), PasskeyError> = async {
+            let mut tx = begin(&self.pool).await?;
+            let existing = sqlx::query("SELECT credential FROM passkeys")
+                .fetch_all(&mut *tx)
+                .await?;
+            for row in &existing {
+                let stored: Passkey = serde_json::from_str(row.try_get("credential")?)?;
+                if stored.cred_id() == passkey.cred_id() {
+                    return Err(PasskeyError::AlreadyEnrolled);
+                }
+            }
+            // The counter column mirrors the one inside the credential from the
+            // start (normally 0 at registration).
+            sqlx::query(
+                "INSERT INTO passkeys (id, label, credential, created_at, counter) \
+                 VALUES (?1, ?2, ?3, ?4, COALESCE(json_extract(?3, '$.cred.counter'), 0))",
+            )
+            .bind(&id)
+            .bind(&label)
+            .bind(&credential)
+            .bind(self.clock.now())
+            .execute(&mut *tx)
+            .await?;
+            tx.commit().await?;
+            Ok(())
+        }
+        .await;
+        note_if_not_applied(&self.audit, &applied, &transition).await;
+        applied?;
         Ok(id)
     }
 
@@ -567,25 +572,33 @@ pub async fn list(pool: &SqlitePool) -> Result<Vec<PasskeyInfo>, PasskeyError> {
 /// # Errors
 /// [`PasskeyError::NotFound`], storage or audit failures.
 pub async fn remove(pool: &SqlitePool, audit: &AuditLog, id: &str) -> Result<(), PasskeyError> {
-    let mut tx = begin(pool).await?;
-    let deleted = sqlx::query("DELETE FROM passkeys WHERE id = ?")
+    let exists = sqlx::query("SELECT 1 FROM passkeys WHERE id = ?")
         .bind(id)
-        .execute(&mut *tx)
+        .fetch_optional(pool)
         .await?;
-    if deleted.rows_affected() == 0 {
+    if exists.is_none() {
         return Err(PasskeyError::NotFound);
     }
+    let transition = format!("removal of passkey {id}");
     let removed = AuditEvent::PasskeyRemoved {
         passkey_id: id.to_owned(),
     };
-    audit_and_commit(
-        audit,
-        tx,
-        vec![removed],
-        &format!("removal of passkey {id}"),
-    )
-    .await?;
-    Ok(())
+    record(audit, vec![removed], &transition).await?;
+    let applied: Result<(), PasskeyError> = async {
+        let mut tx = begin(pool).await?;
+        let deleted = sqlx::query("DELETE FROM passkeys WHERE id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        if deleted.rows_affected() == 0 {
+            return Err(PasskeyError::NotFound);
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+    .await;
+    note_if_not_applied(audit, &applied, &transition).await;
+    applied
 }
 
 /// Codes are compared case-insensitively, ignoring spaces and dashes.

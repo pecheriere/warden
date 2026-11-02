@@ -553,7 +553,8 @@ fn live_area(grant: &ActiveGrant, live: Option<&LiveGrant<'_>>) -> Markup {
     }
 }
 
-/// The warning that revocations took effect but are not in the audit log yet.
+/// The warning that changes ending access took effect but are not in the audit
+/// log yet.
 /// It comes from the server's state, so it lasts until they are, whatever the
 /// page reloads for.
 fn unwritten_warning(unwritten: i64) -> Markup {
@@ -561,8 +562,8 @@ fn unwritten_warning(unwritten: i64) -> Markup {
         @if unwritten > 0 {
             p.warning role="alert" {
                 strong { "Not in the audit log. " }
-                "Access was revoked, but " (unwritten)
-                " audit log entries could not be written. warden keeps trying. Check the \
+                "The access or request was ended, but " (unwritten)
+                " audit log entries could not be written yet. warden keeps trying. Check the \
                  server's log and the disk that holds the audit log."
             }
         }
@@ -571,7 +572,7 @@ fn unwritten_warning(unwritten: i64) -> Markup {
 
 /// Active grants, one card each, with what each is doing now (`live`, one
 /// entry per grant) and revoke buttons, under a warning if `unwritten` audit
-/// entries of revocations are waiting for the log.
+/// entries are waiting for the log.
 #[must_use]
 pub fn grants(grants: &[ActiveGrant], live: &[LiveGrant<'_>], now: i64, unwritten: i64) -> Markup {
     if grants.is_empty() {

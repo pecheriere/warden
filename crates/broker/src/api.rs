@@ -526,6 +526,9 @@ async fn call(
         tracing::error!(grant = %grant_id, error = %e, "could not audit a proxy call start; not sending it");
         return Err(Failure::Request(RequestError::Audit(e)));
     }
+    // Writing the log can take long, and a revocation does not wait for it: the
+    // grant may have ended meanwhile, and then nothing goes out.
+    usable_api_grant(state, agent, grant_id).await?;
     let upstream = proxy::forward(&policy, &secret, prepared, &limits)
         .await
         .map_err(|e| Failure::Client(e.status(), e.to_string()))?;

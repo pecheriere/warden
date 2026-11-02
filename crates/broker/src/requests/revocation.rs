@@ -1,31 +1,38 @@
-//! Revocation does not wait for the audit log: stopping access matters more than
-//! recording it.
+//! A change that ends access does not wait for the audit log: stopping access
+//! matters more than recording it.
 //!
-//! A revocation stores its audit entries in `unwritten_audit`, in the transaction
-//! that revokes, and is then written to the log and removed from that table. So a
-//! log that fails or stalls cannot stop a revocation, and an entry it could not
-//! take is not lost: it waits in the database, and every sweep tries again. The
-//! grants page warns the owner for as long as any is waiting. A crash after an
-//! entry is written and before it is removed writes it twice, which overstates
-//! nothing.
+//! Revoking, denying, cancelling and expiring store their audit entries in
+//! `unwritten_audit`, in the transaction that makes the change. The entries are
+//! then written to the log and removed from that table. So the log cannot delay
+//! the change, and an entry it could not take is not lost: it waits in the
+//! database, and every sweep tries again. The grants page warns the owner for as
+//! long as any is waiting. A writer claims a row before writing it, so two
+//! processes do not both write it; a crash after an entry is written and before it
+//! is removed writes it twice, which overstates nothing.
 
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::{Row as _, Sqlite, SqlitePool, Transaction};
 use tokio::sync::Mutex;
+use warden_broker_proto::Id;
 
-use super::{RequestError, Requests};
-use crate::audit::{AuditEvent, AuditLog};
+use super::{Clock, RequestError, Requests};
+use crate::audit::{AuditError, AuditEvent, AuditLog};
 use crate::notify::Doorbell;
 
-/// Longest a revocation waits for its entries to be written.
+/// Longest a change waits for its entries to be written.
 const WRITE_WAIT: Duration = Duration::from_secs(2);
 
-/// An entry this many seconds after its revocation is noted as written late.
+/// An entry written this many seconds after its change is noted as late.
 const LATE_SECS: i64 = 60;
 
-/// Whether a revocation that took effect is on record.
+/// How long a claim on an entry lasts: after this its writer is taken to be gone.
+const CLAIM_SECS: i64 = 300;
+
+/// Whether a change that took effect is on record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuditOutcome {
     /// Every entry has been written to the audit log.
@@ -43,18 +50,18 @@ pub struct EntriesWritten {
     pub cause: Option<String>,
 }
 
-/// Store `events` and commit the revocation `tx` of `now`. This never touches the
+/// Store `events` and commit the change `tx` of `now`. This never touches the
 /// audit log, so nothing about the log can delay or stop it.
 ///
 /// # Errors
-/// Storage failures, which mean the revocation did not happen.
+/// Storage failures, which mean the change did not happen.
 pub(super) async fn commit_with_entries(
     mut tx: Transaction<'static, Sqlite>,
     events: Vec<AuditEvent>,
     now: i64,
 ) -> Result<(), RequestError> {
     for event in events {
-        sqlx::query("INSERT INTO unwritten_audit (event, revoked_at) VALUES (?, ?)")
+        sqlx::query("INSERT INTO unwritten_audit (event, took_effect_at) VALUES (?, ?)")
             .bind(serde_json::to_string(&event)?)
             .bind(now)
             .execute(&mut *tx)
@@ -64,7 +71,7 @@ pub(super) async fn commit_with_entries(
     Ok(())
 }
 
-/// The audit entries of revocations still waiting for the log, oldest first.
+/// The audit entries still waiting for the log, oldest first.
 ///
 /// # Errors
 /// Storage failures or an unreadable stored entry.
@@ -77,24 +84,74 @@ pub async fn unwritten_entries(pool: &SqlitePool) -> Result<Vec<AuditEvent>, Req
         .collect()
 }
 
-/// Write the waiting entries in order, each removed once it is in the log.
-async fn write_waiting(pool: &SqlitePool, audit: &AuditLog, now: i64) -> Result<(), RequestError> {
-    let rows = sqlx::query("SELECT id, event, revoked_at FROM unwritten_audit ORDER BY id")
+/// How many audit entries are waiting in the database file `db`, read without
+/// changing it. A database from before this table has none.
+///
+/// # Errors
+/// Why the database could not be read.
+pub async fn count_waiting_read_only(db: &Path) -> Result<i64, String> {
+    let options = SqliteConnectOptions::new()
+        .filename(db)
+        .create_if_missing(false)
+        .read_only(true);
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .map_err(|e| e.to_string())?;
+    let has_table: Option<i64> = sqlx::query_scalar(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'unwritten_audit'",
+    )
+    .fetch_optional(&pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    let count = if has_table.is_some() {
+        sqlx::query_scalar("SELECT COUNT(*) FROM unwritten_audit")
+            .fetch_one(&pool)
+            .await
+            .map_err(|e| e.to_string())
+    } else {
+        Ok(0)
+    };
+    pool.close().await;
+    count
+}
+
+/// Write the waiting entries in order, each claimed first and removed once it is
+/// in the log. The time is read after each write, which may take long.
+async fn write_waiting(
+    pool: &SqlitePool,
+    audit: &AuditLog,
+    clock: &dyn Clock,
+) -> Result<(), RequestError> {
+    let claim = Id::random();
+    let rows = sqlx::query("SELECT id, event, took_effect_at FROM unwritten_audit ORDER BY id")
         .fetch_all(pool)
         .await?;
     for row in &rows {
         let id: i64 = row.try_get("id")?;
-        let revoked_at: i64 = row.try_get("revoked_at")?;
+        let took_effect_at: i64 = row.try_get("took_effect_at")?;
         let event: AuditEvent = serde_json::from_str(row.try_get("event")?)?;
-        audit.append(event).await?;
-        if now.saturating_sub(revoked_at) >= LATE_SECS {
-            let note = AuditEvent::Error {
-                context: "audit".to_owned(),
-                message: format!(
-                    "the entry above was written late: it took effect at {revoked_at}"
-                ),
-            };
-            audit.append(note).await?;
+        let now = clock.now();
+        let claimed = sqlx::query(
+            "UPDATE unwritten_audit SET claim = ?1, claimed_at = ?2 \
+             WHERE id = ?3 AND (claim IS NULL OR claimed_at <= ?4)",
+        )
+        .bind(claim.as_str())
+        .bind(now)
+        .bind(id)
+        .bind(now.saturating_sub(CLAIM_SECS))
+        .execute(pool)
+        .await?;
+        if claimed.rows_affected() == 0 {
+            continue;
+        }
+        if let Err(e) = write_one(audit, event, took_effect_at, clock).await {
+            sqlx::query("UPDATE unwritten_audit SET claim = NULL WHERE id = ?")
+                .bind(id)
+                .execute(pool)
+                .await?;
+            return Err(e.into());
         }
         sqlx::query("DELETE FROM unwritten_audit WHERE id = ?")
             .bind(id)
@@ -104,20 +161,42 @@ async fn write_waiting(pool: &SqlitePool, audit: &AuditLog, now: i64) -> Result<
     Ok(())
 }
 
+/// Write `event`, noting after it when it is late: its own time is when it was
+/// written, not when the change took effect.
+async fn write_one(
+    audit: &AuditLog,
+    event: AuditEvent,
+    took_effect_at: i64,
+    clock: &dyn Clock,
+) -> Result<(), AuditError> {
+    audit.append(event).await?;
+    if clock.now().saturating_sub(took_effect_at) >= LATE_SECS {
+        let note = AuditEvent::Error {
+            context: "audit".to_owned(),
+            message: format!(
+                "the entry above was written late: it took effect at {took_effect_at}"
+            ),
+        };
+        audit.append(note).await?;
+    }
+    Ok(())
+}
+
 /// Write the waiting entries, waiting for that at most [`WRITE_WAIT`]. A log that
 /// has stalled finishes on its own task whenever it can; `gate` keeps two writers
-/// in this process from writing an entry twice.
+/// in this process from queueing up behind it.
 async fn write_bounded(
     pool: &SqlitePool,
     audit: &Arc<AuditLog>,
     gate: &Arc<Mutex<()>>,
-    now: i64,
+    clock: &Arc<dyn Clock>,
 ) -> EntriesWritten {
     let task = {
         let (pool, audit, gate) = (pool.clone(), Arc::clone(audit), Arc::clone(gate));
+        let clock = Arc::clone(clock);
         tokio::spawn(async move {
             let _writing = gate.lock_owned().await;
-            write_waiting(&pool, &audit, now).await
+            write_waiting(&pool, &audit, clock.as_ref()).await
         })
     };
     let cause = match tokio::time::timeout(WRITE_WAIT, task).await {
@@ -146,42 +225,41 @@ async fn write_bounded(
 /// Write the waiting entries from a process with no running [`Requests`], such
 /// as `warden-server agent revoke`. Returns within a few seconds even if the log
 /// has stalled; the caller reports what is left.
-pub async fn write_entries(pool: &SqlitePool, audit: &Arc<AuditLog>, now: i64) -> EntriesWritten {
-    write_bounded(pool, audit, &Arc::default(), now).await
+pub async fn write_entries(
+    pool: &SqlitePool,
+    audit: &Arc<AuditLog>,
+    clock: &Arc<dyn Clock>,
+) -> EntriesWritten {
+    write_bounded(pool, audit, &Arc::default(), clock).await
 }
 
 impl Requests {
     /// Write the waiting entries, and report loudly if any must stay waiting.
     pub(super) async fn settle_entries(&self) -> AuditOutcome {
-        let written = write_bounded(
-            &self.pool,
-            &self.audit,
-            &self.entry_writer,
-            self.clock.now(),
-        )
-        .await;
+        let written = write_bounded(&self.pool, &self.audit, &self.entry_writer, &self.clock).await;
         if written.outcome == AuditOutcome::Missing {
             let waiting = unwritten_entries(&self.pool).await;
             tracing::error!(
                 cause = written.cause.as_deref().unwrap_or("none reported"),
                 ?waiting,
-                "access was revoked but this is not in the audit log yet"
+                "access was ended but this is not in the audit log yet"
             );
         }
         written.outcome
     }
 
     /// Try again to write the entries still waiting, unless a write is under way.
-    /// The sweep calls this, so an entry is written soon after the log recovers.
-    pub async fn flush_revocation_entries(&self) {
+    /// The sweep calls this, so an entry is written soon after the log recovers,
+    /// and soon after a start if a crash left some behind.
+    pub async fn flush_waiting_entries(&self) {
         let is_writing = self.entry_writer.try_lock().is_err();
         if !is_writing {
             self.settle_entries().await;
         }
     }
 
-    /// How many audit entries of revocations are waiting for the log; the grants
-    /// page warns the owner while there are any.
+    /// How many audit entries are waiting for the log; the grants page warns the
+    /// owner while there are any.
     ///
     /// # Errors
     /// Storage failures.
@@ -219,14 +297,30 @@ impl Requests {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicI64, Ordering};
 
     use warden_broker_proto::Id;
 
     use super::{
-        AuditEvent, AuditLog, AuditOutcome, commit_with_entries, unwritten_entries, write_entries,
+        AuditEvent, AuditLog, AuditOutcome, Clock, commit_with_entries, count_waiting_read_only,
+        unwritten_entries, write_entries,
     };
     use crate::requests::begin;
     use crate::store;
+
+    /// A clock a test moves by hand.
+    struct TestClock(AtomicI64);
+
+    impl Clock for TestClock {
+        fn now(&self) -> i64 {
+            self.0.load(Ordering::SeqCst)
+        }
+    }
+
+    fn clock_at(now: i64) -> (Arc<TestClock>, Arc<dyn Clock>) {
+        let clock = Arc::new(TestClock(AtomicI64::new(now)));
+        (Arc::clone(&clock), clock)
+    }
 
     fn event() -> AuditEvent {
         AuditEvent::Denied { id: Id::random() }
@@ -258,12 +352,16 @@ mod tests {
         let entry = commit_one(&pool, 1000).await;
         assert_eq!(unwritten_entries(&pool).await.unwrap(), [entry]);
         assert_eq!(crate::audit::verify(&path).unwrap(), 0);
+        let db = dir.path().join("warden.db");
+        assert_eq!(count_waiting_read_only(&db).await.unwrap(), 1);
 
-        let written = write_entries(&pool, &audit, 1000).await;
+        let (_, clock) = clock_at(1000);
+        let written = write_entries(&pool, &audit, &clock).await;
         assert_eq!(written.outcome, AuditOutcome::Recorded);
         assert_eq!(written.cause, None);
         assert_eq!(unwritten_entries(&pool).await.unwrap(), []);
         assert_eq!(crate::audit::verify(&path).unwrap(), 1);
+        assert_eq!(count_waiting_read_only(&db).await.unwrap(), 0);
     }
 
     #[tokio::test]
@@ -273,13 +371,15 @@ mod tests {
         std::fs::write(&path, b"not an audit line\n").unwrap();
         let entry = commit_one(&pool, 1000).await;
 
-        let written = write_entries(&pool, &audit, 1000).await;
+        let (time, clock) = clock_at(1000);
+        let written = write_entries(&pool, &audit, &clock).await;
         assert_eq!(written.outcome, AuditOutcome::Missing);
         assert!(written.cause.is_some());
         assert_eq!(unwritten_entries(&pool).await.unwrap(), [entry]);
 
         std::fs::write(&path, b"").unwrap();
-        let written = write_entries(&pool, &audit, 1060).await;
+        time.0.store(1060, Ordering::SeqCst);
+        let written = write_entries(&pool, &audit, &clock).await;
         assert_eq!(written.outcome, AuditOutcome::Recorded);
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(
@@ -293,8 +393,70 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (pool, audit, path) = setup(&dir).await;
         commit_one(&pool, 1000).await;
-        write_entries(&pool, &audit, 1059).await;
+        let (_, clock) = clock_at(1059);
+        write_entries(&pool, &audit, &clock).await;
         assert!(!std::fs::read_to_string(&path).unwrap().contains("late"));
+    }
+
+    #[tokio::test]
+    async fn an_entry_that_waited_on_a_stalled_write_is_noted_as_late() {
+        let dir = tempfile::tempdir().unwrap();
+        let (pool, audit, path) = setup(&dir).await;
+        commit_one(&pool, 1000).await;
+        let holder = std::fs::File::open(&path).unwrap();
+        holder.lock().unwrap();
+        let (time, clock) = clock_at(1000);
+        let written = write_entries(&pool, &audit, &clock).await;
+        assert_eq!(written.outcome, AuditOutcome::Missing);
+
+        // The write under way finishes an hour later, by this clock.
+        time.0.store(4600, Ordering::SeqCst);
+        drop(holder);
+        while !unwritten_entries(&pool).await.unwrap().is_empty() {
+            tokio::task::yield_now().await;
+        }
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains("written late: it took effect at 1000"),
+            "{text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn two_processes_writing_at_once_write_each_entry_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let (pool, audit, path) = setup(&dir).await;
+        // Separate handles and separate gates, as in two processes.
+        let other = Arc::new(AuditLog::open(&path).await.unwrap());
+        for _ in 0..40 {
+            commit_one(&pool, 1000).await;
+        }
+        let (_, clock) = clock_at(1000);
+        let (first, second) = tokio::join!(
+            write_entries(&pool, &audit, &clock),
+            write_entries(&pool, &other, &clock)
+        );
+        assert_eq!(first.cause, None);
+        assert_eq!(second.cause, None);
+        assert_eq!(crate::audit::verify(&path).unwrap(), 40);
+    }
+
+    #[tokio::test]
+    async fn a_claim_left_by_a_crash_is_taken_over_only_after_it_lapses() {
+        let dir = tempfile::tempdir().unwrap();
+        let (pool, audit, path) = setup(&dir).await;
+        commit_one(&pool, 1000).await;
+        sqlx::query("UPDATE unwritten_audit SET claim = 'gone', claimed_at = 1000")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let (time, clock) = clock_at(1299);
+        let written = write_entries(&pool, &audit, &clock).await;
+        assert_eq!(written.outcome, AuditOutcome::Missing);
+        assert_eq!(crate::audit::verify(&path).unwrap(), 0);
+        time.0.store(1300, Ordering::SeqCst);
+        let written = write_entries(&pool, &audit, &clock).await;
+        assert_eq!(written.outcome, AuditOutcome::Recorded);
     }
 
     #[tokio::test]
@@ -303,10 +465,11 @@ mod tests {
         let (pool, audit, path) = setup(&dir).await;
         commit_one(&pool, 1000).await;
         // Another writer holds the lock, which an append waits on for 5 s: longer
-        // than a revocation waits.
+        // than a change waits.
         let holder = std::fs::File::open(&path).unwrap();
         holder.lock().unwrap();
-        let written = write_entries(&pool, &audit, 1000).await;
+        let (_, clock) = clock_at(1000);
+        let written = write_entries(&pool, &audit, &clock).await;
         assert_eq!(written.outcome, AuditOutcome::Missing);
         assert!(written.cause.unwrap().contains("did not answer"));
     }

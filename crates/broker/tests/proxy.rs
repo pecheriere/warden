@@ -882,6 +882,35 @@ async fn revoked_during_call_withholds_response() {
     assert_eq!(calls[0]["status"], 200);
 }
 
+/// A revocation that has reported access stopped holds for a call still waiting
+/// to record its start: it must not go out once the log answers.
+#[tokio::test]
+async fn revoked_while_a_call_waits_to_record_its_start_sends_nothing() {
+    let s = setup().await;
+    let holder = std::fs::File::open(s.broker.audit_path()).unwrap();
+    holder.lock().unwrap();
+    let call = get(&s, "/delayed");
+    let revoke = async {
+        while s.broker.state().proxy_calls.snapshot().is_empty() {
+            tokio::task::yield_now().await;
+        }
+        let outcome = s
+            .broker
+            .state()
+            .requests
+            .revoke_grant(&s.grant, "owner")
+            .await
+            .unwrap();
+        drop(holder);
+        outcome
+    };
+    let (resp, outcome) = tokio::join!(call, revoke);
+    assert_eq!(outcome, warden_broker::requests::AuditOutcome::Missing);
+    assert_eq!(resp.status, StatusCode::CONFLICT, "{}", resp.body);
+    assert_eq!(resp.body, r#"{"error":"grant revoked"}"#);
+    assert!(s.upstream.received().is_empty());
+}
+
 #[tokio::test]
 async fn expired_during_call_withholds_response() {
     let s = setup().await;

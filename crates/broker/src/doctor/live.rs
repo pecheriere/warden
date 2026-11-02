@@ -17,6 +17,7 @@ use crate::config::Config;
 use crate::health::probe_target;
 use crate::notify::{ChannelSettings, Doorbell, NotifyError};
 use crate::policy::{CaProbe, OnePasswordConnect, VaultProbe};
+use crate::requests::revocation::count_waiting_read_only;
 
 /// How long a listener has to accept a connection.
 const LISTENER_TIMEOUT: Duration = Duration::from_secs(3);
@@ -107,6 +108,14 @@ impl Environment for Live {
         match count_passkeys(db).await {
             Ok(count) => PasskeyProbe::Enrolled(count),
             Err(reason) => PasskeyProbe::Unreadable(reason),
+        }
+    }
+
+    async fn waiting_entries(&self, db: &Path) -> Result<i64, String> {
+        // With no database there is nothing waiting: the passkey check reports it.
+        match tokio::fs::symlink_metadata(db).await {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(0),
+            _ => count_waiting_read_only(db).await,
         }
     }
 

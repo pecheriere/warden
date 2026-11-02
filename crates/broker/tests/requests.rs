@@ -757,7 +757,14 @@ async fn notify_failure_ends_in_error() {
         panic!("expected error, got {status:?}");
     };
     assert!(message.contains("failing returned HTTP 503"), "{message}");
-    assert!(audit_types(&h).contains(&"notify_failed".to_owned()));
+    // The change that ended the request comes first; its entry follows.
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !audit_types(&h).contains(&"notify_failed".to_owned()) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the entry was written");
     // The token was never delivered, but even so it is no longer usable.
     assert_eq!(row_count(&h.pool, "requests").await, 1);
 }

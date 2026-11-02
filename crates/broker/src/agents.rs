@@ -21,7 +21,7 @@ use warden_broker_proto::signing::{SigningKeyError, SigningPublicKey};
 use zeroize::Zeroizing;
 
 use crate::audit::{AuditError, AuditEvent, AuditLog};
-use crate::requests::{CommitError, audit_and_commit, begin};
+use crate::requests::{begin, note_if_not_applied, record};
 
 /// Prefix of every agent key.
 const KEY_PREFIX: &str = "wdn_";
@@ -318,15 +318,6 @@ async fn other_key_owner(
         .transpose()
 }
 
-impl From<CommitError> for AgentError {
-    fn from(e: CommitError) -> Self {
-        match e {
-            CommitError::Audit(e) => Self::Audit(e),
-            CommitError::Db(e) => Self::Db(e),
-        }
-    }
-}
-
 /// Create a key-signed agent registered with `key`, recording
 /// [`AuditEvent::AgentAdded`] and [`AuditEvent::AgentKeySet`]. The agent
 /// exists only if both entries were written.
@@ -343,26 +334,18 @@ pub async fn add_key_audited(
     name: &AgentName,
     key: &AgentPublicKey,
 ) -> Result<(), AgentError> {
-    let mut tx = begin(pool).await?;
-    if let Some(owner) = other_key_owner(&mut tx, name, key).await? {
+    // Checked here so a refusal writes nothing, and again where it is stored.
+    let mut conn = pool.acquire().await?;
+    if let Some(owner) = other_key_owner(&mut conn, name, key).await? {
         return Err(AgentError::KeyInUse(owner));
     }
-    let inserted = sqlx::query(
-        "INSERT INTO agents (name, auth_kind, public_key, key_fingerprint, created_at) \
-         VALUES (?, 'ssh-key', ?, ?, ?)",
-    )
-    .bind(name.as_str())
-    .bind(key.openssh())
-    .bind(key.fingerprint())
-    .bind(unix_now())
-    .execute(&mut *tx)
-    .await;
-    match inserted {
-        Ok(_) => {}
-        Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {
-            return Err(AgentError::AlreadyExists);
-        }
-        Err(e) => return Err(e.into()),
+    let taken = sqlx::query("SELECT 1 FROM agents WHERE name = ?")
+        .bind(name.as_str())
+        .fetch_optional(&mut *conn)
+        .await?;
+    drop(conn);
+    if taken.is_some() {
+        return Err(AgentError::AlreadyExists);
     }
     let events = vec![
         AuditEvent::AgentAdded {
@@ -373,8 +356,36 @@ pub async fn add_key_audited(
             fingerprint: key.fingerprint().to_owned(),
         },
     ];
-    audit_and_commit(audit, tx, events, &format!("creation of agent {name}")).await?;
-    Ok(())
+    let transition = format!("creation of agent {name}");
+    record(audit, events, &transition).await?;
+    let applied: Result<(), AgentError> = async {
+        let mut tx = begin(pool).await?;
+        if let Some(owner) = other_key_owner(&mut tx, name, key).await? {
+            return Err(AgentError::KeyInUse(owner));
+        }
+        let inserted = sqlx::query(
+            "INSERT INTO agents (name, auth_kind, public_key, key_fingerprint, created_at) \
+             VALUES (?, 'ssh-key', ?, ?, ?)",
+        )
+        .bind(name.as_str())
+        .bind(key.openssh())
+        .bind(key.fingerprint())
+        .bind(unix_now())
+        .execute(&mut *tx)
+        .await;
+        match inserted {
+            Ok(_) => {}
+            Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {
+                return Err(AgentError::AlreadyExists);
+            }
+            Err(e) => return Err(e.into()),
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+    .await;
+    note_if_not_applied(audit, &applied, &transition).await;
+    applied
 }
 
 /// Switch an existing agent to signing with `key`, recording
@@ -394,40 +405,56 @@ pub async fn set_key_audited(
     name: &AgentName,
     key: &AgentPublicKey,
 ) -> Result<(), AgentError> {
-    let mut tx = begin(pool).await?;
+    // Checked here so a refusal writes nothing, and again where it is stored.
+    let mut conn = pool.acquire().await?;
+    check_can_set_key(&mut conn, name, key).await?;
+    drop(conn);
+    let event = AuditEvent::AgentKeySet {
+        agent: name.clone(),
+        fingerprint: key.fingerprint().to_owned(),
+    };
+    let transition = format!("key change of agent {name}");
+    record(audit, vec![event], &transition).await?;
+    let applied: Result<(), AgentError> = async {
+        let mut tx = begin(pool).await?;
+        check_can_set_key(&mut tx, name, key).await?;
+        sqlx::query(
+            "UPDATE agents SET auth_kind = 'ssh-key', key_hash = NULL, public_key = ?, \
+             key_fingerprint = ? WHERE name = ?",
+        )
+        .bind(key.openssh())
+        .bind(key.fingerprint())
+        .bind(name.as_str())
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+    .await;
+    note_if_not_applied(audit, &applied, &transition).await;
+    applied
+}
+
+/// Refuse switching agent `name` to `key` if it does not exist or is revoked, or
+/// if another agent has the key.
+async fn check_can_set_key(
+    conn: &mut sqlx::SqliteConnection,
+    name: &AgentName,
+    key: &AgentPublicKey,
+) -> Result<(), AgentError> {
     let revoked_at: Option<Option<i64>> =
         sqlx::query_scalar("SELECT revoked_at FROM agents WHERE name = ?")
             .bind(name.as_str())
-            .fetch_optional(&mut *tx)
+            .fetch_optional(&mut *conn)
             .await?;
     match revoked_at {
         None => return Err(AgentError::Unknown),
         Some(Some(_)) => return Err(AgentError::Revoked),
         Some(None) => {}
     }
-    if let Some(owner) = other_key_owner(&mut tx, name, key).await? {
+    if let Some(owner) = other_key_owner(conn, name, key).await? {
         return Err(AgentError::KeyInUse(owner));
     }
-    sqlx::query(
-        "UPDATE agents SET auth_kind = 'ssh-key', key_hash = NULL, public_key = ?, \
-         key_fingerprint = ? WHERE name = ?",
-    )
-    .bind(key.openssh())
-    .bind(key.fingerprint())
-    .bind(name.as_str())
-    .execute(&mut *tx)
-    .await?;
-    let event = AuditEvent::AgentKeySet {
-        agent: name.clone(),
-        fingerprint: key.fingerprint().to_owned(),
-    };
-    audit_and_commit(
-        audit,
-        tx,
-        vec![event],
-        &format!("key change of agent {name}"),
-    )
-    .await?;
     Ok(())
 }
 

@@ -82,6 +82,17 @@ fn agent_revoke_works_with_a_broken_audit_log_and_exits_with_an_error() {
     assert!(stderr.contains(r#""type":"agent_revoked""#), "{stderr}");
     assert!(stderr.contains("build-agent"), "{stderr}");
     assert!(server.agents().contains("revoked@"), "{}", server.agents());
+
+    // With the log repaired, verifying it says it is not the whole story.
+    bytes.truncate(bytes.len() - b"not an audit line\n".len());
+    std::fs::write(&log, &bytes).unwrap();
+    let verified = server.run(&["audit", "verify"]);
+    assert!(verified.status.success(), "{}", text(&verified.stderr));
+    assert!(
+        text(&verified.stderr).contains("waiting in the database"),
+        "{}",
+        text(&verified.stderr)
+    );
 }
 
 /// Piped into a password manager, stdout must be the key and only the key,

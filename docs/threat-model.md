@@ -148,47 +148,54 @@ what was approved, and a compromised broker could misapply it.
 ## What the audit log can miss
 
 The audit log is the evidence warden leaves, so an action that gives access
-must not happen without its entry. An action that takes access away is the
-exception: stopping access matters more than recording it.
+must not happen without its entry. An action that ends access is the exception:
+stopping access matters more than recording it. Either way, the log is never
+written while a database write is open, so writing it cannot hold up another
+change.
 
-- **Written first, or the action does not happen.** Creating, approving,
-  denying, cancelling and expiring requests, adding an agent or changing its
-  key, enrolling or removing a passkey and making an
-  enrollment code write their entries before the database commit. A proxied
-  call and a relay session write theirs before anything reaches the target. If
-  the entry cannot be written, the change is rolled back and the caller gets an
-  error. A bearer agent's row is written first and revoked if its entry cannot
-  be written; its key is shown only after that entry, so the row cannot be used.
-- **Revoking does not wait for the log (deliberate).** A failing log must not
-  leave an owner unable to end access they have decided to end, and a compromise
-  is when both are most likely to matter. So a revocation stores its entries in
-  the database, in the transaction that revokes, and only then writes them to the
-  log, waiting 2 s at most. A log that fails, stalls or cannot be opened cannot
-  stop it:
-  - Access stops as usual. The grant or agent is revoked in the database, pending
-    requests of a revoked agent end, relay sessions close, and proxied calls and
-    the agent's key are refused. A certificate already issued stays valid until
-    it expires, as it does for any revocation.
-  - The entry is not lost. It waits in the database, and every sweep (each 15 s)
-    tries again, so it reaches the log once the log works, with a note if it is
-    over a minute late. Until then it has no hash chain, and whoever controls the
-    host could remove it. A crash just after writing one can write it twice.
+- **Written first, or the action does not happen.** Creating a request, approving
+  one, adding an agent or changing its key, enrolling or removing a passkey and
+  making an enrollment code write their entries before they touch the database. A
+  proxied call and a relay session write theirs before anything reaches the target,
+  and then check the grant again. If the entry cannot be written, the action does
+  not happen and the caller gets an error. A bearer agent's row is written first and
+  revoked if its entry cannot be written; its key is shown only after that entry, so
+  the row cannot be used.
+- **Ending access does not wait for the log (deliberate).** A failing log must not
+  leave an owner unable to end access they have decided to end, and a compromise is
+  when both are most likely to matter. So revoking, denying, cancelling and expiring
+  store their entries in the database, in the transaction that makes the change, and
+  only then write them to the log, waiting 2 s at most.
+  - Access stops as usual. A revoked grant or agent is revoked in the database,
+    pending requests of a revoked agent end, relay sessions close, and proxied calls
+    and the agent's key are refused. A call or session waiting to record its start
+    checks the grant again once it has, and does not go out. One already sent runs
+    on (issue [#44](https://github.com/pecheriere/warden/issues/44)), and a
+    certificate already issued stays valid until it expires, as for any revocation.
+  - The entry is not lost. It waits in the database, and every sweep (each 15 s, and
+    at start) tries again, so it reaches the log once the log works, with a note if
+    it is over a minute late, because its own time is when it was written. Until then
+    it has no hash chain, and whoever controls the host could remove it. Writers
+    claim an entry first, so two processes do not both write it. A crash just after
+    writing one can write it twice, and its claim holds it back for up to 5 minutes.
   - The owner sees it. The grants page warns for as long as any entry is waiting,
-    whatever the page reloads for. A notification goes out too, with the grant id
-    or agent name, because an agent can revoke its own grant with no owner there.
-    The server log has an error with the entries at each attempt.
-    `warden-server agent revoke` has no server log, so it prints the entries and
-    exits with an error, after revoking.
-  - Only a database that cannot commit stops a revocation: it then did not happen,
-    and the caller gets an error. The relay ends its sessions by itself if it
-    cannot read the database for 10 s (see "Fail closed when state cannot be
-    read").
-  - Entries of revocations are therefore written just after the commit, so a
-    session that a revocation ends can log its end before the revocation's entry.
+    whatever the page reloads for. A revocation also sends a notification, with the
+    grant id or agent name, because an agent can revoke its own grant with no owner
+    there. The server log has an error with the entries at each attempt.
+    `warden-server agent revoke` has no server log, so it prints the entries and exits
+    with an error, after revoking. `warden-server doctor` fails while entries wait,
+    and `warden-server audit verify` warns.
+  - What can still stop a revocation is the database: if it cannot commit, the
+    revocation did not happen and the caller gets an error. Other writers hold it only
+    briefly, as none of them writes the log meanwhile; a revocation queues behind them,
+    for 5 s at most. The relay ends its sessions by itself if it cannot read the
+    database for 10 s (see "Fail closed when state cannot be read").
+  - Entries of these changes are written just after the commit, so a session that a
+    revocation ends can log its end before the revocation's entry.
 - **`cert_issued` fails closed.** A certificate cannot be revoked before it
   expires, so one with no entry would be access with no evidence and no way to
   take it back. `cert_issued` is therefore written with `approved`, before the
-  commit. The certificate is signed in memory and reaches the agent only through
+  database changes. The certificate is signed in memory and reaches the agent only through
   the grant that commit stores, so if either entry cannot be written, it is
   dropped without having left the broker. The owner, who is looking at the
   approval page, sees that nothing changed and no access was given, and can
@@ -196,11 +203,12 @@ exception: stopping access matters more than recording it.
   request is still `pending`, which is true, and ends in a decision or `expired`
   as usual. It gets a 5xx instead if the log is still failing when the request
   expires, because expiry is audited too.
-- **Apart from revocations, entries can overstate, not understate.** Entries
-  come before the commit, so a failed commit can leave an entry for a change that did not happen; an `error`
-  entry then says so. A crash at that moment, or a failure to write the `error`
-  entry too, leaves none: an `approved` with no matching grant in the database
-  means the approval did not take effect, and no certificate left the broker.
+- **Entries written first can overstate, not understate.** A change that then fails,
+  or finds that its agent was revoked meanwhile, leaves an entry for something that
+  did not happen; an `error` entry then says so. A crash at that moment, or a failure
+  to write the `error` entry too, leaves none: an `approved` with no matching grant in
+  the database means the approval did not take effect, and no certificate left the
+  broker.
 - **Written after the fact, and only logged if that fails.** `notified`,
   `relay_session_ended`, `relay_session_refused` and `relay_login_refused`
   record something that already happened and gave no new access, so nothing can
@@ -214,12 +222,11 @@ exception: stopping access matters more than recording it.
   spent but never finishes enrolling is not recorded either; only `passkey_enrolled`
   shows that it was used. An `enrollment_code_created` entry holds neither the
   code nor its hash, so it cannot be matched to one enrollment.
-- **A log that cannot be written stops everything but revocation.** With a full
-  disk, or after a failed write (which needs a restart to repair), no request can
-  be created, approved or denied, pending requests cannot expire, and relay
-  sessions and proxied calls cannot start. This is the fail-closed choice. A
-  grant's window is still enforced from the database. Watch the disk that holds
-  the log.
+- **A log that cannot be written stops what gives access.** With a full disk, or
+  after a failed write (which needs a restart to repair), no request can be created
+  or approved, and relay sessions and proxied calls cannot start. A log that stalls
+  holds those up until it answers. Ending access goes on as above. Watch
+  the disk that holds the log.
 
 ## Authentication of callers
 

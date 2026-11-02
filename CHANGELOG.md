@@ -110,12 +110,17 @@ All notable changes to this project are recorded here. The format follows
   `warden-server audit verify` from an older release.
 - A failed agent creation or key change that had already written an audit entry
   now records that it did not take effect.
-- Revoking a grant or an agent no longer depends on the audit log: stopping access
-  matters more than recording it. Before, it was refused if the entry could not be
-  written, and could hang if the log stalled. Its entries now wait in the database
-  and reach the log once it works. Until then the grants page warns and a
-  notification goes out, and `warden-server agent revoke` prints them and exits with
-  an error after revoking. New migration `0007_unwritten_audit`.
+- Ending access no longer depends on the audit log: stopping access matters more
+  than recording it. Revoking, denying, cancelling and expiring take effect first, and
+  their entries wait in the database until they reach the log. Until then the grants
+  page warns, `warden-server doctor` fails and `warden-server audit verify` warns; a
+  revocation also notifies the owner, and `warden-server agent revoke` prints the
+  entries and exits with an error after revoking. New migration
+  `0007_unwritten_audit`.
+- The log is no longer written during a database write, so writing it cannot hold up
+  a revocation or any other change.
+- A proxied call or a relay session that waited to record its start now checks its
+  grant again, and does not go out if the grant ended meanwhile.
 
 ## [0.8.1] - 2026-11-01
 

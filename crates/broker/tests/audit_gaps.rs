@@ -7,11 +7,17 @@ use std::time::Duration;
 
 use axum::http::StatusCode;
 use serde_json::{Value, json};
+use sqlx::sqlite::SqliteConnectOptions;
+use sqlx::{ConnectOptions as _, Row as _};
 use ssh_key::Certificate;
+use warden_broker::agents;
 use warden_broker::approval::passkeys::PasskeyError;
 use warden_broker::requests::{AuditOutcome, Clock as _, sha256_hex};
 use warden_broker::testkit::{FakeBackend, SoftAuthenticator, TestBroker, TestResponse};
-use warden_broker_proto::{AgentName, CreatedResponse, GrantAccess, Id, RequestStatus, Window};
+use warden_broker_proto::{
+    AgentName, CreatedResponse, GrantAccess, GrantView, Id, RequestStatus, SshGrant, UnixUser,
+    Window,
+};
 
 /// Make every append to the audit log fail until the returned bytes are put
 /// back.
@@ -156,19 +162,70 @@ async fn one_certificate_gets_one_entry() {
 }
 
 #[tokio::test]
-async fn denying_says_so_when_the_log_cannot_be_written() {
+async fn denying_takes_effect_and_says_so_when_the_log_cannot_be_written() {
     let (broker, _auth, created, token) = pending(Window::M15).await;
     let good = break_audit_log(&broker);
-    let refused = broker.deny(&token).await;
-    assert_eq!(
-        refused.status,
-        StatusCode::SERVICE_UNAVAILABLE,
-        "{}",
-        refused.body
-    );
-    assert_eq!(status(&broker, &created).await, RequestStatus::Pending);
+    let denied = broker.deny(&token).await;
+    assert_eq!(denied.status, StatusCode::OK, "{}", denied.body);
+    let message = denied.json()["message"].as_str().unwrap().to_owned();
+    assert!(message.contains("not on record"), "{message}");
+    assert_eq!(status(&broker, &created).await, RequestStatus::Denied);
+    assert!(grants_page(&broker).await.contains("Not in the audit log"));
+
     repair_audit_log(&broker, &good);
-    assert_eq!(broker.deny(&token).await.status, StatusCode::OK);
+    broker.state().requests.flush_waiting_entries().await;
+    assert!(broker.audit_types().iter().any(|t| t == "denied"));
+    assert!(!grants_page(&broker).await.contains("Not in the audit log"));
+}
+
+#[tokio::test]
+async fn a_request_expires_when_the_log_cannot_be_written() {
+    let (broker, _auth, created, _token) = pending(Window::M15).await;
+    broker.clock.advance(601);
+    let good = break_audit_log(&broker);
+    assert_eq!(status(&broker, &created).await, RequestStatus::Expired);
+    repair_audit_log(&broker, &good);
+    broker.state().requests.flush_waiting_entries().await;
+    assert!(broker.audit_types().iter().any(|t| t == "expired"));
+}
+
+#[tokio::test]
+async fn the_first_sweep_after_a_start_writes_what_a_crash_left_waiting() {
+    let (broker, _key, created, grant) = api_grant().await;
+    let good = break_audit_log(&broker);
+    broker
+        .state()
+        .requests
+        .revoke_grant(&grant, "owner")
+        .await
+        .unwrap();
+    repair_audit_log(&broker, &good);
+    let broker = broker.restart().await;
+    // A sweep period no test waits for: only the first tick can do this.
+    let (stop, stopped) = tokio::sync::watch::channel(false);
+    let sweeper = tokio::spawn(warden_broker::requests::sweep_loop(
+        broker.state().requests.clone(),
+        Duration::from_secs(3600),
+        stopped,
+    ));
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while broker
+            .state()
+            .requests
+            .unwritten_entry_count()
+            .await
+            .unwrap()
+            > 0
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the entry was written");
+    stop.send(true).unwrap();
+    sweeper.await.unwrap();
+    assert!(broker.audit_types().iter().any(|t| t == "grant_revoked"));
+    assert_eq!(status(&broker, &created).await, RequestStatus::Revoked);
 }
 
 #[tokio::test]
@@ -384,13 +441,13 @@ async fn the_warning_stays_on_the_page_until_the_entry_is_in_the_log() {
     for _ in 0..2 {
         assert!(grants_page(&broker).await.contains("Not in the audit log"));
     }
-    broker.state().requests.flush_revocation_entries().await;
+    broker.state().requests.flush_waiting_entries().await;
     assert!(grants_page(&broker).await.contains("Not in the audit log"));
 
     // Once the log works, the sweep writes the entry, noting it is late.
     broker.clock.advance(120);
     repair_audit_log(&broker, &good);
-    broker.state().requests.flush_revocation_entries().await;
+    broker.state().requests.flush_waiting_entries().await;
     assert!(!grants_page(&broker).await.contains("Not in the audit log"));
     let events = audit_events(&broker);
     let at = events
@@ -432,7 +489,7 @@ async fn an_audit_log_that_has_stalled_does_not_stop_a_revocation() {
             .unwrap()
             > 0
         {
-            broker.state().requests.flush_revocation_entries().await;
+            broker.state().requests.flush_waiting_entries().await;
             tokio::task::yield_now().await;
         }
     })
@@ -441,19 +498,136 @@ async fn an_audit_log_that_has_stalled_does_not_stop_a_revocation() {
     assert!(broker.audit_types().iter().any(|t| t == "grant_revoked"));
 }
 
+// --- writing the log never holds up the database ------------------------------
+
+/// Hold the audit log's lock, as a log that has stalled would, while `work` runs,
+/// and check the whole time that another writer can still get into the database,
+/// as a revocation must.
+async fn assert_no_write_lock_while_log_waits<T: Send + 'static>(
+    broker: &TestBroker,
+    work: impl Future<Output = T> + Send + 'static,
+) {
+    let holder = std::fs::File::open(broker.audit_path()).unwrap();
+    holder.lock().unwrap();
+    let file: String = sqlx::query("PRAGMA database_list")
+        .fetch_one(&broker.state().pool)
+        .await
+        .unwrap()
+        .get("file");
+    let mut other = SqliteConnectOptions::new()
+        .filename(file)
+        // Long enough for a short write to finish, far less than a log can stall.
+        .busy_timeout(Duration::from_secs(1))
+        .connect()
+        .await
+        .unwrap();
+    let task = tokio::spawn(work);
+    while !task.is_finished() {
+        sqlx::query("BEGIN IMMEDIATE")
+            .execute(&mut other)
+            .await
+            .expect("a writer holds the database while it waits for the audit log");
+        sqlx::query("ROLLBACK").execute(&mut other).await.unwrap();
+        tokio::task::yield_now().await;
+    }
+    drop(holder);
+    task.await.unwrap();
+}
+
 #[tokio::test]
-async fn a_revocation_survives_a_restart_with_its_entry_still_waiting() {
+async fn creating_a_request_holds_no_write_lock_while_the_log_waits() {
+    let broker = TestBroker::new().await;
+    broker.add_agent("bot").await;
+    let requests = broker.state().requests.clone();
+    let bot = AgentName::try_from("bot".to_owned()).unwrap();
+    let request = TestBroker::pi_request("restart the job", Window::M15);
+    assert_no_write_lock_while_log_waits(&broker, async move {
+        drop(requests.create(&bot, request).await);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn approving_holds_no_write_lock_while_the_log_waits() {
+    let (broker, _auth, _created, token) = pending(Window::M15).await;
+    let now = broker.clock.now();
+    let grant = GrantView {
+        grant_id: Id::random(),
+        not_before: now,
+        not_after: now + 900,
+        access: GrantAccess::Ssh(SshGrant {
+            certificate: "ssh-ed25519-cert-v01@openssh.com AAAA".to_owned(),
+            host: "192.0.2.10".to_owned(),
+            port: 22,
+            user: UnixUser::try_from("alice".to_owned()).unwrap(),
+            host_keys: vec![],
+        }),
+    };
+    let requests = broker.state().requests.clone();
+    assert_no_write_lock_while_log_waits(&broker, async move {
+        drop(
+            requests
+                .mark_approved(&token, Window::M15, grant, "passkey")
+                .await,
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn making_an_enrollment_code_holds_no_write_lock_while_the_log_waits() {
+    let broker = TestBroker::new().await;
+    let passkeys = broker.state().passkeys.clone();
+    let now = broker.clock.now();
+    assert_no_write_lock_while_log_waits(&broker, async move {
+        drop(passkeys.create_enrollment_code(now).await);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn denying_holds_no_write_lock_while_the_log_waits() {
+    let (broker, _auth, _created, token) = pending(Window::M15).await;
+    let requests = broker.state().requests.clone();
+    assert_no_write_lock_while_log_waits(&broker, async move {
+        drop(requests.deny(&token).await);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn adding_a_key_signed_agent_holds_no_write_lock_while_the_log_waits() {
+    let broker = TestBroker::new().await;
+    let pool = broker.state().pool.clone();
+    let audit = broker.state().audit.clone();
+    let name = AgentName::try_from("new".to_owned()).unwrap();
+    let key = agents::AgentPublicKey::parse(
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOh0zJ+xlPfFH6uwtZmJ2O9GrkMxjqMwPQTsBVmbbBrE new@host",
+    )
+    .unwrap();
+    assert_no_write_lock_while_log_waits(&broker, async move {
+        drop(agents::add_key_audited(&pool, &audit, &name, &key).await);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_revocation_goes_through_while_another_writer_waits_for_the_log() {
     let (broker, _key, created, grant) = api_grant().await;
-    let good = break_audit_log(&broker);
-    broker
+    let holder = std::fs::File::open(broker.audit_path()).unwrap();
+    holder.lock().unwrap();
+    // A writer that must have its entry first, waiting for the log.
+    let passkeys = broker.state().passkeys.clone();
+    let now = broker.clock.now();
+    let other = tokio::spawn(async move { passkeys.create_enrollment_code(now).await });
+    let outcome = broker
         .state()
         .requests
         .revoke_grant(&grant, "owner")
         .await
         .unwrap();
-    repair_audit_log(&broker, &good);
-    let broker = broker.restart().await;
-    broker.state().requests.flush_revocation_entries().await;
-    assert!(broker.audit_types().iter().any(|t| t == "grant_revoked"));
+    assert_eq!(outcome, AuditOutcome::Missing);
     assert_eq!(status(&broker, &created).await, RequestStatus::Revoked);
+    drop(holder);
+    drop(other.await.unwrap());
 }

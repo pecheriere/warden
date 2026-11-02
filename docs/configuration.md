@@ -137,6 +137,7 @@ deployment exits 7 with `--strict`.
 | `notify.<channel>` | With the flag: the channel accepts the message. | Never. |
 | `notify.delivery` | Never. | With the flag: warden sees that a channel accepted the message, not that it reached the phone. Confirm that it did. |
 | `passkey` | At least one passkey is enrolled. | The database exists but cannot be read. |
+| `audit.waiting` | No audit log entries are waiting in the database. They wait there when the log could not take them; a running server writes them once it can. | The database exists but cannot be read. |
 | `listener.api`, `listener.approval`, `listener.relay` | A process accepts TCP connections on the address, and the address is not `0.0.0.0` or `::`. This does not prove the process is warden. The relay is checked only when it is on. | The connection neither succeeds nor is refused. |
 | `data.directory` | The database's directory belongs to doctor's user, with no group or other permissions (0700). | The path cannot be read. |
 | `data.database`, `data.audit-log`, `data.audience` | Each is a regular file (not a symbolic link) of doctor's user, not writable by group or others. | The path cannot be read. |
@@ -155,8 +156,8 @@ What doctor does and does not do:
   fallback shows up. The message says it is a test.
 - **It writes nothing to the audit log, even with the flag.** The commands that
   change an agent or a passkey (`agent add`, `agent set-key`, `agent revoke`,
-  `passkey remove`) are audited, as is enrolling a passkey; `enroll` itself, which
-  only makes a code, is not. Those that only read (`agent list`, `passkey list`,
+  `passkey remove`) are audited, as are enrolling a passkey and `enroll`, which makes
+  a code. Those that only read (`agent list`, `passkey list`,
   `audit verify`) are not. Doctor is one of those: a test message changes no
   state and decides no access, and doctor has to work when the audit log is
   what is broken.

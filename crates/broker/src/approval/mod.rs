@@ -67,6 +67,10 @@ const AUDIT_UNAVAILABLE: &str = "the audit log could not be written, so nothing 
 const REVOKED_UNAUDITED: &str = "Revoked: access has stopped. But the audit log could not be \
                                  written, so this is not on record. Check the server's log.";
 
+/// What the owner is told when a denial could not be recorded.
+const DENIED_UNAUDITED: &str = "Denied. But the audit log could not be written, so this is not \
+                                on record yet. Check the server's log.";
+
 /// Recorded as `by` when the owner revokes a grant from the UI.
 const REVOKED_BY_OWNER: &str = "owner";
 
@@ -763,7 +767,8 @@ fn api_grant(
 
 async fn deny(State(state): State<AppState>, Path(token): Path<String>) -> Response {
     match state.requests.deny(&token).await {
-        Ok(()) => done("Denied."),
+        Ok(AuditOutcome::Recorded) => done("Denied."),
+        Ok(AuditOutcome::Missing) => done(DENIED_UNAUDITED),
         Err(e) => request_error(&e),
     }
 }

@@ -22,7 +22,7 @@ use warden_broker::policy::OnePasswordConnect;
 use warden_broker::proxy::CallSlots;
 use warden_broker::relay::host_key::RelayHostKey;
 use warden_broker::relay::{RelayEndpoint, RelayLimits, RelayServer, host_key};
-use warden_broker::requests::{self, AuditOutcome, Clock as _, Requests, SystemClock};
+use warden_broker::requests::{self, AuditOutcome, Clock, Requests, SystemClock};
 use warden_broker::{AppState, agents, audience, audit, build_routers, enrollment, store};
 use warden_broker::{doctor, health};
 use warden_broker_proto::AgentName;
@@ -155,6 +155,7 @@ async fn main() -> Result<ExitCode> {
             let count =
                 audit::verify(&path).with_context(|| format!("verifying {}", path.display()))?;
             println!("audit log ok: {count} entries");
+            report_waiting_entries().await;
         }
         Command::Doctor {
             send_test_notification,
@@ -254,19 +255,37 @@ async fn agent(command: AgentCommand) -> Result<()> {
                 .await
                 .with_context(|| format!("revoking agent {name}"))?;
             eprintln!("agent {name} revoked; {} request(s) ended", affected.len());
-            record_revocation(&pool, &name, now).await;
+            record_revocation(&pool, &name).await;
         }
     }
     Ok(())
 }
 
+/// Say if entries are waiting in the database to reach the log just verified, as
+/// the log is then missing them. The database is optional here: the check above
+/// needs only the log.
+async fn report_waiting_entries() {
+    let Some(db) = std::env::var_os("WARDEN_DB_PATH").filter(|path| !path.is_empty()) else {
+        return;
+    };
+    match requests::revocation::count_waiting_read_only(PathBuf::from(db).as_path()).await {
+        Ok(0) => {}
+        Ok(n) => eprintln!(
+            "warning: {n} entries are waiting in the database and are not in this log yet: a \
+             running server writes them once the log works"
+        ),
+        Err(reason) => eprintln!("could not check for entries waiting in the database: {reason}"),
+    }
+}
+
 /// Write the entries of a revocation that has taken effect to the audit log. If
 /// that fails, print what is missing, as this command has no server log, and exit
 /// with an error. A running server writes those entries once the log works.
-async fn record_revocation(pool: &SqlitePool, name: &AgentName, now: i64) {
+async fn record_revocation(pool: &SqlitePool, name: &AgentName) {
     let cause = match tokio::time::timeout(AUDIT_OPEN_WAIT, open_audit()).await {
         Ok(Ok(audit)) => {
-            let written = requests::write_entries(pool, &Arc::new(audit), now).await;
+            let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+            let written = requests::write_entries(pool, &Arc::new(audit), &clock).await;
             if written.outcome == AuditOutcome::Recorded {
                 return;
             }

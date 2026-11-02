@@ -2249,6 +2249,33 @@ async fn revoke_closes_live_session_when_the_audit_log_cannot_be_written() {
     );
 }
 
+/// A revocation from another process, while a session waits to record its start,
+/// holds once the log answers: nothing reaches the target.
+#[tokio::test(flavor = "multi_thread")]
+async fn revoked_while_a_session_waits_to_record_its_start_opens_nothing() {
+    let s = key_target().await;
+    let agent = approved_agent(&s.broker, "bot").await;
+    let c = login(&s.broker, s.relay, TARGET, &agent.key).await;
+    let mut channel = c.handle.channel_open_session().await.unwrap();
+    let holder = std::fs::File::open(s.broker.audit_path()).unwrap();
+    holder.lock().unwrap();
+    channel.exec(true, "echo reached-the-target").await.unwrap();
+    while s.broker.live_relay_bytes().is_empty() {
+        tokio::task::yield_now().await;
+    }
+    let state = s.broker.state();
+    warden_broker::requests::revoke_agent(
+        &state.pool,
+        &AgentName::try_from("bot".to_owned()).unwrap(),
+        state.clock.now(),
+    )
+    .await
+    .unwrap();
+    drop(holder);
+    let out = collect(&mut channel).await;
+    assert!(!text(&out.stdout).contains("reached-the-target"), "{out:?}");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn agent_revoke_closes_sessions_when_the_audit_log_cannot_be_written() {
     let s = key_target().await;

@@ -2,11 +2,11 @@
 //! long-poll status, decisions, expiry and revocation.
 //!
 //! Every state change runs to completion on its own task (dropping the caller
-//! cannot interrupt it) in one `BEGIN IMMEDIATE` transaction whose audit
-//! entry is appended before the commit, so the audit trail never misses a
-//! transition (a failed commit can at worst leave an entry for a change that
-//! did not happen). Revocations are the exception: they do not wait for the
-//! log, see [`revocation`]. After the commit the affected request ids are published
+//! cannot interrupt it) in one `BEGIN IMMEDIATE` transaction. The log is never
+//! written inside that transaction. A change that gives access has its entry
+//! written first, so the audit trail never misses it (a change that then fails
+//! leaves an entry and a note that it did not happen); one that ends access does
+//! not wait for the log, see [`revocation`]. After the commit the affected request ids are published
 //! on the [`StatusBus`] so long-polls wake up, and relay sessions of revoked
 //! grants are ended.
 
@@ -38,7 +38,7 @@ mod transition;
 use self::revocation::commit_with_entries;
 pub use self::revocation::{AuditOutcome, EntriesWritten, unwritten_entries, write_entries};
 use self::transition::detached;
-pub(crate) use self::transition::{CommitError, audit_and_commit, begin};
+pub(crate) use self::transition::{begin, note_if_not_applied, record};
 
 /// How long a request waits for the owner, in seconds.
 const PENDING_TTL_SECS: i64 = 600;
@@ -214,15 +214,6 @@ impl RequestError {
                 reason,
             },
             other => other.into(),
-        }
-    }
-}
-
-impl From<CommitError> for RequestError {
-    fn from(e: CommitError) -> Self {
-        match e {
-            CommitError::Audit(e) => Self::Audit(e),
-            CommitError::Db(e) => Self::Db(e),
         }
     }
 }
@@ -406,8 +397,12 @@ pub struct Requests {
     relay: Option<Arc<RelayEndpoint>>,
     /// Live relay sessions, ended when their grant is revoked.
     sessions: Arc<LiveSessions>,
-    /// Held while writing the entries of revocations to the audit log.
+    /// Held while writing the waiting audit entries to the log.
     entry_writer: Arc<tokio::sync::Mutex<()>>,
+    /// Held from checking a change that gives access until it is applied. Its entry
+    /// is written in between, outside any transaction, and without this two racing
+    /// changes would both pass the check and both be recorded.
+    recorded_change: Arc<tokio::sync::Mutex<()>>,
 }
 
 /// Which pending requests an expiry pass looks at.
@@ -442,6 +437,7 @@ impl Requests {
             relay: relay.map(Arc::new),
             sessions: LiveSessions::new(),
             entry_writer: Arc::default(),
+            recorded_change: Arc::default(),
         }
     }
 
@@ -562,6 +558,19 @@ impl Requests {
         for _ in 0..INSERT_ATTEMPTS {
             // A stale pending row past its expiry must not hold the slot.
             self.expire_due(Scope::Dedupe(dedupe_key.clone())).await?;
+            let change = Arc::clone(&self.recorded_change).lock_owned().await;
+            // Checked here so a request that stores nothing writes nothing; the
+            // transaction that stores one checks again.
+            if let Access::Ssh {
+                target, public_key, ..
+            } = &req.access
+            {
+                let mut conn = self.pool.acquire().await?;
+                check_key_unbound(&mut conn, agent, target, public_key, self.clock.now()).await?;
+            }
+            if let Some(existing) = self.pending_in_slot(&dedupe_key).await? {
+                return Ok(existing);
+            }
             let token = approval_token()?;
             let link = self.approval_link(&token)?;
             // Insert and ring as one detached unit: a caller dropped while the
@@ -575,6 +584,7 @@ impl Requests {
                     subject.clone(),
                 );
                 detached(async move {
+                    let _change = change;
                     let created = this.insert(&agent, &req, &subject, &key, &token).await?;
                     this.spawn_notify(created.id.clone(), doorbell(&agent, &subject, &req, link));
                     Ok(created)
@@ -603,36 +613,14 @@ impl Requests {
         dedupe_key: &str,
         token: &str,
     ) -> Result<CreatedResponse, RequestError> {
-        let now = self.clock.now();
         let id = Id::random();
         let fp = fingerprint(agent, req);
-        let mut tx = begin(&self.pool).await?;
-        if let Access::Ssh {
-            target, public_key, ..
-        } = &req.access
-        {
-            // In the write transaction, so no concurrent create can bind the
-            // key between this check and the insert.
-            check_key_unbound(&mut tx, agent, target, public_key, now).await?;
-        }
-        let inserted = sqlx::query(
-            "INSERT INTO requests (id, agent, fingerprint, dedupe_key, body, \
-             approval_token_hash, status, created_at, expires_at) \
-             SELECT ?, ?, ?, ?, ?, ?, 'pending', ?, ? \
-             WHERE EXISTS (SELECT 1 FROM agents WHERE name = ? AND revoked_at IS NULL)",
-        )
-        .bind(id.as_str())
-        .bind(agent.as_str())
-        .bind(fp.as_str())
-        .bind(dedupe_key)
-        .bind(serde_json::to_string(req)?)
-        .bind(sha256_hex(token))
-        .bind(now)
-        .bind(now + PENDING_TTL_SECS)
-        .bind(agent.as_str())
-        .execute(&mut *tx)
-        .await?;
-        if inserted.rows_affected() == 0 {
+        let body = serde_json::to_string(req)?;
+        let active = sqlx::query("SELECT 1 FROM agents WHERE name = ? AND revoked_at IS NULL")
+            .bind(agent.as_str())
+            .fetch_optional(&self.pool)
+            .await?;
+        if active.is_none() {
             return Err(RequestError::AgentRevoked);
         }
         let created = AuditEvent::RequestCreated {
@@ -641,13 +629,45 @@ impl Requests {
             fingerprint: fp.clone(),
             summary: format!("{subject} for {}: {}", window_label(req.window), req.goal),
         };
-        audit_and_commit(
-            &self.audit,
-            tx,
-            vec![created],
-            &format!("creation of request {id}"),
-        )
-        .await?;
+        let transition = format!("creation of request {id}");
+        record(&self.audit, vec![created], &transition).await?;
+        let applied = async {
+            let mut tx = begin(&self.pool).await?;
+            let now = self.clock.now();
+            if let Access::Ssh {
+                target, public_key, ..
+            } = &req.access
+            {
+                // In the write transaction, so no concurrent create can bind the
+                // key between this check and the insert.
+                check_key_unbound(&mut tx, agent, target, public_key, now).await?;
+            }
+            let inserted = sqlx::query(
+                "INSERT INTO requests (id, agent, fingerprint, dedupe_key, body, \
+                 approval_token_hash, status, created_at, expires_at) \
+                 SELECT ?, ?, ?, ?, ?, ?, 'pending', ?, ? \
+                 WHERE EXISTS (SELECT 1 FROM agents WHERE name = ? AND revoked_at IS NULL)",
+            )
+            .bind(id.as_str())
+            .bind(agent.as_str())
+            .bind(fp.as_str())
+            .bind(dedupe_key)
+            .bind(&body)
+            .bind(sha256_hex(token))
+            .bind(now)
+            .bind(now + PENDING_TTL_SECS)
+            .bind(agent.as_str())
+            .execute(&mut *tx)
+            .await?;
+            if inserted.rows_affected() == 0 {
+                return Err(RequestError::AgentRevoked);
+            }
+            tx.commit().await?;
+            Ok(())
+        }
+        .await;
+        note_if_not_applied(&self.audit, &applied, &transition).await;
+        applied?;
         Ok(CreatedResponse {
             id,
             fingerprint: fp,
@@ -718,13 +738,14 @@ impl Requests {
         channel: String,
         reason: String,
     ) -> Result<(), RequestError> {
+        let now = self.clock.now();
         let mut tx = begin(&self.pool).await?;
         sqlx::query(
             "UPDATE requests SET status = 'error', error = ?, decided_at = ? \
              WHERE id = ? AND status = 'pending'",
         )
         .bind(format!("could not notify the owner: {reason}"))
-        .bind(self.clock.now())
+        .bind(now)
         .bind(id.as_str())
         .execute(&mut *tx)
         .await?;
@@ -733,13 +754,8 @@ impl Requests {
             channel,
             reason,
         };
-        audit_and_commit(
-            &self.audit,
-            tx,
-            vec![failed],
-            &format!("notification failure of request {id}"),
-        )
-        .await?;
+        commit_with_entries(tx, vec![failed], now).await?;
+        self.settle_entries().await;
         Ok(())
     }
 
@@ -830,18 +846,19 @@ impl Requests {
         })
     }
 
-    /// Deny the pending request behind `token`.
+    /// Deny the pending request behind `token`, whatever state the audit log is
+    /// in; [`AuditOutcome::Missing`] says it is not on record yet.
     ///
     /// # Errors
     /// [`RequestError::NotFound`] for an unknown token,
     /// [`RequestError::AlreadyDecided`] if it is no longer pending.
-    pub async fn deny(&self, token: &str) -> Result<(), RequestError> {
+    pub async fn deny(&self, token: &str) -> Result<AuditOutcome, RequestError> {
         let this = self.clone();
         let token = token.to_owned();
         detached(async move { this.deny_now(&token).await }).await
     }
 
-    async fn deny_now(&self, token: &str) -> Result<(), RequestError> {
+    async fn deny_now(&self, token: &str) -> Result<AuditOutcome, RequestError> {
         let hash = sha256_hex(token);
         let now = self.clock.now();
         let mut tx = begin(&self.pool).await?;
@@ -860,15 +877,10 @@ impl Requests {
         };
         let id: Id = parse(&row, "id")?;
         let denied = AuditEvent::Denied { id: id.clone() };
-        audit_and_commit(
-            &self.audit,
-            tx,
-            vec![denied],
-            &format!("denial of request {id}"),
-        )
-        .await?;
+        commit_with_entries(tx, vec![denied], now).await?;
+        let outcome = self.settle_entries().await;
         self.bus.publish(&id);
-        Ok(())
+        Ok(outcome)
     }
 
     /// Withdraw `agent`'s own pending request `id`. The request becomes
@@ -910,13 +922,8 @@ impl Requests {
             id: id.clone(),
             agent: agent.clone(),
         };
-        audit_and_commit(
-            &self.audit,
-            tx,
-            vec![event],
-            &format!("cancellation of request {id}"),
-        )
-        .await?;
+        commit_with_entries(tx, vec![event], now).await?;
+        self.settle_entries().await;
         self.bus.publish(id);
         Ok(())
     }
@@ -981,37 +988,25 @@ impl Requests {
                 "grant validity does not match the window",
             ));
         }
-        let mut tx = begin(&self.pool).await?;
+        let _change = self.recorded_change.lock().await;
+        // Checked here so an approval that cannot apply writes nothing; the
+        // update below checks again.
         let Some(row) = sqlx::query(
-            "UPDATE requests SET status = 'approved', decided_at = ?1 \
-             WHERE approval_token_hash = ?2 AND status = 'pending' AND expires_at > ?1 \
+            "SELECT id, agent FROM requests \
+             WHERE approval_token_hash = ?1 AND status = 'pending' AND expires_at > ?2 \
              AND EXISTS (SELECT 1 FROM agents \
-                         WHERE agents.name = requests.agent AND agents.revoked_at IS NULL) \
-             RETURNING id, agent",
+                         WHERE agents.name = requests.agent AND agents.revoked_at IS NULL)",
         )
-        .bind(now)
         .bind(&hash)
-        .fetch_optional(&mut *tx)
+        .bind(now)
+        .fetch_optional(&self.pool)
         .await?
         else {
-            drop(tx);
             return Err(self.not_pending(&hash).await);
         };
         let id: Id = parse(&row, "id")?;
         let agent: AgentName = parse(&row, "agent")?;
-        sqlx::query(
-            "INSERT INTO grants (id, request_id, agent, window_secs, not_before, not_after, view) \
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(grant.grant_id.as_str())
-        .bind(id.as_str())
-        .bind(agent.as_str())
-        .bind(window_secs)
-        .bind(grant.not_before)
-        .bind(grant.not_after)
-        .bind(serde_json::to_string(&grant)?)
-        .execute(&mut *tx)
-        .await?;
+        let view = serde_json::to_string(&grant)?;
         let mut events = vec![AuditEvent::Approved {
             id: id.clone(),
             grant_id: grant.grant_id.clone(),
@@ -1021,17 +1016,48 @@ impl Requests {
         if matches!(grant.access, GrantAccess::Ssh(_)) {
             events.push(AuditEvent::CertIssued {
                 key_id: ssh_ca::key_id(&agent, &grant.grant_id),
-                grant_id: grant.grant_id,
+                grant_id: grant.grant_id.clone(),
                 not_after: grant.not_after,
             });
         }
-        audit_and_commit(
-            &self.audit,
-            tx,
-            events,
-            &format!("approval of request {id}"),
-        )
-        .await?;
+        let transition = format!("approval of request {id}");
+        record(&self.audit, events, &transition).await?;
+        let applied = async {
+            let mut tx = begin(&self.pool).await?;
+            // The time again: writing the log may have taken long.
+            let approved = sqlx::query(
+                "UPDATE requests SET status = 'approved', decided_at = ?1 \
+                 WHERE id = ?2 AND status = 'pending' AND expires_at > ?1 \
+                 AND EXISTS (SELECT 1 FROM agents \
+                             WHERE agents.name = requests.agent AND agents.revoked_at IS NULL)",
+            )
+            .bind(self.clock.now())
+            .bind(id.as_str())
+            .execute(&mut *tx)
+            .await?;
+            if approved.rows_affected() == 0 {
+                return Err(RequestError::AlreadyDecided);
+            }
+            sqlx::query(
+                "INSERT INTO grants \
+                 (id, request_id, agent, window_secs, not_before, not_after, view) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(grant.grant_id.as_str())
+            .bind(id.as_str())
+            .bind(agent.as_str())
+            .bind(window_secs)
+            .bind(grant.not_before)
+            .bind(grant.not_after)
+            .bind(&view)
+            .execute(&mut *tx)
+            .await?;
+            tx.commit().await?;
+            Ok(())
+        }
+        .await;
+        note_if_not_applied(&self.audit, &applied, &transition).await;
+        applied?;
         self.bus.publish(&id);
         Ok(())
     }
@@ -1376,14 +1402,8 @@ impl Requests {
             .iter()
             .map(|id| AuditEvent::Expired { id: id.clone() })
             .collect();
-        let listed = ids.iter().map(Id::as_str).collect::<Vec<_>>().join(", ");
-        audit_and_commit(
-            &self.audit,
-            tx,
-            events,
-            &format!("expiry of request(s) {listed}"),
-        )
-        .await?;
+        commit_with_entries(tx, events, now).await?;
+        self.settle_entries().await;
         for id in &ids {
             self.bus.publish(id);
         }
@@ -1651,7 +1671,7 @@ pub async fn sweep_loop(
                 if let Err(e) = requests.sweep_nonces().await {
                     tracing::error!(error = %e, "nonce sweep failed");
                 }
-                requests.flush_revocation_entries().await;
+                requests.flush_waiting_entries().await;
             }
             // Any change, or the sender going away, means stop.
             _ = shutdown.changed() => return,

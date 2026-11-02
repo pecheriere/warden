@@ -1,49 +1,53 @@
-//! How a state change is made: on its own task, in one write transaction,
-//! with its audit entries written before the commit.
+//! How a state change is made: on its own task, and never with the audit log in
+//! the middle of a database write. Writing the log can take as long as its disk
+//! does, and a write transaction blocks every other writer, a revocation included.
+//!
+//! So a change that must not happen without its entry writes the entry first, with
+//! [`record`], and only then opens its transaction. If it then cannot apply,
+//! [`note_if_not_applied`] says so on the record. A change that ends access does not
+//! wait for the log at all: see [`super::revocation`].
+
+use std::fmt::Display;
 
 use sqlx::{Sqlite, SqlitePool, Transaction};
 
 use super::RequestError;
 use crate::audit::{AuditError, AuditEvent, AuditLog};
 
-/// Why [`audit_and_commit`] failed. Nothing took effect either way.
-#[derive(Debug, thiserror::Error)]
-pub(crate) enum CommitError {
-    /// An entry could not be written.
-    #[error(transparent)]
-    Audit(#[from] AuditError),
-    /// The commit failed.
-    #[error("database error: {0}")]
-    Db(#[from] sqlx::Error),
-}
-
-/// Record `events`, then commit `tx`.
-///
-/// The audit entries come first so no change ever lands unaudited. If a
-/// later step fails after something was recorded (a further entry or the
-/// commit), an `Error { context: "commit" }` entry states that `transition`
+/// Write `events`, which come before `transition` is applied. Call this with no
+/// write transaction open. If a later entry fails, the record says `transition`
 /// did not take effect.
-pub(crate) async fn audit_and_commit(
+///
+/// # Errors
+/// The audit failure: the caller must not apply the change.
+pub(crate) async fn record(
     audit: &AuditLog,
-    tx: Transaction<'static, Sqlite>,
     events: Vec<AuditEvent>,
     transition: &str,
-) -> Result<(), CommitError> {
+) -> Result<(), AuditError> {
     let mut recorded = false;
     for event in events {
         if let Err(e) = audit.append(event).await {
             if recorded {
                 record_not_committed(audit, transition, &e.to_string()).await;
             }
-            return Err(e.into());
+            return Err(e);
         }
         recorded = true;
     }
-    if let Err(e) = tx.commit().await {
-        record_not_committed(audit, transition, &e.to_string()).await;
-        return Err(e.into());
-    }
     Ok(())
+}
+
+/// Say on the record that `transition`, already recorded, did not take effect if
+/// `applied` is an error. Call this with its transaction closed.
+pub(crate) async fn note_if_not_applied<T, E: Display>(
+    audit: &AuditLog,
+    applied: &Result<T, E>,
+    transition: &str,
+) {
+    if let Err(e) = applied {
+        record_not_committed(audit, transition, &e.to_string()).await;
+    }
 }
 
 async fn record_not_committed(audit: &AuditLog, transition: &str, cause: &str) {
@@ -79,38 +83,24 @@ pub(crate) async fn begin(pool: &SqlitePool) -> Result<Transaction<'static, Sqli
 mod tests {
     use warden_broker_proto::Id;
 
-    use super::{AuditEvent, AuditLog, CommitError, audit_and_commit, begin};
-    use crate::store;
+    use super::{AuditEvent, AuditLog, note_if_not_applied, record};
+
+    fn denied(id: &Id) -> AuditEvent {
+        AuditEvent::Denied { id: id.clone() }
+    }
 
     #[tokio::test]
-    async fn failed_commit_is_recorded_as_not_taking_effect() {
+    async fn a_recorded_change_that_cannot_apply_says_so() {
         let dir = tempfile::tempdir().unwrap();
-        let pool = store::open(&dir.path().join("warden.db")).await.unwrap();
         let path = dir.path().join("audit.jsonl");
         let audit = AuditLog::open(&path).await.unwrap();
-
-        // A deferred foreign-key violation makes the commit itself fail.
-        let mut tx = begin(&pool).await.unwrap();
-        sqlx::query("PRAGMA defer_foreign_keys = ON")
-            .execute(&mut *tx)
+        let id = Id::random();
+        let transition = format!("denial of request {id}");
+        record(&audit, vec![denied(&id)], &transition)
             .await
             .unwrap();
-        sqlx::query(
-            "INSERT INTO grants (id, request_id, agent, window_secs, not_before, not_after, view) \
-             VALUES ('g', 'no-such-request', 'a', 900, 0, 900, '{}')",
-        )
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-        let id = Id::random();
-        let result = audit_and_commit(
-            &audit,
-            tx,
-            vec![AuditEvent::Denied { id: id.clone() }],
-            &format!("denial of request {id}"),
-        )
-        .await;
-        assert!(matches!(result, Err(CommitError::Db(_))), "{result:?}");
+        let applied: Result<(), &str> = Err("the database refused it");
+        note_if_not_applied(&audit, &applied, &transition).await;
 
         let text = std::fs::read_to_string(&path).unwrap();
         let lines: Vec<&str> = text.lines().collect();
@@ -122,39 +112,26 @@ mod tests {
             "{text}"
         );
         assert_eq!(crate::audit::verify(&path).unwrap(), 2);
-        let grants: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM grants")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-        assert_eq!(grants, 0);
     }
 
     #[tokio::test]
-    async fn entry_that_cannot_be_written_rolls_the_change_back() {
+    async fn a_change_that_applied_adds_nothing_to_the_record() {
         let dir = tempfile::tempdir().unwrap();
-        let pool = store::open(&dir.path().join("warden.db")).await.unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let audit = AuditLog::open(&path).await.unwrap();
+        let applied: Result<(), &str> = Ok(());
+        note_if_not_applied(&audit, &applied, "a change").await;
+        assert_eq!(crate::audit::verify(&path).unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn an_entry_that_cannot_be_written_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("audit.jsonl");
         let audit = AuditLog::open(&path).await.unwrap();
         // An unreadable last line refuses every append.
         std::fs::write(&path, b"not an audit line\n").unwrap();
-
-        let mut tx = begin(&pool).await.unwrap();
-        sqlx::query("INSERT INTO enrollment_codes (code_hash, expires_at) VALUES ('c', 1)")
-            .execute(&mut *tx)
-            .await
-            .unwrap();
-        let result = audit_and_commit(
-            &audit,
-            tx,
-            vec![AuditEvent::EnrollmentCodeCreated { expires_at: 1 }],
-            "creation of a code",
-        )
-        .await;
-        assert!(matches!(result, Err(CommitError::Audit(_))), "{result:?}");
-        let codes: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM enrollment_codes")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-        assert_eq!(codes, 0);
+        let got = record(&audit, vec![denied(&Id::random())], "a change").await;
+        assert!(got.is_err(), "{got:?}");
     }
 }

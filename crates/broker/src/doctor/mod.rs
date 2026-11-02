@@ -94,6 +94,9 @@ pub trait Environment: Send + Sync {
     -> Result<(), NotifyError>;
     /// Count passkeys, without creating or migrating the database.
     async fn passkeys(&self, db: &Path) -> PasskeyProbe;
+    /// How many audit entries are waiting in the database for the log, or why
+    /// that could not be read.
+    async fn waiting_entries(&self, db: &Path) -> Result<i64, String>;
     /// Try a TCP connection to a listener.
     async fn listener(&self, addr: SocketAddr) -> ListenerProbe;
     /// The facts about `path`.
@@ -222,6 +225,9 @@ pub async fn examine(
             .to_owned()
     };
     checks.push(passkey_check(env.passkeys(&config.db_path).await));
+    checks.push(waiting_entries_check(
+        env.waiting_entries(&config.db_path).await,
+    ));
     listener_checks(config, env, &mut checks).await;
     data_checks(config, env, &mut checks).await;
     checks.extend(by_hand_checks());
@@ -418,6 +424,24 @@ fn passkey_check(probe: PasskeyProbe) -> Check {
             NAME,
             format!("The database could not be read: {reason}"),
             "Run doctor as the broker's user, then `warden-server passkey list`.",
+        ),
+    }
+}
+
+fn waiting_entries_check(probe: Result<i64, String>) -> Check {
+    const NAME: &str = "audit.waiting";
+    match probe {
+        Ok(0) => Check::pass(NAME, "No audit log entries are waiting."),
+        Ok(n) => Check::fail(
+            NAME,
+            format!("{n} audit log entries are waiting in the database and are not in the log."),
+            "Find out why the audit log cannot be written (the server's log, the disk that holds \
+             it). A running server writes them once it works.",
+        ),
+        Err(reason) => Check::could_not_check(
+            NAME,
+            format!("The database could not be read: {reason}"),
+            "Run doctor as the broker's user.",
         ),
     }
 }
