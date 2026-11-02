@@ -130,7 +130,8 @@ the loop, and the agent holds no lasting credential for your servers or APIs.
    1Password vault in the recommended setup.
 2. **Approve.** You get a notification (Home Assistant or ntfy). The link
    opens the approval page, reachable only from your phone over Tailscale,
-   and you approve with a passkey, or deny.
+   and you approve with a passkey, or deny. Missed it? The request waits on the
+   Pending page until it expires.
 3. **Use.** The agent gets exactly what you approved, for the window you
    chose, and warden writes what it does to a tamper-evident audit log.
 

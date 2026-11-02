@@ -356,7 +356,10 @@ broker is briefly unreachable or fails with a 5xx, the CLI retries, pausing
 1 s and doubling up to 15 s, with one note on stderr per failure. A refusal
 (4xx) ends the wait at once. When the CLI gives up, it says so: the request
 may still be pending, and it expires on its own. Do not make a new request
-while the old one is pending.
+while the old one is pending: you would get the same request back, and the owner
+no new notification. If the owner missed the notification, they do not need one:
+the request waits on the **Pending** page of their approval UI, so tell them to
+look there.
 
 When the owner approves, it prints this to stdout:
 

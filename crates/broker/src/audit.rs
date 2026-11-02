@@ -103,6 +103,13 @@ pub enum AuditEvent {
         /// The agent that made and cancelled it.
         agent: AgentName,
     },
+    /// The owner opened a pending request from the pending screen: it has a new
+    /// approval link, and the one before it stopped working. The token itself is
+    /// never recorded.
+    ApprovalLinkReplaced {
+        /// Request id.
+        id: Id,
+    },
     /// A request timed out.
     Expired {
         /// Request id.

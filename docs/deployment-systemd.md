@@ -289,8 +289,9 @@ rely on that: an allowed address could still connect.
 **From this host.** As in the Docker layout with Tailscale Services, **every process
 on the host can connect to the listeners and forge the owner's login**, so the whole
 host is inside the trust boundary, not only its root. A forged login cannot approve
-anything, but it can read `/grants` and `/history`, revoke grants, and use a stolen
-bearer agent key. So the same rules apply:
+anything, but it can read `/pending`, `/grants` and `/history`, revoke grants, deny
+any pending request, replace approval links so that the one in a notification stops
+working, and use a stolen bearer agent key. So the same rules apply:
 
 - Dedicate the host to warden and its Connect, with no untrusted local users and
   no other services that run untrusted code.

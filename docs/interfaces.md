@@ -57,6 +57,9 @@ stable API for other clients. The code is in
 | `POST /approve/{token}/begin` | `{"window","target"}`: the chosen window, and the destination digest the page showed | Starts a passkey ceremony bound to the request and window. 409 if the destination changed. |
 | `POST /approve/{token}/finish` | `{"ceremony","credential"}` | Verifies the assertion, and makes the grant. |
 | `POST /approve/{token}/deny` | `{}` | Denies the request. Takes no passkey. |
+| `GET /pending` | | The pending requests, each with Approve… and Deny buttons. |
+| `POST /pending/{id}/open` | `{}` | Gives a pending request a new approval link, returned as `{"link"}`; the old link stops working. Approves nothing. 404 if the request is no longer pending. |
+| `POST /pending/{id}/deny` | `{}` | Denies a pending request, as `POST /approve/{token}/deny` does. Takes no passkey. 404 if the request is no longer pending. |
 | `GET /grants` | | Active grants, with a Revoke button and live activity. |
 | `GET /grants/live` | | The live activity, as JSON, for the page to refresh. |
 | `POST /grants/{id}/revoke` | `{}` | Revokes a grant. Takes no passkey. |

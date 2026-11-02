@@ -11,12 +11,17 @@ use super::LiveGrant;
 use crate::policy::{ApiScope, SshMode};
 use crate::requests::{ActiveGrant, Destination, HistoryEntry, PendingView, window_label};
 
+mod pending;
+
+pub use self::pending::pending;
+
 /// Every window, shortest first.
 const WINDOWS: [Window; 4] = [Window::M15, Window::M30, Window::H1, Window::H4];
 
 /// The page of the header navigation a page is, marked `aria-current`.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Nav {
+    Pending,
     Grants,
     History,
     Enroll,
@@ -26,6 +31,7 @@ enum Nav {
 fn nav_links(current: Option<Nav>) -> Markup {
     html! {
         @for (page, href, text) in [
+            (Nav::Pending, "/pending", "Pending"),
             (Nav::Grants, "/grants", "Active grants"),
             (Nav::History, "/history", "History"),
             (Nav::Enroll, "/enroll", "Enroll a passkey"),
@@ -329,6 +335,12 @@ const TO_GRANTS: Link = Link {
     text: "View active grants",
 };
 
+/// The link from an end state to what is still waiting for the owner.
+const TO_PENDING: Link = Link {
+    href: "/pending",
+    text: "View pending requests",
+};
+
 /// The status chip of an end state: an icon and a short text.
 struct Chip<'a> {
     icon: Markup,
@@ -366,8 +378,8 @@ fn empty_icon() -> Markup {
     html! { path d="M3 13h5l1 3h6l1-3h5" {} path d="M5 13 7 5h10l2 8v6H5z" {} }
 }
 
-/// The request behind a link is unknown, decided or expired. Says nothing
-/// about which, so links reveal nothing.
+/// The request behind a link is unknown, decided or expired, or a newer link
+/// replaced this one. Says nothing about which, so links reveal nothing.
 #[must_use]
 pub fn not_pending() -> Markup {
     let content = end_state(
@@ -376,8 +388,11 @@ pub fn not_pending() -> Markup {
             text: "No longer pending",
         },
         "Nothing to approve",
-        &html! { "This request is no longer pending: it was decided, expired or never existed." },
-        Some(&TO_GRANTS),
+        &html! {
+            "This request is no longer pending on this link: it was decided or expired, a newer "
+            "link replaced this one, or it never existed. Anything still waiting is under Pending."
+        },
+        Some(&TO_PENDING),
     );
     layout("Nothing to approve", None, false, &content)
 }
@@ -767,7 +782,7 @@ mod tests {
         not_pending, secs_label, unavailable, utc_parts,
     };
     use crate::policy::{ApiSecretPolicy, SshMode, SshTarget, ValueFormat};
-    use crate::requests::{ActiveGrant, Destination, HistoryEntry, PendingView};
+    use crate::requests::{ActiveGrant, Destination, HistoryEntry, PendingEntry, PendingView};
 
     const NOW: i64 = 1_800_000_000;
 
@@ -1018,6 +1033,45 @@ mod tests {
         ]
     }
 
+    /// A long SSH request, a read-only and a modifying API request, and one
+    /// whose current policy could not be read.
+    fn pending_entries() -> Vec<PendingEntry> {
+        let entry = |n: u8, agent: AgentName, request, destination| PendingEntry {
+            id: id(n),
+            agent,
+            fingerprint: fingerprint(n),
+            request,
+            destination,
+            expires_at: NOW + 60 * i64::from(n),
+        };
+        vec![
+            entry(
+                2,
+                long_agent(),
+                ssh_request(long_goal(), Window::H1),
+                Some(ssh_destination(SshMode::Relay)),
+            ),
+            entry(
+                5,
+                agent("build-agent"),
+                api_request(goal("Read device status"), &["GET"]),
+                Some(api_destination()),
+            ),
+            entry(
+                8,
+                agent("build-agent"),
+                api_request(goal("Restart switch-01"), &["GET", "POST"]),
+                Some(api_destination()),
+            ),
+            entry(
+                9,
+                agent("home-agent"),
+                ssh_request(goal("Deploy the nightly build"), Window::M30),
+                None,
+            ),
+        ]
+    }
+
     /// Every page with fixture data, named for the screenshot script.
     fn pages() -> Vec<(&'static str, Markup)> {
         let long = long_goal();
@@ -1077,6 +1131,8 @@ mod tests {
             ("history-empty", history(&[])),
             ("history", history(&history_entries())),
             ("enroll", enroll()),
+            ("pending-empty", super::pending(&[], NOW)),
+            ("pending", super::pending(&pending_entries(), NOW)),
         ]
     }
 
@@ -1166,6 +1222,38 @@ mod tests {
         assert_self_contained(
             "svg",
             r#"<svg xmlns="http://www.w3.org/2000/svg"></svg><p>https://api.example.com</p>"#,
+        );
+    }
+
+    #[test]
+    fn pending_cards_offer_both_decisions_and_never_guess_at_the_scope() {
+        let entries = pending_entries();
+        let html = super::pending(&entries, NOW).into_string();
+        assert_eq!(html.matches("<section class=\"card pending\"").count(), 4);
+        assert_eq!(html.matches("Approve…</button>").count(), 4, "{html}");
+        assert_eq!(html.matches(">Deny</button>").count(), 4, "{html}");
+        for entry in &entries {
+            assert!(html.contains(entry.fingerprint.as_str()), "{html}");
+        }
+        assert!(html.contains("<bdi>Restart switch-01</bdi>"), "{html}");
+        assert!(html.contains("Can modify: POST"), "{html}");
+        // No link to a token, and no form: everything goes through a POST.
+        assert!(!html.contains("/approve/"), "{html}");
+        assert!(!html.contains("<form"), "{html}");
+
+        // With the policy unreadable the card does not say read-only or not.
+        let unread = super::pending(&entries[3..], NOW).into_string();
+        assert!(unread.contains("could not be read"), "{unread}");
+        assert!(!unread.contains("Read-only"), "{unread}");
+        assert!(!unread.contains("Can modify"), "{unread}");
+
+        let html = super::pending(&[], NOW).into_string();
+        assert!(html.contains("Nothing waiting"), "{html}");
+        assert_eq!(
+            html.matches(r#"<a href="/pending" aria-current="page">"#)
+                .count(),
+            2,
+            "{html}"
         );
     }
 
@@ -1305,9 +1393,9 @@ mod tests {
             assert!(!html.contains("<script"), "{name}: {html}");
         }
         assert!(
-            not_pending()
-                .into_string()
-                .contains(r#"<a class="btn ghost block" href="/grants">View active grants</a>"#)
+            not_pending().into_string().contains(
+                r#"<a class="btn ghost block" href="/pending">View pending requests</a>"#
+            )
         );
     }
 

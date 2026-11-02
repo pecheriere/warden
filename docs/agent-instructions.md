@@ -43,8 +43,10 @@ warden request api <secret> --methods POST --path <prefix> --for 15m --goal "<wh
 
 `warden request` blocks until the person decides, for up to 11 minutes. Run it
 so it can wait that long, in the background if your tools time out sooner, and
-do not start a second one meanwhile. It prints a fingerprint on stderr: tell the
-person, so they can compare it with the approval page. If you no longer need
+do not start a second one meanwhile: it would not notify them again. If they
+missed the notification, the request is on the Pending page of their approval UI.
+It prints a fingerprint on stderr: tell the person, so they can compare it with the
+approval page. If you no longer need
 the access, withdraw the request with Ctrl-C, or:
 
 ```sh

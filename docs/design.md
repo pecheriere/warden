@@ -171,6 +171,10 @@ enabled ones in priority order in `WARDEN_NOTIFY`.
 4. **Review.** The approval page (HTTPS on the tailnet name) shows goal, kind,
    target, user/secret, destination rules, requested duration, and a duration
    picker (15 m / 30 m / 1 h / 4 h, capped by the target's max).
+   The Pending page lists every pending request, for a notification that was
+   dismissed or missed. Deny works from the list. Approve… there gives the request
+   a new approval token, replacing the stored hash so that only one link is valid,
+   and opens this same page on it (audited as `approval_link_replaced`).
 5. **Approve / deny.** Approve = WebAuthn assertion for a ceremony the server
    began for this request **and the chosen duration**. The challenge is the
    WebAuthn library's own; the binding is the state the server keeps for the
@@ -575,7 +579,8 @@ nor keep it out of the log.
 - **Tailscale identity** as a second check: the approval endpoints accept only
   requests carrying the owner's `Tailscale-User-Login` (set by Serve).
 - Approval tokens: ≥128-bit random, single use, tied to one request, expire
-  with the request.
+  with the request, and stop working when the owner replaces them from the
+  Pending page.
 
 Request submission and proxy/relay use are restricted by the tailnet policy to
 the devices the agents run on, and every API call is authenticated as an

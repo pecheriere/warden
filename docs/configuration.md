@@ -273,7 +273,7 @@ directory of its own, or change this one's mode yourself: warden will not.
 | Agent API | `GET /healthz` | Anyone who can reach it (static `ok`). |
 | Agent API | `GET /v1/info` | Anyone who can reach it (protocols and audience). |
 | Agent API | `/v1/requests…`, `/v1/grants…` | Agents. See [the agent protocol](agent-protocol.md#6-endpoints). |
-| Approval UI | `/approve/<token>`, `/grants`, `/history`, `/enroll` and their actions; [full list](interfaces.md#approval-ui) | The owner (`WARDEN_OWNER_LOGIN`). |
+| Approval UI | `/approve/<token>`, `/pending`, `/grants`, `/history`, `/enroll` and their actions; [full list](interfaces.md#approval-ui) | The owner (`WARDEN_OWNER_LOGIN`). |
 
 Every request to either listener that came through Tailscale Funnel is
 refused with `401`.

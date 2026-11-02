@@ -17,7 +17,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use sha2::{Digest as _, Sha256};
 use sqlx::sqlite::SqliteRow;
-use sqlx::{Row as _, SqliteConnection, SqlitePool};
+use sqlx::{Row as _, Sqlite, SqliteConnection, SqlitePool, Transaction};
 use url::Url;
 use warden_broker_proto::{
     Access, AgentName, CreateRequest, CreatedResponse, Fingerprint, GrantAccess, GrantView, Id,
@@ -42,11 +42,13 @@ pub(crate) use self::transition::{begin, note_if_not_applied, record};
 
 mod bus;
 mod limits;
+mod pending;
 
 pub use self::bus::StatusBus;
 use self::bus::next_change;
 use self::limits::Refusals;
 pub use self::limits::{LimitRefusal, RequestLimits};
+pub use self::pending::PendingEntry;
 
 /// How long a request waits for the owner, in seconds.
 const PENDING_TTL_SECS: i64 = 600;
@@ -822,15 +824,7 @@ impl Requests {
         .ok_or(RequestError::NotFound)?;
         let body: String = row.try_get("body")?;
         let request: CreateRequest = serde_json::from_str(&body)?;
-        let destination = match &request.access {
-            Access::Ssh { target, .. } => Destination::Ssh(self.backend.ssh_target(target).await?),
-            Access::Api { secret, .. } => Destination::Api(
-                self.backend
-                    .api_secret(secret)
-                    .await
-                    .map_err(RequestError::from_secret_lookup)?,
-            ),
-        };
+        let destination = self.destination(&request).await?;
         Ok(PendingView {
             id: parse(&row, "id")?,
             agent: parse(&row, "agent")?,
@@ -871,10 +865,21 @@ impl Requests {
             return Err(self.not_pending(&hash).await);
         };
         let id: Id = parse(&row, "id")?;
+        self.finish_denial(tx, &id, now).await
+    }
+
+    /// Commit the denial of `id` made in `tx`, with its audit entry, and tell
+    /// whoever waits on the request.
+    async fn finish_denial(
+        &self,
+        tx: Transaction<'static, Sqlite>,
+        id: &Id,
+        now: i64,
+    ) -> Result<AuditOutcome, RequestError> {
         let denied = AuditEvent::Denied { id: id.clone() };
         commit_with_entries(tx, vec![denied], now).await?;
         let outcome = self.settle_entries().await;
-        self.bus.publish(&id);
+        self.bus.publish(id);
         Ok(outcome)
     }
 
@@ -1019,15 +1024,18 @@ impl Requests {
         record(&self.audit, events, &transition).await?;
         let applied = async {
             let mut tx = begin(&self.pool).await?;
-            // The time again: writing the log may have taken long.
+            // The time again: writing the log may have taken long. The token again
+            // too: a link that was replaced approves nothing.
             let approved = sqlx::query(
                 "UPDATE requests SET status = 'approved', decided_at = ?1 \
-                 WHERE id = ?2 AND status = 'pending' AND expires_at > ?1 \
+                 WHERE id = ?2 AND approval_token_hash = ?3 \
+                 AND status = 'pending' AND expires_at > ?1 \
                  AND EXISTS (SELECT 1 FROM agents \
                              WHERE agents.name = requests.agent AND agents.revoked_at IS NULL)",
             )
             .bind(self.clock.now())
             .bind(id.as_str())
+            .bind(&hash)
             .execute(&mut *tx)
             .await?;
             if approved.rows_affected() == 0 {

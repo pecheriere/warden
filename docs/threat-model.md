@@ -73,7 +73,7 @@ defends against it.
   than the one displayed.** Approval needs a WebAuthn assertion from an
   enrolled passkey. The approval token is at least 128 bits of randomness,
   stored only as a SHA-256 hash, single use, tied to one request and expiring
-  with it. The window cannot exceed what the target allows. An approval is
+  with it. A request has one valid token at a time. The window cannot exceed what the target allows. An approval is
   valid only on the approved target: the certificate's single principal is
   `warden:<target>:<user>`, which only that target's host maps to the account
   (see "Targets trust the CA, per target" below). See "Approval binding"
@@ -145,6 +145,18 @@ what was approved, and a compromised broker could misapply it.
 - The certificate is signed for the exact ephemeral public key in the request.
   One certificate is issued per grant. The grant id is not a bearer credential
   and cannot mint further certificates.
+- **The pending screen goes through all of the above.** `GET /pending` lists the
+  pending requests. Approve… there is `POST /pending/{id}/open`, which gives the
+  request a new token, stores its hash in place of the old one, and returns the
+  link: the same approval page, the same passkey ceremony, bound in the same way.
+  It approves nothing, and no route of the screen does. The old token stops working
+  in that statement. A page open on it ends in the not-pending outcome, a ceremony
+  bound to it is refused before the assertion is checked and does not carry over
+  to the new token, and an approval already past those checks either finishes first
+  or fails on the token in its own update. A request that is no longer pending
+  (decided, cancelled, expired, even before a sweep) gets no new token.
+  `approval_link_replaced` is written before the change, or the change does not
+  happen, and it holds the request id and no token or hash.
 
 ## What the audit log can miss
 
@@ -362,6 +374,19 @@ These were recorded during implementation and are accepted for this release.
   `warden-server agent revoke` run from the command line changes the database,
   but the running server only re-reads it when a long poll wakes, so a waiting
   client can take up to 30 seconds to see the terminal state.
+- **The approval token is not a second factor against the owner's login.** Since
+  the pending screen can issue a new token, holding the owner's login is enough to
+  get one, so only the passkey separates the login from an approval. Whoever has the
+  login, or can [forge it](#deployment-assumptions), still cannot approve anything.
+  They can deny any pending request without learning a link, and replace links so
+  that the one in a notification stops working, which keeps a request from being
+  approved from there until the owner opens it from the list. They could read the
+  same requests on `/history` already. Each replacement adds an audit entry at the
+  rate they can send requests. All of it is on the record, and it is why the tailnet
+  policy should give the approval listener only to the owner's phone. A device
+  logged in as the owner that the policy lets through, a workstation running an
+  agent for example, has this too. This is accepted: it can stop access being given,
+  never give it.
 - **Cloned authenticators are detected, not prevented.** The broker keeps
   each passkey's signature counter in its own column and raises it with a
   single conditional update, so concurrent approvals can never store an older

@@ -64,9 +64,9 @@ WCAG AA contrast in both modes.
 
 ## Components
 
-- **Header**: mascot (38 px) and the `warden` wordmark; navigation (Active
-  grants, History, Enroll a passkey) inline from 720 px, behind a menu button
-  below.
+- **Header**: mascot (38 px) and the `warden` wordmark; navigation (Pending,
+  Active grants, History, Enroll a passkey) inline from 720 px, behind a menu
+  button below.
 - **Status chip**: pill on `--soft`, an icon and short text ("Pending ·
   expires in 9 min", "Approved").
 - **Card**: `--surface`, label / value fields.
@@ -79,6 +79,9 @@ WCAG AA contrast in both modes.
 - **Buttons**: Approve filled `--primary`; Deny and Revoke with a 2 px
   `--deny` outline and `--deny` text; secondary actions with a 2 px `--line`
   outline.
+- **Pending card**: a card per request with the agent, the access (and its badge),
+  the goal, then fingerprint, asked window and expiry in `--muted`. Approve… and
+  Deny fill the bottom side by side, the same size at every width.
 - **Live indicator**: `--accent` dot with a 2 px `--accent-edge` ring, plus
   `--soft-ink` text ("1 session open"). Under it, the live area of a grant
   card lists what is open, across the card below a `--line` divider.
@@ -107,7 +110,7 @@ it is decoration, and never animates in a way that delays the decision
 The page uses `viewport-fit=cover` and pads with `env(safe-area-inset-*)`.
 Agent-controlled text (goals, agent names) wraps and stays in `<bdi>`; it
 never pushes the fingerprint or the buttons off screen. Lists such as
-Active grants are cards on a phone, not wide tables.
+Pending and Active grants are cards on a phone, not wide tables.
 
 ### Foldables
 

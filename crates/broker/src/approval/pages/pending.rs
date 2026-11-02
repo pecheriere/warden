@@ -1,0 +1,95 @@
+//! The pending screen: every request waiting for the owner, each with a way to
+//! approve it (on the same approval page a notification links to) or deny it.
+
+use maud::{Markup, html};
+use warden_broker_proto::Access;
+
+use super::{
+    Chip, Nav, clock, destination_access, empty_icon, end_state, icon, key_icon, layout,
+    window_words,
+};
+use crate::requests::PendingEntry;
+
+/// What `entry` asks for when its current policy could not be read. It claims
+/// nothing about whether the access can modify anything: the approval page does
+/// that once it can read the policy, and refuses until then.
+fn stored_access(entry: &PendingEntry) -> Markup {
+    let subject = match &entry.request.access {
+        Access::Ssh { target, user, .. } => format!("ssh {user}@{target}"),
+        Access::Api { secret, .. } => format!("api {secret}"),
+    };
+    html! {
+        code { bdi { (subject) } }
+        span.detail { "Its current policy could not be read right now." }
+    }
+}
+
+/// The card of one pending request. Both buttons are described by whose request
+/// it is and its fingerprint, since every card has the same two labels.
+fn card(entry: &PendingEntry, now: i64) -> Markup {
+    let who = format!("agent-{}", entry.id);
+    let fingerprint = format!("fingerprint-{}", entry.id);
+    let described_by = format!("{who} {fingerprint}");
+    html! {
+        section.card.pending data-request=(entry.id) {
+            div.field {
+                span.label { "Requested by" }
+                span.who #(who) { bdi { (entry.agent) } }
+            }
+            div.field.tight {
+                span.label { "Access" }
+                @match &entry.destination {
+                    Some(destination) => (destination_access(&entry.request, destination)),
+                    None => (stored_access(entry)),
+                }
+            }
+            div.field {
+                span.label { "Goal" }
+                span { bdi { (entry.request.goal) } }
+            }
+            div.meta {
+                span #(fingerprint) { "Fingerprint " code { (entry.fingerprint) } }
+                span { "Asks for " (window_words(entry.request.window)) }
+                span {
+                    "Expires " (clock(entry.expires_at))
+                    " (in " (((entry.expires_at - now).max(0) + 59) / 60) " min)"
+                }
+            }
+            div.btns {
+                button.btn.approve type="button" aria-describedby=(described_by) {
+                    (icon(20, "2.2", &key_icon())) " Approve…"
+                }
+                button.btn.deny type="button" aria-describedby=(described_by) { "Deny" }
+            }
+        }
+    }
+}
+
+/// Every request waiting for a decision, soonest expiry first.
+#[must_use]
+pub fn pending(entries: &[PendingEntry], now: i64) -> Markup {
+    if entries.is_empty() {
+        let content = end_state(
+            &Chip {
+                icon: empty_icon(),
+                text: "Nothing waiting",
+            },
+            "Pending requests",
+            &html! { "No request is waiting for you. A request shows here until it is decided or expires." },
+            None,
+        );
+        return layout("Pending requests", Some(Nav::Pending), false, &content);
+    }
+    let content = html! {
+        main.wide {
+            h1 { "Pending requests" }
+            p.lead {
+                "Approve… opens the request's approval page on a new link. "
+                "The link in its notification then stops working."
+            }
+            p.result #result role="status" {}
+            @for entry in entries { (card(entry, now)) }
+        }
+    };
+    layout("Pending requests", Some(Nav::Pending), true, &content)
+}

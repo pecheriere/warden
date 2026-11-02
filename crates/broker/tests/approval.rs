@@ -1037,7 +1037,11 @@ async fn history_lists_decided_requests_newest_first() {
 
 fn every_route(token: &str) -> Vec<(&'static str, String)> {
     let grant = Id::random();
+    let request = Id::random();
     vec![
+        ("GET", "/pending".to_owned()),
+        ("POST", format!("/pending/{}/open", request.as_str())),
+        ("POST", format!("/pending/{}/deny", request.as_str())),
         ("GET", format!("/approve/{token}")),
         ("POST", format!("/approve/{token}/begin")),
         ("POST", format!("/approve/{token}/finish")),

@@ -36,6 +36,7 @@ use self::passkeys::{ApprovalBinding, PasskeyError};
 
 pub mod pages;
 pub mod passkeys;
+mod pending;
 
 /// The browser glue, served as `/static/warden.js`.
 const SCRIPT: &str = include_str!("warden.js");
@@ -71,6 +72,9 @@ const REVOKED_UNAUDITED: &str = "Revoked: access has stopped. But the audit log 
 const DENIED_UNAUDITED: &str = "Denied. But the audit log could not be written, so this is not \
                                 on record yet. Check the server's log.";
 
+/// A ceremony's approval link was replaced before it finished.
+const LINK_REPLACED: &str = "a newer link replaced this one; open the request from Pending";
+
 /// Recorded as `by` when the owner revokes a grant from the UI.
 const REVOKED_BY_OWNER: &str = "owner";
 
@@ -81,6 +85,9 @@ pub fn router(state: AppState) -> Router {
         .route("/approve/{token}/begin", post(approve_begin))
         .route("/approve/{token}/finish", post(approve_finish))
         .route("/approve/{token}/deny", post(deny))
+        .route("/pending", get(pending::page))
+        .route("/pending/{id}/open", post(pending::open))
+        .route("/pending/{id}/deny", post(pending::deny))
         .route("/grants", get(grants_page))
         .route("/grants/live", get(grants_live))
         .route("/grants/{id}/revoke", post(revoke_grant))
@@ -309,9 +316,10 @@ fn backend_unavailable(detail: &dyn std::fmt::Display) -> Response {
 
 fn request_error(e: &RequestError) -> Response {
     match e {
-        RequestError::NotFound => {
-            json_error(StatusCode::NOT_FOUND, "this request is no longer pending")
-        }
+        RequestError::NotFound => json_error(
+            StatusCode::NOT_FOUND,
+            "this request is no longer pending, or a newer link replaced this one",
+        ),
         RequestError::AlreadyDecided => {
             json_error(StatusCode::CONFLICT, "this request was already decided")
         }
@@ -556,16 +564,6 @@ async fn approve_finish(
         );
     }
     let now = state.clock.now();
-    let undecidable = || {
-        if now >= binding.request_expires_at {
-            json_error(
-                StatusCode::GONE,
-                "this request expired before it was approved",
-            )
-        } else {
-            json_error(StatusCode::CONFLICT, "this request was already decided")
-        }
-    };
     // Everything that would refuse this approval regardless of the passkey is
     // checked before the assertion, so that a request decided meanwhile is
     // refused as such instead of reaching the counter check: a second
@@ -574,7 +572,7 @@ async fn approve_finish(
     // whoever holds the token.
     let view = match state.requests.pending_for_token(&token).await {
         Ok(view) => view,
-        Err(RequestError::NotFound) => return undecidable(),
+        Err(RequestError::NotFound) => return undecidable(&state, &token, &binding, now).await,
         Err(e) => return request_error(&e),
     };
     if view.fingerprint != binding.fingerprint {
@@ -638,11 +636,37 @@ async fn approve_finish(
         .await
     {
         Ok(()) => {}
-        Err(RequestError::NotFound | RequestError::AlreadyDecided) => return undecidable(),
+        Err(RequestError::NotFound | RequestError::AlreadyDecided) => {
+            return undecidable(&state, &token, &binding, now).await;
+        }
         Err(e) => return request_error(&e),
     }
     tracing::info!(request = %view.id, grant = %grant_id, "request approved");
     done(format!("Approved for {}.", window_label(binding.window)))
+}
+
+/// Why a ceremony bound to `binding` found its request no longer pending at `now`.
+/// A token that matches no request existed when the ceremony began, so a newer
+/// link replaced it.
+async fn undecidable(
+    state: &AppState,
+    token: &str,
+    binding: &ApprovalBinding,
+    now: i64,
+) -> Response {
+    if now >= binding.request_expires_at {
+        return json_error(
+            StatusCode::GONE,
+            "this request expired before it was approved",
+        );
+    }
+    match state.requests.why_not_pending(token).await {
+        RequestError::NotFound => json_error(StatusCode::CONFLICT, LINK_REPLACED),
+        RequestError::AlreadyDecided => {
+            json_error(StatusCode::CONFLICT, "this request was already decided")
+        }
+        e => request_error(&e),
+    }
 }
 
 /// A failed grant-building step and its cause.

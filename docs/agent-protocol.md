@@ -616,6 +616,11 @@ printf '["build-bot",%s]' "$(cat body.json)" | openssl dgst -sha256 -r | cut -c1
 
 On a mismatch, do not wait on the other request: it is not yours to use.
 
+A duplicate does not notify the owner again, and no call of this API can. An owner
+who missed the notification finds the request on the Pending page of the approval
+UI until it expires, and nothing about the request changes for you if they open it
+there: same id, same fingerprint, same expiry.
+
 ### `GET /v1/requests/{id}` (long poll)
 
 The state of one of the agent's own requests. Signed; no body.

@@ -99,8 +99,9 @@ the `front` network. **Every other process on the host can connect to that
 address too, and so can every container with host networking.** Any of them
 can send a forged `Tailscale-User-Login` with the owner's login. A forged
 login cannot approve anything (that needs the passkey), but it can read
-`/grants` and `/history` (every goal, agent and target), revoke grants,
-deny requests whose link it learns, and use a stolen bearer agent key.
+`/pending`, `/grants` and `/history` (every goal, agent and target), revoke
+grants, deny any pending request, replace approval links so that the one in a
+notification stops working, and use a stolen bearer agent key.
 
 So in this layout **the whole host is inside the trust boundary**, not only
 its root. Contain it:

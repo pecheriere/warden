@@ -45,7 +45,11 @@
     } catch (_) {
       data = {};
     }
-    if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+    if (!response.ok) {
+      const failure = new Error(data.error || `HTTP ${response.status}`);
+      failure.status = response.status;
+      throw failure;
+    }
     return data;
   };
 
@@ -165,6 +169,59 @@
           button.disabled = false;
         }
       });
+    }
+  };
+
+  // --- pending page -------------------------------------------------------------
+
+  const setupPending = () => {
+    const cards = document.querySelectorAll('section.pending');
+    if (!cards.length) return;
+    for (const node of document.querySelectorAll('main time[datetime]')) localTime(node);
+    // Back from the approval page must not show this page as it was left: the
+    // list and the buttons may be out of date by then.
+    window.addEventListener('pageshow', (event) => {
+      if (event.persisted) window.location.reload();
+    });
+
+    /** The request is gone: drop its card. Focus goes to the page heading, or
+     *  the page reloads for the server's empty state after the last card. */
+    const dropCard = (card) => {
+      card.remove();
+      if (!document.querySelector('section.pending')) {
+        window.location.reload();
+        return;
+      }
+      const heading = document.querySelector('main h1');
+      if (heading) {
+        heading.setAttribute('tabindex', '-1');
+        heading.focus();
+      }
+    };
+
+    for (const card of cards) {
+      const approve = card.querySelector('button.approve');
+      const deny = card.querySelector('button.deny');
+      const act = (action, done) => async () => {
+        busy([approve, deny], true);
+        try {
+          done(await post(`/pending/${encodeURIComponent(card.dataset.request)}/${action}`, {}));
+        } catch (error) {
+          show(error.message, false);
+          // 404: decided, expired, cancelled or unknown by now.
+          if (error.status === 404) dropCard(card);
+          else busy([approve, deny], false);
+        }
+      };
+      // Opening gives this request a new approval link, and the old one stops
+      // working; the decision is made on the page it leads to.
+      approve.addEventListener('click', act('open', (opened) => {
+        window.location.assign(opened.link);
+      }));
+      deny.addEventListener('click', act('deny', (denied) => {
+        show(denied.message, true);
+        dropCard(card);
+      }));
     }
   };
 
@@ -390,6 +447,7 @@
   document.addEventListener('DOMContentLoaded', () => {
     setupApproval();
     setupGrants();
+    setupPending();
     setupLive();
     setupEnrollment();
   });

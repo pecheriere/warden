@@ -51,6 +51,15 @@ All notable changes to this project are recorded here. The format follows
 
 ### Added
 
+- A **Pending** page in the approval UI lists every request waiting for a decision,
+  with the agent, access, goal, fingerprint and expiry, so a notification that was
+  dismissed or missed is no longer a dead end. Deny works from the list. **Approve…**
+  gives the request a new approval link and opens the usual approval page, where the
+  passkey is still required; the link in the notification stops working, and a page
+  still open on it ends in the usual "no longer pending" outcome. This is audited as
+  the new `approval_link_replaced` entry, which holds no token. A `warden-server`
+  older than this release refuses a log that holds one. See
+  [docs/notifications.md](docs/notifications.md#if-you-miss-a-notification).
 - `WARDEN_SECRET_BACKEND=local`: targets, API secrets and the SSH CA key from a
   policy file and private secret files on warden's host, with no 1Password account
   or Connect ([docs/local-backend.md](docs/local-backend.md)). It is weaker: a
