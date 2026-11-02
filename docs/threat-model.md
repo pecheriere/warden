@@ -274,6 +274,39 @@ These were recorded during implementation and are accepted for this release.
   mitigations today: one request per task, revoking each grant when its task
   ends, and separate agents (separate OS users and keys) for work that must
   not share grants.
+- **An agent can still send the owner some notifications.** A flood of requests
+  makes a careless approval more likely and can hide one that matters, so each
+  agent may have 5 requests pending and make 10 new ones per 10 minutes by
+  default ([configuration](configuration.md#request-limits)). The counts come
+  from the database, in the transaction that would store the request: creates
+  cannot race past them, a restart does not reset them, and a database that
+  cannot be read refuses the request. Every stored request counts, so cancelling
+  and asking again gains nothing, but a duplicate of a pending request does not,
+  as it stores nothing and rings nobody. Within the limits an agent can still
+  cause up to 60 notifications an hour. An owner who sees that should revoke the
+  agent. Requests that end in `error` because no notification channel worked
+  count too, so an outage of the channels can use up an agent's allowance for
+  one window.
+  - **The limits cannot block anyone else for long.** The counts are per agent,
+    and there is no shared limit, so one agent cannot use up another's allowance
+    or stop the owner from deciding. An agent that uses up its own waits at most
+    the window (an hour at the highest setting) for a new request, or 10 minutes
+    for a pending slot. A key that is stolen can only block its own agent. A
+    clock set back can extend the wait by as much as it moved.
+  - **Refusals cannot fill the audit log.** An agent can send refused requests as
+    fast as it can sign them. The first is audited as `request_limited` and the
+    rest are counted and written at most once a minute; the count is written by
+    the periodic sweep and at shutdown even if the agent stops. A crash can lose
+    the count of up to a minute of repeats, never the fact of the first refusal.
+    If an entry cannot be written, the request is still refused and the count is
+    tried again. The owner gets one notice per agent per hour at most, with the
+    agent's name and no text the agent chose. A notice that cannot be delivered
+    is audited and not retried until that hour has passed.
+  - **Refused requests are not free.** The request is checked against the policy
+    first, so each refused request still reads the item from 1Password Connect
+    and, for a signed request, verifies a signature and stores a nonce. This is
+    bounded by who the tailnet policy lets reach the API, as for other refused
+    requests.
 - **Goals are free text.** The goal is a single line of at most 500 characters
   without control characters or invisible format characters (bidi overrides,
   zero-width characters). The owner decides on the goal alone, and a

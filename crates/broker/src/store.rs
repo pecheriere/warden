@@ -148,7 +148,14 @@ mod tests {
         .fetch_all(&pool)
         .await
         .unwrap();
-        assert_eq!(indexes, ["one_pending", "requests_created_at"]);
+        assert_eq!(
+            indexes,
+            [
+                "one_pending",
+                "requests_agent_created_at",
+                "requests_created_at"
+            ]
+        );
         let grant_indexes: Vec<String> = sqlx::query_scalar(
             "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'grants' \
              AND name NOT LIKE 'sqlite_%'",
@@ -385,6 +392,7 @@ mod tests {
                 "agents_key_fingerprint",
                 "grants_not_after",
                 "one_pending",
+                "requests_agent_created_at",
                 "requests_created_at",
             ]
         );
