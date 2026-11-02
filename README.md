@@ -98,7 +98,8 @@ your phone, on a server you run.
 warden takes a different approach: approval moves to your phone. The agent
 asks for one piece of access, for one stated goal and a short window. You
 approve or deny it from wherever you are. The secrets stay in your vault
-and on the warden server, and the agent only gets access for a limited window.
+and on the warden server (with the [weaker local backend](docs/local-backend.md),
+on the server alone), and the agent only gets access for a limited window.
 
 warden still needs a person. It frees you from the computer, not from
 deciding. If nobody answers, the request expires after 10 minutes and the
@@ -125,8 +126,8 @@ the loop, and the agent holds no lasting credential for your servers or APIs.
 ```
 
 1. **Request.** The agent runs `warden request` with a target, a goal and a
-   window (15 minutes to 4 hours). warden checks it against the policy in a
-   1Password vault.
+   window (15 minutes to 4 hours). warden checks it against the policy, in a
+   1Password vault in the recommended setup.
 2. **Approve.** You get a notification (Home Assistant or ntfy). The link
    opens the approval page, reachable only from your phone over Tailscale,
    and you approve with a passkey, or deny.
@@ -144,7 +145,8 @@ What warden can grant:
 ## Recommended setup
 
 Run warden with **Tailscale, Docker and 1Password**, on a Linux server
-dedicated to it. All three are required today. What each part protects:
+dedicated to it. Tailscale is required today; Docker and 1Password have
+[weaker alternatives](#supported-setups). What each part protects:
 
 - **Tailscale** keeps warden off the internet and tells it who is calling.
   The tailnet policy keeps the approval page off agent machines, so a
@@ -161,8 +163,9 @@ dedicated to it. All three are required today. What each part protects:
 
 ### Supported setups
 
-The first two use Docker and differ in how warden joins the tailnet. All three
-use 1Password Connect, which 1Password ships only as a container.
+The first two use Docker and differ in how warden joins the tailnet. The first
+three use 1Password Connect, which 1Password ships only as a container. The fourth
+row changes where the secrets are, under any of them.
 
 | Setup | State | Access | What it costs in security |
 |-------|-------|--------|---------------------------|
@@ -170,12 +173,13 @@ use 1Password Connect, which 1Password ships only as a container.
 | **Tailscale sidecar** container | [Documented](docs/deployment.md#10-the-sidecar-layout-for-relay-targets), but not yet tested end to end. | SSH certificates, API calls, SSH relay. | Other host processes cannot reach the listeners, but firewall rules can no longer tell warden's traffic from Tailscale's, and hardening the Tailscale container is untested. With relay targets, warden also [reads and uses their credentials](docs/threat-model.md#relay-mode-residual-risks), so a compromised warden can expose them. |
 | **systemd service**, warden outside a container | [Documented](docs/deployment-systemd.md), but not yet tested on a clean host. Needs a release later than 0.8.1 and a build from source. | SSH certificates, API calls. No SSH relay. | As for Tailscale Services, the whole host is trusted. warden also [loses the image's isolation](docs/deployment-systemd.md#1-what-holds-what-is-replaced-what-is-lost): it shares the host's filesystem (read-only) and network stack, and there is no build attestation yet. |
 
+| **Local files** instead of 1Password | [Documented](docs/local-backend.md). The backend is tested; its Docker and systemd examples have not been run on a real host. Needs a release later than 0.8.1. | As the layout it runs on. | **A compromised host gets every secret**: the vault's separation from the host is gone, and with it the [read-only token boundary](docs/threat-model.md#the-local-secret-backend). Backups and disks hold the secrets too. 1Password stays the recommendation. |
+
 The [local demo](docs/demo.md) is for trying warden, not one of these setups:
 it is not secure for real use.
 
-Other setups are planned but **do not exist yet**: approving without Tailscale
-([#75](https://github.com/pecheriere/warden/issues/75)) and secrets without
-1Password ([#76](https://github.com/pecheriere/warden/issues/76)).
+Approving without Tailscale is planned but **does not exist yet**
+([#75](https://github.com/pecheriere/warden/issues/75)).
 
 ### Requirements
 
@@ -187,7 +191,8 @@ Other setups are planned but **do not exist yet**: approving without Tailscale
   would expose warden's listeners
   ([why](docs/deployment.md#deploying-warden)).
 - A 1Password account that can run a
-  [1Password Connect](https://developer.1password.com/docs/connect/) server.
+  [1Password Connect](https://developer.1password.com/docs/connect/) server
+  (recommended; [local files](docs/local-backend.md) are the weaker alternative).
 - A phone with a passkey (and on the tailnet).
 - A notification channel: [Home Assistant or ntfy](docs/notifications.md).
 - On each agent machine: the `warden` CLI and OpenSSH.
@@ -289,6 +294,7 @@ it; follow it for a real setup.
 | [Configuration](docs/configuration.md) | Every environment variable and command of the server and the CLI. |
 | [SSH targets](docs/ssh-targets.md) | Setting up hosts: one user per agent, certificate-only logins, relay targets. |
 | [1Password items](docs/1password-items.md) | The exact tags and fields of targets, API secrets and the CA. |
+| [Local files](docs/local-backend.md) | The weaker backend without 1Password: its policy file, secret files and what it gives up. |
 | [Notifications](docs/notifications.md) | Home Assistant and ntfy. |
 | [Agent usage](docs/agent-usage.md) | Setting up an agent and how it should ask for access. |
 | [Agent instructions](docs/agent-instructions.md) | A block to paste into an agent's `AGENTS.md` or `CLAUDE.md`. |
@@ -330,7 +336,8 @@ it; follow it for a real setup.
   only its `sshd` logs them. Secrets never reach the log or the notifications.
 
 warden does not protect against whoever controls the warden host (it is the
-root of trust) or the 1Password vault, against an approved agent or code on
+root of trust; with the local backend it holds every secret too) or the
+1Password vault, against an approved agent or code on
 its machine misusing its window, or against a misleading goal you approve.
 Grants are not yet tied to a task, so one
 agent's sessions can share them

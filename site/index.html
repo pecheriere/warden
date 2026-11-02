@@ -115,7 +115,7 @@
       </article>
       <article class="answer">
         <h3>warden moves the approval to your phone</h3>
-        <p>The agent asks for one piece of access, with a stated goal and a short window. You approve or deny it from wherever you are. Secrets stay in your vault and on your warden server. It still needs a person: if nobody answers, the request expires after 10 minutes and the agent has to ask again, and a grant lasts at most 4 hours. If you are asleep, the agent waits.</p>
+        <p>The agent asks for one piece of access, with a stated goal and a short window. You approve or deny it from wherever you are. Secrets stay in your vault and on your warden server (on the server alone with the weaker local backend). It still needs a person: if nobody answers, the request expires after 10 minutes and the agent has to ask again, and a grant lasts at most 4 hours. If you are asleep, the agent waits.</p>
       </article>
     </div>
   </div>
@@ -129,7 +129,7 @@
     <ol class="flow">
       <li class="step half">
         <h3>The agent asks</h3>
-        <p>It names the access, the window and the goal, then waits. warden checks the request against your policy in a 1Password vault. Without <code class="nb">--methods</code>, an API request is read-only.</p>
+        <p>It names the access, the window and the goal, then waits. warden checks the request against your policy, in a 1Password vault in the recommended setup. Without <code class="nb">--methods</code>, an API request is read-only.</p>
         <figure class="cmd">
           <figcaption>On the agent's machine</figcaption>
 <pre><code>warden request api home-api \
@@ -209,7 +209,7 @@
         <p class="access"><code>warden http home-api GET https://api.example.com/v1/devices/</code></p>
         <div class="field">
           <p class="label">How</p>
-          <p>warden reads the secret from 1Password, makes the call to the origin and path you allow, and returns the answer with the secret redacted. Redirects are not followed.</p>
+          <p>warden reads the secret, makes the call to the origin and path you allow, and returns the answer with the secret redacted. Redirects are not followed.</p>
         </div>
         <div class="field">
           <p class="label">The agent never sees</p>
@@ -269,7 +269,7 @@
       <div class="card limits">
         <h3><svg class="ico" width="20" height="20" aria-hidden="true"><use href="#i-warn"/></svg>What warden does not protect against</h3>
         <ul class="plain">
-          <li><strong>Whoever controls the warden host.</strong> Root there can read the CA key and relay credentials, rewrite the database and audit log, and issue grants. Keep the host as locked down as the most sensitive thing it reaches.</li>
+          <li><strong>Whoever controls the warden host.</strong> Root there can read the CA key and relay credentials (and every secret, with the local backend), rewrite the database and audit log, and issue grants. Keep the host as locked down as the most sensitive thing it reaches.</li>
           <li><strong>Whoever controls the 1Password vault.</strong> The vault decides what warden may hand out and where secrets may go.</li>
           <li><strong>A compromised agent machine, within its approvals.</strong> Code running as the agent's OS user can make requests and use its active grants. A copied agent key works until you revoke the agent, though it cannot approve anything.</li>
           <li><strong>A grant used for another task.</strong> Grants are not tied to a task, so everything running as that OS user can use them (<a href="https://github.com/pecheriere/warden/issues/49">#49</a>).</li>
@@ -329,12 +329,12 @@ cat "$WARDEN_DEMO_DIR/audit.jsonl"</code></pre>
     <div class="real">
       <div class="real-copy">
         <h3>For a real setup</h3>
-        <p>Run warden with Tailscale, Docker and 1Password, all required today, on a Linux server dedicated to it. Each server has one owner, who approves every request. One owner can have many agents, but there are no teams or roles.</p>
+        <p>Run warden with Tailscale, Docker and 1Password, the recommended setup, on a Linux server dedicated to it. Each server has one owner, who approves every request. One owner can have many agents, but there are no teams or roles.</p>
         <p class="cta">
           <a class="btn primary" href="https://github.com/pecheriere/warden#quick-start">README quick start</a>
           <a class="btn ghost" href="https://github.com/pecheriere/warden/blob/main/docs/deployment.md">Deployment guide</a>
         </p>
-        <p>Approving without Tailscale (<a href="https://github.com/pecheriere/warden/issues/75">#75</a>) and secrets without 1Password (<a href="https://github.com/pecheriere/warden/issues/76">#76</a>) are planned and do not exist yet.</p>
+        <p>Approving without Tailscale (<a href="https://github.com/pecheriere/warden/issues/75">#75</a>) is planned and does not exist yet. Secrets without 1Password exist as <a href="https://github.com/pecheriere/warden/blob/main/docs/local-backend.md">local files</a>, which are weaker: a compromised host gets every secret.</p>
       </div>
       <div>
         <p class="label">You need</p>
@@ -342,7 +342,7 @@ cat "$WARDEN_DEMO_DIR/audit.jsonl"</code></pre>
           <li>A Linux host, and to be comfortable running it</li>
           <li>A <a href="https://tailscale.com">Tailscale</a> tailnet</li>
           <li>Docker Engine 28 or later and Compose 2.33 or later</li>
-          <li>A 1Password account that can run a Connect server</li>
+          <li>A 1Password account that can run a Connect server (recommended; local files are weaker)</li>
           <li>A phone with a passkey, on the tailnet</li>
           <li>Home Assistant or ntfy for notifications</li>
           <li>On each agent machine, the <code>warden</code> CLI and OpenSSH</li>

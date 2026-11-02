@@ -1,5 +1,6 @@
 //! Access policy: which SSH targets and API secrets exist, and the SSH CA
-//! key, sourced from a secret backend (1Password Connect in production).
+//! key, sourced from a secret backend: 1Password Connect, the recommended one,
+//! or files on the broker's host ([`local`]), which is weaker.
 
 use std::fmt;
 
@@ -13,8 +14,10 @@ use warden_broker_proto::{
 };
 use zeroize::Zeroizing;
 
+pub mod local;
 pub mod onepassword;
 
+pub use local::{LocalBackend, LocalProbe};
 pub use onepassword::{CaProbe, OnePasswordConnect, VaultProbe};
 
 /// How warden grants access to an SSH target.

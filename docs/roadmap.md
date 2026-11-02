@@ -23,7 +23,8 @@ Fewer things to set up before warden is useful.
 - [#75](https://github.com/pecheriere/warden/issues/75) Approve without
   Tailscale
 - [#76](https://github.com/pecheriere/warden/issues/76) Secrets and policy
-  without 1Password
+  without 1Password: [local files](local-backend.md) exist, and are weaker;
+  other backends can follow if people ask
 - [#77](https://github.com/pecheriere/warden/issues/77) Guided setup: doctor
   and setup checks
 - [#78](https://github.com/pecheriere/warden/issues/78) Make it easy to set up

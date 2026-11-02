@@ -327,6 +327,9 @@ publishes it as a Serve TCP forward, if you have relay targets.
 
 ## 3. 1Password
 
+[Local files](local-backend.md) can replace this section and the next, at a real
+cost: a compromised host gets every secret. 1Password stays the recommendation.
+
 warden reads its policy (targets, API secrets, the SSH CA key) from a
 1Password vault through a [1Password Connect][connect] server. Nothing is
 cached: an edit in 1Password takes effect on the next request.

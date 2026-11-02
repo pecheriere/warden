@@ -23,6 +23,8 @@ Contents:
 7. [Replacing credentials](#7-replacing-credentials)
 8. [How the project keeps this true](#8-how-the-project-keeps-this-true)
 
+This case describes the recommended 1Password backend. The weaker [local backend](local-backend.md) gives up the vault's separation from the host: [the threat model](threat-model.md#the-local-secret-backend) says what changes.
+
 ## 1. Security requirements
 
 What warden is meant to do, for anyone deciding whether to rely on it. What it
@@ -176,6 +178,7 @@ constructed, so code holding the type does not check again.
 | Proxied URL, method, headers, body | The rules in [the design](design.md#83-http-proxy-mode-secret-injection), inspected as sent | `check` in [`proxy/rules.rs`](../crates/broker/src/proxy/rules.rs) |
 | Relay session requests | `pty-req`, `env` (`LANG`, `LC_*`, `TERM`), `window-change`, `signal`, `shell`, `exec`; limits before start | [`relay/server.rs`](../crates/broker/src/relay/server.rs) |
 | 1Password items | Every field parsed, an item with an invalid field refused | [`policy/onepassword.rs`](../crates/broker/src/policy/onepassword.rs) |
+| Local policy and secret files | The same validators as 1Password items, plus owner, mode, link and end-marker checks on what was opened, each read. A problem refuses the start or the request. | [`policy/local.rs`](../crates/broker/src/policy/local.rs), [`policy/local/files.rs`](../crates/broker/src/policy/local/files.rs) |
 | Answers from the broker, in the CLI | Control characters removed from messages; hosts checked by `is_safe_host`; host keys parsed and written again | `sanitize` in [`proto/src/doctor.rs`](../crates/proto/src/doctor.rs); [`cli/src/agent.rs`](../crates/cli/src/agent.rs) |
 | `warden-server agent add --server` | `https` (or `http` on loopback), a root URL, a plain host name, because the printed command is pasted in a shell | `parse_agent_api_url` in [`enrollment.rs`](../crates/broker/src/enrollment.rs) |
 | Secret files | Regular file, no access for others, one line, at most 32 KiB | `read_secret_file` in [`config.rs`](../crates/broker/src/config.rs) |

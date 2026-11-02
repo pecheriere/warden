@@ -103,10 +103,12 @@ stays the recommendation.
 
 ## 2. 1Password Connect is still a container
 
-warden reads its policy only through 1Password Connect, and 1Password ships Connect
-only as container images. There are no binaries, so **no setup of warden is free of
-containers**. "Without Docker" here means that warden does not run in one, and you
-choose where Connect does:
+With 1Password, the recommended backend, warden reads its policy through Connect,
+which 1Password ships only as container images. There are no binaries, so **with
+1Password, no setup of warden is free of containers**. "Without Docker" here means
+that warden does not run in one, and you choose where Connect does. The other way is
+[local files](local-backend.md#with-systemd), with no Connect and no container, at
+the price that a compromised host gets every secret.
 
 - **On another host (the only way to have no container runtime on the warden host).**
   Run Connect there, hardened as in

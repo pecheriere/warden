@@ -60,7 +60,7 @@ for target in "${targets[@]}"; do
     if "${command[@]}" >/dev/null 2>&1; then
       echo "$target: no crash in ${seconds}s (seed $seed)"
     else
-      # The kind (crash, oom, timeout, leak) says nothing about the input. No
+      # The kind (crash, oom, timeout, leak, slow) says nothing about the input. No
       # kind means the run failed without an input to blame: a tool failure.
       kinds="$(find "artifacts/$target" -type f -exec basename {} \; 2>/dev/null | cut -d- -f1 | sort -u | xargs || true)"
       echo "$target: FAILED (seed $seed, kind: ${kinds:-none}); the output is withheld, rerun it locally"

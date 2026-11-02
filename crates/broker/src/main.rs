@@ -15,10 +15,10 @@ use tracing_subscriber::EnvFilter;
 use url::Url;
 use warden_broker::approval::passkeys::{self, Passkeys};
 use warden_broker::audit::AuditLog;
-use warden_broker::config::{Config, DEFAULT_AUDIENCE_PATH, parse_public_url};
+use warden_broker::config::{BackendSettings, Config, DEFAULT_AUDIENCE_PATH, parse_public_url};
 use warden_broker::identity::TailscaleServeIdentity;
 use warden_broker::notify::{ChannelSettings, Fallback, Notifier};
-use warden_broker::policy::OnePasswordConnect;
+use warden_broker::policy::{LocalBackend, OnePasswordConnect, SecretBackend};
 use warden_broker::proxy::CallSlots;
 use warden_broker::relay::host_key::RelayHostKey;
 use warden_broker::relay::{RelayEndpoint, RelayLimits, RelayServer, host_key};
@@ -402,7 +402,7 @@ async fn relay_endpoint(config: &Config) -> Result<Option<(RelayEndpoint, RelayH
 async fn start_relay(
     config: &Config,
     requests: &Requests,
-    backend: Arc<OnePasswordConnect>,
+    backend: Arc<dyn SecretBackend>,
     audit: Arc<AuditLog>,
     key: &RelayHostKey,
     stop: watch::Receiver<bool>,
@@ -441,10 +441,32 @@ struct App {
     api: axum::Router,
     approval: axum::Router,
     requests: Requests,
-    backend: Arc<OnePasswordConnect>,
+    backend: Arc<dyn SecretBackend>,
     audit: Arc<AuditLog>,
     /// The relay's host key, when the relay is configured.
     relay_key: Option<RelayHostKey>,
+}
+
+/// The configured secret backend. The local one is checked whole first, and
+/// an invalid one stops the server.
+async fn secret_backend(config: &Config, audit: &Arc<AuditLog>) -> Result<Arc<dyn SecretBackend>> {
+    match &config.backend {
+        BackendSettings::OnePassword(connect) => Ok(Arc::new(OnePasswordConnect::new(
+            connect.url.clone(),
+            connect.token.clone(),
+            connect.vault.clone(),
+        ))),
+        BackendSettings::Local(settings) => {
+            tracing::warn!(
+                "secrets come from files on this host: a compromised host gets them, and \
+                 1Password stays the recommended backend (docs/local-backend.md)"
+            );
+            let backend = LocalBackend::open(settings, audit.clone())
+                .await
+                .context("the local secret backend is not usable")?;
+            Ok(Arc::new(backend))
+        }
+    }
 }
 
 async fn build_app(config: &Arc<Config>) -> Result<App> {
@@ -454,11 +476,7 @@ async fn build_app(config: &Arc<Config>) -> Result<App> {
             .await
             .with_context(|| format!("opening audit log {}", config.audit_path.display()))?,
     );
-    let backend = Arc::new(OnePasswordConnect::new(
-        config.connect_url.clone(),
-        config.connect_token.clone(),
-        config.vault.clone(),
-    ));
+    let backend = secret_backend(config, &audit).await?;
     let audience = audience::load_or_create(config.audience_path.clone())
         .await
         .with_context(|| format!("loading the audience {}", config.audience_path.display()))?;
@@ -535,13 +553,22 @@ async fn serve() -> Result<()> {
     let approval_listener = TcpListener::bind(config.approval_listen)
         .await
         .with_context(|| format!("binding the approval UI on {}", config.approval_listen))?;
-    tracing::info!(
-        api = %config.api_listen,
-        approval = %config.approval_listen,
-        public_url = %config.public_url,
-        vault = %config.vault,
-        "warden-server listening"
-    );
+    match &config.backend {
+        BackendSettings::OnePassword(connect) => tracing::info!(
+            api = %config.api_listen,
+            approval = %config.approval_listen,
+            public_url = %config.public_url,
+            vault = %connect.vault,
+            "warden-server listening"
+        ),
+        BackendSettings::Local(_) => tracing::info!(
+            api = %config.api_listen,
+            approval = %config.approval_listen,
+            public_url = %config.public_url,
+            secret_backend = config.backend.name(),
+            "warden-server listening"
+        ),
+    }
 
     let (stop, stop_rx) = watch::channel(false);
     let relay = match &relay_key {

@@ -53,10 +53,10 @@ struct ItemSummary {
 /// An SSH target item, decoded so that a relay target's credential never
 /// lives in a plain `String`.
 #[derive(Deserialize)]
-struct TargetItem {
-    title: String,
+pub(super) struct TargetItem {
+    pub(super) title: String,
     #[serde(default)]
-    fields: Vec<SecretField>,
+    pub(super) fields: Vec<SecretField>,
 }
 
 /// The CA item, decoded so that no private-key text lives in a plain `String`.
@@ -69,29 +69,29 @@ struct CaItem {
 /// An API secret item, decoded so that the credential never lives in a plain
 /// `String`.
 #[derive(Deserialize)]
-struct ApiItem {
+pub(super) struct ApiItem {
     #[serde(default)]
-    urls: Vec<ItemUrl>,
+    pub(super) urls: Vec<ItemUrl>,
     #[serde(default)]
-    fields: Vec<SecretField>,
+    pub(super) fields: Vec<SecretField>,
 }
 
 /// An entry of an item's `urls` array (the website fields in 1Password).
 #[derive(Deserialize)]
-struct ItemUrl {
+pub(super) struct ItemUrl {
     #[serde(default)]
-    primary: bool,
-    href: Option<String>,
+    pub(super) primary: bool,
+    pub(super) href: Option<String>,
 }
 
 /// A field whose value may be secret: held in memory wiped on drop.
 #[derive(Deserialize)]
-struct SecretField {
+pub(super) struct SecretField {
     #[serde(default)]
-    id: String,
-    label: Option<String>,
+    pub(super) id: String,
+    pub(super) label: Option<String>,
     #[serde(default, deserialize_with = "secret_string")]
-    value: Option<Zeroizing<String>>,
+    pub(super) value: Option<Zeroizing<String>>,
 }
 
 fn secret_string<'de, D: serde::Deserializer<'de>>(
@@ -478,7 +478,7 @@ impl SecretBackend for OnePasswordConnect {
 /// Parse an OpenSSH or PKCS#8 PEM private key. Returns `None` for anything
 /// unreadable; the input is never echoed. PKCS#8 is only supported for
 /// Ed25519, so a PKCS#8 RSA or ECDSA key is rejected as unreadable.
-fn parse_private_key(text: &str) -> Option<PrivateKey> {
+pub(super) fn parse_private_key(text: &str) -> Option<PrivateKey> {
     let text = text.trim();
     if text.starts_with("-----BEGIN OPENSSH PRIVATE KEY-----") {
         PrivateKey::from_openssh(text).ok()
@@ -502,7 +502,7 @@ fn invalid(item: &str, field: &str, reason: &str) -> PolicyError {
 
 /// Validate an SSH target item. Returns the onward credential exactly when
 /// the target is in relay mode. Reasons never quote a field value.
-fn parse_target(
+pub(super) fn parse_target(
     name: &TargetName,
     item: &TargetItem,
 ) -> Result<(SshTarget, Option<RelayCredential>), PolicyError> {
@@ -692,7 +692,7 @@ fn pkcs8_algorithm(text: &str) -> Option<ed25519_dalek::pkcs8::ObjectIdentifier>
 /// Validate an API secret item. Optional fields that are absent or blank
 /// take their default; the credential, `max_window` and the website never do.
 /// Reasons never quote a field value.
-fn parse_api_secret(
+pub(super) fn parse_api_secret(
     name: &SecretName,
     item: &ApiItem,
 ) -> Result<(ApiSecretPolicy, SecretValue), PolicyError> {

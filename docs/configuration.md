@@ -18,8 +18,8 @@ Values are never echoed in errors.
 | `WARDEN_AUDIT_PATH` | The audit log, for example `/data/audit.jsonl`. |
 | `WARDEN_PUBLIC_URL` | The approval UI's URL: `https`, a domain name (not an IP address), no path, query or credentials. Its host is the WebAuthn relying party: changing it invalidates every enrolled passkey. Notifications link to it. |
 | `WARDEN_OWNER_LOGIN` | The owner's Tailscale login (as Tailscale Serve reports it in `Tailscale-User-Login`). Only this login may use the approval UI or a bearer agent key. |
-| `WARDEN_OP_CONNECT_URL` | The 1Password Connect API, for example `http://172.31.251.11:8080`. Plain `http` is accepted, and exposes the token and all it reads to that network: use it only on the [private network](deployment.md#3-1password) that Connect shares with warden. |
-| `WARDEN_OP_CONNECT_TOKEN` | The Connect token. Read-only, for the warden vault only. Secret; can be [read from a file](#secrets-in-files). |
+| `WARDEN_OP_CONNECT_URL` | The 1Password Connect API, for example `http://172.31.251.11:8080`. Plain `http` is accepted, and exposes the token and all it reads to that network: use it only on the [private network](deployment.md#3-1password) that Connect shares with warden. Not with `WARDEN_SECRET_BACKEND=local`. |
+| `WARDEN_OP_CONNECT_TOKEN` | The Connect token. Read-only, for the warden vault only. Secret; can be [read from a file](#secrets-in-files). Not with `WARDEN_SECRET_BACKEND=local`. |
 | `WARDEN_NOTIFY` | The notification channels in priority order, comma-separated, lowercase: `homeassistant`, `ntfy`. See [Notifications](notifications.md). |
 
 ### Optional
@@ -29,7 +29,10 @@ Values are never echoed in errors.
 | `WARDEN_API_LISTEN` | `127.0.0.1:8080` | The agent API listener (`ip:port`). |
 | `WARDEN_APPROVAL_LISTEN` | `127.0.0.1:8081` | The approval UI listener (`ip:port`). |
 | `WARDEN_AUDIENCE_PATH` | `/data/audience` | The file holding the broker's audience id, created on first start and never changed. Keep it on the data volume. |
-| `WARDEN_OP_VAULT` | `Warden` | The 1Password vault to read. |
+| `WARDEN_OP_VAULT` | `Warden` | The 1Password vault to read. Refused with `WARDEN_SECRET_BACKEND=local`. |
+| `WARDEN_SECRET_BACKEND` | `1password` | Where targets, API secrets and the SSH CA key come from: `1password`, recommended, or `local`, [files on this host](local-backend.md), where a compromised host gets every secret. |
+| `WARDEN_LOCAL_POLICY_FILE` | | Required with `WARDEN_SECRET_BACKEND=local`, and refused without it: the [policy file](local-backend.md#the-policy-file), an absolute path. |
+| `WARDEN_LOCAL_SECRETS_DIR` | | Required with `WARDEN_SECRET_BACKEND=local`, and refused without it: the [only directory secrets are read from](local-backend.md#the-secret-files), an absolute path. |
 | `WARDEN_NOTIFY_HOMEASSISTANT_WEBHOOK_URL` | | Required when `homeassistant` is listed. Secret. |
 | `WARDEN_NOTIFY_NTFY_URL` | | Required when `ntfy` is listed: the topic URL. |
 | `WARDEN_NOTIFY_NTFY_TOKEN` | | An ntfy access token, sent as `Authorization: Bearer`. Secret. |
@@ -160,6 +163,7 @@ deployment exits 7 with `--strict`.
 | `connect.vault` | The token can see `WARDEN_OP_VAULT`. | Connect gave no useful answer, or refused the token. |
 | `connect.token-read-only` | Never. | Always: Connect does not report a token's permissions, and doctor will not attempt a write. Check how the token was created. |
 | `ssh-ca` | The CA key loads, or there is no CA item and no certificate target needs one. | Connect or the vault is not usable, or a target item cannot be read. |
+| `local.policy`, `local.entries`, `local.host-boundary` | Instead of `connect.*`, with `WARDEN_SECRET_BACKEND=local`. See [Checking it](local-backend.md#checking-it). | |
 | `notify` | Never. | Without `--send-test-notification`: nothing was sent. |
 | `notify.<channel>` | With the flag: the channel accepts the message. | Never. |
 | `notify.delivery` | Never. | With the flag: warden sees that a channel accepted the message, not that it reached the phone. Confirm that it did. |
@@ -177,7 +181,8 @@ What doctor does and does not do:
   the database read-only. The one exception is outside warden's control: on a
   database in WAL mode, SQLite may create the `-shm` file that readers share.
   Its reads of the vault, the CA item included, appear in 1Password's usage
-  reports like any other.
+  reports like any other. With the local backend, it reads the same files by
+  the same rules as the server, and audits no refusal.
 - **`--send-test-notification` reaches the owner's phone.** It sends one message
   through every channel in `WARDEN_NOTIFY`, not only the first, so that a broken
   fallback shows up. The message says it is a test.

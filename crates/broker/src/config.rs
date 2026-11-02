@@ -5,7 +5,7 @@ use std::fs::{self, File};
 use std::io::{self, Read as _};
 use std::net::SocketAddr;
 use std::os::unix::fs::PermissionsExt as _;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use secrecy::SecretString;
 use url::Url;
@@ -40,6 +40,26 @@ const CONNECT_TOKEN_VARIABLES: (&str, &str) =
 /// Largest secret file accepted, in bytes. Far above any token or URL; it
 /// keeps a wrong path from being read into memory whole.
 const MAX_SECRET_FILE_BYTES: u16 = 32 * 1024;
+
+/// The variables only the 1Password backend reads.
+const ONE_PASSWORD_VARIABLES: [&str; 4] = [
+    CONNECT_TOKEN_VARIABLES.0,
+    CONNECT_TOKEN_VARIABLES.1,
+    "WARDEN_OP_CONNECT_URL",
+    "WARDEN_OP_VAULT",
+];
+
+/// The local backend's policy file variable.
+const LOCAL_POLICY_FILE: &str = "WARDEN_LOCAL_POLICY_FILE";
+
+/// The local backend's secrets directory variable.
+const LOCAL_SECRETS_DIR: &str = "WARDEN_LOCAL_SECRETS_DIR";
+
+/// `WARDEN_SECRET_BACKEND`'s value for 1Password.
+const ONE_PASSWORD_BACKEND: &str = "1password";
+
+/// `WARDEN_SECRET_BACKEND`'s value for local files.
+const LOCAL_BACKEND: &str = "local";
 
 /// A configuration variable is missing or invalid. The message names it.
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
@@ -207,6 +227,47 @@ pub struct RelayConfig {
     pub max_sessions: usize,
 }
 
+/// How to reach 1Password Connect.
+#[derive(Debug, Clone)]
+pub struct ConnectSettings {
+    /// `WARDEN_OP_CONNECT_URL`.
+    pub url: Url,
+    /// `WARDEN_OP_CONNECT_TOKEN`.
+    pub token: SecretString,
+    /// `WARDEN_OP_VAULT`, default `Warden`.
+    pub vault: String,
+}
+
+/// Where the local backend reads its files. Both paths are absolute, without
+/// `..`; whether they are safe to read is decided each time they are read.
+#[derive(Debug, Clone)]
+pub struct LocalSettings {
+    /// `WARDEN_LOCAL_POLICY_FILE`: targets and API secrets, in TOML.
+    pub policy_file: PathBuf,
+    /// `WARDEN_LOCAL_SECRETS_DIR`: the only directory secrets are read from.
+    pub secrets_dir: PathBuf,
+}
+
+/// Where targets, API secrets and the SSH CA key come from.
+#[derive(Debug, Clone)]
+pub enum BackendSettings {
+    /// A 1Password vault through Connect: the recommended backend.
+    OnePassword(ConnectSettings),
+    /// Files on the broker's host. Weaker: see `docs/local-backend.md`.
+    Local(LocalSettings),
+}
+
+impl BackendSettings {
+    /// The `WARDEN_SECRET_BACKEND` spelling of this backend.
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        match self {
+            Self::OnePassword(_) => ONE_PASSWORD_BACKEND,
+            Self::Local(_) => LOCAL_BACKEND,
+        }
+    }
+}
+
 /// Full server configuration.
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -225,12 +286,8 @@ pub struct Config {
     pub public_url: Url,
     /// `WARDEN_OWNER_LOGIN`.
     pub owner_login: String,
-    /// `WARDEN_OP_CONNECT_URL`.
-    pub connect_url: Url,
-    /// `WARDEN_OP_CONNECT_TOKEN`.
-    pub connect_token: SecretString,
-    /// `WARDEN_OP_VAULT`, default `Warden`.
-    pub vault: String,
+    /// `WARDEN_SECRET_BACKEND` and the settings of the backend it names.
+    pub backend: BackendSettings,
     /// The enabled notification channels in priority order: `WARDEN_NOTIFY`
     /// and the `WARDEN_NOTIFY_<KIND>_*` settings. Never empty.
     pub notify: ChannelList,
@@ -252,6 +309,54 @@ pub struct Config {
     /// from the environment: always [`BodyReadTimeout::default`]; tests
     /// shorten it.
     pub body_read_timeout: BodyReadTimeout,
+}
+
+/// Whether `WARDEN_SECRET_BACKEND` asks for the local backend. Unset means
+/// 1Password: every deployment from before the setting exists keeps working,
+/// and nothing ever falls through to the weaker backend. So the local backend's
+/// settings without the explicit choice are refused, and so are one backend's
+/// settings under the other: either could mean the owner believes secrets are
+/// somewhere they are not.
+fn wants_local_backend(lookup: &impl Fn(&str) -> Option<String>) -> Result<bool, ConfigError> {
+    const VAR: &str = "WARDEN_SECRET_BACKEND";
+    let is_set = |var: &&&'static str| lookup(var).is_some_and(|v| !v.trim().is_empty());
+    let local = match lookup(VAR).filter(|v| !v.trim().is_empty()).as_deref() {
+        None | Some(ONE_PASSWORD_BACKEND) => false,
+        Some(LOCAL_BACKEND) => true,
+        Some(_) => {
+            return Err(ConfigError::Invalid {
+                var: VAR,
+                reason: "must be 1password or local",
+            });
+        }
+    };
+    let (other, reason) = if local {
+        (
+            &ONE_PASSWORD_VARIABLES[..],
+            "set, but WARDEN_SECRET_BACKEND is local",
+        )
+    } else {
+        (
+            &[LOCAL_POLICY_FILE, LOCAL_SECRETS_DIR][..],
+            "set, but WARDEN_SECRET_BACKEND is not local",
+        )
+    };
+    match other.iter().find(is_set) {
+        Some(var) => Err(ConfigError::Invalid { var, reason }),
+        None => Ok(local),
+    }
+}
+
+/// A path for the local backend: absolute and without `..`.
+fn local_path(var: &'static str, value: &str) -> Result<PathBuf, ConfigError> {
+    let path = Path::new(value);
+    if !path.is_absolute() || path.components().any(|c| c == Component::ParentDir) {
+        return Err(ConfigError::Invalid {
+            var,
+            reason: "must be an absolute path without ..",
+        });
+    }
+    Ok(path.to_owned())
 }
 
 /// The proxy's limits from the environment, defaults where unset.
@@ -439,6 +544,8 @@ impl Config {
     ///
     /// [`ConfigError`] naming the first missing or invalid variable.
     pub fn from_lookup(lookup: impl Fn(&str) -> Option<String>) -> Result<Self, ConfigError> {
+        // First, so that a refused combination reads no secret file.
+        let local_backend = wants_local_backend(&lookup)?;
         let secrets = read_secret_files(&lookup)?;
         let lookup = |var: &str| {
             secrets
@@ -466,7 +573,18 @@ impl Config {
         };
 
         let public_url = parse_public_url(&required("WARDEN_PUBLIC_URL")?)?;
-        let connect_url = url("WARDEN_OP_CONNECT_URL", &required("WARDEN_OP_CONNECT_URL")?)?;
+        let backend = if local_backend {
+            BackendSettings::Local(LocalSettings {
+                policy_file: local_path(LOCAL_POLICY_FILE, &required(LOCAL_POLICY_FILE)?)?,
+                secrets_dir: local_path(LOCAL_SECRETS_DIR, &required(LOCAL_SECRETS_DIR)?)?,
+            })
+        } else {
+            BackendSettings::OnePassword(ConnectSettings {
+                url: url("WARDEN_OP_CONNECT_URL", &required("WARDEN_OP_CONNECT_URL")?)?,
+                token: SecretString::from(required("WARDEN_OP_CONNECT_TOKEN")?),
+                vault: get("WARDEN_OP_VAULT").unwrap_or_else(|| "Warden".to_owned()),
+            })
+        };
         let notify = parse_channels(&lookup)?;
 
         let proxy = proxy_limits(&get)?;
@@ -504,9 +622,7 @@ impl Config {
             approval_listen: addr("WARDEN_APPROVAL_LISTEN", "127.0.0.1:8081")?,
             public_url,
             owner_login: required("WARDEN_OWNER_LOGIN")?,
-            connect_url,
-            connect_token: SecretString::from(required("WARDEN_OP_CONNECT_TOKEN")?),
-            vault: get("WARDEN_OP_VAULT").unwrap_or_else(|| "Warden".to_owned()),
+            backend,
             notify,
             proxy,
             requests,
@@ -525,7 +641,7 @@ mod tests {
     use secrecy::ExposeSecret as _;
     use tempfile::TempDir;
 
-    use super::{Config, ConfigError, MAX_SECRET_FILE_BYTES};
+    use super::{BackendSettings, Config, ConfigError, ConnectSettings, MAX_SECRET_FILE_BYTES};
     use crate::notify::ChannelSettings;
     use crate::requests::RequestLimits;
 
@@ -619,6 +735,14 @@ mod tests {
         path.to_str().unwrap().to_owned()
     }
 
+    /// The Connect settings of a configuration that must have them.
+    fn connect(config: &Config) -> &ConnectSettings {
+        match &config.backend {
+            BackendSettings::OnePassword(connect) => connect,
+            BackendSettings::Local(_) => panic!("expected the 1Password backend"),
+        }
+    }
+
     fn token_from_file(path: &str) -> Result<Config, ConfigError> {
         Config::from_lookup(lookup(&[(TOKEN_FILE, path)]))
     }
@@ -632,7 +756,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = secret_file(&dir, "token", SECRET.as_bytes(), 0o400);
         let config = token_from_file(&path).unwrap();
-        assert_eq!(config.connect_token.expose_secret(), SECRET);
+        assert_eq!(connect(&config).token.expose_secret(), SECRET);
     }
 
     #[test]
@@ -642,7 +766,7 @@ mod tests {
             let content = format!("{SECRET}{ending}");
             let path = secret_file(&dir, "token", content.as_bytes(), 0o400);
             let config = token_from_file(&path).unwrap();
-            assert_eq!(config.connect_token.expose_secret(), SECRET, "{ending:?}");
+            assert_eq!(connect(&config).token.expose_secret(), SECRET, "{ending:?}");
         }
     }
 
@@ -653,7 +777,7 @@ mod tests {
         let link = dir.path().join("link");
         symlink(&path, &link).unwrap();
         let config = token_from_file(link.to_str().unwrap()).unwrap();
-        assert_eq!(config.connect_token.expose_secret(), SECRET);
+        assert_eq!(connect(&config).token.expose_secret(), SECRET);
     }
 
     #[test]
@@ -670,7 +794,7 @@ mod tests {
             (TOKEN_FILE, " "),
         ]))
         .unwrap();
-        assert_eq!(config.connect_token.expose_secret(), SECRET);
+        assert_eq!(connect(&config).token.expose_secret(), SECRET);
     }
 
     #[test]
@@ -682,7 +806,7 @@ mod tests {
             (TOKEN_FILE, &path),
         ]))
         .unwrap();
-        assert_eq!(config.connect_token.expose_secret(), SECRET);
+        assert_eq!(connect(&config).token.expose_secret(), SECRET);
     }
 
     #[test]
@@ -849,5 +973,128 @@ mod tests {
                 reason: "set but the channel is not listed in WARDEN_NOTIFY",
             }
         );
+    }
+    /// `extra` on top of valid settings, without the Connect URL `lookup`
+    /// always adds, which a local configuration must not have.
+    fn without_connect_url(extra: &[(&str, &str)]) -> Result<Config, ConfigError> {
+        let vars = lookup(extra);
+        Config::from_lookup(|var| {
+            let from_base = var == "WARDEN_OP_CONNECT_URL" && !extra.iter().any(|(k, _)| *k == var);
+            vars(var).filter(|_| !from_base)
+        })
+    }
+
+    const LOCAL: [(&str, &str); 3] = [
+        ("WARDEN_SECRET_BACKEND", "local"),
+        ("WARDEN_LOCAL_POLICY_FILE", "/etc/warden/policy.toml"),
+        ("WARDEN_LOCAL_SECRETS_DIR", "/var/lib/warden/secrets"),
+    ];
+
+    #[test]
+    fn a_missing_setting_keeps_meaning_1password() {
+        let config = Config::from_lookup(lookup(&[("WARDEN_OP_CONNECT_TOKEN", SECRET)])).unwrap();
+        assert_eq!(config.backend.name(), "1password");
+        assert_eq!(connect(&config).vault, "Warden");
+        let blank = Config::from_lookup(lookup(&[
+            ("WARDEN_OP_CONNECT_TOKEN", SECRET),
+            ("WARDEN_SECRET_BACKEND", " "),
+        ]))
+        .unwrap();
+        assert_eq!(blank.backend.name(), "1password");
+    }
+
+    #[test]
+    fn naming_1password_still_needs_its_token() {
+        let err =
+            Config::from_lookup(lookup(&[("WARDEN_SECRET_BACKEND", "1password")])).unwrap_err();
+        assert_eq!(err, ConfigError::Missing("WARDEN_OP_CONNECT_TOKEN"));
+    }
+
+    #[test]
+    fn reads_the_local_settings() {
+        let config = without_connect_url(&LOCAL).unwrap();
+        let BackendSettings::Local(local) = &config.backend else {
+            panic!("expected the local backend");
+        };
+        assert_eq!(local.policy_file.to_str(), Some(LOCAL[1].1));
+        assert_eq!(local.secrets_dir.to_str(), Some(LOCAL[2].1));
+    }
+
+    #[test]
+    fn refuses_an_unknown_backend_without_echoing_it() {
+        for bad in ["Local", "1Password", "vault", SECRET] {
+            let err = Config::from_lookup(lookup(&[
+                ("WARDEN_OP_CONNECT_TOKEN", SECRET),
+                ("WARDEN_SECRET_BACKEND", bad),
+            ]))
+            .unwrap_err();
+            assert_eq!(
+                err,
+                ConfigError::Invalid {
+                    var: "WARDEN_SECRET_BACKEND",
+                    reason: "must be 1password or local"
+                }
+            );
+        }
+    }
+
+    /// The local files never apply unless the weaker backend was asked for by
+    /// name, and asking for it is refused while 1Password settings remain.
+    #[test]
+    fn refuses_settings_of_the_other_backend() {
+        for choice in [None, Some("1password")] {
+            let mut extra = vec![
+                ("WARDEN_OP_CONNECT_TOKEN", SECRET),
+                ("WARDEN_LOCAL_POLICY_FILE", "/etc/warden/policy.toml"),
+            ];
+            extra.extend(choice.map(|c| ("WARDEN_SECRET_BACKEND", c)));
+            let err = Config::from_lookup(lookup(&extra)).unwrap_err();
+            assert!(
+                matches!(
+                    err,
+                    ConfigError::Invalid {
+                        var: "WARDEN_LOCAL_POLICY_FILE",
+                        ..
+                    }
+                ),
+                "{err}"
+            );
+        }
+        for var in [
+            "WARDEN_OP_CONNECT_URL",
+            "WARDEN_OP_CONNECT_TOKEN",
+            "WARDEN_OP_CONNECT_TOKEN_FILE",
+            "WARDEN_OP_VAULT",
+        ] {
+            let mut extra = LOCAL.to_vec();
+            extra.push((var, "something"));
+            let err = without_connect_url(&extra).unwrap_err();
+            assert!(
+                matches!(err, ConfigError::Invalid { var: named, .. } if named == var),
+                "{var}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_local_backend_needs_both_paths_and_they_must_be_absolute() {
+        for index in [1, 2] {
+            let var = LOCAL[index].0;
+            let missing: Vec<_> = LOCAL.iter().copied().filter(|(k, _)| *k != var).collect();
+            assert_eq!(
+                without_connect_url(&missing).unwrap_err(),
+                ConfigError::Missing(var)
+            );
+            for bad in ["relative/path", "/etc/../shadow"] {
+                let mut extra = LOCAL.to_vec();
+                extra[index].1 = bad;
+                let err = without_connect_url(&extra).unwrap_err();
+                assert!(
+                    matches!(err, ConfigError::Invalid { var: named, .. } if named == var),
+                    "{bad}: {err}"
+                );
+                assert!(!err.to_string().contains(bad), "the error echoes the path");
+            }
+        }
     }
 }

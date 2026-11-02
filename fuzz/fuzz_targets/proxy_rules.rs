@@ -19,8 +19,9 @@ use warden_fuzz::{fields, text};
 
 const PREFIXES: [&str; 4] = ["/", "/api", "/api/", "/v1/repos"];
 const MAX_BODY: usize = 1024;
-/// Marks header values, so a refusal that repeats one can be seen.
-const SENTINEL: &str = "zq7sentinel";
+/// Marks header values, so a refusal that repeats one can be seen. A header name
+/// cannot hold a space, so a refusal that names a header cannot repeat this.
+const SENTINEL: &str = "zq7 sentinel";
 /// Headers that may never pass: the secret's own, framing and routing,
 /// compression and ranges (which hide the secret from redaction), and overrides.
 const NEVER_SENT: [&str; 17] = [
@@ -116,9 +117,8 @@ fn run(policy: &ApiSecretPolicy, req: &ProxyRequest) {
     match check(policy, req, MAX_BODY) {
         Ok(prepared) => check_prepared(policy, req, &prepared),
         Err(refusal) => {
-            let in_name = req.headers.iter().any(|(name, _)| name.contains(SENTINEL));
             assert!(
-                in_name || !refusal.to_string().contains(SENTINEL),
+                !refusal.to_string().contains(SENTINEL),
                 "a refusal repeats a header value"
             );
         }

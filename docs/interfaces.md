@@ -15,6 +15,7 @@ specified. Interfaces with a reference of their own are linked, not repeated.
 | Server settings | The operator | [Environment variables](configuration.md#server-environment-variables), [secrets in files](configuration.md#secrets-in-files) |
 | CLI settings and files | The agent's machine | [CLI environment and files](configuration.md#cli-environment-and-files) |
 | 1Password items | The owner, in the vault | [1Password items](1password-items.md) |
+| Local policy and secret files, with `WARDEN_SECRET_BACKEND=local` | Whoever can write them on the host | [Local files](local-backend.md) |
 
 ## What warden calls
 

@@ -18,6 +18,15 @@ All notable changes to this project are recorded here. The format follows
 
 ### Added
 
+- `WARDEN_SECRET_BACKEND=local`: targets, API secrets and the SSH CA key from a
+  policy file and private secret files on warden's host, with no 1Password account
+  or Connect ([docs/local-backend.md](docs/local-backend.md)). It is weaker: a
+  compromised host gets every secret, and there is no read-only token boundary.
+  1Password stays the recommended backend and the default when the setting is
+  unset, so existing deployments do not change. Files with loose permissions, links
+  or invalid content refuse the server's start or the request, and refusals are
+  audited. A policy file must end with `[end_of_policy]`, so that one cut short is
+  refused. `warden-server doctor` checks it. warden does not generate the CA key.
 - Contributions now need a Developer Certificate of Origin sign-off
   (`git commit -s`). A new `dco` check reads every commit of a pull request, and
   `CONTRIBUTING.md` explains the rule, including merge commits and Dependabot.

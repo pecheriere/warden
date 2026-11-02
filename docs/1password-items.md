@@ -12,7 +12,8 @@ Nothing is cached: every request reads the items afresh, so an edit in
 - The Connect token needs read access to this vault only, and nothing more.
 
 How to create the vault, the Connect server and its token is in
-[Deployment](deployment.md#3-1password).
+[Deployment](deployment.md#3-1password). 1Password is the recommended backend;
+[local files](local-backend.md) are a weaker alternative with the same rules.
 
 A missing or malformed field makes the request fail with an error naming the
 item and the field. A required field never falls back to a default.

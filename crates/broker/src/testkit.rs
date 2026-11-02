@@ -614,6 +614,9 @@ pub struct TestBroker {
     pub capture: Arc<CapturingNotifier>,
     /// The broker's policy source.
     pub backend: Arc<FakeBackend>,
+    /// What the broker actually asks: [`Self::backend`], unless built with
+    /// [`TestBroker::with_secret_backend`].
+    policy_source: Arc<dyn SecretBackend>,
     db_path: PathBuf,
     audit_path: PathBuf,
     default_passkey: tokio::sync::Mutex<Option<SoftAuthenticator>>,
@@ -628,6 +631,23 @@ pub struct TestBroker {
     limits: Limits,
     /// `WARDEN_RELAY_PUBLIC_ADDR`, if the relay is configured.
     relay: Option<String>,
+}
+
+/// The fake backend a test can change, and the backend the broker asks: the
+/// same one, unless built with [`TestBroker::with_secret_backend`].
+struct PolicySources {
+    fake: Arc<FakeBackend>,
+    asked: Arc<dyn SecretBackend>,
+}
+
+impl PolicySources {
+    fn fake() -> Self {
+        let fake = Arc::new(FakeBackend::new());
+        Self {
+            asked: fake.clone(),
+            fake,
+        }
+    }
 }
 
 impl Drop for TestBroker {
@@ -654,6 +674,30 @@ impl TestBroker {
     /// If any part of the setup fails.
     pub async fn new() -> Self {
         Self::with_proxy_limits(ProxyLimits::default()).await
+    }
+
+    /// Like [`TestBroker::new`], reading its policy from `backend` instead of
+    /// [`Self::backend`], and with a directory of its own for its files.
+    ///
+    /// # Panics
+    /// If any part of the setup fails.
+    pub async fn with_secret_backend(backend: Arc<dyn SecretBackend>) -> Self {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let db_path = dir.path().join("warden.db");
+        let audit_path = dir.path().join("audit.jsonl");
+        Self::build(
+            Some(dir),
+            db_path,
+            audit_path,
+            Arc::new(ManualClock::new(TEST_START)),
+            PolicySources {
+                fake: Arc::new(FakeBackend::new()),
+                asked: backend,
+            },
+            Limits::default(),
+            None,
+        )
+        .await
     }
 
     /// Like [`TestBroker::new`], without `WARDEN_RELAY_PUBLIC_ADDR`: the
@@ -739,7 +783,7 @@ impl TestBroker {
             db_path,
             audit_path,
             Arc::new(ManualClock::new(TEST_START)),
-            Arc::new(FakeBackend::new()),
+            PolicySources::fake(),
             limits,
             relay,
         )
@@ -775,7 +819,10 @@ impl TestBroker {
             self.db_path.clone(),
             self.audit_path.clone(),
             self.clock.clone(),
-            self.backend.clone(),
+            PolicySources {
+                fake: self.backend.clone(),
+                asked: self.policy_source.clone(),
+            },
             self.limits,
             relay,
         )
@@ -789,10 +836,14 @@ impl TestBroker {
         db_path: PathBuf,
         audit_path: PathBuf,
         clock: Arc<ManualClock>,
-        backend: Arc<FakeBackend>,
+        sources: PolicySources,
         limits: Limits,
         relay: Option<String>,
     ) -> Self {
+        let PolicySources {
+            fake: backend,
+            asked: policy_source,
+        } = sources;
         let pool = store::open(&db_path).await.expect("open database");
         let audit = Arc::new(AuditLog::open(&audit_path).await.expect("open audit log"));
         let host_key_path = db_path.with_file_name("relay_host_ed25519");
@@ -823,7 +874,7 @@ impl TestBroker {
         let requests = Requests::new(
             pool.clone(),
             audit.clone(),
-            backend.clone(),
+            policy_source.clone(),
             capture.clone(),
             config.public_url.clone(),
             clock.clone(),
@@ -842,7 +893,7 @@ impl TestBroker {
             config: config.clone(),
             identity: Arc::new(TailscaleServeIdentity),
             audit,
-            backend: backend.clone(),
+            backend: policy_source.clone(),
             clock: clock.clone(),
             requests,
             passkeys: Arc::new(passkeys),
@@ -857,6 +908,7 @@ impl TestBroker {
             clock,
             capture,
             backend,
+            policy_source,
             db_path,
             audit_path,
             default_passkey: tokio::sync::Mutex::new(None),
