@@ -29,7 +29,8 @@ only, such as `build-agent`, `home-api`, `switch-01`, `warden.example.ts.net`
 and documentation addresses (`192.0.2.0/24`, `198.51.100.0/24`).
 
 Commit messages and PR descriptions carry no AI attribution lines
-(`Co-Authored-By`, session links, "Generated with").
+(`Co-Authored-By`, session links, "Generated with"). A `Signed-off-by` line
+is not one: see [Sign-off](#sign-off-dco).
 
 ## Layout
 
@@ -48,10 +49,11 @@ Commit messages and PR descriptions carry no AI attribution lines
 
 ## Before you push
 
-CI (`.github/workflows/ci.yml` and `zizmor.yml`) runs exactly these, and
-every one must pass:
+CI (`.github/workflows/ci.yml`, `dco.yml` and `zizmor.yml`) runs exactly
+these, and every one must pass:
 
 ```sh
+python3 -I .github/scripts/dco.py pull-request --base origin/main --head HEAD
 cargo fmt --check
 scripts/check-no-reqwest-decompression.sh
 scripts/check-demo-not-shipped.sh
@@ -100,6 +102,26 @@ uvx zizmor@1.31.1 .   # when a workflow or the Dependabot config changes
   the PR template lists, light and dark, and attach the screenshots.
   `scripts/check-grants-live.py <out-dir>` checks the grants page's live
   refresh.
+
+## Sign-off (DCO)
+
+Every commit is signed off with `git commit -s`.
+[`CONTRIBUTING.md`](CONTRIBUTING.md#sign-off-dco) says what that means and what the
+`dco` check accepts.
+
+**Agents.** A sign-off is a person's statement, and an agent cannot make it. An
+agent adds one on behalf of the maintainer, only:
+
+- with `git commit -s` under the maintainer's own git identity, as already
+  configured: never by changing `user.name` or `user.email`, and never by typing
+  the line or an address by hand;
+- for work that maintainer asked for, who then answers for it as for any change
+  they sign off.
+
+If no person with that standing asked for the work, leave the commit without a
+sign-off and say so: the check fails, and a person decides. The line names the
+maintainer and never the agent, so it fits the rule against AI attribution, and
+it does not replace that rule: add no other trailer for the agent.
 
 ## Releases
 

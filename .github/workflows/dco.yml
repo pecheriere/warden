@@ -1,0 +1,57 @@
+name: dco
+
+# Checks the Developer Certificate of Origin sign-off. CONTRIBUTING.md says what
+# it means, and .github/scripts/dco.py says what passes and why.
+#
+# `dco` checks the commits of a pull request and is the check to require.
+# `dco-squash` checks the squash commit after the merge: GitHub writes that
+# commit's message at merge time, so nothing can check it sooner. It only runs on
+# pushes to main. On a pull request it is skipped, which GitHub counts as passing,
+# so requiring it would enforce nothing.
+
+on:
+  pull_request:
+    # `edited` because retargeting a pull request changes which commits it adds,
+    # and a result already on the head commit would otherwise still count. There is
+    # no filter for retargeting alone: a job skipped on a title edit would replace
+    # a failed result, so every edit reruns the check.
+    types: [opened, synchronize, reopened, edited]
+  push:
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  dco:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The whole history: the commits between the PR's merge commit's two
+          # parents, and their merge bases for the clean-merge comparison.
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Refuse commits without a sign-off
+        env:
+          # A number GitHub assigns, not text from the commit or the PR.
+          PR_AUTHOR_ID: ${{ github.event.pull_request.user.id }}
+        run: >-
+          python3 -I .github/scripts/dco.py pull-request
+          --base HEAD^1 --head HEAD^2 --pr-author-id "$PR_AUTHOR_ID"
+
+  dco-squash:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Report a squash commit that lost its sign-off
+        run: python3 -I .github/scripts/dco.py squash --commit HEAD

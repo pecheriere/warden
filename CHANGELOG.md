@@ -27,6 +27,9 @@ All notable changes to this project are recorded here. The format follows
   or invalid content refuse the server's start or the request, and refusals are
   audited. A policy file must end with `[end_of_policy]`, so that one cut short is
   refused. `warden-server doctor` checks it. warden does not generate the CA key.
+- Contributions now need a Developer Certificate of Origin sign-off
+  (`git commit -s`). A new `dco` check reads every commit of a pull request, and
+  `CONTRIBUTING.md` explains the rule, including merge commits and Dependabot.
 - CI measures test coverage with `cargo llvm-cov`, including the Linux-only
   relay tests, and reports it in each run's summary. No threshold fails the
   build yet.
