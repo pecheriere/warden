@@ -2,10 +2,11 @@ name: repeatable build
 
 # Builds each release output twice on separate runners, from checkouts at
 # different paths, and fails if the two differ by a single bit. It uses the same
-# script, Dockerfile and options as release.yml. docs/reproducing-builds.md says
-# what this does and does not show. It is too slow for every pull request, so it
-# runs when the build inputs change and every week, which catches a change in the
-# runner images.
+# script and Dockerfile as release.yml. The image's options differ in two ways: it
+# writes an OCI archive rather than pushing, and it has no provenance, whose times
+# never repeat. docs/reproducing-builds.md says what this does and does not show.
+# It is too slow for every pull request, so a change to the sources alone waits for
+# the weekly run, which also catches a change in the runner images.
 
 on:
   pull_request:
@@ -17,6 +18,8 @@ on:
       - .dockerignore
       - Cargo.toml
       - Cargo.lock
+      - crates/*/Cargo.toml
+      - crates/*/build.rs
       - rust-toolchain.toml
   schedule:
     - cron: '17 4 * * 1'

@@ -3,8 +3,9 @@
 From the first release after v0.8.1, building warden twice from the same commit
 with the same tools is meant to give the same bits. The
 [repeatable build](../.github/workflows/repeatable-build.yml) workflow checks this
-every week and whenever a build input changes: it builds each output twice, on
-separate runners, from checkouts at different paths.
+every week, and when the build's configuration or dependencies change: it builds
+each output twice, on separate runners, from checkouts at different paths. A change
+to the sources alone is not checked until the next weekly run.
 
 v0.8.1 and earlier do not reproduce: their files carry build times, and their CLI
 archives did not exist.
@@ -20,7 +21,9 @@ archives did not exist.
 | Base image | None | The Dockerfile's two digests |
 | Time | The commit's, set by the script | `SOURCE_DATE_EPOCH`, the commit's |
 | BuildKit | None | The version in `release.yml` |
-| Paths, user name, CPU count | Need not match | Need not match |
+| Paths | Need not match | Need not match |
+| User name, home directory | Need not match, measured on Linux only | Not measured; the build runs in a container |
+| CPU count | Need not match, measured with 2 and 3 | Not measured |
 
 ## Reproduce the image
 
@@ -99,7 +102,9 @@ source files had new times.
 | CLI binary, macOS arm64 | Identical with the same home directory; holds it in 412 paths | Identical, with no such paths |
 | Image, `linux/arm64` | Differs: only the times in the config and on two layers' files. `warden-server` was already identical | Identical, in every blob |
 
-The workflow's run on `linux/amd64` and on GitHub's runners is the evidence for
-those, and for two separate machines. A build on a developer's machine was not
-compared with one on a runner, and a release's published digest has not yet been
-compared with a rebuild, because no release has been built this way yet.
+The workflow's runs are the evidence for `linux/amd64` and for GitHub's runners.
+Each pair of builds runs on two runner instances of the same runner image; GitHub
+does not show whether those are on different hardware. A build on a developer's
+machine was not compared with one on a runner, and a release's published digest has
+not yet been compared with a rebuild, because no release has been built this way
+yet.
