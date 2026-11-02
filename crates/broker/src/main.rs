@@ -488,20 +488,38 @@ async fn secret_backend(config: &Config, audit: &Arc<AuditLog>) -> Result<Arc<dy
     }
 }
 
-async fn build_app(config: &Arc<Config>) -> Result<App> {
+/// Make the data directory private if it is clearly warden's, and say what
+/// happened if not. Refuses to go on if others can write to it.
+async fn report_data_directory(config: &Config) -> Result<()> {
     let directory = private_files::data_directory(&config.db_path);
-    match private_files::tighten_data_directory(&config.db_path).await {
+    let others = [
+        config.audit_path.as_path(),
+        config.audience_path.as_path(),
+        config.relay.host_key_path.as_path(),
+    ];
+    let state = private_files::tighten_data_directory(&config.db_path, &others).await?;
+    match state {
         DirectoryState::Tightened => {
             tracing::info!(path = %directory.display(), "data directory set to mode 0700");
         }
-        DirectoryState::Left { reason } => tracing::warn!(
+        DirectoryState::Readable { reason } => tracing::warn!(
             path = %directory.display(),
             %reason,
-            "the data directory has group or other permissions and warden left them; \
-             warden's files in it stay private, and warden-server doctor fails it"
+            "others can list the data directory, and warden did not change it: they can see \
+             its files' names and sizes, not their contents. warden-server doctor fails it"
+        ),
+        DirectoryState::Unchecked { reason } => tracing::warn!(
+            path = %directory.display(),
+            %reason,
+            "warden could not check the data directory's mode"
         ),
         _ => {}
     }
+    Ok(())
+}
+
+async fn build_app(config: &Arc<Config>) -> Result<App> {
+    report_data_directory(config).await?;
     let pool = store::open(&config.db_path).await?;
     let audit = Arc::new(
         AuditLog::open(&config.audit_path)

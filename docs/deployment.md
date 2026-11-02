@@ -526,19 +526,13 @@ on how it is mounted:
   directory does not exist, Docker creates it owned by root, and warden cannot
   start: create it first, as [the steps below](#the-compose-file) do.
 
-warden keeps its files private to its user, whichever you use. It creates them
-0600, and at each start it corrects any it finds with group or other permissions:
-the database and its `-wal` and `-shm` files, the audit log and the audience. It
-does the same for the data directory, 0700, when its own non-root user owns it.
-
-- **A file it cannot correct stops warden**, with a message naming the file: for
-  example, one owned by another user or on a read-only mount. A file that is
-  already private needs no change, so it can be on a read-only mount. A database
-  cannot, as warden writes to it.
-- **A directory it cannot correct** gets a warning in the log, and warden starts:
-  the files in it are private without its help. `warden-server doctor` fails it
-  until you correct it.
-- **Tools that read these files** must run as warden's user or as root.
+warden keeps its files private to its user, whichever you use, and corrects
+`/data` itself at start when it holds nothing but warden's files.
+[The data directory](configuration.md#the-data-directory) has the rules. Tools that
+read these files must run as warden's user or as root. Run doctor inside the
+container: Docker Desktop's file sharing can show a bind-mounted directory with one
+mode on the host and another in the container, and the container's is what warden
+sees.
 
 ### Networks
 

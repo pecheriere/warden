@@ -237,6 +237,35 @@ on a private network. Any other scheme is refused.
 See [Backups and upgrades](deployment.md#9-backups-and-upgrades). To replace a
 key or token, see [Replacing credentials](assurance-case.md#7-replacing-credentials).
 
+### The files
+
+warden keeps its files private to its user. It creates the database and its
+companion files, the audit log and the audience 0600. At start, it corrects any it
+finds with group or other permissions. It refuses to start, with a message naming the
+file, if a file cannot be corrected, for example because another user owns it or it
+is on a read-only mount, or if a symbolic link is in its place. A file that is already
+private needs no change, so it can be on a read-only mount, though warden has to write
+to the database and the audit log. The relay's host key is refused rather than
+corrected.
+
+### The data directory
+
+The data directory is the one holding `WARDEN_DB_PATH`. **warden sets it to 0700 only
+when warden's non-root user owns it and nothing but warden's own files is in it.** So
+`/data`, in a new volume or one warden has been using, is corrected, and `$HOME` holding
+a database is not. warden's own files are those in the table above and its temporary
+files for them.
+
+If warden leaves a directory with group or other permissions alone:
+
+| Others can | warden | Why |
+|---|---|---|
+| Write to it | Refuses to start, and says why | They could replace the files in it, whatever the files' modes. |
+| Only read it | Logs a warning, and starts | They can see the files' names, sizes and times, not their contents. |
+
+`warden-server doctor` fails `data.directory` in both cases. To fix it, give warden a
+directory of its own, or change this one's mode yourself: warden will not.
+
 ## Server endpoints
 
 | Listener | Path | Who |

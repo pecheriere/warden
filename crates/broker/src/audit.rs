@@ -10,7 +10,7 @@
 
 use std::fs::{File, TryLockError};
 use std::io::{Read as _, Write as _};
-use std::os::unix::fs::{FileExt as _, OpenOptionsExt as _};
+use std::os::unix::fs::FileExt as _;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -608,13 +608,7 @@ fn write_event(file: &File, head: &Head, event: &AuditEvent) -> Result<Head, Aud
 
 /// Open, lock, verify and repair the log at `path`. Blocking.
 fn open_blocking(path: &Path) -> Result<(File, Head), AuditError> {
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .read(true)
-        .mode(0o600)
-        .open(path)?;
-    crate::private_files::make_private(&file, path)?;
+    let file = crate::private_files::open_private_log(path)?;
     let head = load_locked(&file)?;
     Ok((file, head))
 }

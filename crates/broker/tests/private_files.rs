@@ -2,7 +2,7 @@
 //! the real `SQLite` creating its own files.
 
 use std::fs::{self, Permissions};
-use std::os::unix::fs::PermissionsExt as _;
+use std::os::unix::fs::{PermissionsExt as _, symlink};
 use std::path::Path;
 
 use warden_broker::audit::{self, AuditLog};
@@ -83,16 +83,40 @@ async fn an_existing_loose_audit_log_is_made_private_and_still_verifies() {
 }
 
 #[tokio::test]
-async fn a_data_directory_warden_owns_is_tightened_and_the_state_reported() {
+async fn a_symbolic_link_for_the_audit_log_is_refused_and_its_target_untouched() {
+    let dir = open_directory();
+    let target = dir.path().join("target");
+    fs::write(&target, "").unwrap();
+    fs::set_permissions(&target, Permissions::from_mode(0o644)).unwrap();
+    let link = dir.path().join("audit.jsonl");
+    symlink(&target, &link).unwrap();
+    assert!(AuditLog::open(&link).await.is_err());
+    assert_eq!(mode(&target), 0o644);
+}
+
+#[tokio::test]
+async fn only_a_data_directory_that_is_clearly_warden_s_is_tightened() {
+    let others = [Path::new("audit.jsonl"), Path::new("audience")];
     let dir = open_directory();
     let db = dir.path().join("warden.db");
-    let first = tighten_data_directory(&db).await;
+    store::open(&db).await.unwrap().close().await;
+    let first = tighten_data_directory(&db, &others).await.unwrap();
     if rustix::process::geteuid().is_root() {
-        assert!(matches!(first, DirectoryState::Left { .. }));
+        assert!(matches!(first, DirectoryState::Readable { .. }));
         assert_eq!(mode(dir.path()), 0o755);
     } else {
         assert_eq!(first, DirectoryState::Tightened);
         assert_eq!(mode(dir.path()), 0o700);
-        assert_eq!(tighten_data_directory(&db).await, DirectoryState::Private);
     }
+
+    // The same, with something else in the directory: it is shared, like $HOME.
+    let shared = open_directory();
+    fs::write(shared.path().join(".profile"), "").unwrap();
+    let db = shared.path().join("warden.db");
+    let state = tighten_data_directory(&db, &others).await.unwrap();
+    assert!(
+        matches!(state, DirectoryState::Readable { .. }),
+        "{state:?}"
+    );
+    assert_eq!(mode(shared.path()), 0o755);
 }
