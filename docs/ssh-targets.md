@@ -25,7 +25,8 @@ A certificate carries a single principal, `warden:<target>:<user>`, where
 key id is `warden:<agent>:<grant id>`, so the target's logs name the agent
 and the grant. It is valid for the approved window (backdated 60 s for
 clock skew), for one ephemeral key, and allows a pty and nothing else: no
-agent, port or X11 forwarding.
+agent, port or X11 forwarding. The window limits new logins: a session already
+open [keeps running after it](#revocation-and-certificates).
 
 A host must accept the CA **only for its own principal**. If it accepted any
 principal from the CA, an approval for one target would work on every host
@@ -166,9 +167,23 @@ login to the agent accounts.
 
 Revoking a grant stops warden from issuing anything more for it, but a
 certificate already issued stays valid on the target until it expires: sshd
-checks it offline (see [issue #35][i35]). Short windows are the defence.
-To cut an approved agent off at once, lock its account on the target or
-remove its principal line.
+checks it offline (see [issue #35][i35]). Short windows limit new logins. A login
+already open is another matter: sshd checks a certificate when it authenticates,
+so the session continues after the certificate expires and after a revocation.
+To cut an approved agent off at once:
+
+1. Refuse new logins: remove its principal line, or expire the account with
+   `usermod --expiredate 1 <user>` (undo with `usermod --expiredate '' <user>`).
+   Do not rely on `passwd -l` or `usermod -L`, which lock only the password: with
+   `UsePAM yes`, certificate logins still worked after either. With `UsePAM no`
+   they were refused.
+2. End what is running, as root: `pkill -KILL -u <user>` on an account warden
+   alone uses, then `ps -u <user>`, and again until nothing is left. Neither step
+   above ends an open session. See
+   [the emergency steps](assurance-case.md#the-ssh-ca-key).
+
+We tested this on OpenSSH 9.2 in a Debian 12 container, not on other systems or on
+appliances. Try it on yours.
 
 [i35]: https://github.com/pecheriere/warden/issues/35
 

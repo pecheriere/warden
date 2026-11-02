@@ -16,9 +16,9 @@ the agent never sees.
 
 Agents authenticate every API call by **signing it with an SSH key** whose
 public half the owner enrolled on the broker (the *signing key*). The key
-can live in hardware (a TPM, a YubiKey) behind an `ssh-agent`, so
-no reusable secret is stored on the agent's machine and a captured request
-cannot be replayed. Older agents authenticate with a bearer key instead (see
+can live in hardware (a TPM, a YubiKey) behind an `ssh-agent`, so that it
+cannot be copied off the agent's machine (a key in a file can), and a captured
+request cannot be replayed. Older agents authenticate with a bearer key instead (see
 [Bearer keys](#bearer-keys-legacy)); a new client should sign.
 
 Contents:
@@ -108,7 +108,8 @@ warden-server agent add <name> --public-key '<public key line>'
 ```
 
 This creates a key-signed agent; no bearer key is printed, and nothing
-secret changes hands. An existing bearer-key agent is switched with
+secret changes hands. It prints the matching `warden login` command, for those
+using the CLI. An existing bearer-key agent is switched with
 `warden-server agent set-key <name> '<public key line>'`: its bearer key stops
 working at once. `warden-server agent list` shows each agent's kind of
 authentication and its key's fingerprint
@@ -287,7 +288,8 @@ ready to put in the blob.
 ### What the broker checks
 
 In this order, stopping at the first failure. Every failure is a 401,
-except an oversized body (413) and a body too slow to arrive (408):
+except an oversized body (413), a body too slow to arrive (408) and a database
+failure on the broker's side (500):
 
 1. The four `Warden-*` headers are present, each once, and well formed;
    `Warden-Signature` is at most 4096 characters; no other `Warden-*` header
@@ -535,7 +537,7 @@ Ask the owner for access. Signed; JSON body:
 |-------|------|---------|
 | `goal` | string | Why access is needed: what you will do and why, naming the change, issue or error. 1 to 500 characters after trimming whitespace, one line: no control characters and no invisible format characters (Unicode category Cf: bidi controls, zero-width characters, BOM, soft hyphen…). The owner decides on it alone; the notification shows the first 200 characters. |
 | `access` | object | What is asked for; see below. |
-| `window` | string | How long the access should last: `15m`, `30m`, `1h` or `4h`. The target's or secret's policy caps it, and the owner may approve a shorter one. |
+| `window` | string | How long the access should last: `15m`, `30m`, `1h` or `4h`. The target's or secret's policy caps it. The owner chooses the window when approving, anything up to that cap, so it may be shorter or longer than the one asked for. |
 
 `access` for SSH (a certificate, or a session through the relay; the
 target's policy decides which, and the agent does not need to know):
@@ -633,7 +635,7 @@ sees the outcome.
 - `pending`: no decision yet.
 - `approved`: the grant is inline (`grant_id`, `not_before`, `not_after` and
   `access`, described in section 7). `not_after` reflects the window the
-  owner approved, which may be shorter than the one asked for.
+  owner approved, which may differ from the one asked for.
 - `denied`: do not retry the same request; ask the owner what to change.
 - `expired`: nobody decided within 10 minutes. Retry later, not in a loop.
 - `cancelled`: the agent withdrew it.
@@ -674,7 +676,8 @@ first. Signed; no body. `200` with a JSON array of grants, each
 End one of the agent's grants as soon as the work is done. Signed; no
 body. Relay sessions on the grant are killed and `api` calls refused.
 Certificates already issued stay valid on the target until they expire,
-which is why windows are short.
+which is why windows are short, and a login already open on the target continues
+after that. End your own sessions when you revoke.
 
 - `204`: revoked (also if it already was); no body.
 - `404` `{"error":"not found"}`: unknown id, or another agent's grant.
@@ -959,7 +962,8 @@ Never use the signing key for anything else, and never use it as the
 
 What signing protects:
 
-- **No reusable secret on the wire or at rest.** A request is useless to
+- **No reusable secret on the wire, nor at rest if the key is in hardware.** A
+  request is useless to
   whoever captures it: the nonce is single-use, the timestamp limits it to 60
   seconds, the audience to one broker, and the signature covers the method,
   path, query and body, so it cannot be redirected to another endpoint, grant

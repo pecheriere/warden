@@ -4,6 +4,7 @@
 
 ## Checklist
 
+- [ ] Every commit is signed off (`git commit -s`; see `CONTRIBUTING.md`).
 - [ ] Tests cover the change, and `cargo fmt`, clippy, tests and `cargo deny` pass.
 - [ ] `CHANGELOG.md` and the docs are updated where behaviour changes.
 - [ ] No private infrastructure details (hostnames, addresses, user names).
