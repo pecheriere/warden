@@ -108,7 +108,8 @@ warden-server agent add <name> --public-key '<public key line>'
 ```
 
 This creates a key-signed agent; no bearer key is printed, and nothing
-secret changes hands. An existing bearer-key agent is switched with
+secret changes hands. It prints the matching `warden login` command, for those
+using the CLI. An existing bearer-key agent is switched with
 `warden-server agent set-key <name> '<public key line>'`: its bearer key stops
 working at once. `warden-server agent list` shows each agent's kind of
 authentication and its key's fingerprint
@@ -287,7 +288,8 @@ ready to put in the blob.
 ### What the broker checks
 
 In this order, stopping at the first failure. Every failure is a 401,
-except an oversized body (413) and a body too slow to arrive (408):
+except an oversized body (413), a body too slow to arrive (408) and a database
+failure on the broker's side (500):
 
 1. The four `Warden-*` headers are present, each once, and well formed;
    `Warden-Signature` is at most 4096 characters; no other `Warden-*` header
@@ -535,7 +537,7 @@ Ask the owner for access. Signed; JSON body:
 |-------|------|---------|
 | `goal` | string | Why access is needed: what you will do and why, naming the change, issue or error. 1 to 500 characters after trimming whitespace, one line: no control characters and no invisible format characters (Unicode category Cf: bidi controls, zero-width characters, BOM, soft hyphen…). The owner decides on it alone; the notification shows the first 200 characters. |
 | `access` | object | What is asked for; see below. |
-| `window` | string | How long the access should last: `15m`, `30m`, `1h` or `4h`. The target's or secret's policy caps it, and the owner may approve a shorter one. |
+| `window` | string | How long the access should last: `15m`, `30m`, `1h` or `4h`. The target's or secret's policy caps it. The owner chooses the window when approving, anything up to that cap, so it may be shorter or longer than the one asked for. |
 
 `access` for SSH (a certificate, or a session through the relay; the
 target's policy decides which, and the agent does not need to know):
@@ -633,7 +635,7 @@ sees the outcome.
 - `pending`: no decision yet.
 - `approved`: the grant is inline (`grant_id`, `not_before`, `not_after` and
   `access`, described in section 7). `not_after` reflects the window the
-  owner approved, which may be shorter than the one asked for.
+  owner approved, which may differ from the one asked for.
 - `denied`: do not retry the same request; ask the owner what to change.
 - `expired`: nobody decided within 10 minutes. Retry later, not in a loop.
 - `cancelled`: the agent withdrew it.

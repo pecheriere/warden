@@ -275,7 +275,10 @@ it; follow it for a real setup.
 | [Agent instructions](docs/agent-instructions.md) | A block to paste into an agent's `AGENTS.md` or `CLAUDE.md`. |
 | [Examples](docs/agent-examples.md) | An SSH deployment and an API call, end to end. |
 | [Agent protocol](docs/agent-protocol.md) | The agent API, for writing another client. |
+| [External interfaces](docs/interfaces.md) | Everything warden accepts and calls, with the approval UI's routes and the SSH relay. |
 | [Threat model](docs/threat-model.md) | What warden protects, what it does not, and what it assumes. |
+| [Assurance case](docs/assurance-case.md) | Trust boundaries, design principles, weaknesses and cryptography, with pointers to the code, and how to replace each credential. |
+| [Security assessment](docs/security-assessment.md) | A dated ranking of what is most likely to go wrong. The project's own, not an independent review. |
 | [Design](docs/design.md) | The design and its decisions. |
 | [Design language](docs/design-language.md) | The approval UI's visual design. |
 
