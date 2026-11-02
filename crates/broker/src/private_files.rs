@@ -289,11 +289,26 @@ mod tests {
             matches!(error, PrivateFileError::NotRegular { .. }),
             "{error}"
         );
-        let error = prepare_database(dir.path()).unwrap_err();
-        assert!(
-            matches!(error, PrivateFileError::NotRegular { .. }),
-            "{error}"
-        );
+        // Linux refuses to open a directory for creating a file, and macOS
+        // opens it and leaves the check to find out.
+        prepare_database(dir.path()).unwrap_err();
+
+        // Opening a FIFO without O_NONBLOCK would wait for a writer forever.
+        let fifo = dir.path().join("fifo");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap();
+        assert!(made.success());
+        for error in [
+            make_existing_private(&fifo).unwrap_err(),
+            prepare_database(&fifo).unwrap_err(),
+        ] {
+            assert!(
+                matches!(error, PrivateFileError::NotRegular { .. }),
+                "{error}"
+            );
+        }
     }
 
     #[test]
