@@ -27,7 +27,9 @@ All notable changes to this project are recorded here. The format follows
   or invalid content refuse the server's start or the request, and refusals are
   audited. A policy file ends with `[end_of_policy]` and a digest of its content,
   so that a read cut short or mixing two versions is refused; the new
-  `warden-server seal-policy` writes the digest and replaces the file atomically. A
+  `warden-server seal-policy` writes the digest and replaces the file atomically,
+  and will not seal a file in place whose digest does not match until you have seen
+  what it allows and pass `--accept-unverified`. A
   policy or secret file mounted on its own is refused, because it would keep showing
   the old file after a change. `warden-server doctor` checks all of it. warden does
   not generate the CA key.

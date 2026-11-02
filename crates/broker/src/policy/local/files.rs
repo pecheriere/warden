@@ -144,6 +144,10 @@ pub(super) fn open_regular(
 const MOUNTED_ALONE: &str = "is a mount of this one file, which keeps showing the old file after \
                              it is replaced; mount the directory holding it";
 
+#[cfg(target_os = "linux")]
+const CANNOT_TELL: &str = "cannot be checked for a mount of the single file: this needs Linux 5.8 \
+                           or later, with the statx system call allowed";
+
 /// A bind mount of one file stays on that file's inode. After a rename over the
 /// source, the mount shows the old content: with no name left when the old file
 /// was replaced, which `nlink` shows, but with one name when it was first moved
@@ -154,8 +158,19 @@ const MOUNTED_ALONE: &str = "is a mount of this one file, which keeps showing th
 fn check_not_a_mount(file: &File) -> Result<(), Refusal> {
     use rustix::fs::{AtFlags, StatxFlags, statx};
 
-    let stat = statx(file, c"", AtFlags::EMPTY_PATH, StatxFlags::BASIC_STATS)?;
+    let stat =
+        statx(file, c"", AtFlags::EMPTY_PATH, StatxFlags::BASIC_STATS).map_err(statx_failed)?;
     mount_rule(stat.stx_attributes_mask, stat.stx_attributes)
+}
+
+/// A kernel without `statx`, or a sandbox that forbids it, cannot answer: name what
+/// is needed, because it stops this backend altogether.
+#[cfg(target_os = "linux")]
+fn statx_failed(errno: Errno) -> Refusal {
+    match errno {
+        Errno::NOSYS | Errno::PERM | Errno::ACCESS => Refusal::Rule(CANNOT_TELL),
+        other => Refusal::from(other),
+    }
 }
 
 /// The decision on what `statx` reports.
@@ -167,9 +182,7 @@ fn mount_rule(
     use rustix::fs::StatxAttributes;
 
     if !known.contains(StatxAttributes::MOUNT_ROOT) {
-        return Err(Refusal::Rule(
-            "cannot be checked for a mount of the single file: this needs Linux 5.8 or later",
-        ));
+        return Err(Refusal::Rule(CANNOT_TELL));
     }
     if attributes.contains(StatxAttributes::MOUNT_ROOT) {
         return Err(Refusal::Rule(MOUNTED_ALONE));
@@ -573,6 +586,21 @@ mod tests {
         assert!(
             matches!(mount_rule(none, none), Err(Refusal::Rule(reason)) if reason.contains("5.8"))
         );
+    }
+
+    /// A kernel or sandbox refusing the call is told apart from a failed read.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_kernel_without_statx_is_named_as_the_reason() {
+        use rustix::io::Errno;
+
+        for errno in [Errno::NOSYS, Errno::PERM, Errno::ACCESS] {
+            assert_eq!(
+                super::statx_failed(errno),
+                Refusal::Rule(super::CANNOT_TELL)
+            );
+        }
+        assert!(matches!(super::statx_failed(Errno::IO), Refusal::Io(_)));
     }
 
     /// The real kernel's answer, on something always a mount (`/`) and on a

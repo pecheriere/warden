@@ -7,26 +7,45 @@
 //!
 //! Sealing says "this content is finished". It cannot tell a finished file from a
 //! file another writer is still overwriting, so what it takes is the operator's
-//! word, and the draft's own `[end_of_policy]` line: a draft cut short has lost that line
-//! and is refused rather than sealed as a wider policy.
+//! word, and the draft's own `[end_of_policy]` line: a draft cut short has lost that
+//! line and is refused rather than sealed as a wider policy. A policy file whose
+//! digest no longer matches may be a mix of two versions, so it is not sealed where
+//! it stands until a person has seen what it allows and said so: see [`Unverified`].
 
 use std::ffi::{OsStr, OsString};
-use std::fs::{File, Permissions};
-use std::io::Write as _;
+use std::fmt::Display;
+use std::fs::{File, Metadata, Permissions};
+use std::io::{self, Write as _};
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _, fchown};
 use std::path::Path;
 
 use rustix::fs::{AtFlags, Mode, OFlags};
+use rustix::io::Errno;
 use thiserror::Error;
 use zeroize::Zeroizing;
 
 use super::files::{
     MAX_POLICY_BYTES, Refusal, check_policy_file, open_directory, open_regular, read_limited,
 };
-use super::{DIGEST_LINE_START, END_MARKER, digest_line, parse_policy};
+use super::{
+    DIGEST_LINE_START, END_MARKER, PolicyFile, digest_line, parse_policy, shown_name, verify_seal,
+};
 
 /// A new policy file's mode: warden needs to read it, and nothing in it is secret.
 const NEW_FILE_MODE: u32 = 0o644;
+
+/// How often a temporary name is drawn before giving up. Random names do not
+/// collide: more than one failure means something else is going on.
+const TEMPORARY_NAME_ATTEMPTS: usize = 8;
+
+/// What to do with a policy file sealed where it stands whose digest does not match.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unverified {
+    /// Refuse, and show what the file would allow.
+    Refuse,
+    /// A person has read that: seal it.
+    Accept,
+}
 
 /// Why nothing was sealed. Never quotes a file.
 #[derive(Debug, Error)]
@@ -34,12 +53,14 @@ const NEW_FILE_MODE: u32 = 0o644;
 pub struct SealError(String);
 
 /// What a sealed file holds, to show the operator.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SealedPolicy {
     /// Entries under `[targets]`.
     pub targets: usize,
     /// Entries under `[api_secrets]`.
     pub api_entries: usize,
+    /// One line for each entry: what it allows. Never a secret's value.
+    pub access: Vec<String>,
 }
 
 /// `draft` as a sealed policy file: its text through its `[end_of_policy]` line, then the
@@ -73,25 +94,133 @@ pub fn seal_text(draft: &str) -> Result<Zeroizing<String>, SealError> {
     Ok(sealed)
 }
 
+/// What each entry allows, for a person to read: names, destinations, methods and
+/// prefixes, including which secret file goes where. A website is shown as its
+/// origin, and a format only as being there, so that a credential pasted into either
+/// stays out of a terminal and its scrollback.
+fn access_lines(policy: &PolicyFile) -> Vec<String> {
+    let shown = |value: Option<&str>| value.map_or_else(|| "(not set)".to_owned(), shown_name);
+    let list = |value: Option<&Vec<String>>| {
+        value.map_or_else(
+            || "(default)".to_owned(),
+            |items| shown_name(&items.join(", ")),
+        )
+    };
+    let mut lines = Vec::new();
+    if let Some(ca) = &policy.ca {
+        lines.push(format!(
+            "SSH CA: key file {}",
+            shown_name(&ca.private_key_file)
+        ));
+    }
+    for (name, entry) in &policy.targets {
+        let source = entry
+            .private_key_file
+            .as_deref()
+            .or(entry.password_file.as_deref());
+        lines.push(format!(
+            "target {}: address {}, mode {}, users {}, window {}, {} host key(s), secret file {}",
+            shown_name(name),
+            shown(entry.address.as_deref()),
+            shown(entry.mode.as_deref()),
+            list(entry.users.as_ref()),
+            shown(entry.max_window.as_deref()),
+            entry.host_keys.as_ref().map_or(0, Vec::len),
+            shown(source),
+        ));
+    }
+    for (name, entry) in &policy.api_secrets {
+        let origin = entry.website.as_deref().map_or_else(
+            || "(not set)".to_owned(),
+            |website| {
+                url::Url::parse(website).map_or_else(
+                    |_| "(not a URL)".to_owned(),
+                    |url| shown_name(&url.origin().ascii_serialization()),
+                )
+            },
+        );
+        lines.push(format!(
+            "API {}: origin {origin}, methods {}, path prefix {}, window {}, header {}, format {}, \
+             own CA {}, secret file {}",
+            shown_name(name),
+            list(entry.methods.as_ref()),
+            entry
+                .path_prefix
+                .as_deref()
+                .map_or_else(|| "(default)".to_owned(), shown_name),
+            shown(entry.max_window.as_deref()),
+            entry
+                .header
+                .as_deref()
+                .map_or_else(|| "(default)".to_owned(), shown_name),
+            if entry.format.is_some() {
+                "own"
+            } else {
+                "(default)"
+            },
+            if entry.ca_pem.is_some() { "yes" } else { "no" },
+            shown(entry.credential_file.as_deref()),
+        ));
+    }
+    lines
+}
+
 /// Whose file a replacement must be, and with what mode.
-struct Ownership {
+pub(super) struct Ownership {
     uid: u32,
     gid: u32,
     mode: u32,
 }
 
+/// `what` was refused for `refusal`. A refusal over who owns a file says what to do.
+fn refused(what: &str, refusal: Refusal) -> SealError {
+    let hint = match refusal {
+        Refusal::Rule(reason) if reason.contains("another user") => {
+            ". warden trusts only root and its own user, and this command holds a file to the \
+             rules warden does: run it as the user that owns the file, such as with the image: \
+             docker run --rm --user \"$(stat -c %u <file>)\" ..."
+        }
+        _ => "",
+    };
+    SealError(format!("{what} {refusal}{hint}"))
+}
+
 /// Seal `policy`, from `draft` if given and from its own content otherwise, and
 /// replace it by a rename, so that a reader sees the old file or the new one.
-/// A draft that does not parse as a policy leaves the file untouched. The path
-/// follows the rules warden reads it by, so what this accepts warden can read,
-/// and it keeps the owner and mode of the file it replaces.
+/// A draft that does not parse as a policy leaves the file untouched. Every path
+/// follows the rules warden reads the policy by, because a draft turns into access;
+/// so what this accepts warden can read. It keeps the owner and mode of the file it
+/// replaces.
+///
+/// A file sealed where it stands whose digest does not match may be a mix of two
+/// versions, which nothing here can tell from an edit: see [`Unverified`]. A file
+/// with no digest yet has nothing to contradict, and a draft is what its author
+/// wrote; neither needs that step.
 ///
 /// # Errors
-/// [`SealError`] when anything is refused or fails; the policy file is then as it
-/// was, and no temporary file is left.
-pub fn seal_policy_file(policy: &Path, draft: Option<&Path>) -> Result<SealedPolicy, SealError> {
-    let euid = rustix::process::geteuid().as_raw();
-    let whole = |what: &str, reason: &dyn std::fmt::Display| SealError(format!("{what} {reason}"));
+/// [`SealError`] when anything is refused or fails. The policy file is then as it
+/// was and no temporary file is left, except that a failure to make the rename
+/// durable comes after the file was replaced, and says so.
+pub fn seal_policy_file(
+    policy: &Path,
+    draft: Option<&Path>,
+    unverified: Unverified,
+) -> Result<SealedPolicy, SealError> {
+    seal_as(
+        policy,
+        draft,
+        unverified,
+        rustix::process::geteuid().as_raw(),
+    )
+}
+
+/// [`seal_policy_file`] on behalf of `euid`.
+pub(super) fn seal_as(
+    policy: &Path,
+    draft: Option<&Path>,
+    unverified: Unverified,
+    euid: u32,
+) -> Result<SealedPolicy, SealError> {
     let policy = std::path::absolute(policy).map_err(|e| {
         SealError(format!(
             "the policy file's path cannot be used: {}",
@@ -102,61 +231,101 @@ pub fn seal_policy_file(policy: &Path, draft: Option<&Path>) -> Result<SealedPol
         return Err(SealError("the policy file must name a file".to_owned()));
     };
     let directory =
-        open_directory(parent, euid).map_err(|e| whole("the policy file's directory:", &e))?;
+        open_directory(parent, euid).map_err(|e| refused("the policy file's directory:", e))?;
     let current = match open_regular(&directory, Path::new(name)) {
         Ok((file, meta)) => {
-            check_policy_file(&meta, euid).map_err(|e| whole("the policy file", &e))?;
+            check_policy_file(&meta, euid).map_err(|e| refused("the policy file", e))?;
             Some((file, meta))
         }
         Err(Refusal::Missing) => None,
-        Err(e) => return Err(whole("the policy file", &e)),
+        Err(e) => return Err(refused("the policy file", e)),
     };
     let ownership = current.as_ref().map(|(_, meta)| Ownership {
         uid: meta.uid(),
         gid: meta.gid(),
         mode: meta.mode() & 0o777,
     });
-    let source = match (draft, current) {
-        (Some(path), _) => read_draft(path).map_err(|e| whole("the draft", &e))?,
+    let current_id = current.as_ref().map(|(_, meta)| (meta.dev(), meta.ino()));
+    let (source, in_place) = match (draft, current) {
+        (Some(path), _) => {
+            let (text, meta) = read_draft(path, euid).map_err(|e| refused("the draft", e))?;
+            // Naming the file as its own draft is still sealing it where it stands.
+            (text, current_id == Some((meta.dev(), meta.ino())))
+        }
         (None, Some((file, _))) => {
-            read_limited(file, MAX_POLICY_BYTES).map_err(|e| whole("the policy file", &e))?
+            let text =
+                read_limited(file, MAX_POLICY_BYTES).map_err(|e| refused("the policy file", e))?;
+            (text, true)
         }
         (None, None) => {
-            return Err(whole(
-                "the policy file",
-                &"does not exist; give a draft with --from",
+            return Err(SealError(
+                "the policy file does not exist; give a draft with --from".to_owned(),
             ));
         }
     };
     let sealed = seal_text(&source)?;
     if sealed.len() > MAX_POLICY_BYTES {
-        return Err(whole("the policy file", &"would be too large"));
+        return Err(SealError("the policy file would be too large".to_owned()));
     }
-    let parsed = parse_policy(&sealed).map_err(|e| whole("the draft", &e))?;
-    replace(&directory, name, &sealed, ownership.as_ref())
-        .map_err(|e| whole("the policy file could not be replaced:", &e))?;
+    let parsed = parse_policy(&sealed).map_err(|e| SealError(format!("the draft {e}")))?;
+    let access = access_lines(&parsed);
+    if in_place
+        && unverified == Unverified::Refuse
+        && has_digest_line(&source)
+        && verify_seal(&source).is_err()
+    {
+        return Err(SealError(format!(
+            "not sealed: the policy file does not match its digest, so it was edited, or it is a \
+             mix of two versions left by an overwrite. warden cannot tell which. It would \
+             allow:\n  {}\nCheck every line. If this is what you meant, run again with \
+             --accept-unverified. Otherwise write a draft you have checked and seal it with \
+             --from <draft>.",
+            if access.is_empty() {
+                "nothing".to_owned()
+            } else {
+                access.join("\n  ")
+            },
+        )));
+    }
+    let target = Target {
+        directory: &directory,
+        name,
+        ownership: ownership.as_ref(),
+    };
+    replace(&target, &sealed, temporary_suffix, File::sync_all)?;
     Ok(SealedPolicy {
         targets: parsed.targets.len(),
         api_entries: parsed.api_secrets.len(),
+        access,
     })
 }
 
-/// A draft may be anywhere the operator keeps it, so only its last component is
-/// held to a rule: a regular file, reached without following a link or blocking.
-fn read_draft(path: &Path) -> Result<Zeroizing<String>, Refusal> {
-    let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK;
-    let file = File::from(rustix::fs::open(path, flags, Mode::empty())?);
-    let meta = file.metadata().map_err(|e| Refusal::Io(e.kind()))?;
-    if !meta.is_file() {
-        return Err(Refusal::Rule("is not a regular file"));
-    }
-    read_limited(file, MAX_POLICY_BYTES)
+/// Whether `text` ends with a digest line, as [`seal_text`] sees it.
+fn has_digest_line(text: &str) -> bool {
+    text.trim_end()
+        .rsplit('\n')
+        .next()
+        .is_some_and(|line| line.starts_with(DIGEST_LINE_START))
+}
+
+/// A draft, by the same rules as the policy file it becomes: a regular file, its
+/// own mount or a link refused, owned by this user or root, and nobody else able to
+/// change it or anything on the way to it.
+pub(super) fn read_draft(path: &Path, euid: u32) -> Result<(Zeroizing<String>, Metadata), Refusal> {
+    let path = std::path::absolute(path).map_err(|e| Refusal::Io(e.kind()))?;
+    let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+        return Err(Refusal::Rule("must name a file"));
+    };
+    let directory = open_directory(parent, euid)?;
+    let (file, meta) = open_regular(&directory, Path::new(name))?;
+    check_policy_file(&meta, euid)?;
+    Ok((read_limited(file, MAX_POLICY_BYTES)?, meta))
 }
 
 /// Removes the temporary file unless it was renamed.
 struct TemporaryName<'a> {
     directory: &'a File,
-    name: &'a OsString,
+    name: &'a OsStr,
     renamed: bool,
 }
 
@@ -170,32 +339,72 @@ impl Drop for TemporaryName<'_> {
     }
 }
 
-/// Write `text` to a new file beside `name`, durable before the rename, and rename
-/// it over `name`.
-fn replace(
-    directory: &File,
-    name: &OsStr,
-    text: &str,
-    ownership: Option<&Ownership>,
-) -> Result<(), Refusal> {
-    let io = |e: std::io::Error| Refusal::Io(e.kind());
-    let mut temporary = OsString::from(".");
-    temporary.push(name);
-    temporary.push(format!(".seal-{}", std::process::id()));
+/// A name no earlier seal left behind. A process id will not do: in a container it
+/// is the same every time, so one leftover file would stop every later seal.
+fn temporary_suffix() -> Result<String, SealError> {
+    let mut suffix = [0_u8; 8];
+    getrandom::fill(&mut suffix)
+        .map_err(|_| SealError("no random name for the temporary file".to_owned()))?;
+    Ok(hex::encode(suffix))
+}
+
+/// Where the sealed text goes.
+pub(super) struct Target<'a> {
+    pub(super) directory: &'a File,
+    pub(super) name: &'a OsStr,
+    pub(super) ownership: Option<&'a Ownership>,
+}
+
+/// The file is untouched: a write beside it failed.
+fn not_written(shown: &OsStr, kind: impl Display) -> SealError {
+    SealError(format!(
+        "the policy file cannot be written, and is as it was: {}: {kind}",
+        shown.display()
+    ))
+}
+
+/// A new file beside the target, under a name no other file has.
+fn create_temporary(
+    target: &Target<'_>,
+    mut suffix: impl FnMut() -> Result<String, SealError>,
+) -> Result<(File, OsString), SealError> {
     let flags = OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC;
-    let mut file = File::from(rustix::fs::openat(
-        directory,
-        &temporary,
-        flags,
-        Mode::from_raw_mode(0o600),
-    )?);
+    let mut taken = OsString::new();
+    for _ in 0..TEMPORARY_NAME_ATTEMPTS {
+        let mut temporary = OsString::from(".");
+        temporary.push(target.name);
+        temporary.push(format!(".seal-{}", suffix()?));
+        match rustix::fs::openat(
+            target.directory,
+            &temporary,
+            flags,
+            Mode::from_raw_mode(0o600),
+        ) {
+            Ok(fd) => return Ok((File::from(fd), temporary)),
+            Err(Errno::EXIST) => taken = temporary,
+            Err(errno) => return Err(not_written(&temporary, io::Error::from(errno).kind())),
+        }
+    }
+    Err(not_written(&taken, "the name is already taken"))
+}
+
+/// Write `text` to a new file beside the target, durable before the rename, and
+/// rename it over the target. `sync_directory` makes the rename durable.
+pub(super) fn replace(
+    target: &Target<'_>,
+    text: &str,
+    suffix: impl FnMut() -> Result<String, SealError>,
+    sync_directory: impl FnOnce(&File) -> io::Result<()>,
+) -> Result<(), SealError> {
+    let (mut file, temporary) = create_temporary(target, suffix)?;
+    let io = |e: io::Error| not_written(&temporary, e.kind());
     let mut guard = TemporaryName {
-        directory,
+        directory: target.directory,
         name: &temporary,
         renamed: false,
     };
     file.write_all(text.as_bytes()).map_err(io)?;
-    let mode = if let Some(owner) = ownership {
+    let mode = if let Some(owner) = target.ownership {
         let meta = file.metadata().map_err(io)?;
         if (meta.uid(), meta.gid()) != (owner.uid, owner.gid) {
             fchown(&file, Some(owner.uid), Some(owner.gid)).map_err(io)?;
@@ -207,7 +416,14 @@ fn replace(
     file.set_permissions(Permissions::from_mode(mode))
         .map_err(io)?;
     file.sync_all().map_err(io)?;
-    rustix::fs::renameat(directory, &temporary, directory, name)?;
+    rustix::fs::renameat(target.directory, &temporary, target.directory, target.name)
+        .map_err(|errno| not_written(&temporary, io::Error::from(errno).kind()))?;
     guard.renamed = true;
-    directory.sync_all().map_err(io)
+    sync_directory(target.directory).map_err(|e| {
+        SealError(format!(
+            "the policy file was replaced, and warden reads the new one, but the change may not \
+             survive a crash: syncing its directory failed: {}",
+            e.kind()
+        ))
+    })
 }

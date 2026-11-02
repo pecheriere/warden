@@ -113,26 +113,38 @@ warden-server doctor
 ```
 
 Requests are served from the old file until the rename, and from the new one after
-it. The command keeps the replaced file's owner and mode, and makes a new file
-`0644`. It refuses a draft that does not parse, or that has lost its
-`[end_of_policy]` line, because that may mean the draft was cut short, and it then
-leaves the policy file as it was. It does not read your secrets, which is what
-`doctor` is for.
+it. The command keeps the replaced file's owner and mode, makes a new file `0644`, and
+prints what each entry allows. It refuses a draft that does not parse, or that has
+lost its `[end_of_policy]` line, because that may mean the draft was cut short, and
+it then leaves the policy file as it was. A draft is held to the rules of the policy
+file below, because it turns into access: keep it beside the policy file, not in a
+home directory. The command does not read your secrets, which is what `doctor` is
+for.
 
-Editing the policy file itself also works: `warden-server seal-policy
-/etc/warden/policy.toml` seals what is there. From your save until you seal, warden
-refuses every request and audits why, and says what to run:
+Editing the policy file itself also works, with one more step. From your save on,
+warden refuses every request and audits why, and says what to run:
 
 > the policy file does not match the digest on its last line: it was changed without
-> sealing, or read while being overwritten; after a finished edit, run warden-server
-> seal-policy on it
+> sealing, or read while being overwritten; to change it, check a draft and run
+> warden-server seal-policy --from \<draft> \<file>; to see what this file allows, run
+> warden-server seal-policy \<file>
 
-**Seal only a file nobody is still writing.** Sealing is your word that the content
-is finished: warden cannot tell a finished edit from a write in progress, and a
-sealed mix is a valid policy.
+warden cannot tell your edit from a mix of two versions left by a write in place, and
+a sealed mix is a valid policy, so `warden-server seal-policy
+/etc/warden/policy.toml` does not seal such a file. It exits non-zero and lists the
+destination, methods, path prefix and secret file of every entry. Read them. If they
+are what you meant, run it again with `--accept-unverified`. If not, restore the file
+from a draft. A file with no digest yet, or one that matches, is sealed without this
+step.
 
-With Docker, run it on the host if you have the binary. Otherwise use the image,
-with the directory mounted writable, as root, for a file root owns:
+**Seal only a file nobody is still writing**, and only a draft you have read: a
+draft copied from a mixed file carries the mix with it.
+
+With Docker, run it on the host if you have the binary. Otherwise use the image, with
+the directory mounted writable, as the user that owns the file (`--user 0` for a file
+root owns, `--user 65532` for the image's user). warden trusts only root and its own
+user, and this command holds files to the same rule, so root is refused on a file
+owned by anyone else, even though it could write it:
 
 ```sh
 docker run --rm --user 0 -v /etc/warden/policy:/policy --entrypoint /warden-server \
@@ -260,8 +272,9 @@ them:
 file after a rename over it, so an edit or a revocation on the host would not reach
 the container. warden refuses a policy file or a secret file that is a mount of its
 own, at startup and at every read, so this fails at once rather than after your first
-edit. The check needs Linux 5.8 or later; on an older kernel warden cannot tell, and
-refuses every such file. The same goes for a single-file `BindReadOnlyPaths=` under
+edit. The check needs Linux 5.8 or later, with the `statx` system call allowed. Where
+the kernel or a sandbox cannot answer, warden cannot tell, so it refuses every policy
+and secret file: **the local backend does not work there at all**. The same goes for a single-file `BindReadOnlyPaths=` under
 systemd.
 
 On the host, `/etc/warden/secrets` and its files belong to the image's user (uid

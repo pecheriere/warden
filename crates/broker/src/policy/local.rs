@@ -42,7 +42,7 @@ use crate::config::LocalSettings;
 mod files;
 mod seal;
 
-pub use seal::{SealError, SealedPolicy, seal_policy_file, seal_text};
+pub use seal::{SealError, SealedPolicy, Unverified, seal_policy_file, seal_text};
 
 use files::{Refusal, check_file_name, one_line, read_policy, read_secret};
 
@@ -59,7 +59,9 @@ const END_MARKER: &str = "[end_of_policy]";
 const DIGEST_LINE_START: &str = "sha256 = \"";
 
 /// Shown whenever a policy file's end cannot be trusted.
-const HOW_TO_SEAL: &str = "after a finished edit, run warden-server seal-policy on it";
+const HOW_TO_SEAL: &str = "to change it, check a draft and run warden-server seal-policy --from \
+                           <draft> <file>; to see what this file allows, run warden-server \
+                           seal-policy <file>";
 
 /// What the audit log calls this backend.
 const AUDIT_CONTEXT: &str = "local secret backend";

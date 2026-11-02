@@ -620,16 +620,19 @@ What is lost, and cannot be regained by any setting:
   long as the file stays so: replacing it by a rename
   ([`warden-server seal-policy`](local-backend.md#editing-the-file)) avoids the
   refusals. The digest is an integrity check against accidents, with no key: **anyone
-  who can write the file can seal it**, and sealing a file another writer is still
-  overwriting makes the mix valid. The file's owner and mode are what stand against an
+  who can write the file can seal it**. Sealing a mix would make it valid, so the
+  command will not seal a file in place whose digest does not match until a person
+  has been shown what it allows and passes `--accept-unverified`. That is a guard
+  against a mistake, not a boundary. The file's owner and mode are what stand against an
   attacker. A secret file has no digest: one cut short is sent as what it is, to the
   destination its entry allows.
 - **Single-file mounts go stale, so they are refused.** A file mounted alone stays on
   the old inode after a rename on the host, which would ignore a revocation. Moving
   the old file aside first leaves it with one name, so nothing about the file shows
   it. warden therefore refuses, at every read, a policy or secret file that is the
-  root of a mount, as the kernel reports through `statx` (Linux 5.8 or later; refused
-  if the kernel cannot say). A file with no name left, or a second name, is refused
+  root of a mount, as the kernel reports through `statx` (Linux 5.8 or later; where
+  the kernel or a sandbox cannot say, every file is refused and the backend does not
+  work). A file with no name left, or a second name, is refused
   as well. What this does not see is a mount of the directory that is itself out of
   date, or a copy made at start, as below.
 - **Secrets from systemd credentials are copied at start**, so rotating or removing

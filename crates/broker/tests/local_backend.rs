@@ -255,6 +255,40 @@ async fn a_policy_edit_invalidates_a_grant_at_once() {
     assert_eq!(upstream.received().len(), sent_before);
 }
 
+/// A live grant, a live proxied call: a file that no longer matches its digest
+/// refuses the next call, even though every setting that decides the destination
+/// is unchanged, sends nothing upstream and is audited. Sealed again, it works.
+#[tokio::test]
+async fn a_policy_file_not_matching_its_digest_refuses_a_proxied_call() {
+    let upstream = HttpsUpstream::start().await;
+    let files = Files::new();
+    files.policy(&api_entry(&upstream, ""));
+    files.secret("svc-token", CREDENTIAL);
+    let (broker, key) = broker_on(&files).await;
+    let grant = approve_api(&broker, "svc").await;
+    let url = upstream.url("/anything");
+    assert_eq!(
+        call(&broker, &key, &grant, &url).await.status,
+        StatusCode::OK
+    );
+
+    let policy_file = &files.settings.policy_file;
+    let sealed = fs::read_to_string(policy_file).unwrap();
+    fs::write(policy_file, format!("# changed\n{sealed}")).unwrap();
+    let sent_before = upstream.received().len();
+    let refused = call(&broker, &key, &grant, &url).await;
+    assert_ne!(refused.status, StatusCode::OK, "{}", refused.body);
+    assert_eq!(upstream.received().len(), sent_before);
+    assert!(!refused.body.contains(CREDENTIAL), "{}", refused.body);
+    assert!(backend_audit(&files).contains("does not match the digest"));
+
+    fs::write(policy_file, sealed).unwrap();
+    assert_eq!(
+        call(&broker, &key, &grant, &url).await.status,
+        StatusCode::OK
+    );
+}
+
 /// Each change that makes the files unsafe refuses the next call, sends
 /// nothing to the upstream and is audited without a secret.
 #[tokio::test]
@@ -604,10 +638,24 @@ async fn a_hand_edit_is_refused_until_seal_policy_runs() {
         server.audit()
     );
 
-    // Needs none of warden's settings.
-    let seal = Command::new(env!("CARGO_BIN_EXE_warden-server"))
+    // Needs none of warden's settings, and shows the file before sealing it.
+    let refused = Command::new(env!("CARGO_BIN_EXE_warden-server"))
         .env_clear()
         .args(["seal-policy"])
+        .arg(&policy_file)
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    assert!(
+        stderr(&refused).contains("--accept-unverified"),
+        "{}",
+        stderr(&refused)
+    );
+    assert!(stderr(&refused).contains("svc"), "{}", stderr(&refused));
+
+    let seal = Command::new(env!("CARGO_BIN_EXE_warden-server"))
+        .env_clear()
+        .args(["seal-policy", "--accept-unverified"])
         .arg(&policy_file)
         .output()
         .unwrap();

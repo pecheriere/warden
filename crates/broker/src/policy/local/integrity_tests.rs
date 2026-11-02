@@ -9,9 +9,10 @@ use tempfile::TempDir;
 use warden_broker_proto::SecretName;
 
 use super::files::{MAX_POLICY_BYTES, read_limited, read_policy};
+use super::seal::{Target, read_draft, replace, seal_as};
 use super::{
-    END_MARKER, LocalBackend, LocalProbe, PolicyFile, digest_line, parse_policy, seal_policy_file,
-    seal_text,
+    END_MARKER, LocalBackend, LocalProbe, PolicyFile, SealError, SealedPolicy, Unverified,
+    digest_line, parse_policy, seal_policy_file, seal_text,
 };
 use crate::config::LocalSettings;
 use crate::policy::SecretBackend;
@@ -33,6 +34,10 @@ fn old_and_new() -> (String, String) {
     let new = version(r#"["GET"]          "#, "/admin1/");
     assert_eq!(old.len(), new.len());
     (old, new)
+}
+
+fn seal_file(policy: &Path, draft: Option<&Path>) -> Result<SealedPolicy, SealError> {
+    seal_policy_file(policy, draft, Unverified::Refuse)
 }
 
 fn seal(draft: &str) -> String {
@@ -268,38 +273,114 @@ fn sealing_refuses_a_draft_cut_short_at_any_byte() {
     }
 }
 
-fn entries(result: Result<super::SealedPolicy, super::SealError>) -> (usize, usize) {
+fn entries(result: Result<SealedPolicy, SealError>) -> (usize, usize) {
     let sealed = result.unwrap();
     (sealed.targets, sealed.api_entries)
 }
 
-/// The hand edit from start to finish: refused until sealed, and the file a reader
-/// already has open stays whole, because it is replaced and not written to.
+/// The hand edit from start to finish: refused until sealed, sealed only once the
+/// person has seen what it allows, and the file a reader already has open stays
+/// whole, because it is replaced and not written to.
 #[tokio::test]
-async fn a_hand_edit_is_refused_until_sealed_and_sealing_replaces_the_file() {
+async fn a_hand_edit_is_sealed_only_after_being_shown_and_replaces_the_file() {
     let (old, _) = old_and_new();
     let (_guard, root, backend) = setup(&old);
     let path = root.join("policy.toml");
     let name = SecretName::try_from("home-api".to_owned()).unwrap();
     fs::set_permissions(&path, Permissions::from_mode(0o640)).unwrap();
 
-    fs::write(&path, old.replace("/public/", "/private/")).unwrap();
+    let edited = old.replace("/public/", "/private/");
+    fs::write(&path, &edited).unwrap();
     let refused = backend.api_secret(&name).await.unwrap_err().to_string();
-    assert!(refused.contains("seal-policy"), "{refused}");
+    assert!(refused.contains("seal-policy --from"), "{refused}");
+
+    let not_sealed = seal_file(&path, None).unwrap_err().to_string();
+    assert!(not_sealed.contains("--accept-unverified"), "{not_sealed}");
+    assert!(not_sealed.contains("/private/"), "{not_sealed}");
+    assert_eq!(fs::read_to_string(&path).unwrap(), edited);
 
     let mut reader = File::open(&path).unwrap();
     let before = fs::metadata(&path).unwrap();
-    assert_eq!(entries(seal_policy_file(&path, None)), (0, 1));
+    let sealed = seal_policy_file(&path, None, Unverified::Accept).unwrap();
+    assert!(
+        sealed.access[0].contains("/private/"),
+        "{:?}",
+        sealed.access
+    );
     let after = fs::metadata(&path).unwrap();
     assert_ne!(before.ino(), after.ino());
     assert_eq!(after.mode() & 0o777, 0o640);
     let mut seen = String::new();
     reader.read_to_string(&mut seen).unwrap();
-    assert_eq!(seen, old.replace("/public/", "/private/"));
+    assert_eq!(seen, edited);
 
     let policy = backend.api_secret(&name).await.unwrap();
     assert_eq!(policy.path_prefix, "/private/");
     assert_eq!(names_in(&root), ["policy.toml", "secrets"]);
+}
+
+/// What the digest just caught is not blessed by default: the mix wider than both
+/// versions stays refused, its access is shown, and nothing changes, including when
+/// the file is named as its own draft. Only the explicit choice seals it.
+#[test]
+fn sealing_a_torn_file_in_place_needs_an_explicit_choice() {
+    let (old, new) = old_and_new();
+    let (_guard, root, _backend) = setup(&old);
+    let path = root.join("policy.toml");
+    let first = old.find("path_prefix").unwrap();
+    let mix = read_torn(&path, &new, first);
+    fs::write(&path, &mix).unwrap();
+
+    for draft in [None, Some(path.as_path())] {
+        let shown = seal_file(&path, draft).unwrap_err().to_string();
+        for what in [
+            "home-api",
+            "GET, DELETE",
+            "/admin1/",
+            "--accept-unverified",
+            "--from",
+        ] {
+            assert!(shown.contains(what), "{what}: {shown}");
+        }
+        assert_eq!(fs::read_to_string(&path).unwrap(), mix);
+    }
+    assert!(seal_policy_file(&path, None, Unverified::Accept).is_ok());
+    assert!(parse_policy(&fs::read_to_string(&path).unwrap()).is_ok());
+}
+
+/// The usual ways in stay easy: no digest yet, a digest that matches, or a draft
+/// copied from a sealed file and edited.
+#[test]
+fn a_first_seal_and_a_draft_need_no_extra_choice() {
+    let (old, _) = old_and_new();
+    let (_guard, root, _backend) = setup(&format!("# first\n{END_MARKER}\n"));
+    let path = root.join("policy.toml");
+    assert!(seal_file(&path, None).is_ok());
+    assert!(seal_file(&path, None).is_ok());
+    let draft = root.join("draft");
+    fs::write(&draft, old.replace("/public/", "/private/")).unwrap();
+    let sealed = seal_file(&path, Some(&draft)).unwrap();
+    assert!(
+        sealed.access[0].contains("/private/"),
+        "{:?}",
+        sealed.access
+    );
+}
+
+/// What a person is shown holds no secret value, wherever one was pasted.
+#[test]
+fn the_access_shown_holds_no_secret_value() {
+    let draft = format!(
+        "[api_secrets.home-api]\nwebsite = \"https://user:{CREDENTIAL}@home.example.com/{CREDENTIAL}\"\n\
+         credential_file = \"home-api\"\nmax_window = \"30m\"\nformat = \"{CREDENTIAL} {{{{secret}}}}\"\n\
+         {END_MARKER}\n"
+    );
+    let (_guard, root, _backend) = setup(&seal(&draft).replace("30m", "20m"));
+    let path = root.join("policy.toml");
+    let shown = seal_file(&path, None).unwrap_err().to_string();
+    assert!(shown.contains("https://home.example.com"), "{shown}");
+    assert!(shown.contains("secret file home-api"), "{shown}");
+    assert!(!shown.contains(CREDENTIAL), "{shown}");
 }
 
 fn names_in(directory: &Path) -> Vec<String> {
@@ -318,12 +399,12 @@ fn sealing_from_a_draft_leaves_the_draft_and_can_make_the_file() {
     let draft = root.join("draft");
     fs::write(&draft, &new).unwrap();
     let path = root.join("policy.toml");
-    assert_eq!(entries(seal_policy_file(&path, Some(&draft))), (0, 1));
+    assert_eq!(entries(seal_file(&path, Some(&draft))), (0, 1));
     assert_eq!(fs::read_to_string(&path).unwrap(), new);
     assert_eq!(fs::read_to_string(&draft).unwrap(), new);
 
     let created = root.join("created.toml");
-    assert_eq!(entries(seal_policy_file(&created, Some(&draft))), (0, 1));
+    assert_eq!(entries(seal_file(&created, Some(&draft))), (0, 1));
     assert_eq!(fs::metadata(&created).unwrap().mode() & 0o777, 0o644);
     assert!(read_policy(&created, rustix::process::geteuid().as_raw()).is_ok());
 }
@@ -345,45 +426,150 @@ fn sealing_refuses_what_warden_would_and_changes_nothing() {
     ];
     for content in unusable {
         fs::write(&draft, content).unwrap();
-        let error = seal_policy_file(&path, Some(&draft)).unwrap_err();
+        let error = seal_file(&path, Some(&draft)).unwrap_err();
         assert!(!error.to_string().contains(CREDENTIAL), "{error}");
         assert_eq!(fs::read_to_string(&path).unwrap(), old);
     }
     fs::remove_file(&draft).unwrap();
 
-    assert!(seal_policy_file(&path, Some(&root.join("absent"))).is_err());
-    assert!(seal_policy_file(&root.join("absent"), None).is_err());
+    assert!(seal_file(&path, Some(&root.join("absent"))).is_err());
+    assert!(seal_file(&root.join("absent"), None).is_err());
 
     let link = root.join("link");
     symlink(&path, &link).unwrap();
-    assert!(seal_policy_file(&link, Some(&path)).is_err());
-    assert!(seal_policy_file(&path, Some(&link)).is_err());
+    assert!(seal_file(&link, Some(&path)).is_err());
+    assert!(seal_file(&path, Some(&link)).is_err());
     fs::remove_file(&link).unwrap();
 
     let second_name = root.join("second-name");
     fs::hard_link(&path, &second_name).unwrap();
-    assert!(seal_policy_file(&path, None).is_err());
+    assert!(seal_file(&path, None).is_err());
     fs::remove_file(&second_name).unwrap();
 
     fs::set_permissions(&path, Permissions::from_mode(0o660)).unwrap();
-    assert!(seal_policy_file(&path, None).is_err());
+    assert!(seal_file(&path, None).is_err());
     fs::set_permissions(&path, Permissions::from_mode(0o600)).unwrap();
 
     assert_eq!(fs::read_to_string(&path).unwrap(), old);
     assert_eq!(names_in(&root), ["policy.toml", "secrets"]);
 }
 
-/// A failure at the last step, here a temporary name already taken, leaves the
-/// file and that other file alone.
+/// A draft turns into access, so it is held to the policy file's own rules.
 #[test]
-fn sealing_does_not_write_through_a_name_already_taken() {
+fn a_draft_is_held_to_the_rules_of_the_policy_file() {
+    let (old, new) = old_and_new();
+    let (_guard, root, _backend) = setup(&old);
+    let path = root.join("policy.toml");
+    let draft = root.join("draft");
+    fs::write(&draft, &new).unwrap();
+
+    fs::set_permissions(&draft, Permissions::from_mode(0o666)).unwrap();
+    let error = seal_file(&path, Some(&draft)).unwrap_err().to_string();
+    assert!(error.contains("written by group or others"), "{error}");
+    fs::set_permissions(&draft, Permissions::from_mode(0o600)).unwrap();
+
+    let euid = rustix::process::geteuid().as_raw();
+    assert!(read_draft(&draft, euid).is_ok());
+    let error = read_draft(&draft, euid + 1).err().unwrap().to_string();
+    assert!(error.contains("another user"), "{error}");
+
+    let real = root.join("real");
+    fs::create_dir(&real).unwrap();
+    fs::set_permissions(&real, Permissions::from_mode(0o700)).unwrap();
+    fs::rename(&draft, real.join("draft")).unwrap();
+    symlink(&real, root.join("linked")).unwrap();
+    let error = seal_file(&path, Some(&root.join("linked/draft")))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("symbolic link"), "{error}");
+    assert_eq!(fs::read_to_string(&path).unwrap(), old);
+}
+
+/// Refused over ownership, the error says what to do.
+#[test]
+fn a_refusal_over_ownership_says_how_to_run_it() {
+    let (old, _) = old_and_new();
+    let (_guard, root, _backend) = setup(&old);
+    let euid = rustix::process::geteuid().as_raw();
+    let error = seal_as(
+        &root.join("policy.toml"),
+        None,
+        Unverified::Refuse,
+        euid + 1,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("another user"), "{error}");
+    assert!(error.contains("docker run --rm --user"), "{error}");
+}
+
+/// A file left by an earlier seal, under what used to be the predictable name, does
+/// not stop this one, and is left alone.
+#[test]
+fn a_leftover_temporary_file_does_not_stop_a_seal() {
     let (old, _) = old_and_new();
     let (_guard, root, _backend) = setup(&old);
     let path = root.join("policy.toml");
-    let taken = root.join(format!(".policy.toml.seal-{}", std::process::id()));
-    let mut other = File::create(&taken).unwrap();
-    other.write_all(b"someone else's").unwrap();
-    assert!(seal_policy_file(&path, None).is_err());
+    let leftover = root.join(format!(".policy.toml.seal-{}", std::process::id()));
+    File::create(&leftover)
+        .unwrap()
+        .write_all(b"leftover")
+        .unwrap();
+    assert!(seal_file(&path, None).is_ok());
+    assert_eq!(fs::read(&leftover).unwrap(), b"leftover");
+}
+
+fn target_in(directory: &File) -> Target<'_> {
+    Target {
+        directory,
+        name: "policy.toml".as_ref(),
+        ownership: None,
+    }
+}
+
+/// A name taken every time: the error says writing failed, and which file is in the
+/// way, and that file and the policy are left alone.
+#[test]
+fn a_temporary_name_taken_every_time_is_named_as_a_write_failure() {
+    let (old, _) = old_and_new();
+    let (_guard, root, _backend) = setup(&old);
+    let taken = root.join(".policy.toml.seal-fixed");
+    File::create(&taken)
+        .unwrap()
+        .write_all(b"someone else's")
+        .unwrap();
+    let directory = File::open(&root).unwrap();
+    let error = replace(
+        &target_in(&directory),
+        "new",
+        || Ok("fixed".to_owned()),
+        File::sync_all,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains(".policy.toml.seal-fixed"), "{error}");
+    assert!(error.contains("cannot be written"), "{error}");
+    assert!(!error.contains("cannot be read"), "{error}");
     assert_eq!(fs::read(&taken).unwrap(), b"someone else's");
-    assert_eq!(fs::read_to_string(&path).unwrap(), old);
+    assert_eq!(fs::read_to_string(root.join("policy.toml")).unwrap(), old);
+}
+
+/// A failure after the rename says the file was replaced, because it was.
+#[test]
+fn a_failed_directory_sync_says_the_file_was_replaced() {
+    let (old, _) = old_and_new();
+    let (_guard, root, _backend) = setup(&old);
+    let directory = File::open(&root).unwrap();
+    let error = replace(
+        &target_in(&directory),
+        "new",
+        || Ok("once".to_owned()),
+        |_| Err(io::Error::other("no sync today")),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("was replaced"), "{error}");
+    assert!(error.contains("may not survive a crash"), "{error}");
+    assert_eq!(fs::read_to_string(root.join("policy.toml")).unwrap(), "new");
+    assert_eq!(names_in(&root), ["policy.toml", "secrets"]);
 }
