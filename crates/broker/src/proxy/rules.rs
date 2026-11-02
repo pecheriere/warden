@@ -111,6 +111,9 @@ const REFUSED_HEADERS: [&str; 19] = [
     "via",
 ];
 
+/// The most headers a call may carry.
+const MAX_HEADERS: usize = 100;
+
 /// Parse the URL and check it against the policy. The path is inspected as
 /// sent, before the URL parser normalises it, and the parsed path must equal
 /// it, so the path that was checked is the path that is sent.
@@ -167,6 +170,11 @@ fn check_method(policy: &ApiSecretPolicy, raw: &str) -> Result<Method, Refusal> 
 /// The agent's headers, refusing malformed ones, the secret's own header and
 /// headers that frame or route the request. Values never appear in refusals.
 fn check_headers(policy: &ApiSecretPolicy, raw: &[(String, String)]) -> Result<HeaderMap, Refusal> {
+    if raw.len() > MAX_HEADERS {
+        return Err(Refusal::Header(format!(
+            "at most {MAX_HEADERS} are allowed"
+        )));
+    }
     let mut headers = HeaderMap::with_capacity(raw.len());
     for (name, value) in raw {
         if [name, value]
@@ -523,6 +531,19 @@ mod tests {
             );
         }
         assert_eq!(super::OUTBOUND_ACCEPT_ENCODING, "identity");
+    }
+
+    #[test]
+    fn rules_limit_the_number_of_headers() {
+        let p = policy("/", &[Method::GET]);
+        let mut req = get("https://api.example.com/x");
+        req.headers = vec![("x-a".to_owned(), "v".to_owned()); super::MAX_HEADERS];
+        assert_eq!(
+            check(&p, &req, MAX).unwrap().headers.len(),
+            super::MAX_HEADERS
+        );
+        req.headers.push(("x-a".to_owned(), "v".to_owned()));
+        assert!(matches!(check(&p, &req, MAX), Err(Refusal::Header(_))));
     }
 
     #[test]

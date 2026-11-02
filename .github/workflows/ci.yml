@@ -50,6 +50,8 @@ jobs:
         run: scripts/check-no-reqwest-decompression.sh
       - name: Refuse the demo in anything that ships
         run: scripts/check-demo-not-shipped.sh
+      - name: Test the release signing script
+        run: scripts/test-sign-release.sh
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - run: cargo test --workspace --all-features --locked
       - name: Build the documentation
