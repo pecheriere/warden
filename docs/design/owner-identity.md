@@ -35,7 +35,7 @@ document was written on.
 |---|---|---|
 | The owner is whoever `Tailscale-User-Login` names. | `TailscaleServeIdentity` and `Owner` in [`identity.rs`](../../crates/broker/src/identity.rs) | Every approval UI route, through `require_owner` in [`approval/mod.rs`](../../crates/broker/src/approval/mod.rs), and bearer agent keys, through `AuthedAgent`. |
 | `WARDEN_OWNER_LOGIN` is set. | `Config::from_lookup` in [`config.rs`](../../crates/broker/src/config.rs) | Startup: it is required. The value is a Tailscale login, and a session has no equivalent. |
-| A `Tailscale-Funnel-Request` header marks internet traffic. | `refuse_funnel` in `identity.rs`, layered in [`api.rs`](../../crates/broker/src/api.rs) only | "No exemption reaches the internet" in the threat model. The approval router has no such layer: it relies on Funnel requests never carrying a login. |
+| A `Tailscale-Funnel-Request` header marks internet traffic. | `refuse_funnel` in `identity.rs`, layered in [`api.rs`](../../crates/broker/src/api.rs) and the approval router | "No exemption reaches the internet" in the threat model. |
 | Who can reach each port is decided by tailnet policy. | Not in the code; see "Phone-only approval port" in the threat model | Keeping agents off the approval UI. Limiting who can try signed requests, and the log lines and connections they can cost. |
 | TLS is someone else's job. | `parse_public_url` requires https, while `axum::serve` in [`main.rs`](../../crates/broker/src/main.rs) serves plain HTTP. `check_server_url` in the [CLI](../../crates/cli/src/config.rs) refuses plain HTTP except to loopback. | Every option here still needs a TLS terminator. |
 
@@ -185,7 +185,7 @@ any pending request whose link is known, plus revoke and deny.
 
 | Option | Attacker on the LAN | Agent on the same host (unprivileged, another OS user) | Internet attacker |
 |---|---|---|---|
-| **A. Tailscale** | Nothing, unless a listener is bound to the LAN against the documented rules; then forge. | Services layout: forge, and use a stolen bearer key. Sidecar layout: nothing. | Nothing with Funnel off. With Funnel on: API 401, UI 403. |
+| **A. Tailscale** | Nothing, unless a listener is bound to the LAN against the documented rules; then forge. | Services layout: forge, and use a stolen bearer key. Sidecar layout: nothing. | Nothing with Funnel off. With Funnel on: 401 from both listeners. |
 | **B. Passkey session** | Can reach the endpoint if the firewall allows: gets the login page, `/static`, credential ids, `/healthz`, `/v1/info`. While no passkey is enrolled, can guess enrollment codes (below). Can flood login. Cannot forge. | The same, and it can connect to a TCP listener directly. Cannot forge. If warden is down it could bind the port first and receive the proxy's traffic, gaining the swap position above; a Unix socket or a private network namespace prevents this. | Unsupported. If exposed by accident, the same as the LAN column, with easier flooding. |
 | **C. Plain header** | Authenticates at the proxy, or forges if any route skips the rule or the listener is reachable. | Forges unless a Unix socket or shared secret keeps it out; a peer address check does not, on loopback. | Depends on the proxy having no mistakes. A direct hit on the origin, or one unprotected route, is a forge. |
 | **D. Signed assertion** | Cannot forge. Reaches at most a refusal. | Cannot forge. Could replay a token it captured until it expires, which needs root on this host. | Best of the set: a hosted proxy can stop traffic before warden, and direct hits fail verification. The proxy can swap approvals. |
@@ -302,11 +302,11 @@ model.
 
 ### Two changes that apply to every mode
 
-- **Add `refuse_funnel` to the approval router.** Today Funnel traffic fails on
-  the approval UI only because it carries no login. Run `passkey-session` behind
-  Serve with Funnel on, and that implicit protection disappears: the login page
-  would be on the internet. Absence of the header proves nothing outside Serve,
-  so this protects only that one setup.
+- **`refuse_funnel` on the approval router**, now in place. Without it, Funnel
+  traffic would fail on the approval UI only for lack of a login, and
+  `passkey-session` behind Serve with Funnel on would put the login page on the
+  internet. Absence of the header proves nothing outside Serve, so this protects
+  only that one setup.
 - **Refuse a request with more than one value of an identity header.**
   `TailscaleServeIdentity` reads the first value. Serve removes client copies, so
   this is hardening rather than a bug.

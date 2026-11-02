@@ -15,7 +15,9 @@ use tracing_subscriber::EnvFilter;
 use url::Url;
 use warden_broker::approval::passkeys::{self, Passkeys};
 use warden_broker::audit::AuditLog;
-use warden_broker::config::{BackendSettings, Config, DEFAULT_AUDIENCE_PATH, parse_public_url};
+use warden_broker::config::{
+    BackendSettings, Config, DEFAULT_AUDIENCE_PATH, UrlTransport, parse_public_url,
+};
 use warden_broker::identity::TailscaleServeIdentity;
 use warden_broker::notify::{ChannelSettings, Fallback, Notifier};
 use warden_broker::policy::{LocalBackend, OnePasswordConnect, SecretBackend};
@@ -378,6 +380,22 @@ fn build_notifier(config: &Config) -> Result<Arc<dyn Notifier>> {
     Ok(Arc::new(Fallback::new(primary, fallbacks)))
 }
 
+/// Say at startup which service URLs send tokens and secrets without TLS. Only
+/// the variable, because a URL can hold a secret.
+fn log_plain_http(config: &Config) {
+    for (variable, transport) in config.plain_http_urls() {
+        if transport == UrlTransport::PlainRemote {
+            tracing::warn!(
+                variable,
+                "plain http to a host that is not clearly local or private: tokens and secrets \
+                 cross that path in clear"
+            );
+        } else {
+            tracing::info!(variable, "plain http to a local or private host");
+        }
+    }
+}
+
 /// Where agents reach the relay and the relay's host key (loaded, and
 /// created on first use), or `None` when `WARDEN_RELAY_PUBLIC_ADDR` is unset.
 async fn relay_endpoint(config: &Config) -> Result<Option<(RelayEndpoint, RelayHostKey)>> {
@@ -553,6 +571,7 @@ async fn serve() -> Result<()> {
     let approval_listener = TcpListener::bind(config.approval_listen)
         .await
         .with_context(|| format!("binding the approval UI on {}", config.approval_listen))?;
+    log_plain_http(&config);
     match &config.backend {
         BackendSettings::OnePassword(connect) => tracing::info!(
             api = %config.api_listen,

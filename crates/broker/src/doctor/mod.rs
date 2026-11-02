@@ -22,7 +22,7 @@ use async_trait::async_trait;
 use secrecy::ExposeSecret;
 use warden_broker_proto::doctor::{Check, Report};
 
-use crate::config::{BackendSettings, Config, ConfigError};
+use crate::config::{ALLOW_PLAIN_HTTP, BackendSettings, Config, ConfigError, UrlTransport};
 use crate::notify::{ChannelSettings, Doorbell, NotifyError};
 use crate::policy::{CaProbe, LocalProbe, VaultProbe};
 use crate::proxy::{Needles, redact};
@@ -184,6 +184,7 @@ pub fn invalid_config_report(error: &ConfigError) -> Report {
         format!("Fix this setting and run doctor again; there may be more. See {SETTINGS_DOC}"),
     )];
     for name in [
+        "plain-http",
         "connect",
         "ssh-ca",
         "notify",
@@ -214,7 +215,10 @@ pub async fn examine(
     env: &dyn Environment,
     send_test_notification: bool,
 ) -> Report {
-    let mut checks = vec![Check::pass("config", "The settings are present and valid.")];
+    let mut checks = vec![
+        Check::pass("config", "The settings are present and valid."),
+        plain_http_check(config),
+    ];
     match &config.backend {
         BackendSettings::OnePassword(connect) => {
             let vault_found = connect_checks(env.vault().await, &connect.vault, &mut checks);
@@ -249,6 +253,45 @@ pub async fn examine(
         checks,
         effects,
     })
+}
+
+/// Which service URLs send their tokens and secrets without TLS. warden can
+/// tell what a URL says, not what the network under it is.
+fn plain_http_check(config: &Config) -> Check {
+    const NAME: &str = "plain-http";
+    let urls = config.plain_http_urls();
+    let named = |wanted: UrlTransport| {
+        urls.iter()
+            .filter(|(_, transport)| *transport == wanted)
+            .map(|(var, _)| *var)
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let (remote, local) = (
+        named(UrlTransport::PlainRemote),
+        named(UrlTransport::PlainLocal),
+    );
+    if !remote.is_empty() {
+        return Check::could_not_check(
+            NAME,
+            format!(
+                "{remote}: plain http to a host that is not clearly local or private, allowed by \
+                 {ALLOW_PLAIN_HTTP}. Tokens and secrets cross that path in clear, and warden \
+                 cannot see whether it is safe."
+            ),
+            "Use https or a tailnet address. If that path really is private, keep the setting.",
+        );
+    }
+    if local.is_empty() {
+        return Check::pass(NAME, "Every service URL uses https.");
+    }
+    Check::pass(
+        NAME,
+        format!(
+            "{local}: plain http to a local or private host, judged from the URL alone. Tokens \
+             and secrets cross that network in clear, so share it only with the service."
+        ),
+    )
 }
 
 /// The checks from a Connect answer. Returns whether the vault was found, the

@@ -549,13 +549,72 @@ async fn the_startup_line_names_the_vault_or_the_local_backend() {
         .env_remove("WARDEN_SECRET_BACKEND")
         .env_remove("WARDEN_LOCAL_POLICY_FILE")
         .env_remove("WARDEN_LOCAL_SECRETS_DIR")
-        .env("WARDEN_OP_CONNECT_URL", "http://192.0.2.1:8080")
+        .env("WARDEN_OP_CONNECT_URL", "http://172.31.251.11:8080")
         .env("WARDEN_OP_CONNECT_TOKEN", "connect-token-not-used")
         .env("WARDEN_API_LISTEN", "127.0.0.1:0")
         .env("WARDEN_APPROVAL_LISTEN", "127.0.0.1:0");
     let line = listening_line(connect);
     assert!(line.contains("vault=Warden"), "{line}");
     assert!(!line.contains("secret_backend"), "{line}");
+}
+
+/// A remote plain `http` URL stops the real server at startup, naming the
+/// variable and the way out, and not the URL.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_server_refuses_to_start_on_remote_plain_http() {
+    let server = Server::new().await;
+    server.files.policy(API_ONLY);
+    server.files.secret("svc-token", CREDENTIAL);
+    let output = server
+        .command(&["serve"])
+        .env(
+            "WARDEN_NOTIFY_NTFY_URL",
+            "http://ntfy.example.com/secret-topic",
+        )
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let text = stderr(&output);
+    assert!(text.contains("WARDEN_NOTIFY_NTFY_URL"), "{text}");
+    assert!(text.contains("WARDEN_ALLOW_PLAIN_HTTP"), "{text}");
+    assert!(!text.contains("secret-topic"), "{text}");
+}
+
+/// The opt-in starts the server, loudly, and the log names no URL. The warning
+/// comes before the listening line, so reading stops there either way.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_server_warns_at_startup_about_allowed_remote_plain_http() {
+    let server = Server::new().await;
+    server.files.policy(API_ONLY);
+    server.files.secret("svc-token", CREDENTIAL);
+    fs::remove_file(server.files.root.join("audience")).unwrap();
+    let mut child = server
+        .command(&["serve"])
+        .env(
+            "WARDEN_NOTIFY_NTFY_URL",
+            "http://ntfy.example.com/secret-topic",
+        )
+        .env("WARDEN_ALLOW_PLAIN_HTTP", "WARDEN_NOTIFY_NTFY_URL")
+        .env("WARDEN_API_LISTEN", "127.0.0.1:0")
+        .env("WARDEN_APPROVAL_LISTEN", "127.0.0.1:0")
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let log: Vec<String> = BufReader::new(child.stdout.take().unwrap())
+        .lines()
+        .map(Result::unwrap)
+        .take_while(|line| !line.contains("warden-server listening"))
+        .collect();
+    child.kill().unwrap();
+    child.wait().unwrap();
+    let log = log.join("\n");
+    let warning = log
+        .lines()
+        .find(|line| line.contains("WARDEN_NOTIFY_NTFY_URL"))
+        .unwrap_or_else(|| panic!("no warning in {log}"));
+    assert!(warning.contains("WARN"), "{warning}");
+    assert!(warning.contains("plain http"), "{warning}");
+    assert!(!log.contains("secret-topic"), "{log}");
 }
 
 /// A policy file cut short stops the real server, whatever it still parses as.
