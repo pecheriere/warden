@@ -271,7 +271,7 @@ async fn lists_what_is_pending_with_enough_to_judge_it() {
         "ssh alice@pi (",
         "Asks for 30 min",
         "Asks for 1 h",
-        r#"<span class="remaining" data-remaining="600">in 10 min</span>"#,
+        r#"<span class="remaining" data-remaining="600">(in 10 min)</span>"#,
         r#"<a href="/pending" aria-current="page">"#,
     ] {
         assert!(html.contains(needle), "{needle} missing from {html}");

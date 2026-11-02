@@ -63,12 +63,11 @@ fn card(entry: &PendingEntry, now: i64) -> Markup {
                 span #(fingerprint) { "Fingerprint " code { (entry.fingerprint) } }
                 span { "Asks for " (window_words(entry.request.window)) }
                 span {
-                    "Expires " (clock(entry.expires_at)) " ("
+                    "Expires " (clock(entry.expires_at)) " "
                     // The script keeps this phrase current.
                     span.remaining data-remaining=(remaining) {
-                        "in " ((remaining + 59) / 60) " min"
+                        "(in " ((remaining + 59) / 60) " min)"
                     }
-                    ")"
                 }
             }
             div.btns {

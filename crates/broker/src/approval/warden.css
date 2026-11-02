@@ -94,7 +94,7 @@ font-weight:700;font-size:15px;font-family:inherit;cursor:pointer}
 .pending .meta{display:flex;flex-wrap:wrap;gap:6px 14px;color:var(--muted);font-size:14px}
 .pending .meta code{white-space:nowrap;word-break:normal}
 /* As wide as its longest text, so that a changing time never rewraps the line and moves a card. */
-.pending .remaining{display:inline-block;min-width:10ch}
+.pending .remaining{display:inline-block;min-width:11ch}
 .pending.ended .field,.pending.ended .meta{opacity:.6}
 .pending .btns{grid-template-columns:repeat(2,minmax(0,1fr))}
 /* What the page says, above the empty state, across its columns on a short screen. */

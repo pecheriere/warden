@@ -262,7 +262,7 @@
       card.classList.add('ended');
       busy(buttons(card), true);
       const remaining = card.querySelector('.remaining');
-      if (remaining) remaining.textContent = word;
+      if (remaining) remaining.textContent = `(${word})`;
     };
 
     const finish = (card, word) => {
@@ -370,14 +370,14 @@
       }));
     };
 
-    /** Keeps "in N min" true. A card whose time is up is marked by the clock alone
+    /** Keeps "(in N min)" true. A card whose time is up is marked by the clock alone
      *  until the next answer settles it, as this device's clock may be wrong. */
     const tick = () => {
       for (const card of cards().filter(live)) {
         const left = Math.ceil((deadlines.get(card) - Date.now()) / 1000);
         const remaining = card.querySelector('.remaining');
         if (left > 0) {
-          if (remaining) remaining.textContent = `in ${Math.ceil(left / 60)} min`;
+          if (remaining) remaining.textContent = `(in ${Math.ceil(left / 60)} min)`;
         } else if (!card.dataset.acting) {
           card.dataset.byClock = 'yes';
           endCard(card, 'expired');
