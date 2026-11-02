@@ -507,6 +507,9 @@ gh attestation verify oci://ghcr.io/pecheriere/warden:0.8.1 --owner pecheriere
 docker buildx imagetools inspect ghcr.io/pecheriere/warden:0.8.1   # the digest
 ```
 
+Releases after v0.8.1 also list the digest in a manifest the maintainer signs:
+see [Verifying a release](verifying-releases.md).
+
 You can also build it from this repository:
 `docker buildx build -t warden:dev --load .`.
 

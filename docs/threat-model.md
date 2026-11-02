@@ -596,7 +596,11 @@ warden's guarantees depend on its environment being set up as follows.
   limited to what warden needs: Connect, the notifiers, the origins of the
   API secrets (proxy mode) and the addresses of the relay targets (relay
   mode). The image is pinned by a digest whose build attestation was
-  verified. The systemd service has its own equivalents, listed above.
+  verified. Build attestations do not protect against a compromise of GitHub
+  or of an account that can change the repository, because those can produce
+  a new one. From the release after v0.8.1 a manifest signed off GitHub covers
+  that case ([Verifying a release](verifying-releases.md)), if the operator
+  kept a copy of the maintainer's public key from before the compromise. The systemd service has its own equivalents, listed above.
 - **Targets trust the CA, per target.** Each target host must trust the SSH
   CA only for its own target name. With OpenSSH: `TrustedUserCAKeys
   /etc/ssh/warden_ca.pub` and `AuthorizedPrincipalsFile

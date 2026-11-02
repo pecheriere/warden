@@ -27,6 +27,11 @@ All notable changes to this project are recorded here. The format follows
 - Project documents: `CONTRIBUTING.md` (where to discuss, reporting bugs, the
   test policy), `GOVERNANCE.md`, `CODE_OF_CONDUCT.md`, `docs/roadmap.md`,
   `docs/building.md` and `docs/upgrading.md`.
+- Releases get a manifest of the archives' and the image's hashes, signed by the
+  maintainer off GitHub (`warden-<version>-SHA256SUMS` and its `.sig`), and
+  [docs/verifying-releases.md](docs/verifying-releases.md) says how to verify
+  each kind of asset and the signer. It starts with the next release: v0.8.1 and
+  earlier have no manifest, and tags before v0.8.0 are not signed.
 - Each agent is limited in how many requests it can make, so that it cannot
   flood the owner: by default 5 pending at once and 10 new ones per 10 minutes,
   cancelled ones included. Over a limit it gets `429` with `Retry-After`, the
