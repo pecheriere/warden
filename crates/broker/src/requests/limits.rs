@@ -265,13 +265,13 @@ impl Refusals {
         Steps { audit, notify }
     }
 
-    /// Put back `tally`, which could not be written: the next refusal or
-    /// sweep tries again.
+    /// Put back `tally`, which could not be written. It is tried again when the
+    /// next entry is due, not sooner: during an audit outage, every refusal
+    /// trying again would flood the server log with the failure.
     fn restore(&self, agent: &AgentName, tally: Tally) {
         let mut agents = self.lock();
         let state = agents.entry(agent.clone()).or_default();
         state.unrecorded.add(tally);
-        state.audited_at = None;
     }
 
     /// Take the tallies that are due at `now`, or all of them if `all`.
@@ -474,7 +474,12 @@ mod tests {
             panic!("the first refusal is audited");
         };
         refusals.restore(&bot, lost);
-        assert_eq!(refusals.note(&bot, PENDING, 1001).audit, Some(tally(1, 1)));
+        // Not on every refusal, which would flood the server log during an outage.
+        assert_eq!(refusals.note(&bot, PENDING, 1001).audit, None);
+        assert_eq!(
+            refusals.note(&bot, PENDING, 1000 + AUDIT_EVERY_SECS).audit,
+            Some(tally(2, 1))
+        );
     }
 
     #[test]

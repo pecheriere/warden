@@ -318,12 +318,20 @@ async fn a_failed_audit_write_still_refuses_and_the_count_is_written_later() {
     );
     assert_eq!(request_count(&broker).await, 2);
 
-    std::fs::write(broker.audit_path(), &good).unwrap();
+    // During the outage, further refusals are counted and not retried at once.
     assert_eq!(
         create(&broker, &key, 2).await.status,
         StatusCode::TOO_MANY_REQUESTS
     );
-    assert_eq!(limited_entries(&broker), [("build-agent".to_owned(), 2, 0)]);
+    std::fs::write(broker.audit_path(), &good).unwrap();
+    assert_eq!(limited_entries(&broker), []);
+
+    broker.clock.advance(60);
+    assert_eq!(
+        create(&broker, &key, 2).await.status,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    assert_eq!(limited_entries(&broker), [("build-agent".to_owned(), 3, 0)]);
 }
 
 /// Wait until the audit log holds `count` entries of `kind`.

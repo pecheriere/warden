@@ -561,10 +561,12 @@ impl Requests {
         dedupe_key: &str,
         token: &str,
     ) -> Result<CreatedResponse, RequestError> {
-        let now = self.clock.now();
         let id = Id::random();
         let fp = fingerprint(agent, req);
         let mut tx = begin(&self.pool).await?;
+        // Read after the write lock: a create that queued for it must see the
+        // requests made meanwhile as earlier than itself, or the limits miss them.
+        let now = self.clock.now();
         if let Access::Ssh {
             target, public_key, ..
         } = &req.access
