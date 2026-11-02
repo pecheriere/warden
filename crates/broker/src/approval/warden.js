@@ -158,6 +158,11 @@
         button.disabled = true;
         try {
           const done = await post(`/grants/${encodeURIComponent(button.dataset.grant)}/revoke`, {});
+          // Access has stopped, but the owner must read this: stay on it.
+          if (done.unaudited) {
+            show(done.message, false);
+            return;
+          }
           show(done.message, true);
           window.location.reload();
         } catch (error) {

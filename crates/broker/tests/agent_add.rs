@@ -60,6 +60,27 @@ fn create_audience(path: &Path) -> String {
         .to_owned()
 }
 
+/// Revoking must work with an audit log that cannot be used, and must say so:
+/// an operator's script sees a failure, and the agent is revoked anyway.
+#[test]
+fn agent_revoke_works_with_a_broken_audit_log_and_exits_with_an_error() {
+    let server = Server::new();
+    let added = server.run(&["agent", "add", "build-agent"]);
+    assert!(added.status.success(), "{}", text(&added.stderr));
+    let log = server.path("audit.log");
+    let mut bytes = std::fs::read(&log).unwrap();
+    bytes.extend_from_slice(b"not an audit line\n");
+    std::fs::write(&log, &bytes).unwrap();
+
+    let revoked = server.run(&["agent", "revoke", "build-agent"]);
+    let stderr = text(&revoked.stderr);
+    assert!(!revoked.status.success(), "{stderr}");
+    assert!(stderr.contains("cannot open the audit log"), "{stderr}");
+    assert!(stderr.contains("is revoked"), "{stderr}");
+    assert!(stderr.contains("NOT in the audit log"), "{stderr}");
+    assert!(server.agents().contains("revoked@"), "{}", server.agents());
+}
+
 /// Piped into a password manager, stdout must be the key and only the key,
 /// and the key must appear nowhere else.
 #[test]

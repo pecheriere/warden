@@ -134,16 +134,39 @@ guarantee because the server is the trusted party:
 ## What the audit log can miss
 
 The audit log is the evidence warden leaves, so an action that gives access
-must not happen without its entry.
+must not happen without its entry. An action that takes access away is the
+exception: stopping access matters more than recording it.
 
 - **Written first, or the action does not happen.** Creating, approving,
-  denying, cancelling, expiring and revoking requests and grants, adding an
-  agent or changing its key, enrolling or removing a passkey and making an
+  denying, cancelling and expiring requests, adding an agent or changing its key, enrolling or removing a passkey and making an
   enrollment code write their entries before the database commit. A proxied
   call and a relay session write theirs before anything reaches the target. If
   the entry cannot be written, the change is rolled back and the caller gets an
   error. A bearer agent's row is written first and revoked if its entry cannot
   be written; its key is shown only after that entry, so the row cannot be used.
+- **Revoking works without the log (deliberate).** Revoking a grant or an
+  agent takes effect even if its entries cannot be written, or, for
+  `warden-server agent revoke`, if the log cannot even be opened. A failing log
+  must not leave an owner unable to end access they have decided to end, and a
+  compromise is when both are most likely to matter. The entries are still
+  written first, so a normal revocation reads as before. If that fails:
+  - Access stops as usual. The grant or agent is revoked in the database, pending
+    requests of a revoked agent end, relay sessions close, and proxied calls and
+    the agent's key are refused. A certificate already issued stays valid until
+    it expires, as it does for any revocation.
+  - The owner sees it. The grants page says that access has stopped and that it
+    is not on record, and stays on that message. A notification goes out too, as
+    the agent may have revoked its own grant, which needs no owner. It holds the
+    grant id or agent name. `warden-server agent revoke` prints the same and exits
+    with an error, after revoking.
+  - The evidence is weaker. The missing entries go to the server log at error
+    level, and `revoked_at` stays in the database, so the revocation can still be
+    found, but neither has the audit log's hash chain. An entry that was missed
+    is not written later, and revoking again does nothing.
+  - Only a database that cannot commit stops a revocation: it then did not happen,
+    and the caller gets an error. The relay ends its sessions by itself if it
+    cannot read the database for 10 s (see "Fail closed when state cannot be
+    read").
 - **`cert_issued` fails closed.** A certificate cannot be revoked before it
   expires, so one with no entry would be access with no evidence and no way to
   take it back. `cert_issued` is therefore written with `approved`, before the
@@ -155,8 +178,8 @@ must not happen without its entry.
   request is still `pending`, which is true, and ends in a decision or `expired`
   as usual. It gets a 5xx instead if the log is still failing when the request
   expires, because expiry is audited too.
-- **Entries can overstate, not understate.** Entries come before the commit, so
-  a failed commit can leave an entry for a change that did not happen; an `error`
+- **Apart from revocations, entries can overstate, not understate.** Entries
+  come before the commit, so a failed commit can leave an entry for a change that did not happen; an `error`
   entry then says so. A crash at that moment leaves no such `error` entry: an
   `approved` with no matching grant in the database means the approval did not
   take effect, and no certificate left the broker.
@@ -173,13 +196,12 @@ must not happen without its entry.
   spent but never finishes enrolling is not recorded either; only `passkey_enrolled`
   shows that it was used. An `enrollment_code_created` entry holds neither the
   code nor its hash, so it cannot be matched to one enrollment.
-- **A log that cannot be written stops warden.** With a full disk, or after a
-  failed write (which needs a restart to repair), no request can be created,
-  approved, denied or revoked, and pending requests cannot expire. This includes
-  the owner revoking a grant, which then ends only at its expiry or once the log
-  works again. This is the fail-closed choice: a grant's window is still enforced
-  from the database, and relay sessions and proxied calls cannot start without
-  their entries. Watch the disk that holds the log.
+- **A log that cannot be written stops everything but revocation.** With a full
+  disk, or after a failed write (which needs a restart to repair), no request can
+  be created, approved or denied, pending requests cannot expire, and relay
+  sessions and proxied calls cannot start. This is the fail-closed choice. A
+  grant's window is still enforced from the database. Watch the disk that holds
+  the log.
 
 ## Authentication of callers
 

@@ -5,7 +5,8 @@
 //! cannot interrupt it) in one `BEGIN IMMEDIATE` transaction whose audit
 //! entry is appended before the commit, so the audit trail never misses a
 //! transition (a failed commit can at worst leave an entry for a change that
-//! did not happen). After the commit the affected request ids are published
+//! did not happen). Revocations are the exception: they take effect even if
+//! their entry cannot be written, see [`AuditOutcome`]. After the commit the affected request ids are published
 //! on the [`StatusBus`] so long-polls wake up, and relay sessions of revoked
 //! grants are ended.
 
@@ -33,8 +34,9 @@ use crate::ssh_ca;
 
 mod transition;
 
-use self::transition::detached;
+pub use self::transition::AuditOutcome;
 pub(crate) use self::transition::{CommitError, audit_and_commit, begin};
+use self::transition::{commit_even_if_unaudited, detached};
 
 /// How long a request waits for the owner, in seconds.
 const PENDING_TTL_SECS: i64 = 600;
@@ -1042,17 +1044,28 @@ impl Requests {
         }
     }
 
-    /// End a grant now. Revoking an already revoked grant does nothing.
+    /// End a grant now, even if the audit log cannot record it (the owner is
+    /// then told, and this returns [`AuditOutcome::Missing`]). Revoking an
+    /// already revoked grant does nothing.
     ///
     /// # Errors
-    /// [`RequestError::NotFound`] if no such grant exists.
-    pub async fn revoke_grant(&self, grant_id: &Id, by: &str) -> Result<(), RequestError> {
+    /// [`RequestError::NotFound`] if no such grant exists; storage failures,
+    /// which mean the grant was not revoked.
+    pub async fn revoke_grant(
+        &self,
+        grant_id: &Id,
+        by: &str,
+    ) -> Result<AuditOutcome, RequestError> {
         let this = self.clone();
         let (grant_id, by) = (grant_id.clone(), by.to_owned());
         detached(async move { this.revoke_grant_now(&grant_id, &by).await }).await
     }
 
-    async fn revoke_grant_now(&self, grant_id: &Id, by: &str) -> Result<(), RequestError> {
+    async fn revoke_grant_now(
+        &self,
+        grant_id: &Id,
+        by: &str,
+    ) -> Result<AuditOutcome, RequestError> {
         let mut tx = begin(&self.pool).await?;
         let Some(row) = sqlx::query(
             "UPDATE grants SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL \
@@ -1072,7 +1085,9 @@ impl Requests {
             if exists.is_some() {
                 self.sessions.revoke_grant(grant_id);
             }
-            return exists.map(|_| ()).ok_or(RequestError::NotFound);
+            return exists
+                .map(|_| AuditOutcome::Recorded)
+                .ok_or(RequestError::NotFound);
         };
         let request_id: Id = parse(&row, "request_id")?;
         sqlx::query("UPDATE requests SET status = 'revoked' WHERE id = ? AND status = 'approved'")
@@ -1083,8 +1098,8 @@ impl Requests {
             grant_id: grant_id.clone(),
             by: by.to_owned(),
         };
-        audit_and_commit(
-            &self.audit,
+        let outcome = commit_even_if_unaudited(
+            Some(&self.audit),
             tx,
             vec![revoked],
             &format!("revocation of grant {grant_id}"),
@@ -1092,23 +1107,31 @@ impl Requests {
         .await?;
         self.sessions.revoke_grant(grant_id);
         self.bus.publish(&request_id);
-        Ok(())
+        if outcome == AuditOutcome::Missing {
+            self.tell_owner_unaudited(format!("Revoking grant {grant_id}"));
+        }
+        Ok(outcome)
     }
 
-    /// Revoke an agent and everything it holds; see [`revoke_agent`].
+    /// Revoke an agent and everything it holds, even if the audit log cannot
+    /// record it (the owner is then told); see [`revoke_agent`].
     ///
     /// # Errors
     /// [`RequestError::UnknownAgent`] or storage failures.
-    pub async fn revoke_agent(&self, name: &AgentName) -> Result<(), RequestError> {
+    pub async fn revoke_agent(&self, name: &AgentName) -> Result<AuditOutcome, RequestError> {
         let this = self.clone();
         let name = name.clone();
         detached(async move {
-            let affected = revoke_agent(&this.pool, &this.audit, &name, this.clock.now()).await?;
+            let revoked =
+                revoke_agent(&this.pool, Some(&this.audit), &name, this.clock.now()).await?;
             this.sessions.revoke_agent(&name);
-            for id in &affected {
+            for id in &revoked.affected {
                 this.bus.publish(id);
             }
-            Ok(())
+            if revoked.audit == AuditOutcome::Missing {
+                this.tell_owner_unaudited(format!("Revoking agent {name}"));
+            }
+            Ok(revoked.audit)
         })
         .await
     }
@@ -1274,8 +1297,9 @@ impl Requests {
         Ok(None)
     }
 
-    /// End a grant on behalf of the agent that holds it. Revoking an already
-    /// revoked grant does nothing.
+    /// End a grant on behalf of the agent that holds it, as
+    /// [`Requests::revoke_grant`] does. Revoking an already revoked grant does
+    /// nothing.
     ///
     /// # Errors
     /// [`RequestError::NotFound`] if the grant does not exist or belongs to
@@ -1284,7 +1308,7 @@ impl Requests {
         &self,
         agent: &AgentName,
         grant_id: &Id,
-    ) -> Result<(), RequestError> {
+    ) -> Result<AuditOutcome, RequestError> {
         sqlx::query("SELECT 1 FROM grants WHERE id = ? AND agent = ?")
             .bind(grant_id.as_str())
             .bind(agent.as_str())
@@ -1437,10 +1461,19 @@ async fn check_key_unbound(
     Ok(())
 }
 
+/// What [`revoke_agent`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RevokedAgent {
+    /// Every affected request, so a running server can wake their long-polls.
+    pub affected: Vec<Id>,
+    /// Whether it is on record. The caller must tell the owner if not.
+    pub audit: AuditOutcome,
+}
+
 /// Revoke agent `name` at `now` in one transaction: its key stops working,
 /// its pending requests end as revoked, and its active grants are revoked
-/// (their requests too). Returns the ids of every affected request so a
-/// running server can wake their long-polls.
+/// (their requests too). This takes effect even if `audit` cannot record it,
+/// or is `None` because the log could not be opened.
 ///
 /// When this runs in another process (the `agent revoke` admin command), the
 /// server's in-process [`StatusBus`] is not told; its long-polls see
@@ -1448,14 +1481,14 @@ async fn check_key_unbound(
 /// ends the agent's sessions at its next grant check (every second).
 ///
 /// # Errors
-/// [`RequestError::UnknownAgent`] if no such agent exists; storage or audit
-/// failures (nothing changes then).
+/// [`RequestError::UnknownAgent`] if no such agent exists; storage failures
+/// (nothing changes then).
 pub async fn revoke_agent(
     pool: &SqlitePool,
-    audit: &AuditLog,
+    audit: Option<&AuditLog>,
     name: &AgentName,
     now: i64,
-) -> Result<Vec<Id>, RequestError> {
+) -> Result<RevokedAgent, RequestError> {
     let mut tx = begin(pool).await?;
     agents::revoke(&mut *tx, name, now)
         .await
@@ -1503,8 +1536,9 @@ pub async fn revoke_agent(
         });
         affected.push(request_id);
     }
-    audit_and_commit(audit, tx, events, &format!("revocation of agent {name}")).await?;
-    Ok(affected)
+    let transition = format!("revocation of agent {name}");
+    let audit = commit_even_if_unaudited(audit, tx, events, &transition).await?;
+    Ok(RevokedAgent { affected, audit })
 }
 
 /// Wait for a bus message about `id`. `true` means re-read (it changed or

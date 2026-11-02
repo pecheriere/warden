@@ -27,8 +27,8 @@ use crate::policy::{ApiScope, ApiSecretPolicy, CaKey, SshMode, SshTarget};
 use crate::proxy::CallInfo;
 use crate::relay::{LiveSessionInfo, RelayEndpoint};
 use crate::requests::{
-    ActiveGrant, BACKEND_UNAVAILABLE, Destination, PendingView, RELAY_NOT_CONFIGURED, RequestError,
-    sha256_hex, window_label,
+    ActiveGrant, AuditOutcome, BACKEND_UNAVAILABLE, Destination, PendingView, RELAY_NOT_CONFIGURED,
+    RequestError, sha256_hex, window_label,
 };
 use crate::ssh_ca::{self, IssueInput};
 
@@ -62,6 +62,10 @@ const DESTINATION_CHANGED: &str = "policy changed; reload and review";
 const AUDIT_UNAVAILABLE: &str = "the audit log could not be written, so nothing changed and no \
                                  access was given. Try again; if it keeps failing, check the \
                                  server's log";
+
+/// What the owner is told when a revocation could not be recorded.
+const REVOKED_UNAUDITED: &str = "Revoked: access has stopped. But the audit log could not be \
+                                 written, so this is not on record. Check the server's log.";
 
 /// Recorded as `by` when the owner revokes a grant from the UI.
 const REVOKED_BY_OWNER: &str = "owner";
@@ -187,6 +191,14 @@ struct CeremonyStarted<T> {
 #[derive(Serialize)]
 struct Done {
     message: String,
+}
+
+/// A revocation that took effect but could not be recorded. The page stays
+/// on this message instead of reloading.
+#[derive(Serialize)]
+struct RevokedUnaudited {
+    message: &'static str,
+    unaudited: bool,
 }
 
 #[derive(Serialize)]
@@ -764,7 +776,12 @@ async fn deny(State(state): State<AppState>, Path(token): Path<String>) -> Respo
 
 async fn revoke_grant(State(state): State<AppState>, Path(id): Path<Id>) -> Response {
     match state.requests.revoke_grant(&id, REVOKED_BY_OWNER).await {
-        Ok(()) => done("Revoked."),
+        Ok(AuditOutcome::Recorded) => done("Revoked."),
+        Ok(AuditOutcome::Missing) => Json(RevokedUnaudited {
+            message: REVOKED_UNAUDITED,
+            unaudited: true,
+        })
+        .into_response(),
         Err(RequestError::NotFound) => json_error(StatusCode::NOT_FOUND, "no such grant"),
         Err(e) => request_error(&e),
     }

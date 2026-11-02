@@ -25,7 +25,7 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::TcpStream;
 use warden_broker::policy::{RelayCredential, SshMode, SshTarget};
 use warden_broker::relay::RelayLimits;
-use warden_broker::requests::Clock as _;
+use warden_broker::requests::{AuditOutcome, Clock as _};
 use warden_broker::testkit::TestBroker;
 use warden_broker::testkit::sshd::{HostKeyType, Sshd, SshdLogin, current_user};
 use warden_broker_proto::{
@@ -2219,6 +2219,74 @@ async fn revoke_closes_live_session() {
     assert_ended_once_then_stop(&s, 1, "revoked").await;
 }
 
+/// Make every append to the broker's audit log fail from now on.
+fn break_audit_log(broker: &TestBroker) {
+    let mut log = std::fs::read(broker.audit_path()).unwrap();
+    log.extend_from_slice(b"not an audit line\n");
+    std::fs::write(broker.audit_path(), &log).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn revoke_closes_live_session_when_the_audit_log_cannot_be_written() {
+    let s = key_target().await;
+    let agent = approved_agent(&s.broker, "bot").await;
+    let (c, mut channel) = hold_session(&s, &agent.key).await;
+    break_audit_log(&s.broker);
+    let revoked = Instant::now();
+    let outcome = s
+        .broker
+        .state()
+        .requests
+        .revoke_grant(&agent.grant_id, "owner")
+        .await
+        .unwrap();
+    assert_eq!(outcome, AuditOutcome::Missing);
+    assert_both_sides_closed(&s, &c, 0, revoked + Duration::from_secs(5)).await;
+    let out = collect(&mut channel).await;
+    assert!(
+        text(&out.stderr).contains("warden relay: access revoked"),
+        "{out:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn agent_revoke_closes_sessions_when_the_audit_log_cannot_be_written() {
+    let s = key_target().await;
+    let agent = approved_agent(&s.broker, "bot").await;
+    let (c, _channel) = hold_session(&s, &agent.key).await;
+    break_audit_log(&s.broker);
+    let revoked = Instant::now();
+    let outcome = s
+        .broker
+        .state()
+        .requests
+        .revoke_agent(&AgentName::try_from("bot".to_owned()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(outcome, AuditOutcome::Missing);
+    assert_both_sides_closed(&s, &c, 0, revoked + Duration::from_secs(5)).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn db_revoke_with_no_audit_log_closes_session_from_another_process() {
+    let s = key_target().await;
+    let agent = approved_agent(&s.broker, "bot").await;
+    let (c, _channel) = hold_session(&s, &agent.key).await;
+    // `warden-server agent revoke` when it could not open the audit log.
+    let state = s.broker.state();
+    let revoked = Instant::now();
+    let done = warden_broker::requests::revoke_agent(
+        &state.pool,
+        None,
+        &AgentName::try_from("bot".to_owned()).unwrap(),
+        state.clock.now(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(done.audit, AuditOutcome::Missing);
+    assert_both_sides_closed(&s, &c, 0, revoked + Duration::from_secs(5)).await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn expiry_closes_live_session() {
     let s = key_target().await;
@@ -2279,7 +2347,7 @@ async fn db_revoke_from_another_process_closes_session() {
     let revoked = Instant::now();
     warden_broker::requests::revoke_agent(
         &state.pool,
-        &state.audit,
+        Some(&state.audit),
         &AgentName::try_from("bot".to_owned()).unwrap(),
         state.clock.now(),
     )

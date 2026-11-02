@@ -244,11 +244,28 @@ async fn agent(command: AgentCommand) -> Result<()> {
             }
         }
         AgentCommand::Revoke { name } => {
-            let audit = open_audit().await?;
-            let affected = requests::revoke_agent(&pool, &audit, &name, SystemClock.now())
+            // Stopping access matters more than recording it: a log that
+            // cannot even be opened does not stop the revocation.
+            let audit = match open_audit().await {
+                Ok(audit) => Some(audit),
+                Err(e) => {
+                    eprintln!("error: cannot open the audit log: {e:#}");
+                    None
+                }
+            };
+            let revoked = requests::revoke_agent(&pool, audit.as_ref(), &name, SystemClock.now())
                 .await
                 .with_context(|| format!("revoking agent {name}"))?;
-            eprintln!("agent {name} revoked; {} request(s) ended", affected.len());
+            eprintln!(
+                "agent {name} revoked; {} request(s) ended",
+                revoked.affected.len()
+            );
+            if revoked.audit == requests::AuditOutcome::Missing {
+                bail!(
+                    "agent {name} is revoked, but this is NOT in the audit log, which could not \
+                     be written"
+                );
+            }
         }
     }
     Ok(())

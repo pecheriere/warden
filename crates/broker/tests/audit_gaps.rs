@@ -9,9 +9,9 @@ use axum::http::StatusCode;
 use serde_json::{Value, json};
 use ssh_key::Certificate;
 use warden_broker::approval::passkeys::PasskeyError;
-use warden_broker::requests::{Clock as _, sha256_hex};
-use warden_broker::testkit::{SoftAuthenticator, TestBroker, TestResponse};
-use warden_broker_proto::{AgentName, CreatedResponse, GrantAccess, RequestStatus, Window};
+use warden_broker::requests::{AuditOutcome, Clock as _, sha256_hex};
+use warden_broker::testkit::{FakeBackend, SoftAuthenticator, TestBroker, TestResponse};
+use warden_broker_proto::{AgentName, CreatedResponse, GrantAccess, Id, RequestStatus, Window};
 
 /// Make every append to the audit log fail until the returned bytes are put
 /// back.
@@ -199,4 +199,161 @@ async fn no_enrollment_code_exists_without_its_audit_entry() {
     repair_audit_log(&broker, &good);
     broker.enrollment_code().await;
     assert_eq!(row_count(&broker, "enrollment_codes").await, 1);
+}
+
+// --- revocation works without the log ---------------------------------------
+
+/// A broker with agent `bot` (its key returned too), holding an approved API
+/// grant.
+async fn api_grant() -> (TestBroker, String, CreatedResponse, Id) {
+    let broker = TestBroker::new().await;
+    broker
+        .backend
+        .set_api_secret(FakeBackend::example_api_secret(), "not-a-real-secret");
+    let key = broker.add_agent("bot").await;
+    broker.enroll_soft_passkey().await;
+    let (created, token) = broker
+        .create_request(
+            "bot",
+            TestBroker::api_request("github", "list issues", Window::M15),
+        )
+        .await;
+    notification_recorded(&broker).await;
+    let approved = broker.approve(&token, Window::M15).await;
+    assert_eq!(approved.status, StatusCode::OK, "{}", approved.body);
+    let RequestStatus::Approved(view) = status(&broker, &created).await else {
+        panic!("expected approved");
+    };
+    (broker, key, created, view.grant_id)
+}
+
+async fn call(broker: &TestBroker, key: &str, grant: &Id) -> TestResponse {
+    broker
+        .api_post_json(
+            key,
+            &format!("/v1/grants/{grant}/http"),
+            &json!({"method": "GET", "url": "https://api.example.com/issues", "headers": []}),
+        )
+        .await
+}
+
+#[tokio::test]
+async fn the_owner_can_revoke_an_api_grant_when_the_log_cannot_be_written() {
+    let (broker, key, created, grant) = api_grant().await;
+    let entries = broker.audit_types().len();
+    break_audit_log(&broker);
+
+    let revoked = broker
+        .post_json(&format!("/grants/{grant}/revoke"), &json!({}))
+        .await;
+    assert_eq!(revoked.status, StatusCode::OK, "{}", revoked.body);
+    assert_eq!(revoked.json()["unaudited"], true);
+    let message = revoked.json()["message"].as_str().unwrap().to_owned();
+    assert!(message.contains("access has stopped"), "{message}");
+    assert!(message.contains("not on record"), "{message}");
+
+    // Access has stopped everywhere the broker decides.
+    assert_eq!(status(&broker, &created).await, RequestStatus::Revoked);
+    let refused = call(&broker, &key, &grant).await;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.body);
+    assert_eq!(refused.json()["error"], "grant revoked");
+
+    // The owner is told out of band too, without anything an agent wrote.
+    let bell = broker.capture.next().await;
+    assert!(bell.title.contains("audit log failed"), "{bell:?}");
+    assert!(bell.message.contains(grant.as_str()), "{bell:?}");
+    assert_eq!(bell.url.path(), "/grants");
+
+    // Nothing was added to the log: the entry really is missing.
+    let good = std::fs::read_to_string(broker.audit_path()).unwrap();
+    let lines = good.lines().count();
+    assert_eq!(lines, entries + 1, "only the line added to break it");
+}
+
+#[tokio::test]
+async fn an_agent_can_revoke_its_own_grant_and_the_owner_is_told() {
+    let (broker, key, _created, grant) = api_grant().await;
+    break_audit_log(&broker);
+    let revoked = broker
+        .api_post(&key, &format!("/v1/grants/{grant}/revoke"))
+        .await;
+    assert_eq!(revoked.status, StatusCode::NO_CONTENT, "{}", revoked.body);
+    assert_eq!(
+        call(&broker, &key, &grant).await.status,
+        StatusCode::CONFLICT
+    );
+    let bell = broker.capture.next().await;
+    assert!(bell.title.contains("audit log failed"), "{bell:?}");
+}
+
+#[tokio::test]
+async fn revoking_an_agent_stops_its_key_grants_and_requests_when_the_log_fails() {
+    let (broker, key, created, grant) = api_grant().await;
+    let (waiting, _token) = broker
+        .create_request("bot", TestBroker::pi_request("another task", Window::M15))
+        .await;
+    let bot = AgentName::try_from("bot".to_owned()).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while broker
+            .audit_types()
+            .iter()
+            .filter(|t| *t == "notified")
+            .count()
+            < 2
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("notifications recorded within 5 s");
+    break_audit_log(&broker);
+
+    let outcome = broker.state().requests.revoke_agent(&bot).await.unwrap();
+    assert_eq!(outcome, AuditOutcome::Missing);
+
+    assert_eq!(status(&broker, &created).await, RequestStatus::Revoked);
+    assert_eq!(status(&broker, &waiting).await, RequestStatus::Revoked);
+    // The key no longer works at all.
+    let refused = call(&broker, &key, &grant).await;
+    assert_eq!(refused.status, StatusCode::UNAUTHORIZED, "{}", refused.body);
+    let bell = broker.capture.next().await;
+    assert!(bell.message.contains("bot"), "{bell:?}");
+}
+
+#[tokio::test]
+async fn revoking_an_ssh_grant_works_when_the_log_cannot_be_written() {
+    let (broker, mut auth, created, token) = pending(Window::M15).await;
+    let approved = approve(&broker, &mut auth, &token).await;
+    assert_eq!(approved.status, StatusCode::OK, "{}", approved.body);
+    let RequestStatus::Approved(view) = status(&broker, &created).await else {
+        panic!("expected approved");
+    };
+    break_audit_log(&broker);
+    let outcome = broker
+        .state()
+        .requests
+        .revoke_grant(&view.grant_id, "owner")
+        .await
+        .unwrap();
+    assert_eq!(outcome, AuditOutcome::Missing);
+    assert_eq!(status(&broker, &created).await, RequestStatus::Revoked);
+}
+
+#[tokio::test]
+async fn a_revocation_the_log_accepts_is_recorded_as_before() {
+    let (broker, _key, created, grant) = api_grant().await;
+    let revoked = broker
+        .post_json(&format!("/grants/{grant}/revoke"), &json!({}))
+        .await;
+    assert_eq!(revoked.status, StatusCode::OK, "{}", revoked.body);
+    assert_eq!(revoked.json()["message"], "Revoked.");
+    assert!(broker.audit_types().iter().any(|t| t == "grant_revoked"));
+    assert_eq!(status(&broker, &created).await, RequestStatus::Revoked);
+    assert!(
+        broker
+            .capture
+            .rung()
+            .iter()
+            .all(|bell| !bell.title.contains("audit log failed"))
+    );
 }
