@@ -1,0 +1,45 @@
+[package]
+name = "warden-demo"
+description = "A throwaway warden on one machine, to try the approval flow; not for real use"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+# Never published, never in the image: scripts/check-demo-not-shipped.sh
+# fails the build if that changes.
+publish = false
+
+[[bin]]
+name = "warden-demo"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+# warden-broker without its `testkit` feature: the demo keeps real passkey
+# checks and has no use for the soft passkey or the fake backend.
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+axum.workspace = true
+clap.workspace = true
+getrandom.workspace = true
+hex.workspace = true
+http.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+rcgen.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+tokio-rustls.workspace = true
+tracing-subscriber.workspace = true
+url.workspace = true
+warden-broker.workspace = true
+warden-broker-proto.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+rustix.workspace = true

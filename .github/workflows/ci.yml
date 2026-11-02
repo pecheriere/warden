@@ -46,6 +46,8 @@ jobs:
       - run: cargo fmt --check
       - name: Refuse reqwest decompression features
         run: scripts/check-no-reqwest-decompression.sh
+      - name: Refuse the demo in anything that ships
+        run: scripts/check-demo-not-shipped.sh
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - run: cargo test --workspace --all-features --locked
       - name: Build the documentation
@@ -155,5 +157,20 @@ jobs:
           context: .
           platforms: ${{ matrix.platform }}
           push: false
+          outputs: type=local,dest=${{ runner.temp }}/image
           cache-from: type=gha,scope=${{ matrix.platform }}
           cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
+      # The demo's startup banner is in its binary, so this also catches the
+      # demo linked into warden-server under another name.
+      - name: Refuse the demo in the built image
+        run: |
+          image="$RUNNER_TEMP/image"
+          test -x "$image/warden-server"
+          if find "$image" -name '*demo*' | grep .; then
+            echo "::error::the image contains the demo"
+            exit 1
+          fi
+          if grep -q 'WARDEN DEMO' "$image/warden-server"; then
+            echo "::error::warden-server contains the demo"
+            exit 1
+          fi

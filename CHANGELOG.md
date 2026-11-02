@@ -8,6 +8,10 @@ All notable changes to this project are recorded here. The format follows
 
 ### Added
 
+- `warden-demo`: try the approval flow on one machine with no setup
+  ([docs/demo.md](docs/demo.md)). A separate, unpublished binary that is not
+  part of `warden-server` or the image; a CI guard keeps it that way. It is not
+  secure for real use, and it needs Rust to build.
 - A hardened systemd unit (`deploy/systemd/warden.service`) and a guide to run
   warden without Docker (`docs/deployment-systemd.md`), which says what holds,
   what is replaced and what is lost compared with Docker. Docker stays the

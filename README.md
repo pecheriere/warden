@@ -12,6 +12,31 @@ use cases and how to start.
 
 <img src="docs/design/mockups/approve-iphone-light.png" alt="The approve page on a phone: the agent, the access with a read-only badge, the goal, the fingerprint, the grant window and the Approve and Deny buttons" width="320">
 
+## Try the demo
+
+The fastest way to see warden work is a local demo. **It is a demo and is not
+secure for real use**: everyone on the machine counts as the owner, and all its
+data is throwaway. It shows the whole flow on one machine, with no Tailscale,
+1Password, Docker or phone.
+
+It currently needs [Rust](https://rustup.rs), because it is built from source:
+whether to publish a demo binary has not been decided. You also need a browser
+that can create a passkey. In a first terminal:
+
+```sh
+git clone https://github.com/pecheriere/warden && cd warden
+cargo build --locked -p warden-demo -p warden-broker-cli
+target/debug/warden-demo
+```
+
+It prints the exact next steps: enroll a passkey in your browser, request
+access from a second terminal, approve, call a local API through the broker and
+read the audit log. The demo is not in the image, and it covers API calls only.
+[What it does and does not show](docs/demo.md).
+
+For a real setup, go on to the [recommended setup](#recommended-setup) and the
+[quick start](#quick-start).
+
 ## Who warden is for
 
 warden is for people who run AI agents or scripts, often unattended, and
@@ -126,11 +151,12 @@ use 1Password Connect, which 1Password ships only as a container.
 | **Tailscale sidecar** container | [Documented](docs/deployment.md#10-the-sidecar-layout-for-relay-targets), but not yet tested end to end. | SSH certificates, API calls, SSH relay. | Other host processes cannot reach the listeners, but firewall rules can no longer tell warden's traffic from Tailscale's, and hardening the Tailscale container is untested. With relay targets, warden also [reads and uses their credentials](docs/threat-model.md#relay-mode-residual-risks), so a compromised warden can expose them. |
 | **systemd service**, warden outside a container | [Documented](docs/deployment-systemd.md), but not yet tested on a clean host. Needs a release later than 0.8.1 and a build from source. | SSH certificates, API calls. No SSH relay. | As for Tailscale Services, the whole host is trusted. warden also [loses the image's isolation](docs/deployment-systemd.md#1-what-holds-what-is-replaced-what-is-lost): it shares the host's filesystem (read-only) and network stack, and there is no build attestation yet. |
 
-Other setups are planned but **do not exist yet**: a local demo
-([#73](https://github.com/pecheriere/warden/issues/73)), approving
-without Tailscale ([#75](https://github.com/pecheriere/warden/issues/75)) and
-secrets without 1Password
-([#76](https://github.com/pecheriere/warden/issues/76)).
+The [local demo](docs/demo.md) is for trying warden, not one of these setups:
+it is not secure for real use.
+
+Other setups are planned but **do not exist yet**: approving without Tailscale
+([#75](https://github.com/pecheriere/warden/issues/75)) and secrets without
+1Password ([#76](https://github.com/pecheriere/warden/issues/76)).
 
 ### Requirements
 
@@ -149,8 +175,8 @@ secrets without 1Password
 
 ## Quick start
 
-This is the short path through the recommended setup. There is no local demo
-yet, so even a first try needs everything above.
+This is the short path through the recommended setup, and it needs everything
+above. To look first without any of that, [try the demo](#try-the-demo).
 [Deployment](docs/deployment.md) explains each step and the reasons behind
 it; follow it for a real setup.
 
@@ -239,6 +265,7 @@ it; follow it for a real setup.
 
 | Document | For |
 |----------|-----|
+| [Local demo](docs/demo.md) | Trying the flow on one machine, and what that leaves out. |
 | [Deployment](docs/deployment.md) | Running warden safely: Tailscale, 1Password Connect, networks, notifications, backups, upgrades. |
 | [Configuration](docs/configuration.md) | Every environment variable and command of the server and the CLI. |
 | [SSH targets](docs/ssh-targets.md) | Setting up hosts: one user per agent, certificate-only logins, relay targets. |

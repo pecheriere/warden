@@ -43,6 +43,11 @@ keyring-core.workspace = true
 
 [dev-dependencies]
 warden-broker = { workspace = true, features = ["testkit"] }
+# The documented demo flow, driven with this CLI (tests/e2e_demo.rs). A test
+# dependency only: the CLI itself never builds or links the demo.
+warden-demo.workspace = true
+webauthn-rs.workspace = true
+webauthn-authenticator-rs.workspace = true
 # `p256`: the tests generate ECDSA P-256 signing keys and verify the
 # signatures the CLI gets from an ssh-agent; the CLI itself only asks the
 # agent to sign.

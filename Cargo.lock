@@ -4883,6 +4883,9 @@ dependencies = [
  "url",
  "warden-broker",
  "warden-broker-proto",
+ "warden-demo",
+ "webauthn-authenticator-rs",
+ "webauthn-rs",
  "zeroize",
 ]
 
@@ -4898,6 +4901,33 @@ dependencies = [
  "ssh-key 0.6.7",
  "thiserror 2.0.21",
  "unicode-properties",
+]
+
+[[package]]
+name = "warden-demo"
+version = "0.8.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "clap",
+ "getrandom 0.4.3",
+ "hex",
+ "http",
+ "hyper",
+ "hyper-util",
+ "rcgen",
+ "rustix",
+ "serde_json",
+ "sqlx",
+ "tempfile",
+ "tokio",
+ "tokio-rustls",
+ "tracing-subscriber",
+ "url",
+ "warden-broker",
+ "warden-broker-proto",
+ "zeroize",
 ]
 
 [[package]]
