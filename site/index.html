@@ -322,7 +322,7 @@ target/debug/warden request api demo-api --for 15m \
 <pre><code>target/debug/warden http demo-api GET https://localhost:&lt;port&gt;/v1/hello
 cat "$WARDEN_DEMO_DIR/audit.jsonl"</code></pre>
         </figure>
-        <p>The answer shows <code>"authorization_received": "[REDACTED]"</code>: the demo API received the token and echoed it, and warden removed it before the agent could see it. Ctrl-C in the first terminal verifies the audit chain and deletes the temporary directory. The passkey stays in your authenticator, so delete it afterwards.</p>
+        <p>The answer shows <code>"authorization_received": "[REDACTED]"</code>: the demo API received the token and echoed it, and warden removed it before the agent could see it. Ctrl-C in the first terminal verifies the audit chain and deletes the temporary directory. The passkey stays in your authenticator, so delete it afterwards. Close the second terminal too, because the demo's settings stay in its environment.</p>
       </div>
     </div>
 
