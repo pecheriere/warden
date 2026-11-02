@@ -9,7 +9,8 @@ name: release
 #
 # It also builds the `warden` CLI on native runners, attests the archives, and
 # leaves them on a draft GitHub release. The workflow never publishes that draft:
-# the owner does, once the run has finished (see "Releases" in AGENTS.md). This
+# the owner signs its manifest with scripts/sign-release.sh, using a key that is
+# not on GitHub, and then publishes it (see "Releases" in AGENTS.md). This
 # repository has immutable releases, so a published release cannot gain files,
 # and they must be on the draft first.
 

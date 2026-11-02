@@ -21,6 +21,11 @@ All notable changes to this project are recorded here. The format follows
 - Project documents: `CONTRIBUTING.md` (where to discuss, reporting bugs, the
   test policy), `GOVERNANCE.md`, `CODE_OF_CONDUCT.md`, `docs/roadmap.md`,
   `docs/building.md` and `docs/upgrading.md`.
+- Releases get a manifest of the archives' and the image's hashes, signed by the
+  maintainer off GitHub (`warden-<version>-SHA256SUMS` and its `.sig`), and
+  [docs/verifying-releases.md](docs/verifying-releases.md) says how to verify
+  each kind of asset and the signer. It starts with the next release: v0.8.1 and
+  earlier have no manifest, and tags before v0.8.0 are not signed.
 - `warden-demo`: try the approval flow on one machine with no setup
   ([docs/demo.md](docs/demo.md)). A separate, unpublished binary that is not
   part of `warden-server` or the image; a CI guard keeps it that way. It is not

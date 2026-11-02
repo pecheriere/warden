@@ -52,6 +52,11 @@ Reporters are credited by name or GitHub account in the advisory and in the
 changelog entry, unless they ask not to be. Say in the report if you would rather
 stay anonymous, or which name to use.
 
+## Verifying what you download
+
+[Verifying a release](docs/verifying-releases.md) says how to check the
+signatures and attestations on a release, and which older releases lack them.
+
 ## Where vulnerabilities are published
 
 - **GitHub security advisories:**
