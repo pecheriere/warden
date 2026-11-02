@@ -204,8 +204,8 @@ says so.
 Each request carries a timestamp, so the machine's clock must be within 60
 seconds of the broker's (use NTP). If a request cannot be signed (for
 example while the `ssh-agent` restarts), the command stops, also while
-waiting for a decision: rerun it once the agent is back. If the broker then
-says a request is already pending, cancel the old one or let it expire.
+waiting for a decision: rerun it once the agent is back. If `warden request`
+then says a request is pending, cancel the old one or let it expire.
 
 Clients other than `warden` follow [the agent protocol](agent-protocol.md).
 
@@ -345,9 +345,19 @@ The approval page shows the same fingerprint. A mismatch means the request
 the owner sees is not yours, and they should deny it.
 
 Only one request per agent and target (or secret and scope) can be pending
-at a time. If another one is already waiting, `warden request` stops and
-prints that request's fingerprint. It does not wait on a request it did not
-make.
+at a time. If one is pending, `warden request` waits on it only when the
+fingerprints match:
+
+- `warden request ssh` always stops, even when you rerun the same command,
+  because each run generates a new key and the key is part of the fingerprint.
+- `warden request api` waits on a pending request written the same way, with the
+  same goal, window, methods and path. Otherwise it stops, even if the two ask
+  for the same access: leaving out `--methods` and listing the read-only methods
+  yourself give different fingerprints.
+
+When it stops, it prints the pending request's ID and fingerprint, says that it
+expires within 10 minutes of being made, and gives the command to withdraw it:
+`warden request cancel <id>`.
 
 ### Waiting for the decision
 

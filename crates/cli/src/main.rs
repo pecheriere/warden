@@ -720,13 +720,9 @@ async fn request_grant(
         return Err(exit.into());
     };
     if created.fingerprint != fingerprint(&config.agent, req) {
-        // The broker answered with another pending request of this agent for
-        // the same target or secret, made with a different goal, window or
-        // (for SSH) key: approving it would not grant what was asked here.
-        bail!(
-            "a request {subject} is already pending (fingerprint {}); wait for it to be decided or expire",
-            created.fingerprint
-        );
+        // The broker answered with a request whose fingerprint is not this
+        // one's: approving it might not grant what was asked here.
+        bail!(guidance::already_pending(subject, &created));
     }
     eprintln!(
         "request {}, fingerprint {} — waiting for approval…",

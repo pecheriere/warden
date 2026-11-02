@@ -5,9 +5,9 @@
 //! These messages hold names, ids and the broker's sanitized words, never a
 //! secret.
 
-use warden_broker_proto::{Id, RequestStatus, SecretName, TargetName};
+use warden_broker_proto::{CreatedResponse, Id, RequestStatus, SecretName, TargetName};
 
-use crate::status_word;
+use crate::{PENDING_EXPIRY_SECS, status_word};
 
 /// Explains the placeholders of a suggested `warden request`.
 pub const REQUEST_PLACEHOLDERS: &str = "window: the shortest of 15m, 30m, 1h or 4h that covers \
@@ -28,6 +28,23 @@ pub fn request_ended(status: &RequestStatus) -> String {
             .to_owned(),
         other => format!("request {}", status_word(other)),
     }
+}
+
+/// The error for a request the broker answered with `pending`, whose
+/// fingerprint is not the one this request has. `subject` names the target or
+/// secret. All the CLI knows is that the fingerprints differ, so this says no
+/// more about why, or about when `pending` was made. The broker's answer has no
+/// expiry time, so this gives the upper limit.
+pub fn already_pending(subject: &str, pending: &CreatedResponse) -> String {
+    format!(
+        "a request {subject} is pending (id {id}, fingerprint {fingerprint}), and its fingerprint \
+         differs from this request's, so warden is not waiting on it. It expires within {minutes} \
+         minutes of being made, unless the owner decides it first. To withdraw it: warden request \
+         cancel {id}",
+        id = pending.id,
+        fingerprint = pending.fingerprint,
+        minutes = PENDING_EXPIRY_SECS / 60,
+    )
 }
 
 /// The error for `warden ssh` without an active grant for `target`.
@@ -96,11 +113,11 @@ pub fn api_grant_expired(grant: &Id, name: &SecretName, broker: &str) -> String 
 #[cfg(test)]
 mod tests {
     use clap::Parser as _;
-    use warden_broker_proto::{Id, RequestStatus};
+    use warden_broker_proto::{CreatedResponse, Id, RequestStatus};
 
     use super::{
-        api_call_stopped, api_grant_expired, api_grant_revoked, no_api_grant, no_ssh_grant,
-        request_ended,
+        already_pending, api_call_stopped, api_grant_expired, api_grant_revoked, no_api_grant,
+        no_ssh_grant, request_ended,
     };
     use crate::Cli;
     use crate::config::Config;
@@ -182,6 +199,26 @@ mod tests {
             assert!(message.contains("expired or"), "{message}");
             assert!(message.contains("the shortest of"), "{message}");
         }
+    }
+
+    #[test]
+    fn already_pending_names_the_id_the_expiry_and_a_valid_cancel() {
+        let id = Id::random();
+        let message = already_pending(
+            "for switch-01",
+            &CreatedResponse {
+                id: id.clone(),
+                fingerprint: "ab02-cd02-ef02".to_owned().try_into().unwrap(),
+            },
+        );
+        assert!(message.contains("for switch-01"), "{message}");
+        assert!(message.contains("ab02-cd02-ef02"), "{message}");
+        assert!(message.contains("within 10 minutes"), "{message}");
+        assert!(message.contains("not waiting on it"), "{message}");
+        let (_, command) = message.rsplit_once(": ").unwrap();
+        assert_eq!(command, format!("warden request cancel {id}"));
+        let parsed = Cli::try_parse_from(command.split_whitespace());
+        assert!(parsed.is_ok(), "{command}: {:?}", parsed.err());
     }
 
     #[test]

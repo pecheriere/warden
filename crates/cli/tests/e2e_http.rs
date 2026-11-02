@@ -617,6 +617,44 @@ async fn e2e_request_cancel() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn e2e_request_refused_by_a_pending_one_prints_a_working_cancel() {
+    let s = setup().await;
+
+    let mut child = spawn_request(&s.cli, &[]);
+    let _stderr = wait_for_waiting_line(&mut child).await;
+    let id = only_request_id(&s).await;
+
+    // The same secret and scope, but another goal: it does not attach to the
+    // pending request.
+    let refused = s.cli.run(&[
+        "request",
+        "api",
+        SECRET_NAME,
+        "--for",
+        "15m",
+        "--goal",
+        "another goal",
+    ]);
+    assert_eq!(refused.status.code(), Some(1), "{}", text(&refused.stderr));
+    let said = text(&refused.stderr);
+    assert!(said.contains(&format!("id {id}")), "{said}");
+    assert!(said.contains("within 10 minutes"), "{said}");
+    assert!(said.contains("not waiting on it"), "{said}");
+    assert_eq!(only_request_id(&s).await, id);
+
+    // The command it prints withdraws the request, which ends the waiting CLI.
+    let (_, command) = said.trim_end().rsplit_once(": warden ").unwrap();
+    let cancel = s.cli.run(&command.split_whitespace().collect::<Vec<_>>());
+    assert_eq!(cancel.status.code(), Some(0), "{}", text(&cancel.stderr));
+    assert_eq!(text(&cancel.stdout), format!("cancelled: request {id}\n"));
+    let out = tokio::task::spawn_blocking(move || child.wait_with_output())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(6));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn e2e_second_ctrl_c_exits_at_once() {
     use std::io::Read as _;
 
