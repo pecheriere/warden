@@ -682,8 +682,10 @@ buttons disabled, and is removed only while the page is hidden or when no live c
 left, where the server's empty state replaces `main`. A request without a card is
 fetched from `/pending` itself, so all markup comes from the server, and goes at the
 end, with its buttons disabled for its first second. Messages are overlaid at the
-bottom, letting taps through. No refresh moves focus or scrolls. The list says so when
-polling fails or has stopped. The empty state polls as well, and what a denial said
+bottom and take the taps on them, and a tap or the Escape key dismisses one. A plain
+"Denied." fades after 8 s; a warning stays. When one goes, the buttons it may have
+covered are disabled for a second too. No refresh moves focus or scrolls. The list says
+so when polling or a refresh fails, or polling has stopped. The empty state polls as well, and what a denial said
 survives onto it. Without script, the page is what the server rendered. No refresh ever
 replaces a token: only pressing Approve… does.
 

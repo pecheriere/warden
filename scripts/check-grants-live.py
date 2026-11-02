@@ -25,7 +25,11 @@ Usage: scripts/check-grants-live.py <out-dir>
   - the last card going leaves the empty state, which polls on;
   - the time left on a card follows the answer;
   - polling never posts anything;
-  - what a denial said stays on screen when the last card goes.
+  - what a denial said stays on screen when the last card goes;
+  - the list recovers without a reload after its ended cards went while hidden and a
+    refresh had failed, having said it was not updating;
+  - the overlaid message takes the tap on it and clears, and a plain one fades;
+  - an unchanged note about updating is not written again.
 
 Chrome runs on virtual time, so 30 s of polling take about a second.
 Needs: cargo, Google Chrome (override with CHROME=...).
@@ -58,6 +62,89 @@ NEW_REQUEST = f"{10:032x}"
 FOCUS_PAGE = "/focus.html"
 DENY_PAGE = "/deny.html"
 DENIED_SAYS = "Denied. But the audit log could not be written"
+OVERLAY_PAGE = "/overlay.html"
+# Test harness only: denies a card, reports what is under the overlaid message and
+# whether a tap on it clears it and rests the other buttons, and what later fades.
+OVERLAY_HARNESS = """<!doctype html><meta charset="utf-8">
+<iframe id="page" src="/pending.html" width="400" height="500"></iframe><pre id="out"></pre>
+<script>
+const frame = document.getElementById('page');
+frame.addEventListener('load', () => {
+  const doc = frame.contentDocument;
+  doc.querySelector('section.pending button.deny').click();
+  setTimeout(() => {
+    const box = doc.getElementById('result').getBoundingClientRect();
+    const hit = doc.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+    const taken = Boolean(hit && hit.closest('#result'));
+    hit.click();
+    const cleared = doc.getElementById('result').textContent === '';
+    const rested = [...doc.querySelectorAll('section.pending:not(.ended) button.deny')]
+      .every((button) => button.disabled);
+    document.getElementById('out').textContent =
+      `taken:${taken} cleared:${cleared} rested:${rested}`;
+  }, 1000);
+}, { once: true });
+</script>
+"""
+FADE_PAGE = "/fade.html"
+# Test harness only: denies a card and reports the message at 2 s and at 10 s.
+FADE_HARNESS = """<!doctype html><meta charset="utf-8">
+<iframe id="page" src="/pending.html" width="400" height="900"></iframe><pre id="out"></pre>
+<script>
+const frame = document.getElementById('page');
+frame.addEventListener('load', () => {
+  const doc = frame.contentDocument;
+  const said = () => doc.getElementById('result').textContent;
+  doc.querySelector('section.pending button.deny').click();
+  let early = '';
+  setTimeout(() => { early = said(); }, 2000);
+  setTimeout(() => {
+    document.getElementById('out').textContent = `early:[${early}] late:[${said()}]`;
+  }, 10000);
+}, { once: true });
+</script>
+"""
+NOTE_PAGE = "/note.html"
+# Test harness only: counts the changes to the note about updating over some polls.
+NOTE_HARNESS = """<!doctype html><meta charset="utf-8">
+<iframe id="page" src="/pending.html" width="400" height="900"></iframe><pre id="out"></pre>
+<script>
+const frame = document.getElementById('page');
+frame.addEventListener('load', () => {
+  let changes = 0;
+  new MutationObserver((list) => { changes += list.length; }).observe(
+    frame.contentDocument.getElementById('live-state'), { childList: true, characterData: true });
+  setTimeout(() => { document.getElementById('out').textContent = `changes:${changes}`; }, 18000);
+}, { once: true });
+</script>
+"""
+RECOVER_PAGE = "/recover.html"
+# Test harness only: denies the last card with the refresh failing, hides the page,
+# lets the refresh work again, shows the page, and reports the cards and the note.
+RECOVER_HARNESS = """<!doctype html><meta charset="utf-8">
+<iframe id="page" src="/pending-last.html" width="400" height="900"></iframe><pre id="out"></pre>
+<script>
+const frame = document.getElementById('page');
+frame.addEventListener('load', () => {
+  const doc = frame.contentDocument;
+  const seen = (state) => {
+    Object.defineProperty(doc, 'visibilityState', { configurable: true, get: () => state });
+    doc.dispatchEvent(new Event('visibilitychange'));
+  };
+  doc.querySelector('section.pending button.deny').click();
+  setTimeout(() => {
+    const failed = doc.getElementById('live-state').textContent;
+    seen('hidden');
+    fetch('/mock/page-ok').then(() => seen('visible'));
+    setTimeout(() => {
+      const ids = [...doc.querySelectorAll('section.pending')].map((c) => c.dataset.request);
+      document.getElementById('out').textContent =
+        `failed:[${failed}] cards:${ids.join(',')} note:[${doc.getElementById('live-state').textContent}]`;
+    }, 2000);
+  }, 1000);
+}, { once: true });
+</script>
+"""
 TAP_PAGE = "/tap.html"
 # Test harness only, never served by the broker: frames the fixture, and reports
 # where a card's Deny button is at load and 8 s later.
@@ -134,10 +221,13 @@ class Mock:
     def __init__(self):
         self.lock = threading.Lock()
         self.status, self.body, self.page, self.paths = 200, b"", b"", []
+        self.page_status = 200
+        self.denied_says = DENIED_SAYS
 
-    def set(self, status, body, page=b""):
+    def set(self, status, body, page=b"", page_status=200, denied_says=DENIED_SAYS):
         with self.lock:
             self.status, self.body, self.page, self.paths = status, body, page, []
+            self.page_status, self.denied_says = page_status, denied_says
 
     def count(self, path):
         with self.lock:
@@ -153,10 +243,16 @@ class Handler(SimpleHTTPRequestHandler):
         with self.mock.lock:
             self.mock.paths.append(self.path)
             status, body = self.mock.status, self.mock.body
+        if self.path == "/mock/page-ok":
+            with self.mock.lock:
+                self.mock.page_status = 200
+            self.send_response(204)
+            self.end_headers()
+            return
         if self.path == "/pending":
             with self.mock.lock:
-                page = self.mock.page
-            self.send_response(200)
+                page, page_status = self.mock.page, self.mock.page_status
+            self.send_response(page_status)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(page)))
             self.end_headers()
@@ -175,9 +271,10 @@ class Handler(SimpleHTTPRequestHandler):
     def do_POST(self):
         with self.mock.lock:
             self.mock.paths.append(f"POST {self.path}")
+            says = self.mock.denied_says
         length = int(self.headers.get("Content-Length", 0))
         self.rfile.read(length)
-        body = f'{{"message":"{DENIED_SAYS}"}}'.encode()
+        body = f'{{"message":"{says}"}}'.encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -266,6 +363,10 @@ def run():
     (out / FOCUS_PAGE.lstrip("/")).write_text(FOCUS_HARNESS)
     (out / DENY_PAGE.lstrip("/")).write_text(DENY_HARNESS)
     (out / TAP_PAGE.lstrip("/")).write_text(TAP_HARNESS)
+    (out / OVERLAY_PAGE.lstrip("/")).write_text(OVERLAY_HARNESS)
+    (out / FADE_PAGE.lstrip("/")).write_text(FADE_HARNESS)
+    (out / NOTE_PAGE.lstrip("/")).write_text(NOTE_HARNESS)
+    (out / RECOVER_PAGE.lstrip("/")).write_text(RECOVER_HARNESS)
     listed = (out / PENDING_PAGE.lstrip("/")).read_text()
     empty = (out / PENDING_EMPTY_PAGE.lstrip("/")).read_text().encode()
     with_new = listed.replace(PENDING_IDS[3], NEW_REQUEST).encode()
@@ -384,6 +485,37 @@ def run():
         said = said.groups() if said else ("nothing reported", "")
         check("pending: what a denial said stays on the empty state",
               said[0] == "empty" and DENIED_SAYS in said[1], said)
+
+        mock.set(200, pending_body(NEW_REQUEST), with_new, page_status=500)
+        dom = load(f"{origin}{RECOVER_PAGE}", 8_000)
+        got = re.search(r"failed:\[([^\]]*)\] cards:([0-9a-f,]*) note:\[([^\]]*)\]", dom)
+        got = got.groups() if got else ("nothing reported", "", "")
+        check("pending: a failed refresh says the list is not updating",
+              "not updating" in got[0], got)
+        check("pending: a new request appears after cards went while hidden",
+              NEW_REQUEST in got[1].split(","), got)
+        check("pending: the note clears after that", got[2] == "", got)
+
+        mock.set(200, pending_body(*PENDING_IDS), listed.encode())
+        dom = load(f"{origin}{OVERLAY_PAGE}", 6_000)
+        check("pending: the overlaid message takes a tap, clears and rests the buttons",
+              "taken:true cleared:true rested:true" in dom,
+              re.findall(r"taken:\w+ cleared:\w+ rested:\w+", dom))
+
+        mock.set(200, pending_body(*PENDING_IDS), listed.encode(), denied_says="Denied.")
+        dom = load(f"{origin}{FADE_PAGE}", 14_000)
+        check("pending: a plain denial shows, then fades",
+              "early:[Denied.] late:[]" in dom, re.findall(r"early:.*late:\[[^\]]*\]", dom))
+        mock.set(200, pending_body(*PENDING_IDS), listed.encode())
+        dom = load(f"{origin}{FADE_PAGE}", 14_000)
+        check("pending: a warning does not fade", f"late:[{DENIED_SAYS}" in dom,
+              re.findall(r"early:.*late:\[[^\]]*\]", dom))
+
+        mock.set(500, b'{"error":"internal error"}')
+        dom = load(f"{origin}{NOTE_PAGE}", 24_000)
+        changes = re.search(r"changes:(\d+)", dom)
+        changes = changes.group(1) if changes else "nothing reported"
+        check("pending: an unchanged note is not written again", changes == "1", changes)
     finally:
         server.shutdown()
 
