@@ -2,7 +2,7 @@
 
 use std::fs::{self, File, OpenOptions, Permissions};
 use std::io::{self, Read, Write as _};
-use std::os::unix::fs::{FileExt as _, MetadataExt as _, PermissionsExt as _, symlink};
+use std::os::unix::fs::{FileExt as _, MetadataExt as _, PermissionsExt as _, chown, symlink};
 use std::path::{Path, PathBuf};
 
 use tempfile::TempDir;
@@ -11,8 +11,8 @@ use warden_broker_proto::SecretName;
 use super::files::{MAX_POLICY_BYTES, read_limited, read_policy};
 use super::seal::{Target, read_draft, replace, seal_as};
 use super::{
-    END_MARKER, LocalBackend, LocalProbe, PolicyFile, SealError, SealedPolicy, Unverified,
-    digest_line, parse_policy, seal_policy_file, seal_text,
+    ACCESS_NOTE, END_MARKER, LocalBackend, LocalProbe, PolicyFile, SealError, SealedPolicy,
+    Unverified, digest_line, parse_policy, seal_policy_file, seal_text,
 };
 use crate::config::LocalSettings;
 use crate::policy::SecretBackend;
@@ -367,9 +367,19 @@ fn a_first_seal_and_a_draft_need_no_extra_choice() {
     );
 }
 
-/// What a person is shown holds no secret value, wherever one was pasted.
+fn names_in(directory: &Path) -> Vec<String> {
+    let mut names: Vec<String> = fs::read_dir(directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    names
+}
+
+/// A website is shown as its origin and a format only as present, so a credential
+/// pasted into either does not reach a terminal. The note says what is shown.
 #[test]
-fn the_access_shown_holds_no_secret_value() {
+fn a_website_and_a_format_are_shown_only_in_outline() {
     let draft = format!(
         "[api_secrets.home-api]\nwebsite = \"https://user:{CREDENTIAL}@home.example.com/{CREDENTIAL}\"\n\
          credential_file = \"home-api\"\nmax_window = \"30m\"\nformat = \"{CREDENTIAL} {{{{secret}}}}\"\n\
@@ -380,16 +390,47 @@ fn the_access_shown_holds_no_secret_value() {
     let shown = seal_file(&path, None).unwrap_err().to_string();
     assert!(shown.contains("https://home.example.com"), "{shown}");
     assert!(shown.contains("secret file home-api"), "{shown}");
+    assert!(shown.contains(ACCESS_NOTE), "{shown}");
     assert!(!shown.contains(CREDENTIAL), "{shown}");
 }
 
-fn names_in(directory: &Path) -> Vec<String> {
-    let mut names: Vec<String> = fs::read_dir(directory)
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-        .collect();
-    names.sort();
-    names
+/// A setting naming a secret file, set to what is no valid name, may be the secret
+/// itself: it never prints, in any of the three places such a setting exists.
+#[test]
+fn a_malformed_secret_file_setting_never_prints() {
+    let pasted = "leaked+value/here==";
+    let draft = format!(
+        "[ca]\nprivate_key_file = \"{pasted}\"\n\
+         [targets.web-01]\nprivate_key_file = \"{pasted}\"\npassword_file = \"{pasted}\"\n\
+         [api_secrets.home-api]\ncredential_file = \"{pasted}\"\n{END_MARKER}\n"
+    );
+    let (_guard, root, _backend) = setup(&seal(&draft).replace("[ca]", "[ca] "));
+    let path = root.join("policy.toml");
+    let shown = seal_file(&path, None).unwrap_err().to_string();
+    assert_eq!(
+        shown.matches("not a valid file name, not shown").count(),
+        4,
+        "{shown}"
+    );
+    assert!(!shown.contains("leaked"), "{shown}");
+}
+
+/// Ordinary settings are shown whole: the difference a person is looking for can be
+/// past any length, and anything a terminal could act on is escaped.
+#[test]
+fn settings_are_shown_whole_and_escaped() {
+    let long = format!("/{}/end-of-the-prefix/", "a".repeat(300));
+    let name = "x".repeat(32);
+    let draft = format!(
+        "[api_secrets.{name}]\nwebsite = \"https://home.example.com\"\ncredential_file = \"home-api\"\n\
+         max_window = \"30m\"\npath_prefix = \"{long}\"\nheader = \"X-Long-\\u001b[31m{long}\"\n{END_MARKER}\n"
+    );
+    let (_guard, root, _backend) = setup(&seal(&draft).replace("30m", "20m"));
+    let path = root.join("policy.toml");
+    let shown = seal_file(&path, None).unwrap_err().to_string();
+    assert!(shown.contains(&format!("path prefix {long}")), "{shown}");
+    assert!(shown.contains(r"X-Long-\u{1b}[31m"), "{shown}");
+    assert!(!shown.contains('\u{1b}'), "{shown}");
 }
 
 #[test]
@@ -454,6 +495,19 @@ fn sealing_refuses_what_warden_would_and_changes_nothing() {
     assert_eq!(names_in(&root), ["policy.toml", "secrets"]);
 }
 
+/// The user to ask as, for whom `path` belongs to someone else. warden trusts root's
+/// files whoever asks, so a test running as root has to give the file away; anyone
+/// else cannot, and needs only to ask as another user.
+fn owned_by_someone_else(path: &Path) -> u32 {
+    let euid = rustix::process::geteuid().as_raw();
+    if euid == 0 {
+        chown(path, Some(12345), None).unwrap();
+        12346
+    } else {
+        euid + 1
+    }
+}
+
 /// A draft turns into access, so it is held to the policy file's own rules.
 #[test]
 fn a_draft_is_held_to_the_rules_of_the_policy_file() {
@@ -470,7 +524,8 @@ fn a_draft_is_held_to_the_rules_of_the_policy_file() {
 
     let euid = rustix::process::geteuid().as_raw();
     assert!(read_draft(&draft, euid).is_ok());
-    let error = read_draft(&draft, euid + 1).err().unwrap().to_string();
+    let other = owned_by_someone_else(&draft);
+    let error = read_draft(&draft, other).err().unwrap().to_string();
     assert!(error.contains("another user"), "{error}");
 
     let real = root.join("real");
@@ -490,15 +545,11 @@ fn a_draft_is_held_to_the_rules_of_the_policy_file() {
 fn a_refusal_over_ownership_says_how_to_run_it() {
     let (old, _) = old_and_new();
     let (_guard, root, _backend) = setup(&old);
-    let euid = rustix::process::geteuid().as_raw();
-    let error = seal_as(
-        &root.join("policy.toml"),
-        None,
-        Unverified::Refuse,
-        euid + 1,
-    )
-    .unwrap_err()
-    .to_string();
+    let path = root.join("policy.toml");
+    let other = owned_by_someone_else(&path);
+    let error = seal_as(&path, None, Unverified::Refuse, other)
+        .unwrap_err()
+        .to_string();
     assert!(error.contains("another user"), "{error}");
     assert!(error.contains("docker run --rm --user"), "{error}");
 }

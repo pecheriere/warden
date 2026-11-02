@@ -20,7 +20,7 @@ use warden_broker::config::{
 };
 use warden_broker::identity::TailscaleServeIdentity;
 use warden_broker::notify::{ChannelSettings, Fallback, Notifier};
-use warden_broker::policy::local::{Unverified, seal_policy_file};
+use warden_broker::policy::local::{ACCESS_NOTE, Unverified, seal_policy_file};
 use warden_broker::policy::{LocalBackend, OnePasswordConnect, SecretBackend};
 use warden_broker::proxy::CallSlots;
 use warden_broker::relay::host_key::RelayHostKey;
@@ -213,6 +213,7 @@ async fn main() -> Result<ExitCode> {
             for line in &sealed.access {
                 println!("  {line}");
             }
+            println!("{ACCESS_NOTE}");
         }
     }
     Ok(ExitCode::SUCCESS)

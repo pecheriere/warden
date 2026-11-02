@@ -42,7 +42,7 @@ use crate::config::LocalSettings;
 mod files;
 mod seal;
 
-pub use seal::{SealError, SealedPolicy, Unverified, seal_policy_file, seal_text};
+pub use seal::{ACCESS_NOTE, SealError, SealedPolicy, Unverified, seal_policy_file, seal_text};
 
 use files::{Refusal, check_file_name, one_line, read_policy, read_secret};
 

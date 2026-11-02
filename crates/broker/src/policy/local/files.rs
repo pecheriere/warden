@@ -158,8 +158,18 @@ const CANNOT_TELL: &str = "cannot be checked for a mount of the single file: thi
 fn check_not_a_mount(file: &File) -> Result<(), Refusal> {
     use rustix::fs::{AtFlags, StatxFlags, statx};
 
-    let stat =
-        statx(file, c"", AtFlags::EMPTY_PATH, StatxFlags::BASIC_STATS).map_err(statx_failed)?;
+    statx_rule(statx(
+        file,
+        c"",
+        AtFlags::EMPTY_PATH,
+        StatxFlags::BASIC_STATS,
+    ))
+}
+
+/// The decision on what the `statx` call returned.
+#[cfg(target_os = "linux")]
+fn statx_rule(result: rustix::io::Result<rustix::fs::Statx>) -> Result<(), Refusal> {
+    let stat = result.map_err(statx_failed)?;
     mount_rule(stat.stx_attributes_mask, stat.stx_attributes)
 }
 
@@ -596,11 +606,14 @@ mod tests {
 
         for errno in [Errno::NOSYS, Errno::PERM, Errno::ACCESS] {
             assert_eq!(
-                super::statx_failed(errno),
-                Refusal::Rule(super::CANNOT_TELL)
+                super::statx_rule(Err(errno)),
+                Err(Refusal::Rule(super::CANNOT_TELL))
             );
         }
-        assert!(matches!(super::statx_failed(Errno::IO), Refusal::Io(_)));
+        assert!(matches!(
+            super::statx_rule(Err(Errno::IO)),
+            Err(Refusal::Io(_))
+        ));
     }
 
     /// The real kernel's answer, on something always a mount (`/`) and on a

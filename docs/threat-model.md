@@ -629,8 +629,10 @@ What is lost, and cannot be regained by any setting:
   refusals. The digest is an integrity check against accidents, with no key: **anyone
   who can write the file can seal it**. Sealing a mix would make it valid, so the
   command will not seal a file in place whose digest does not match until a person
-  has been shown what it allows and passes `--accept-unverified`. That is a guard
-  against a mistake, not a boundary. The file's owner and mode are what stand against an
+  has been shown what it allows and passes `--accept-unverified`. That guards against
+  a mistake and is no boundary: deleting the digest line, or copying the file and
+  sealing with `--from`, skips it. Sealing is a person's decision, and the digest
+  detects torn writes, not tampering. The file's owner and mode are what stand against an
   attacker. A secret file has no digest: one cut short is sent as what it is, to the
   destination its entry allows.
 - **Single-file mounts go stale, so they are refused.** A file mounted alone stays on

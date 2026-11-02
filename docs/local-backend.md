@@ -137,8 +137,16 @@ are what you meant, run it again with `--accept-unverified`. If not, restore the
 from a draft. A file with no digest yet, or one that matches, is sealed without this
 step.
 
-**Seal only a file nobody is still writing**, and only a draft you have read: a
-draft copied from a mixed file carries the mix with it.
+The list shows settings whole and as written, so a value pasted into one, such as
+`header` or `path_prefix`, shows too. The exceptions: a website is shown only as its
+origin, a format and a CA only as present, and a setting naming a secret file only if
+its value is a valid file name. No secret file is read. Host keys are shown as a count.
+
+**Sealing is your decision, and this check only stops it being made by accident.**
+Deleting the digest line and sealing the file as new skips the check, and so does
+copying the file and sealing the copy with `--from`, which carries any mix with it.
+The digest detects a torn write, not tampering. Seal only a file nobody is still
+writing, and only a draft you have read.
 
 With Docker, run it on the host if you have the binary. Otherwise use the image, with
 the directory mounted writable, as the user that owns the file (`--user 0` for a file

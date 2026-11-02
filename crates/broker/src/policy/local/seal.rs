@@ -25,11 +25,10 @@ use thiserror::Error;
 use zeroize::Zeroizing;
 
 use super::files::{
-    MAX_POLICY_BYTES, Refusal, check_policy_file, open_directory, open_regular, read_limited,
+    MAX_POLICY_BYTES, Refusal, check_file_name, check_policy_file, open_directory, open_regular,
+    read_limited,
 };
-use super::{
-    DIGEST_LINE_START, END_MARKER, PolicyFile, digest_line, parse_policy, shown_name, verify_seal,
-};
+use super::{DIGEST_LINE_START, END_MARKER, PolicyFile, digest_line, parse_policy, verify_seal};
 
 /// A new policy file's mode: warden needs to read it, and nothing in it is secret.
 const NEW_FILE_MODE: u32 = 0o644;
@@ -59,7 +58,7 @@ pub struct SealedPolicy {
     pub targets: usize,
     /// Entries under `[api_secrets]`.
     pub api_entries: usize,
-    /// One line for each entry: what it allows. Never a secret's value.
+    /// One line for each entry: what it allows, as [`ACCESS_NOTE`] describes.
     pub access: Vec<String>,
 }
 
@@ -94,39 +93,56 @@ pub fn seal_text(draft: &str) -> Result<Zeroizing<String>, SealError> {
     Ok(sealed)
 }
 
-/// What each entry allows, for a person to read: names, destinations, methods and
-/// prefixes, including which secret file goes where. A website is shown as its
-/// origin, and a format only as being there, so that a credential pasted into either
-/// stays out of a terminal and its scrollback.
+/// What a person is told about the list of what each entry allows.
+pub const ACCESS_NOTE: &str = "Settings are shown whole and as written, so a value pasted into \
+                               one shows too; a website only as its origin, a format and a CA \
+                               only as present, a secret file only by its name if that is a \
+                               valid one. No secret file is read.";
+
+/// A setting whole, with anything a terminal could act on escaped. Never cut: the
+/// difference a person is looking for can be anywhere in it.
+fn whole(value: &str) -> String {
+    value.escape_default().to_string()
+}
+
+/// A setting that names a secret file. A value that is no valid name is not a name,
+/// and may be the secret itself, so it is not shown. One that is valid cannot be told
+/// from a secret by looking at it, and which file goes where is what a person must
+/// check; so that is shown.
+fn secret_file(value: Option<&str>) -> String {
+    match value {
+        None => "(not set)".to_owned(),
+        Some(name) if check_file_name(name).is_ok() => name.to_owned(),
+        Some(_) => "(not a valid file name, not shown)".to_owned(),
+    }
+}
+
+/// What each entry allows, for a person to read: see [`ACCESS_NOTE`].
 fn access_lines(policy: &PolicyFile) -> Vec<String> {
-    let shown = |value: Option<&str>| value.map_or_else(|| "(not set)".to_owned(), shown_name);
+    let shown = |value: Option<&str>| value.map_or_else(|| "(not set)".to_owned(), whole);
+    let or_default = |value: Option<&str>| value.map_or_else(|| "(default)".to_owned(), whole);
     let list = |value: Option<&Vec<String>>| {
-        value.map_or_else(
-            || "(default)".to_owned(),
-            |items| shown_name(&items.join(", ")),
-        )
+        value.map_or_else(|| "(default)".to_owned(), |items| whole(&items.join(", ")))
     };
     let mut lines = Vec::new();
     if let Some(ca) = &policy.ca {
         lines.push(format!(
-            "SSH CA: key file {}",
-            shown_name(&ca.private_key_file)
+            "SSH CA: secret file {}",
+            secret_file(Some(&ca.private_key_file))
         ));
     }
     for (name, entry) in &policy.targets {
-        let source = entry
-            .private_key_file
-            .as_deref()
-            .or(entry.password_file.as_deref());
         lines.push(format!(
-            "target {}: address {}, mode {}, users {}, window {}, {} host key(s), secret file {}",
-            shown_name(name),
+            "target {}: address {}, mode {}, users {}, window {}, {} host key(s), key file {}, \
+             password file {}",
+            whole(name),
             shown(entry.address.as_deref()),
             shown(entry.mode.as_deref()),
             list(entry.users.as_ref()),
             shown(entry.max_window.as_deref()),
             entry.host_keys.as_ref().map_or(0, Vec::len),
-            shown(source),
+            secret_file(entry.private_key_file.as_deref()),
+            secret_file(entry.password_file.as_deref()),
         ));
     }
     for (name, entry) in &policy.api_secrets {
@@ -135,31 +151,25 @@ fn access_lines(policy: &PolicyFile) -> Vec<String> {
             |website| {
                 url::Url::parse(website).map_or_else(
                     |_| "(not a URL)".to_owned(),
-                    |url| shown_name(&url.origin().ascii_serialization()),
+                    |url| whole(&url.origin().ascii_serialization()),
                 )
             },
         );
         lines.push(format!(
             "API {}: origin {origin}, methods {}, path prefix {}, window {}, header {}, format {}, \
              own CA {}, secret file {}",
-            shown_name(name),
+            whole(name),
             list(entry.methods.as_ref()),
-            entry
-                .path_prefix
-                .as_deref()
-                .map_or_else(|| "(default)".to_owned(), shown_name),
+            or_default(entry.path_prefix.as_deref()),
             shown(entry.max_window.as_deref()),
-            entry
-                .header
-                .as_deref()
-                .map_or_else(|| "(default)".to_owned(), shown_name),
+            or_default(entry.header.as_deref()),
             if entry.format.is_some() {
                 "own"
             } else {
                 "(default)"
             },
             if entry.ca_pem.is_some() { "yes" } else { "no" },
-            shown(entry.credential_file.as_deref()),
+            secret_file(entry.credential_file.as_deref()),
         ));
     }
     lines
@@ -277,7 +287,7 @@ pub(super) fn seal_as(
         return Err(SealError(format!(
             "not sealed: the policy file does not match its digest, so it was edited, or it is a \
              mix of two versions left by an overwrite. warden cannot tell which. It would \
-             allow:\n  {}\nCheck every line. If this is what you meant, run again with \
+             allow:\n  {}\n{ACCESS_NOTE}\nCheck every line. If this is what you meant, run again with \
              --accept-unverified. Otherwise write a draft you have checked and seal it with \
              --from <draft>.",
             if access.is_empty() {
