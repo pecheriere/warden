@@ -12,7 +12,7 @@ use sqlx::{ConnectOptions as _, Row as _};
 use ssh_key::Certificate;
 use warden_broker::agents;
 use warden_broker::approval::passkeys::PasskeyError;
-use warden_broker::requests::{AuditOutcome, Clock as _, sha256_hex};
+use warden_broker::requests::{AuditOutcome, Clock as _, RequestError, RequestLimits, sha256_hex};
 use warden_broker::testkit::{FakeBackend, SoftAuthenticator, TestBroker, TestResponse};
 use warden_broker_proto::{
     AgentName, CreatedResponse, GrantAccess, GrantView, Id, RequestStatus, SshGrant, UnixUser,
@@ -607,6 +607,36 @@ async fn adding_a_key_signed_agent_holds_no_write_lock_while_the_log_waits() {
     .unwrap();
     assert_no_write_lock_while_log_waits(&broker, async move {
         drop(agents::add_key_audited(&pool, &audit, &name, &key).await);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_refused_request_holds_no_write_lock_while_the_log_waits() {
+    let broker = TestBroker::with_request_limits(RequestLimits {
+        max_pending: 1,
+        max_new: 10,
+        window_secs: 600,
+    })
+    .await;
+    broker.add_agent("bot").await;
+    broker
+        .create_request("bot", TestBroker::pi_request("restart", Window::M15))
+        .await;
+    notification_recorded(&broker).await;
+    let requests = broker.state().requests.clone();
+    let bot = AgentName::try_from("bot".to_owned()).unwrap();
+    broker
+        .backend
+        .set_api_secret(FakeBackend::example_api_secret(), "not-a-real-secret");
+    let refused = TestBroker::api_request("github", "list issues", Window::M15);
+    assert_no_write_lock_while_log_waits(&broker, async move {
+        let got = requests.create(&bot, refused).await;
+        assert!(
+            matches!(got, Err(RequestError::Limited(_))),
+            "{:?}",
+            got.map(|created| created.id)
+        );
     })
     .await;
 }

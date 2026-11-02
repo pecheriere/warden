@@ -162,7 +162,10 @@ enabled ones in priority order in `WARDEN_NOTIFY`.
    Assistant Companion); if it does not accept within a short timeout (≈5 s)
    or errors, the same doorbell goes through the next channel in the
    `WARDEN_NOTIFY` order (for example ntfy). Content: goal (truncated), target
-   summary, link to `/approve/<token>`. Never secret values.
+   summary, link to `/approve/<token>`. Never secret values. Before this, a new
+   request is held to the agent's
+   [request limits](configuration.md#request-limits); one over them is refused
+   with a 429, is not stored and does not ring.
 4. **Review.** The approval page (HTTPS on the tailnet name) shows goal, kind,
    target, user/secret, destination rules, requested duration, and a duration
    picker (15 m / 30 m / 1 h / 4 h, capped by the target's max).
