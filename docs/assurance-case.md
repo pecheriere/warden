@@ -149,9 +149,12 @@ Also:
   reaching the listeners.
 - **Defence in depth.** Redaction backs up the destination rules, and passkey
   approval backs up the tailnet policy. Neither is treated as enough on its own.
-- **Audit before action.** For proxied calls and relay sessions the record is
-  written first. Other state changes commit only after the audit entry is written
-  (`audit_and_commit` in [`requests.rs`](../crates/broker/src/requests.rs)).
+- **Audit before action.** For proxied calls, relay sessions and changes that give
+  access, the entry is written first, before any database write (`record` in
+  [`requests/transition.rs`](../crates/broker/src/requests/transition.rs)). A change
+  that ends access [does not wait for the log](threat-model.md#what-the-audit-log-can-miss):
+  its entry is stored with it and written after
+  ([`requests/revocation.rs`](../crates/broker/src/requests/revocation.rs)).
 
 ## 4. Input validation
 

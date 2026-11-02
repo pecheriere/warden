@@ -42,7 +42,7 @@ target for the approval UI (#33), not code the broker serves.
 | `--raised` | `#FFFFFF` | `#2B4180` | Selected segment, lifted above its `--soft` track |
 | `--accent` | `#F5B800` | `#F5B800` | Mascot plume and keyhole, live dot; never text |
 | `--accent-edge` | `#9A6B00` | `#F5B800` | Edge of the live dot, so it keeps 3:1 against a light card |
-| `--warn-bg` / `--warn-ink` / `--warn-line` | `#FFF1D6` / `#7A3300` / `#C25100` | `#3A2306` / `#FFD08A` / `#E08A2C` | "Can modify" badge; the grants page's warning that revocations are not in the audit log |
+| `--warn-bg` / `--warn-ink` / `--warn-line` | `#FFF1D6` / `#7A3300` / `#C25100` | `#3A2306` / `#FFD08A` / `#E08A2C` | "Can modify" badge; the grants page's warning that audit log entries are waiting |
 | `--deny` | `#B42318` | `#FF8A80` | Deny and Revoke buttons |
 | `--fp-bg` | `#F7F9FF` | `#101D40` | Fingerprint box |
 

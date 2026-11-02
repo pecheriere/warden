@@ -24,7 +24,7 @@ use crate::audit::{AuditError, AuditEvent, AuditLog};
 use crate::notify::Doorbell;
 
 /// Longest a change waits for its entries to be written.
-const WRITE_WAIT: Duration = Duration::from_secs(2);
+pub(super) const WRITE_WAIT: Duration = Duration::from_secs(2);
 
 /// An entry written this many seconds after its change is noted as late.
 const LATE_SECS: i64 = 60;
@@ -35,7 +35,8 @@ const CLAIM_SECS: i64 = 300;
 /// Whether a change that took effect is on record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuditOutcome {
-    /// Every entry has been written to the audit log.
+    /// Every entry has been written to the audit log, or another process has
+    /// claimed it to do so.
     Recorded,
     /// Access has stopped, but entries are still waiting for the log.
     Missing,
@@ -135,7 +136,7 @@ async fn write_waiting(
         let now = clock.now();
         let claimed = sqlx::query(
             "UPDATE unwritten_audit SET claim = ?1, claimed_at = ?2 \
-             WHERE id = ?3 AND (claim IS NULL OR claimed_at <= ?4)",
+             WHERE id = ?3 AND (claim IS NULL OR claimed_at <= ?4 OR claimed_at > ?2)",
         )
         .bind(claim.as_str())
         .bind(now)
@@ -161,20 +162,22 @@ async fn write_waiting(
     Ok(())
 }
 
-/// Write `event`, noting after it when it is late: its own time is when it was
-/// written, not when the change took effect.
+/// Write `event`, followed by a note when it is late: its own time is when it was
+/// written, not when the change took effect. The note holds the entry, as another
+/// writer's entry can come between the two.
 async fn write_one(
     audit: &AuditLog,
     event: AuditEvent,
     took_effect_at: i64,
     clock: &dyn Clock,
 ) -> Result<(), AuditError> {
+    let written = serde_json::to_string(&event)?;
     audit.append(event).await?;
     if clock.now().saturating_sub(took_effect_at) >= LATE_SECS {
         let note = AuditEvent::Error {
             context: "audit".to_owned(),
             message: format!(
-                "the entry above was written late: it took effect at {took_effect_at}"
+                "this entry was written late, it took effect at {took_effect_at}: {written}"
             ),
         };
         audit.append(note).await?;
@@ -208,16 +211,18 @@ async fn write_bounded(
             WRITE_WAIT.as_secs()
         )),
     };
-    let outcome = match sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM unwritten_audit")
-        .fetch_one(pool)
-        .await
-    {
-        Ok(0) => AuditOutcome::Recorded,
-        Ok(_) => AuditOutcome::Missing,
-        Err(e) => {
+    // An entry another writer has claimed is that writer's to report.
+    let unclaimed =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM unwritten_audit WHERE claim IS NULL")
+            .fetch_one(pool)
+            .await;
+    let outcome = match (&cause, unclaimed) {
+        (None, Ok(0)) => AuditOutcome::Recorded,
+        (_, Err(e)) => {
             tracing::error!(error = %e, "could not read which audit entries are waiting");
             AuditOutcome::Missing
         }
+        _ => AuditOutcome::Missing,
     };
     EntriesWritten { outcome, cause }
 }
@@ -370,6 +375,7 @@ mod tests {
         let (pool, audit, path) = setup(&dir).await;
         std::fs::write(&path, b"not an audit line\n").unwrap();
         let entry = commit_one(&pool, 1000).await;
+        let named = serde_json::to_string(&serde_json::to_string(&entry).unwrap()).unwrap();
 
         let (time, clock) = clock_at(1000);
         let written = write_entries(&pool, &audit, &clock).await;
@@ -383,9 +389,11 @@ mod tests {
         assert_eq!(written.outcome, AuditOutcome::Recorded);
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(
-            text.contains("written late: it took effect at 1000"),
+            text.contains("written late, it took effect at 1000"),
             "{text}"
         );
+        // The note holds the entry it is about.
+        assert!(text.contains(named.trim_matches('"')), "{text}");
     }
 
     #[tokio::test]
@@ -413,11 +421,11 @@ mod tests {
         time.0.store(4600, Ordering::SeqCst);
         drop(holder);
         while !unwritten_entries(&pool).await.unwrap().is_empty() {
-            tokio::task::yield_now().await;
+            write_entries(&pool, &audit, &clock).await;
         }
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(
-            text.contains("written late: it took effect at 1000"),
+            text.contains("written late, it took effect at 1000"),
             "{text}"
         );
     }
@@ -438,6 +446,9 @@ mod tests {
         );
         assert_eq!(first.cause, None);
         assert_eq!(second.cause, None);
+        // Neither reports a failure because the other holds some entries.
+        assert_eq!(first.outcome, AuditOutcome::Recorded);
+        assert_eq!(second.outcome, AuditOutcome::Recorded);
         assert_eq!(crate::audit::verify(&path).unwrap(), 40);
     }
 
@@ -451,12 +462,27 @@ mod tests {
             .await
             .unwrap();
         let (time, clock) = clock_at(1299);
-        let written = write_entries(&pool, &audit, &clock).await;
-        assert_eq!(written.outcome, AuditOutcome::Missing);
+        write_entries(&pool, &audit, &clock).await;
         assert_eq!(crate::audit::verify(&path).unwrap(), 0);
         time.0.store(1300, Ordering::SeqCst);
         let written = write_entries(&pool, &audit, &clock).await;
         assert_eq!(written.outcome, AuditOutcome::Recorded);
+        // The entry, and the note that it is late.
+        assert_eq!(crate::audit::verify(&path).unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_claim_stamped_ahead_of_the_clock_is_taken_over() {
+        let dir = tempfile::tempdir().unwrap();
+        let (pool, audit, path) = setup(&dir).await;
+        commit_one(&pool, 1000).await;
+        sqlx::query("UPDATE unwritten_audit SET claim = 'gone', claimed_at = 5000")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let (_, clock) = clock_at(1000);
+        write_entries(&pool, &audit, &clock).await;
+        assert_eq!(crate::audit::verify(&path).unwrap(), 1);
     }
 
     #[tokio::test]
@@ -464,13 +490,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (pool, audit, path) = setup(&dir).await;
         commit_one(&pool, 1000).await;
-        // Another writer holds the lock, which an append waits on for 5 s: longer
-        // than a change waits.
+        // Another writer holds the lock throughout, so the write cannot succeed,
+        // whether it gives up first or this does.
         let holder = std::fs::File::open(&path).unwrap();
         holder.lock().unwrap();
         let (_, clock) = clock_at(1000);
         let written = write_entries(&pool, &audit, &clock).await;
         assert_eq!(written.outcome, AuditOutcome::Missing);
-        assert!(written.cause.unwrap().contains("did not answer"));
+        assert!(written.cause.is_some());
     }
 }

@@ -401,9 +401,10 @@ what keeps the default unchanged, and it should have a test.
      agent.
   2. Read the action and secret together, and compare them with the approved
      digest.
-  3. In one transaction: spend the use (`UPDATE … SET used = used + 1 WHERE used
-     < max AND not_after > now AND ended_at IS NULL`) and audit its start, using
-     `audit_and_commit`.
+  3. Audit its start with `record` in `requests/transition.rs`, as the log is never
+     written during a database write. Then spend the use (`UPDATE … SET used = used +
+     1 WHERE used < max AND not_after > now AND ended_at IS NULL`), and say on the
+     record if that finds nothing left to spend.
   4. Ring the owner where required (below).
   5. Check again that the approval is still live, since a ring can take several
      seconds and the owner may revoke meanwhile. If it has ended, audit that and

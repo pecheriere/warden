@@ -457,6 +457,7 @@ async fn the_warning_stays_on_the_page_until_the_entry_is_in_the_log() {
     assert_eq!(events[at]["grant_id"], grant.as_str());
     let note = events[at + 1]["message"].as_str().unwrap();
     assert!(note.contains("written late"), "{note}");
+    assert!(note.contains(grant.as_str()), "{note}");
     warden_broker::audit::verify(broker.audit_path()).unwrap();
 }
 
@@ -660,4 +661,57 @@ async fn a_revocation_goes_through_while_another_writer_waits_for_the_log() {
     assert_eq!(status(&broker, &created).await, RequestStatus::Revoked);
     drop(holder);
     drop(other.await.unwrap());
+}
+
+#[tokio::test]
+async fn the_sweep_goes_on_expiring_while_the_log_has_stalled() {
+    let broker = TestBroker::with_request_limits(RequestLimits {
+        max_pending: 1,
+        max_new: 10,
+        window_secs: 600,
+    })
+    .await;
+    broker.add_agent("bot").await;
+    let (created, _token) = broker
+        .create_request("bot", TestBroker::pi_request("restart", Window::M15))
+        .await;
+    notification_recorded(&broker).await;
+    broker
+        .backend
+        .set_api_secret(FakeBackend::example_api_secret(), "not-a-real-secret");
+    let bot = AgentName::try_from("bot".to_owned()).unwrap();
+    // Two refusals, the second counted and not yet written.
+    for _ in 0..2 {
+        let refused = TestBroker::api_request("github", "list issues", Window::M15);
+        let got = broker.state().requests.create(&bot, refused).await;
+        assert!(matches!(got, Err(RequestError::Limited(_))));
+    }
+    let holder = std::fs::File::open(broker.audit_path()).unwrap();
+    holder.lock().unwrap();
+    // Those refusals are due, and the request past its time.
+    broker.clock.advance(601);
+    let (stop, stopped) = tokio::sync::watch::channel(false);
+    let sweeper = tokio::spawn(warden_broker::requests::sweep_loop(
+        broker.state().requests.clone(),
+        Duration::from_millis(10),
+        stopped,
+    ));
+    let requests = broker.state().requests.clone();
+    tokio::time::timeout(Duration::from_secs(20), async {
+        while requests
+            .history(10)
+            .await
+            .unwrap()
+            .iter()
+            .all(|entry| entry.status != "expired")
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the request expired");
+    drop(holder);
+    stop.send(true).unwrap();
+    sweeper.await.unwrap();
+    assert_eq!(status(&broker, &created).await, RequestStatus::Expired);
 }

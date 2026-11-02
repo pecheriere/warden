@@ -1648,11 +1648,17 @@ pub async fn sweep_loop(
                     tracing::error!(error = %e, "nonce sweep failed");
                 }
                 requests.flush_waiting_entries().await;
-                requests.flush_refusals(false).await;
+                // On its own task: it writes the log, which may have stalled, and
+                // must not hold up expiry or the waiting entries.
+                let flushing = requests.clone();
+                drop(tokio::spawn(async move { flushing.flush_refusals(false).await }));
             }
             // Any change, or the sender going away, means stop.
             _ = shutdown.changed() => {
-                requests.flush_refusals(true).await;
+                let flushed = requests.flush_refusals(true);
+                if tokio::time::timeout(revocation::WRITE_WAIT, flushed).await.is_err() {
+                    tracing::error!("the audit log did not take the refusal counts at shutdown");
+                }
                 return;
             }
         }

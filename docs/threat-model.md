@@ -173,11 +173,13 @@ change.
     on (issue [#44](https://github.com/pecheriere/warden/issues/44)), and a
     certificate already issued stays valid until it expires, as for any revocation.
   - The entry is not lost. It waits in the database, and every sweep (each 15 s, and
-    at start) tries again, so it reaches the log once the log works, with a note if
-    it is over a minute late, because its own time is when it was written. Until then
+    at start) tries again, so it reaches the log once the log works, with a note
+    holding the entry if it is over a minute late, because its own time is when it was
+    written. Until then
     it has no hash chain, and whoever controls the host could remove it. Writers
-    claim an entry first, so two processes do not both write it. A crash just after
-    writing one can write it twice, and its claim holds it back for up to 5 minutes.
+    claim an entry first, so two processes do not both write it, though entries
+    can then reach the log out of order. A crash just after writing one can write it
+    twice, and its claim holds it back for up to 5 minutes.
   - The owner sees it. The grants page warns for as long as any entry is waiting,
     whatever the page reloads for. A revocation also sends a notification, with the
     grant id or agent name, because an agent can revoke its own grant with no owner
@@ -201,8 +203,7 @@ change.
   approval page, sees that nothing changed and no access was given, and can
   approve again, which signs a new certificate. The agent is not told: its
   request is still `pending`, which is true, and ends in a decision or `expired`
-  as usual. It gets a 5xx instead if the log is still failing when the request
-  expires, because expiry is audited too.
+  as usual, also if the log is still failing by then.
 - **Entries written first can overstate, not understate.** A change that then fails,
   or finds that its agent was revoked meanwhile, leaves an entry for something that
   did not happen; an `error` entry then says so. A crash at that moment, or a failure
