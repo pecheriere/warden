@@ -860,28 +860,6 @@ async fn proxy_refused_when_audit_unwritable() {
     assert_eq!(proxied.status, 200);
 }
 
-#[tokio::test]
-async fn revoked_during_call_withholds_response() {
-    let s = setup().await;
-    let call = get(&s, "/delayed");
-    let revoke = async {
-        while s.upstream.received().is_empty() {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        s.broker
-            .api_post(&s.key, &format!("/v1/grants/{}/revoke", s.grant))
-            .await
-    };
-    let (resp, revoked) = tokio::join!(call, revoke);
-    assert_eq!(revoked.status, StatusCode::NO_CONTENT, "{}", revoked.body);
-    assert_eq!(resp.status, StatusCode::CONFLICT, "{}", resp.body);
-    assert_eq!(resp.body, r#"{"error":"grant revoked during the call"}"#);
-    let calls = proxy_calls(&s.broker);
-    assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0]["outcome"], "grant revoked during the call");
-    assert_eq!(calls[0]["status"], 200);
-}
-
 /// A revocation that has reported access stopped holds for a call still waiting
 /// to record its start: it must not go out once the log answers.
 #[tokio::test]
@@ -891,7 +869,14 @@ async fn revoked_while_a_call_waits_to_record_its_start_sends_nothing() {
     holder.lock().unwrap();
     let call = get(&s, "/delayed");
     let revoke = async {
-        while s.broker.state().proxy_calls.snapshot().is_empty() {
+        while s
+            .broker
+            .state()
+            .requests
+            .proxy_calls()
+            .snapshot()
+            .is_empty()
+        {
             tokio::task::yield_now().await;
         }
         let outcome = s
@@ -909,25 +894,6 @@ async fn revoked_while_a_call_waits_to_record_its_start_sends_nothing() {
     // Refused as revoked or, had the wait for the log run out first, as unrecorded.
     assert_ne!(resp.status, StatusCode::OK, "{}", resp.body);
     assert!(s.upstream.received().is_empty());
-}
-
-#[tokio::test]
-async fn expired_during_call_withholds_response() {
-    let s = setup().await;
-    let call = get(&s, "/delayed");
-    let expire = async {
-        while s.upstream.received().is_empty() {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        s.broker.clock.advance(30 * 60);
-    };
-    let (resp, ()) = tokio::join!(call, expire);
-    assert_eq!(resp.status, StatusCode::CONFLICT, "{}", resp.body);
-    assert_eq!(resp.body, r#"{"error":"grant expired during the call"}"#);
-    let calls = proxy_calls(&s.broker);
-    assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0]["outcome"], "grant expired during the call");
-    assert_eq!(calls[0]["status"], 200);
 }
 
 /// A call whose URL is too long to record is listed on the owner's grants

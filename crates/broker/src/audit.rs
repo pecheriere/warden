@@ -20,6 +20,8 @@ use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 use warden_broker_proto::{AgentName, Fingerprint, Id, TargetName, UnixUser};
 
+use crate::proxy::CallEnd;
+
 #[cfg(feature = "testkit")]
 mod stall;
 
@@ -153,6 +155,13 @@ pub enum AuditEvent {
         redactions: u32,
         /// `ok`, or the message the agent was given.
         outcome: String,
+        /// Why the broker stopped the upstream call before it finished, if it
+        /// did. Absent for a call that ran to its end, including one whose
+        /// response was then withheld. `status` and `response_bytes` then say
+        /// how far the answer had come, and the upstream may have acted on the
+        /// call all the same.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        aborted: Option<CallEnd>,
     },
     /// A relayed SSH session is about to reach its target. Written before
     /// the relay opens any connection to the target; the session does not

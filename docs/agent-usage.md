@@ -451,7 +451,8 @@ the broker's size limit (1 MiB by default) or compressed are an error, and
 the secret is replaced by `[REDACTED]` wherever it shows up in a response. A
 call takes at most 30 seconds. If the owner changes the secret's policy
 after you were approved, or revokes the grant, or the grant expires, the
-broker answers 409 (also while a call is out: the response is withheld) and
+broker answers 409 (also while a call is out: the call stops, and nothing of the
+response comes back) and
 you request again.
 
 `warden status` lists the grants on this machine and the broker's view of
@@ -473,8 +474,9 @@ within seconds.
   expire: the target checks them offline. Short windows limit that, so
   revoke as soon as you finish. A login already open continues even after the
   certificate expires, so end your sessions and what they started.
-- **A proxied API call already in flight runs to completion** (at most
-  30 s); only new calls are refused.
+- **A proxied API call already in flight stops**, with a 409 and none of its
+  response, even if a response had started to arrive. The API may still have acted
+  on the call, so check before you repeat one that changes something.
 
 Every `warden` run also cleans up expired grants and stops their agents, and
 removes temporary files abandoned for over ten minutes by an interrupted
@@ -523,12 +525,12 @@ never try to get around warden by any other route.
   something else. Until this is fixed ([issue #49][i49]), revoke each grant
   as soon as its task ends, and run agents that must not share grants as
   different OS users with different agent keys.
-- **Revoking does not stop a proxied call in flight** ([issue #44][i44]).
+- **Revoking a proxied call in flight cannot undo it.** The call stops, but the API
+  may already have acted on it.
 - **Revoking does not invalidate an issued certificate** on the target
   ([issue #35][i35]).
 
 [i49]: https://github.com/pecheriere/warden/issues/49
-[i44]: https://github.com/pecheriere/warden/issues/44
 [i35]: https://github.com/pecheriere/warden/issues/35
 
 ## Instructions to give an agent

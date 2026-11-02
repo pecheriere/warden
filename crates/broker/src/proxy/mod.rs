@@ -6,8 +6,10 @@ pub mod client;
 pub mod redact;
 pub mod rules;
 pub mod slots;
+pub mod watch;
 
 pub use client::{ProxyError, ProxyLimits, Upstream, forward, redact_response};
 pub use redact::{Needles, redact};
 pub use rules::{OUTBOUND_ACCEPT_ENCODING, Prepared, Refusal, check};
-pub use slots::{CallInfo, CallSlot, CallSlots, TooManyCalls};
+pub use slots::{CallEnd, CallInfo, CallProgress, CallSlot, CallSlots, TooManyCalls};
+pub use watch::{GrantChecks, GrantState, until_grant_ends};

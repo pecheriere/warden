@@ -55,7 +55,7 @@ use crate::policy::{
     ApiSecretPolicy, CaKey, PolicyError, RelayCredential, SecretBackend, SecretValue, SshMode,
     SshTarget, ValueFormat, not_a_relay_target,
 };
-use crate::proxy::{CallInfo, CallSlots, ProxyLimits};
+use crate::proxy::{CallInfo, ProxyLimits};
 use crate::relay::{RelayEndpoint, RelayLimits, RelayServer, host_key};
 use crate::requests::{Clock, RelayGrantRecord, RequestLimits, Requests};
 use crate::signed::BodyReadTimeout;
@@ -880,7 +880,8 @@ impl TestBroker {
             clock.clone(),
             relay_endpoint,
         )
-        .with_limits(limits.requests);
+        .with_limits(limits.requests)
+        .with_call_limits(config.proxy.max_calls_per_agent, config.proxy.max_calls);
         let passkeys = Passkeys::new(
             pool.clone(),
             audit.clone(),
@@ -897,7 +898,6 @@ impl TestBroker {
             clock: clock.clone(),
             requests,
             passkeys: Arc::new(passkeys),
-            proxy_calls: CallSlots::new(config.proxy.max_calls_per_agent, config.proxy.max_calls),
             audience,
         };
         let (api_router, router) = crate::build_routers(state.clone());
@@ -1115,7 +1115,8 @@ impl TestBroker {
         );
         let slot = self
             .state
-            .proxy_calls
+            .requests
+            .proxy_calls()
             .try_acquire(&agent, call)
             .expect("proxy call slot");
         LiveHold {

@@ -1,12 +1,17 @@
 //! Concurrency limits for proxied calls: how many may be in flight at once
 //! per agent and overall. Each call holds a [`CallSlot`] for as long as it
 //! runs; the slot is released when it is dropped, whatever way the call
-//! ends.
+//! ends. A slot also carries what ends the call early: revoking a grant or
+//! an agent tells its slots, without waiting for anything, and the call stops.
 
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap};
+use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
+use http::StatusCode;
+use serde::{Deserialize, Serialize};
+use tokio::sync::watch;
 use warden_broker_proto::{AgentName, Id};
 
 /// Why a call got no slot.
@@ -41,11 +46,106 @@ impl CallInfo {
     }
 }
 
+/// Why a call in flight must stop before it has finished.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CallEnd {
+    /// The grant, or the agent holding it, was revoked.
+    Revoked,
+    /// The grant's window is over.
+    Expired,
+    /// The grant's state could not be read for too long, so the call fails
+    /// closed.
+    GrantStateUnavailable,
+}
+
+impl CallEnd {
+    /// What the agent is told, and the audit's `outcome`.
+    #[must_use]
+    pub const fn message(self) -> &'static str {
+        match self {
+            Self::Revoked => "grant revoked during the call",
+            Self::Expired => "grant expired during the call",
+            Self::GrantStateUnavailable => "grant state unavailable during the call",
+        }
+    }
+
+    /// The status the agent gets: 409 for a grant that ended, 503 if nobody
+    /// can tell.
+    #[must_use]
+    pub const fn status(self) -> StatusCode {
+        match self {
+            Self::Revoked | Self::Expired => StatusCode::CONFLICT,
+            Self::GrantStateUnavailable => StatusCode::SERVICE_UNAVAILABLE,
+        }
+    }
+}
+
+/// How far the upstream's answer to a call has come, for the audit entry of
+/// a call that is stopped part-way. Holds counts only, never response data.
+#[derive(Debug, Default)]
+pub struct CallProgress {
+    /// The status received, or 0 before one arrived.
+    status: AtomicU16,
+    bytes: AtomicU64,
+}
+
+impl CallProgress {
+    /// The response's head arrived, with `status`.
+    pub(crate) fn response_started(&self, status: StatusCode) {
+        self.status.store(status.as_u16(), Ordering::Relaxed);
+    }
+
+    /// `bytes` more of the response's body arrived.
+    pub(crate) fn received(&self, bytes: usize) {
+        let bytes = u64::try_from(bytes).unwrap_or(u64::MAX);
+        self.bytes.fetch_add(bytes, Ordering::Relaxed);
+    }
+
+    /// The upstream's status, if its answer has started.
+    #[must_use]
+    pub fn status(&self) -> Option<u16> {
+        match self.status.load(Ordering::Relaxed) {
+            0 => None,
+            status => Some(status),
+        }
+    }
+
+    /// Bytes of the response's body received so far, before redaction.
+    #[must_use]
+    pub fn bytes(&self) -> u64 {
+        self.bytes.load(Ordering::Relaxed)
+    }
+}
+
+/// A call in flight, as the registry holds it.
+#[derive(Debug)]
+struct LiveCall {
+    info: CallInfo,
+    agent: AgentName,
+    progress: Arc<CallProgress>,
+    /// Why the call must stop, once it must.
+    end: watch::Sender<Option<CallEnd>>,
+}
+
+impl LiveCall {
+    /// Tell the call to stop for `end`; the first reason given stands.
+    fn stop(&self, end: CallEnd) {
+        self.end.send_if_modified(|ending| {
+            if ending.is_some() {
+                return false;
+            }
+            *ending = Some(end);
+            true
+        });
+    }
+}
+
 #[derive(Debug, Default)]
 struct Counts {
     total: usize,
     per_agent: HashMap<AgentName, usize>,
-    calls: BTreeMap<u64, CallInfo>,
+    calls: BTreeMap<u64, LiveCall>,
     next: u64,
 }
 
@@ -103,23 +203,72 @@ impl CallSlots {
         counts.total += 1;
         let key = counts.next;
         counts.next = counts.next.wrapping_add(1);
-        counts.calls.insert(key, call);
+        let (end, ended) = watch::channel(None);
+        let progress = Arc::new(CallProgress::default());
+        counts.calls.insert(
+            key,
+            LiveCall {
+                info: call,
+                agent: agent.clone(),
+                progress: Arc::clone(&progress),
+                end,
+            },
+        );
         Ok(CallSlot {
             slots: Arc::clone(self),
             agent: agent.clone(),
             key,
+            ended,
+            progress,
         })
+    }
+
+    /// Stop the calls of grant `grant_id`: it was revoked. Does not wait for
+    /// them to stop.
+    pub fn revoke_grant(&self, grant_id: &Id) {
+        for call in self.lock().calls.values() {
+            if call.info.grant_id == *grant_id {
+                call.stop(CallEnd::Revoked);
+            }
+        }
+    }
+
+    /// Stop the calls of `agent`, on every grant: it was revoked. Does not
+    /// wait for them to stop.
+    pub fn revoke_agent(&self, agent: &AgentName) {
+        for call in self.lock().calls.values() {
+            if call.agent == *agent {
+                call.stop(CallEnd::Revoked);
+            }
+        }
     }
 
     /// The calls in flight, oldest first (ties by grant, then by when they
     /// were admitted).
     #[must_use]
     pub fn snapshot(&self) -> Vec<CallInfo> {
-        let mut calls: Vec<_> = self.lock().calls.values().cloned().collect();
+        let mut calls: Vec<_> = self
+            .lock()
+            .calls
+            .values()
+            .map(|call| call.info.clone())
+            .collect();
         calls.sort_by(|a, b| {
             (a.started_at, a.grant_id.as_str()).cmp(&(b.started_at, b.grant_id.as_str()))
         });
         calls
+    }
+
+    /// Response bytes received so far by all the calls in flight, for tests
+    /// to wait on a response that has really started arriving.
+    #[cfg(feature = "testkit")]
+    #[must_use]
+    pub fn response_bytes_in_flight(&self) -> u64 {
+        self.lock()
+            .calls
+            .values()
+            .map(|call| call.progress.bytes())
+            .sum()
     }
 }
 
@@ -129,6 +278,32 @@ pub struct CallSlot {
     slots: Arc<CallSlots>,
     agent: AgentName,
     key: u64,
+    ended: watch::Receiver<Option<CallEnd>>,
+    progress: Arc<CallProgress>,
+}
+
+impl CallSlot {
+    /// Resolves, with the reason, once the call must stop. The reason is
+    /// kept, so a slot told before this is called still resolves at once.
+    pub async fn ended(&self) -> CallEnd {
+        let mut ended = self.ended.clone();
+        // The sender lives in the registry entry, which this slot removes
+        // only when dropped, so it outlives the wait.
+        let ending = ended
+            .wait_for(Option::is_some)
+            .await
+            .map_or(None, |ending| *ending);
+        match ending {
+            Some(end) => end,
+            None => std::future::pending().await,
+        }
+    }
+
+    /// How far the upstream's answer has come.
+    #[must_use]
+    pub fn progress(&self) -> &CallProgress {
+        &self.progress
+    }
 }
 
 impl Drop for CallSlot {
@@ -208,6 +383,88 @@ mod tests {
         let refused = CallSlots::new(0, 0);
         refused.try_acquire(&agent("a"), info("/")).unwrap_err();
         assert_eq!(refused.snapshot(), [] as [crate::proxy::slots::CallInfo; 0]);
+    }
+
+    /// Whether `slot` has been told to stop, without waiting for it.
+    async fn told(slot: &CallSlot) -> Option<CallEnd> {
+        tokio::select! {
+            biased;
+            end = slot.ended() => Some(end),
+            () = std::future::ready(()) => None,
+        }
+    }
+
+    #[tokio::test]
+    async fn revoking_a_grant_stops_only_its_calls() {
+        let slots = CallSlots::new(10, 10);
+        let grant = Id::random();
+        let call = CallInfo::new(grant.clone(), "GET".to_owned(), "/".to_owned(), 100);
+        let mine = slots.try_acquire(&agent("a"), call.clone()).unwrap();
+        let mine_too = slots.try_acquire(&agent("a"), call).unwrap();
+        let other_grant = slots.try_acquire(&agent("a"), info("/")).unwrap();
+        slots.revoke_grant(&grant);
+        assert_eq!(told(&mine).await, Some(CallEnd::Revoked));
+        assert_eq!(told(&mine_too).await, Some(CallEnd::Revoked));
+        assert_eq!(told(&other_grant).await, None);
+    }
+
+    #[tokio::test]
+    async fn revoking_an_agent_stops_only_its_calls() {
+        let slots = CallSlots::new(10, 10);
+        let one = slots.try_acquire(&agent("a"), info("/")).unwrap();
+        let two = slots.try_acquire(&agent("a"), info("/")).unwrap();
+        let other = slots.try_acquire(&agent("b"), info("/")).unwrap();
+        slots.revoke_agent(&agent("a"));
+        assert_eq!(told(&one).await, Some(CallEnd::Revoked));
+        assert_eq!(told(&two).await, Some(CallEnd::Revoked));
+        assert_eq!(told(&other).await, None);
+    }
+
+    #[tokio::test]
+    async fn the_first_reason_stands() {
+        let slots = CallSlots::new(10, 10);
+        let grant = Id::random();
+        let call = CallInfo::new(grant.clone(), "GET".to_owned(), "/".to_owned(), 100);
+        let slot = slots.try_acquire(&agent("a"), call).unwrap();
+        slots.lock().calls[&slot.key].stop(CallEnd::Expired);
+        slots.revoke_grant(&grant);
+        assert_eq!(told(&slot).await, Some(CallEnd::Expired));
+    }
+
+    #[tokio::test]
+    async fn a_waiting_slot_wakes_when_told() {
+        let slots = CallSlots::new(10, 10);
+        let slot = slots.try_acquire(&agent("a"), info("/")).unwrap();
+        let revoke = async {
+            tokio::task::yield_now().await;
+            slots.revoke_agent(&agent("a"));
+        };
+        let (end, ()) = tokio::join!(slot.ended(), revoke);
+        assert_eq!(end, CallEnd::Revoked);
+    }
+
+    #[test]
+    fn progress_counts_the_answer_so_far() {
+        let progress = CallProgress::default();
+        assert_eq!((progress.status(), progress.bytes()), (None, 0));
+        progress.response_started(StatusCode::CREATED);
+        progress.received(10);
+        progress.received(5);
+        assert_eq!((progress.status(), progress.bytes()), (Some(201), 15));
+    }
+
+    #[test]
+    fn an_ended_call_has_a_fixed_status_and_audit_name() {
+        assert_eq!(CallEnd::Revoked.status(), StatusCode::CONFLICT);
+        assert_eq!(CallEnd::Expired.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            CallEnd::GrantStateUnavailable.status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert_eq!(
+            serde_json::to_string(&CallEnd::GrantStateUnavailable).unwrap(),
+            r#""grant_state_unavailable""#
+        );
     }
 
     #[test]

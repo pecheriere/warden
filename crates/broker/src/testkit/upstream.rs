@@ -1,6 +1,7 @@
 //! A local HTTPS server standing in for an API behind a secret: a throwaway
 //! CA, a `localhost` certificate it signed, and handlers that echo, redirect,
-//! stream too much or too slowly, or claim a compressed body.
+//! stream too much or too slowly, hang until the caller gives up, or claim a
+//! compressed body.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -15,6 +16,7 @@ use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use http_body_util::{BodyExt as _, Channel};
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, Issuer, KeyPair, KeyUsagePurpose};
+use tokio::sync::watch;
 use tokio::task::AbortHandle;
 use tokio_rustls::TlsAcceptor;
 use tokio_rustls::rustls::ServerConfig;
@@ -65,6 +67,9 @@ pub struct Received {
 ///   `Content-Length`;
 /// - `/slow`: [`SLOW_PREFIX`], then nothing for a minute;
 /// - `/delayed` and any path under it: `late answer`, after [`DELAY`];
+/// - `/hang`: no answer at all, until the caller closes the connection;
+/// - `/drip`: `200`, the `Authorization` value in clear, then a chunk every few
+///   milliseconds without end, until the caller closes the connection;
 /// - `/gzip`: a body labelled `Content-Encoding: gzip`;
 /// - `/status/<code>`: that status, body `status <code>`;
 /// - `/binary`: [`BINARY_BODY`], which is not UTF-8;
@@ -73,6 +78,7 @@ pub struct HttpsUpstream {
     origin: Url,
     ca_pem: String,
     received: Arc<Mutex<Vec<Received>>>,
+    abandoned: Arc<watch::Sender<u64>>,
     server: AbortHandle,
 }
 
@@ -83,6 +89,24 @@ impl Drop for HttpsUpstream {
 }
 
 type Log = Arc<Mutex<Vec<Received>>>;
+
+/// What the handlers share.
+#[derive(Clone)]
+struct Shared {
+    log: Log,
+    /// How many `/hang` and `/drip` calls the caller walked away from.
+    abandoned: Arc<watch::Sender<u64>>,
+}
+
+/// Counts one abandoned call when dropped, which is what happens to a handler
+/// when its connection closes.
+struct Abandonment(Arc<watch::Sender<u64>>);
+
+impl Drop for Abandonment {
+    fn drop(&mut self) {
+        self.0.send_modify(|count| *count += 1);
+    }
+}
 
 impl HttpsUpstream {
     /// Generate the CA and certificate and start serving.
@@ -103,12 +127,17 @@ impl HttpsUpstream {
             .expect("bind upstream listener");
         let port = listener.local_addr().expect("upstream address").port();
         let received: Log = Arc::default();
-        let router = Router::new().fallback(handle).with_state(received.clone());
+        let abandoned = Arc::new(watch::Sender::new(0));
+        let router = Router::new().fallback(handle).with_state(Shared {
+            log: received.clone(),
+            abandoned: abandoned.clone(),
+        });
         let server = tokio::spawn(serve(listener, acceptor, router)).abort_handle();
         Self {
             origin: Url::parse(&format!("https://localhost:{port}")).expect("upstream origin"),
             ca_pem,
             received,
+            abandoned,
             server,
         }
     }
@@ -159,6 +188,25 @@ impl HttpsUpstream {
     pub fn received(&self) -> Vec<Received> {
         self.received.lock().expect("upstream log poisoned").clone()
     }
+
+    /// Wait until `count` calls to `/hang` or `/drip` have lost their caller,
+    /// which only a closed connection does. The caller bounds the wait.
+    ///
+    /// # Panics
+    /// If the upstream is gone, which cannot happen while `self` lives.
+    pub async fn wait_for_abandoned(&self, count: u64) {
+        self.abandoned
+            .subscribe()
+            .wait_for(|abandoned| *abandoned >= count)
+            .await
+            .expect("the upstream holds the sender");
+    }
+
+    /// How many calls to `/hang` or `/drip` have lost their caller so far.
+    #[must_use]
+    pub fn abandoned(&self) -> u64 {
+        *self.abandoned.borrow()
+    }
 }
 
 /// The CA certificate PEM, and the server's chain and key.
@@ -205,7 +253,7 @@ async fn serve(listener: tokio::net::TcpListener, acceptor: TlsAcceptor, router:
     }
 }
 
-async fn handle(State(log): State<Log>, req: Request) -> Response {
+async fn handle(State(shared): State<Shared>, req: Request) -> Response {
     let (parts, body) = req.into_parts();
     let body = body
         .collect()
@@ -216,12 +264,16 @@ async fn handle(State(log): State<Log>, req: Request) -> Response {
         .uri
         .path_and_query()
         .map_or_else(|| parts.uri.path().to_owned(), ToString::to_string);
-    log.lock().expect("upstream log poisoned").push(Received {
-        method: parts.method.to_string(),
-        path_and_query,
-        headers: parts.headers.clone(),
-        body: body.clone(),
-    });
+    shared
+        .log
+        .lock()
+        .expect("upstream log poisoned")
+        .push(Received {
+            method: parts.method.to_string(),
+            path_and_query,
+            headers: parts.headers.clone(),
+            body: body.clone(),
+        });
     match parts.uri.path() {
         "/echo" => echo(&parts.headers, &body),
         "/name-echo" => name_echo(&parts.headers),
@@ -233,6 +285,15 @@ async fn handle(State(log): State<Log>, req: Request) -> Response {
             tokio::time::sleep(DELAY).await;
             respond(StatusCode::OK, &[], Body::from("late answer"))
         }
+        "/hang" => {
+            let _abandonment = Abandonment(shared.abandoned);
+            std::future::pending().await
+        }
+        "/drip" => respond(
+            StatusCode::OK,
+            &[],
+            drip(&parts.headers, Abandonment(shared.abandoned)),
+        ),
         "/binary" => respond(StatusCode::OK, &[], Body::from(BINARY_BODY)),
         path if path.starts_with("/status/") => {
             let code = path["/status/".len()..]
@@ -381,6 +442,26 @@ fn huge_chunked() -> Body {
             if tx.send_data(chunk.clone()).await.is_err() {
                 return;
             }
+        }
+    });
+    Body::new(body)
+}
+
+/// The `Authorization` value, then short chunks until the caller is gone, which
+/// is what `abandonment` then records. A chunk this size every few milliseconds
+/// stays under the response limit for far longer than any call may last.
+fn drip(headers: &HeaderMap, abandonment: Abandonment) -> Body {
+    let echoed = headers
+        .get(header::AUTHORIZATION)
+        .map(|v| Bytes::copy_from_slice(v.as_bytes()))
+        .unwrap_or_default();
+    let (mut tx, body) = Channel::<Bytes>::new(1);
+    tokio::spawn(async move {
+        let _abandonment = abandonment;
+        let mut next = echoed;
+        while tx.send_data(next).await.is_ok() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            next = Bytes::from_static(b".");
         }
     });
     Body::new(body)

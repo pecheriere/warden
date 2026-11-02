@@ -392,7 +392,7 @@ async fn grants_page(State(state): State<AppState>) -> Response {
     match (grants, unwritten) {
         (Ok(grants), Ok(unwritten)) => {
             let sessions = state.requests.live_sessions().snapshot();
-            let calls = state.proxy_calls.snapshot();
+            let calls = state.requests.proxy_calls().snapshot();
             let live = live_grants(&grants, &sessions, &calls);
             pages::grants(&grants, &live, state.clock.now(), unwritten).into_response()
         }
@@ -408,7 +408,7 @@ async fn grants_live(State(state): State<AppState>) -> Response {
         Err(e) => return internal("live activity", &e),
     };
     let sessions = state.requests.live_sessions().snapshot();
-    let calls = state.proxy_calls.snapshot();
+    let calls = state.requests.proxy_calls().snapshot();
     let live = LiveActivity {
         grants: live_grants(&grants, &sessions, &calls),
     };

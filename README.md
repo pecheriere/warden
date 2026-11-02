@@ -341,10 +341,9 @@ root of trust; with the local backend it holds every secret too) or the
 its machine misusing its window, or against a misleading goal you approve.
 Grants are not yet tied to a task, so one
 agent's sessions can share them
-([#49](https://github.com/pecheriere/warden/issues/49)), and a revoke does
-not cancel an API call already in flight
-([#44](https://github.com/pecheriere/warden/issues/44)) or an issued
-certificate ([#35](https://github.com/pecheriere/warden/issues/35)). The
+([#49](https://github.com/pecheriere/warden/issues/49)), a revoke stops an API
+call in flight but cannot undo what the API did with it, and it does not cancel
+an issued certificate ([#35](https://github.com/pecheriere/warden/issues/35)). The
 [threat model](docs/threat-model.md) has the full picture.
 
 Report a vulnerability privately as described in [SECURITY.md](SECURITY.md).

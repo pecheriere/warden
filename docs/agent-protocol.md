@@ -827,13 +827,17 @@ Errors:
   `grant is not for API access`, `policy changed; request access again` (the
   owner changed the secret's policy after approval), or, when this happens
   while the call is out, `grant revoked during the call` / `grant expired
-  during the call` (the response is withheld). Request access again.
+  during the call` (the call is stopped and nothing of its response is returned;
+  the upstream may still have acted on it). Request access again.
 - `413`: the JSON body is over 2 MiB.
 - `429` `too many concurrent calls`: at most 4 calls per agent (16 overall)
   may be in flight; wait for one to finish.
 - `502`, `504`: the upstream failed, timed out (30 s per call), sent a
   compressed or oversized (over 1 MiB by default) response; the message is
   fixed and never quotes the upstream.
+- `503` `grant state unavailable during the call`: the broker could not read the
+  grant for 10 s while the call was out, so it stopped the call. The upstream may
+  have acted on it.
 - `500`, `503`, and section 5.
 
 Every call is recorded in the broker's audit log (method, origin and path,

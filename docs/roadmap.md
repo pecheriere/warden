@@ -49,8 +49,6 @@ machine.
 
 - [#35](https://github.com/pecheriere/warden/issues/35) Make revoking a
   certificate grant effective on the target
-- [#44](https://github.com/pecheriere/warden/issues/44) Revoke: end proxied API
-  calls already in flight
 - [#49](https://github.com/pecheriere/warden/issues/49) Use a grant only for the
   task it was approved for
 - [#45](https://github.com/pecheriere/warden/issues/45) Live connections: idle

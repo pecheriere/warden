@@ -44,9 +44,8 @@ warden does **not** protect against:
 - **Instant revocation everywhere.** An issued certificate stays valid on
   its target until it expires, and an open login to a certificate target continues
   even after that (issue
-  [#35](https://github.com/pecheriere/warden/issues/35)). A proxied API
-  call already in flight runs to completion (issue
-  [#44](https://github.com/pecheriere/warden/issues/44)).
+  [#35](https://github.com/pecheriere/warden/issues/35)). Stopping a proxied
+  API call already in flight does not undo what the API has done with it.
 
 This page is about a real deployment. The [local demo](demo.md) is a separate
 binary that is not secure for real use: on it, everyone on the machine counts as
@@ -171,9 +170,9 @@ change.
   - Access stops as usual. A revoked grant or agent is revoked in the database,
     pending requests of a revoked agent end, relay sessions close, and proxied calls
     and the agent's key are refused. A call or session waiting to record its start
-    checks the grant again once it has, and does not go out. One already sent runs
-    on (issue [#44](https://github.com/pecheriere/warden/issues/44)), and a
-    certificate already issued stays valid until it expires, as for any revocation.
+    checks the grant again once it has, and does not go out. One already sent is
+    stopped, and a certificate already issued stays valid until it expires, as for
+    any revocation.
   - The entry is not lost. It waits in the database, and every sweep (each 15 s, and
     at start) tries again, so it reaches the log once the log works, with a note
     holding the entry if it is over a minute late, because its own time is when it was
@@ -194,8 +193,8 @@ change.
     briefly, as none of them writes the log meanwhile; a revocation queues behind them,
     for 5 s at most. The relay ends its sessions by itself if it cannot read the
     database for 10 s (see "Fail closed when state cannot be read").
-  - Entries of these changes are written just after the commit, so a session that a
-    revocation ends can log its end before the revocation's entry.
+  - Entries of these changes are written just after the commit, so a session or
+    call that a revocation ends can log its end before the revocation's entry.
 - **`cert_issued` fails closed.** A certificate cannot be revoked before it
   expires, so one with no entry would be access with no evidence and no way to
   take it back. `cert_issued` is therefore written with `approved`, before the
@@ -466,11 +465,28 @@ These were recorded during implementation and are accepted for this release.
   across calls) and, inside a larger base64 blob, at most 4 bits of the secret
   per side can remain at the boundary. Compressed responses are refused
   because they cannot be inspected. The real control is the destination rule.
-- **Revoking does not stop a call in flight** (issue
-  [#44](https://github.com/pecheriere/warden/issues/44)). A revoke refuses
-  new calls and withholds the response of a call already sent (409), but the
-  upstream request runs to completion (at most 30 s), so a state-changing
-  call sent just before the revoke still takes effect.
+- **Revoking stops a call in flight, but cannot undo it.** A revoke refuses new
+  calls and stops those already out: the connection to the upstream closes and the
+  agent gets a 409, including while a response is still arriving. A revocation does
+  not wait for any of this. It commits, tells the calls and moves on, whatever the
+  upstream or the audit log is doing. Limits:
+  - **The upstream may have acted already.** Closing the connection tells it nothing
+    useful: a state-changing call it has received may take effect, in part or in
+    full. The call's `proxy_call` entry has `aborted` with the reason, and the
+    status and bytes received so far, which show how far the answer came, not what
+    the upstream did. Check there when the call could have changed something.
+  - **How fast.** Through this broker it is at once. A revoke made by another process
+    (the server CLI) and the end of the window are found by a check every second, so
+    about 1 s, or about 2.5 s if the check is slow. If the grant's state cannot be
+    read for 10 s, the call fails closed with a 503. The longest a call can run on
+    without any of these is still the 30 s limit.
+  - **A complete answer can still be delivered.** The grant is checked once more after
+    redaction. A revoke after that, while the answer waits for its `proxy_call` entry
+    or is on its way, does not hold it back.
+  - **Nothing partial leaves the broker.** The whole response is read before it is
+    redacted and returned, so a response that is cut part-way, which may quote the
+    secret, is dropped unread. The agent gets the fixed message, and the audit entry
+    holds only the counts.
 - **Within the window, the agent can make any allowed call.** Approval is
   bound to an origin, prefix, method set and window, not to individual
   requests. A prompt-injected agent can issue any call the grant permits
@@ -636,8 +652,8 @@ What holds, because the same code runs:
   not.
 - **Fresh reads.** Nothing is cached: a policy edit, a removed entry or a removed
   secret applies at the next request. Destination digests work as before, so an edit
-  invalidates a grant it no longer matches. A proxied call in flight, and a certificate
-  already issued, behave as described above.
+  invalidates a grant it no longer matches, but does not stop a proxied call already
+  in flight. A certificate already issued behaves as described above.
 - **Fail closed, and audited.** A file that is invalid, unreadable, ambiguous or too
   open refuses the request and writes an `error` event to the audit log, without
   quoting any value. If the audit log cannot be written, the request is still refused.

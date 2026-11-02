@@ -28,6 +28,7 @@ use crate::agents::{self, AgentError};
 use crate::audit::{AuditError, AuditEvent, AuditLog};
 use crate::notify::{Doorbell, Notifier, doorbell};
 use crate::policy::{ApiSecretPolicy, PolicyError, SecretBackend, SshMode, SshTarget};
+use crate::proxy::{CallSlots, ProxyLimits};
 use crate::relay::{LiveSessions, RelayEndpoint};
 use crate::ssh_ca;
 
@@ -364,6 +365,8 @@ pub struct Requests {
     relay: Option<Arc<RelayEndpoint>>,
     /// Live relay sessions, ended when their grant is revoked.
     sessions: Arc<LiveSessions>,
+    /// Proxied calls in flight, stopped when their grant is revoked.
+    proxy_calls: Arc<CallSlots>,
     /// Held while writing the waiting audit entries to the log.
     entry_writer: Arc<tokio::sync::Mutex<()>>,
     /// Held from checking a change that gives access until it is applied. Its entry
@@ -387,7 +390,8 @@ impl Requests {
     /// Build the service. Approval links are `<public_url>/approve/<token>`.
     /// Relay targets can be requested only when `relay` (where agents reach
     /// the relay) is given. Agents are held to the default [`RequestLimits`];
-    /// see [`Requests::with_limits`].
+    /// see [`Requests::with_limits`]. Proxied calls are held to the default
+    /// [`ProxyLimits`]; see [`Requests::with_call_limits`].
     #[must_use]
     pub fn new(
         pool: SqlitePool,
@@ -398,6 +402,7 @@ impl Requests {
         clock: Arc<dyn Clock>,
         relay: Option<RelayEndpoint>,
     ) -> Self {
+        let calls = ProxyLimits::default();
         Self {
             pool,
             audit,
@@ -408,11 +413,26 @@ impl Requests {
             clock,
             relay: relay.map(Arc::new),
             sessions: LiveSessions::new(),
+            proxy_calls: CallSlots::new(calls.max_calls_per_agent, calls.max_calls),
             entry_writer: Arc::default(),
             recorded_change: Arc::default(),
             limits: RequestLimits::default(),
             refusals: Arc::default(),
         }
+    }
+
+    /// Allow `max_per_agent` proxied calls in flight per agent and `max_total`
+    /// overall, instead of the default [`ProxyLimits`].
+    #[must_use]
+    pub fn with_call_limits(mut self, max_per_agent: usize, max_total: usize) -> Self {
+        self.proxy_calls = CallSlots::new(max_per_agent, max_total);
+        self
+    }
+
+    /// The proxied calls in flight.
+    #[must_use]
+    pub const fn proxy_calls(&self) -> &Arc<CallSlots> {
+        &self.proxy_calls
     }
 
     /// The live relay sessions.
@@ -1101,11 +1121,12 @@ impl Requests {
                 .bind(grant_id.as_str())
                 .fetch_optional(&mut *tx)
                 .await?;
-            // Revoked already, perhaps by another process: its sessions end
-            // now rather than at the relay's next check.
+            // Revoked already, perhaps by another process: its sessions and
+            // calls end now rather than at their next check.
             drop(tx);
             exists.ok_or(RequestError::NotFound)?;
             self.sessions.revoke_grant(grant_id);
+            self.proxy_calls.revoke_grant(grant_id);
             return Ok(self.settle_entries().await);
         };
         let request_id: Id = parse(&row, "request_id")?;
@@ -1119,6 +1140,7 @@ impl Requests {
         };
         commit_with_entries(tx, vec![revoked], now).await?;
         self.sessions.revoke_grant(grant_id);
+        self.proxy_calls.revoke_grant(grant_id);
         let outcome = self.settle_entries().await;
         self.bus.publish(&request_id);
         if outcome == AuditOutcome::Missing {
@@ -1139,6 +1161,7 @@ impl Requests {
         detached(async move {
             let affected = revoke_agent(&this.pool, &name, this.clock.now()).await?;
             this.sessions.revoke_agent(&name);
+            this.proxy_calls.revoke_agent(&name);
             let outcome = this.settle_entries().await;
             for id in &affected {
                 this.bus.publish(id);

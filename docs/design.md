@@ -517,16 +517,32 @@ new credential. If the digest no longer matches (including the format and the
 CA), or the secret is gone or invalid, the call is a 409
 (`policy changed; request access again`) and the agent must request again. A
 grant that is revoked or expires while a call is in flight yields a 409
-(`grant revoked during the call` or `grant expired during the call`) and the
-response is discarded. The window and the secret value are not part of the
-digest.
+(`grant revoked during the call` or `grant expired during the call`), and the
+call stops. The window and the secret value are not part of the digest.
+
+**Ending a call in flight.** Each call holds a slot among the calls in flight,
+as a relay session holds its registration. Revoking a grant or an agent commits
+first, then tells the slots of that grant or agent, which only sets a value and
+wakes the call: a revocation never waits for an upstream or for a call to end.
+The call races the upstream request against that signal, and whichever loses is
+dropped. Dropping the request closes its connection (each call has a client of
+its own) and whatever had arrived of the response, wherever it had got to,
+unread. A revocation made by another process (`warden-server agent revoke`), and
+the end of the window, reach no slot, so while a call is out it also checks its
+grant every second, each check bounded to 1.5 s, as the relay does for sessions.
+If no check succeeds for 10 s, the call ends with a 503 (`grant state unavailable
+during the call`). A call that finishes first is checked once more after
+redaction, and its response is discarded if the grant has ended. Stopping a call
+cannot undo what the upstream has already done with it.
 
 **Audit.** `proxy_call_started` is written **before** the request is sent; if
 it cannot be written, the call is refused and nothing is sent. `proxy_call` is
 written after the call ends, whatever the outcome; if that write fails, the
 agent gets a 500 and no response. It records: grant, method, origin and path
 (never the query string, which may carry the agent's own data), status,
-response size, redaction count and outcome. The secret never appears. The call
+response size, redaction count and outcome. If the broker stopped the call, the
+entry also has `aborted` (`revoked`, `expired` or `grant_state_unavailable`), and
+the status and size are as far as the answer had come. The secret never appears. The call
 runs on its own task, so an agent that disconnects can neither stop it halfway
 nor keep it out of the log.
 
@@ -639,9 +655,8 @@ A call is listed with the method and path its `proxy_call` audit entry
 records, from one sanitization: the path never carries userinfo, query string
 or fragment, and is `invalid` when the URL does not parse or is longer than
 512 bytes with its origin, so the agent cannot put an unbounded string on the
-owner's page. Revoking an API grant refuses its new calls and withholds the
-response of a call in flight, but that call runs on upstream until it answers
-or times out; it is no longer listed once the grant has ended. Times are
+owner's page. Revoking an API grant refuses its new calls and stops those in
+flight; they are no longer listed once the grant has ended. Times are
 rendered as UTC and shown in the viewer's local time by the script.
 
 ### Screenshots

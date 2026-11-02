@@ -97,7 +97,7 @@ document was written on.
 | API scope is an origin, a path prefix on a segment boundary, and a method list. | `check_url`, `check_method` in [`proxy/rules.rs`](../../crates/broker/src/proxy/rules.rs) | No exact path and no use count exist. |
 | **The query, body and most headers are the agent's**, and the query is not audited. | `check_headers`, `decode_body` in `rules.rs`; `CallRecord::new` in [`api.rs`](../../crates/broker/src/api.rs) | An allow-list of method and path leaves all of this open. |
 | A call is audited before it is sent, and if that fails it is not sent. The policy and secret are read together at call time and compared with the approved digest. | `call` in `api.rs` | Reused as it is. |
-| Revoking refuses new calls; a call in flight runs to completion, at most 30 s. | `call` in `api.rs`; [#44](https://github.com/pecheriere/warden/issues/44) | Stated limit. |
+| Revoking refuses new calls and stops a call in flight, but cannot undo what the origin did with it. | `call` in `api.rs`; `CallSlots` in [`proxy/slots.rs`](../../crates/broker/src/proxy/slots.rs) | Stated limit. |
 | A certificate has one principal, no critical options, `permit-pty` only, and is issued once, at approval. | `issue` in [`ssh_ca.rs`](../../crates/broker/src/ssh_ca.rs); `ssh_grant` in `approval/mod.rs` | After issue the broker is out of the path: it cannot count, see or stop use ([#35](https://github.com/pecheriere/warden/issues/35)). |
 | The relay accepts one session channel per connection, then `shell` or `exec`, and passes the exec bytes unchanged. It also forwards stdin, signals, window changes, a pty and some environment. | Module comment and `exec_request` in [`relay/server.rs`](../../crates/broker/src/relay/server.rs); `start` in [`relay/onward.rs`](../../crates/broker/src/relay/onward.rs) | The relay can see a command. Comparing it is not enough, because the command's input stays open. |
 | The relay's audit keeps the first 200 characters of a command, with invalid UTF-8 replaced. | `Program::audited` in [`relay/session.rs`](../../crates/broker/src/relay/session.rs) | The log is not an exact record of what ran. |
@@ -567,10 +567,9 @@ and used-up counts remain.
 time remaining, and with one Revoke that ends the whole approval.
 
 - **New uses** are refused at once, by the same check that spends them.
-- **A call in flight runs to completion, at most 30 s**
-  ([#44](https://github.com/pecheriere/warden/issues/44)), and its response is
-  withheld. Spacing and the one-at-a-time rule limit this to one call. Fixing
-  #44 would not undo what the origin already did.
+- **A call in flight stops**, and its response is withheld. Spacing and the
+  one-at-a-time rule limit this to one call. It does not undo what the origin
+  already did.
 - **[#35](https://github.com/pecheriere/warden/issues/35) does not apply**,
   because no certificate exists. This is a large part of why the first version
   is API-only.
@@ -776,8 +775,8 @@ These go in with the implementation, not before.
   - "Within the window, the agent can make any allowed call": not so for
     actions; add the difference.
   - "The query string and body are the agent's": not so for actions.
-  - "Revoking does not stop a call in flight": applies, limited to one call per
-    approval.
+  - "Revoking stops a call in flight, but cannot undo it": applies, limited to one
+    call per approval.
   - A new section on advance approvals: the table in [What could go
     wrong](#what-could-go-wrong), the trap with mutable state, the nightly-habit
     risk, the worst-moment test, and the halt pretext with what it leaves open.

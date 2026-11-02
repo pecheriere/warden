@@ -15,6 +15,7 @@ use warden_broker_proto::ProxyResponse;
 
 use super::redact::{Needles, redact, redact_name};
 use super::rules::{OUTBOUND_ACCEPT_ENCODING, Prepared};
+use super::slots::CallProgress;
 use crate::policy::{ApiSecretPolicy, SecretValue};
 
 /// Size and time limits of one proxied call.
@@ -113,6 +114,10 @@ impl ProxyError {
 /// followed; no proxy is used; requests are never retried; the response
 /// must be uncompressed. The header value is marked sensitive.
 ///
+/// `progress` follows the answer as it arrives. Dropping the returned future
+/// stops the call: the client and its connection go with it, and what had
+/// arrived of the response is dropped unseen.
+///
 /// # Errors
 /// A [`ProxyError`]; nothing partial is returned.
 pub async fn forward(
@@ -120,6 +125,7 @@ pub async fn forward(
     secret: &SecretValue,
     prepared: Prepared,
     limits: &ProxyLimits,
+    progress: &CallProgress,
 ) -> Result<Upstream, ProxyError> {
     let client = client_for(policy, limits)?;
     let rendered = policy.format.render(secret.expose());
@@ -146,6 +152,7 @@ pub async fn forward(
             return Err(ProxyError::TooLarge(max));
         }
         let status = response.status();
+        progress.response_started(status);
         let headers = std::mem::take(response.headers_mut());
         let mut body = Vec::new();
         while let Some(chunk) = response.chunk().await.map_err(failed)? {
@@ -153,6 +160,7 @@ pub async fn forward(
                 return Err(ProxyError::TooLarge(max));
             }
             body.extend_from_slice(&chunk);
+            progress.received(chunk.len());
         }
         Ok(Upstream {
             status,

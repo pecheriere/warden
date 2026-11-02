@@ -35,7 +35,6 @@ use warden_broker::approval::passkeys::Passkeys;
 use warden_broker::audit::{self, AuditLog};
 use warden_broker::config::Config;
 use warden_broker::notify::Doorbell;
-use warden_broker::proxy::CallSlots;
 use warden_broker::requests::{self, Clock as _, Requests, SystemClock};
 use warden_broker::{AppState, agents, audience, build_routers, store};
 use warden_broker_proto::AgentName;
@@ -388,7 +387,8 @@ impl Prepared {
             config.public_url.clone(),
             clock.clone(),
             None,
-        );
+        )
+        .with_call_limits(config.proxy.max_calls_per_agent, config.proxy.max_calls);
         let audience = audience::load_or_create(config.audience_path.clone()).await?;
         let state = AppState {
             pool: pool.clone(),
@@ -405,7 +405,6 @@ impl Prepared {
             clock,
             requests: requests.clone(),
             passkeys,
-            proxy_calls: CallSlots::new(config.proxy.max_calls_per_agent, config.proxy.max_calls),
             audience,
         };
         let (api, approval) = build_routers(state);

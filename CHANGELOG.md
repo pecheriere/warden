@@ -15,6 +15,15 @@ All notable changes to this project are recorded here. The format follows
   `p256` 0.14 instead of through `ssh-key` 0.6. RUSTSEC-2023-0071 stays exempted
   for the `rsa` pre-release that russh pins, which only verifies targets' RSA
   host keys. Nothing changes for agents.
+- Revoking a grant or an agent now stops proxied API calls already in flight, also
+  while a response is still arriving: the connection to the upstream closes and
+  the agent gets the same 409 as before, with nothing of the response. The end of
+  the grant's window does the same, a revocation by another process is found within
+  seconds, and a call whose grant state cannot be read for 10 s ends with a 503. A
+  revocation waits for none of this. The upstream may still have acted on a call
+  it received. The `proxy_call` audit entry of a stopped call gains `aborted`, with
+  the reason, and has the status and bytes received so far. As with any new audit
+  field, a `warden-server` older than this release refuses a log that holds one.
 
 ### Added
 

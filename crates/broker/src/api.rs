@@ -25,7 +25,7 @@ use crate::AppState;
 use crate::audit::AuditEvent;
 use crate::identity::{AuthedAgent, refuse_funnel};
 use crate::policy::{ApiScope, PolicyError};
-use crate::proxy::{self, CallInfo, Needles};
+use crate::proxy::{self, CallEnd, CallInfo, CallSlot, GrantChecks, GrantState, Needles};
 use crate::requests::{BACKEND_UNAVAILABLE, RequestError};
 use crate::signed;
 
@@ -103,6 +103,12 @@ enum Failure {
 impl From<RequestError> for Failure {
     fn from(e: RequestError) -> Self {
         Self::Request(e)
+    }
+}
+
+impl From<CallEnd> for Failure {
+    fn from(end: CallEnd) -> Self {
+        Self::Client(end.status(), end.message().to_owned())
     }
 }
 
@@ -406,6 +412,8 @@ struct CallRecord {
     status: Option<u16>,
     response_bytes: u64,
     redactions: u32,
+    /// Why the upstream call was stopped before it finished, if it was.
+    aborted: Option<CallEnd>,
 }
 
 impl CallRecord {
@@ -435,6 +443,7 @@ impl CallRecord {
             status: None,
             response_bytes: 0,
             redactions: 0,
+            aborted: None,
         }
     }
 }
@@ -464,8 +473,8 @@ async fn audited_call(
         record.path.clone(),
         state.clock.now(),
     );
-    let result = match state.proxy_calls.try_acquire(&agent, info) {
-        Ok(_slot) => call(&state, &agent, &grant_id, &grant, &req, &mut record).await,
+    let result = match state.requests.proxy_calls().try_acquire(&agent, info) {
+        Ok(slot) => call(&state, &agent, &grant_id, &grant, &req, &slot, &mut record).await,
         Err(refused) => Err(Failure::Client(
             StatusCode::TOO_MANY_REQUESTS,
             refused.to_string(),
@@ -487,6 +496,7 @@ async fn audited_call(
         response_bytes: record.response_bytes,
         redactions: record.redactions,
         outcome,
+        aborted: record.aborted,
     };
     if let Err(e) = state.audit.append(event).await {
         tracing::error!(grant = %grant_id, error = %e, "could not audit a proxy call");
@@ -497,14 +507,17 @@ async fn audited_call(
 
 /// Check `req` against the secret's current policy, which must still be
 /// the approved one; record that the call starts (or refuse it if that
-/// cannot be recorded); send it with the secret; and redact the answer,
-/// unless the grant ended while the call was out.
+/// cannot be recorded); send it with the secret, stopping if the grant ends
+/// while the call is out; and redact the answer, which is withheld if the grant
+/// has ended by then. A stopped call drops what had arrived of the answer
+/// unread: the agent gets only the fixed message.
 async fn call(
     state: &AppState,
     agent: &AgentName,
     grant_id: &Id,
     grant: &ApiGrant,
     req: &ProxyRequest,
+    slot: &CallSlot,
     record: &mut CallRecord,
 ) -> Result<ProxyResponse, Failure> {
     let (policy, secret) = state
@@ -538,27 +551,78 @@ async fn call(
     // Writing the log can take long, and a revocation does not wait for it: the
     // grant may have ended meanwhile, and then nothing goes out.
     usable_api_grant(state, agent, grant_id).await?;
-    let upstream = proxy::forward(&policy, &secret, prepared, &limits)
-        .await
-        .map_err(|e| Failure::Client(e.status(), e.to_string()))?;
+    // Whichever finishes first: the other is dropped, and dropping the call
+    // closes its connection to the upstream. The end comes first so that a call
+    // told to stop never goes on to use an answer that arrived at that moment.
+    let forwarded = tokio::select! {
+        biased;
+        end = call_ended(state, agent, grant_id, slot) => Err(end),
+        result = proxy::forward(&policy, &secret, prepared, &limits, slot.progress()) => Ok(result),
+    };
     drop(secret);
+    let upstream = match forwarded {
+        Ok(result) => result.map_err(|e| Failure::Client(e.status(), e.to_string()))?,
+        Err(end) => {
+            tracing::warn!(grant = %grant_id, reason = end.message(), "proxied call stopped");
+            record.status = slot.progress().status();
+            record.response_bytes = slot.progress().bytes();
+            record.aborted = Some(end);
+            return Err(end.into());
+        }
+    };
     record.status = Some(upstream.status.as_u16());
     record.response_bytes = u64::try_from(upstream.body.len()).unwrap_or(u64::MAX);
-    let ended =
-        |how: &str| Failure::Client(StatusCode::CONFLICT, format!("grant {how} during the call"));
-    match api_grant_status(state, agent, grant_id).await {
-        Ok(Ok(_)) => {}
-        Ok(Err(Unusable::Expired)) => return Err(ended("expired")),
-        Ok(Err(Unusable::Revoked | Unusable::NotApi))
-        | Err(Failure::Request(RequestError::NotFound)) => return Err(ended("revoked")),
-        Err(other) => return Err(other),
-    }
     // Redaction scans every needle over up to 1 MiB, then the result is
     // base64 encoded: both run off the async workers. The needles are
     // moved in and wiped when the work ends.
     let response = off_runtime(move || proxy::redact_response(&upstream, &needles)).await?;
+    // Checked last, redaction included: a grant that has ended gets nothing.
+    if let Some(end) = grant_end(state, agent, grant_id).await? {
+        return Err(end.into());
+    }
     record.redactions = response.redactions;
     Ok(response)
+}
+
+/// Whether grant `id` has ended, for a call already under way on it. A grant
+/// that is gone counts as revoked.
+async fn grant_end(
+    state: &AppState,
+    agent: &AgentName,
+    id: &Id,
+) -> Result<Option<CallEnd>, Failure> {
+    match api_grant_status(state, agent, id).await {
+        Ok(Ok(_)) => Ok(None),
+        Ok(Err(Unusable::Expired)) => Ok(Some(CallEnd::Expired)),
+        Ok(Err(Unusable::Revoked | Unusable::NotApi))
+        | Err(Failure::Request(RequestError::NotFound)) => Ok(Some(CallEnd::Revoked)),
+        Err(other) => Err(other),
+    }
+}
+
+/// Resolves once a call on the grant must stop: at once when this broker
+/// revokes the grant or its agent, and otherwise when a periodic check finds the
+/// grant ended (revoked by another process, or past its window) or unreadable.
+async fn call_ended(
+    state: &AppState,
+    agent: &AgentName,
+    grant_id: &Id,
+    slot: &CallSlot,
+) -> CallEnd {
+    let checked = proxy::until_grant_ends(GrantChecks::default(), || async {
+        match grant_end(state, agent, grant_id).await {
+            Ok(None) => GrantState::Usable,
+            Ok(Some(end)) => GrantState::Ended(end),
+            Err(failure) => {
+                tracing::warn!(grant = %grant_id, error = %failure.outcome(), "checking the grant of a call in flight failed");
+                GrantState::Unreadable
+            }
+        }
+    });
+    tokio::select! {
+        end = slot.ended() => end,
+        end = checked => end,
+    }
 }
 
 /// Run `work` on the blocking thread pool, off the async workers: CPU-bound
