@@ -48,6 +48,9 @@ const EXIT_CANCELLED: u8 = 6;
 /// Exit code: `warden http --fail` got an upstream status of 400 or more
 /// (curl's code for the same condition).
 const EXIT_HTTP_FAIL: u8 = 22;
+/// Exit code: the command line did not parse (`EX_USAGE`). Not clap's default
+/// of 2, which here means denied: the two call for opposite reactions.
+const EXIT_USAGE: u8 = 64;
 /// Exit code: interrupted with Ctrl-C (128 plus SIGINT, as shells report it).
 const EXIT_INTERRUPTED: u8 = 130;
 
@@ -230,7 +233,10 @@ impl std::error::Error for Exit {}
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(e) => return parse_failure_exit(&e),
+    };
     // Doctor changes nothing, so not even the housekeeping runs before it.
     if !matches!(cli.command, Cmd::Doctor { .. }) {
         cleanup_state(unix_now());
@@ -244,6 +250,19 @@ async fn main() -> ExitCode {
             eprintln!("warden: {e:#}");
             ExitCode::from(code)
         }
+    }
+}
+
+/// Prints what the parser has to say and gives the exit code: 0 for the help
+/// and version output it reports as errors, and otherwise [`EXIT_USAGE`].
+fn parse_failure_exit(e: &clap::Error) -> ExitCode {
+    // A failed write to stdout or stderr leaves nowhere to report it, and the
+    // exit code still says what happened.
+    let _ = e.print();
+    if e.use_stderr() {
+        ExitCode::from(EXIT_USAGE)
+    } else {
+        ExitCode::SUCCESS
     }
 }
 
@@ -1160,18 +1179,42 @@ async fn revoke(grant: &Id) -> Result<()> {
 mod tests {
     use ssh_key::rand_core::OsRng;
     use ssh_key::{Algorithm, PrivateKey, certificate};
+    use warden_broker_proto::doctor::{EXIT_COULD_NOT_CHECK, EXIT_FAILED, EXIT_NOTHING_FAILED};
     use warden_broker_proto::{
         ApiGrant, GrantAccess, GrantView, Id, RelayGrant, RequestStatus, SshGrant,
     };
 
+    use std::collections::BTreeSet;
     use std::path::PathBuf;
     use std::time::{Duration, Instant};
 
     use super::{
-        CallError, check_scope_not_wider, local_subject, next_retry_delay, ssh_setup,
-        terminal_exit_code, wait_for_decision,
+        CallError, EXIT_CANCELLED, EXIT_DENIED, EXIT_ERROR, EXIT_EXPIRED, EXIT_HTTP_FAIL,
+        EXIT_INTERRUPTED, EXIT_NO_GRANT, EXIT_REVOKED, EXIT_USAGE, check_scope_not_wider,
+        local_subject, next_retry_delay, ssh_setup, terminal_exit_code, wait_for_decision,
     };
     use crate::agent::{GrantRecord, Route};
+
+    /// Each code means one thing, so an agent can act on it. A failed
+    /// `warden doctor` check is the one overlap: it is an error like any other.
+    #[test]
+    fn exit_codes_are_distinct() {
+        let codes = [
+            EXIT_NOTHING_FAILED,
+            EXIT_ERROR,
+            EXIT_DENIED,
+            EXIT_EXPIRED,
+            EXIT_REVOKED,
+            EXIT_NO_GRANT,
+            EXIT_CANCELLED,
+            EXIT_COULD_NOT_CHECK,
+            EXIT_HTTP_FAIL,
+            EXIT_USAGE,
+            EXIT_INTERRUPTED,
+        ];
+        assert_eq!(BTreeSet::from(codes).len(), codes.len(), "{codes:?}");
+        assert_eq!(EXIT_FAILED, EXIT_ERROR);
+    }
 
     fn relay_view(relay: RelayGrant) -> GrantView {
         GrantView {
