@@ -45,6 +45,10 @@ All notable changes to this project are recorded here. The format follows
 
 ### Changed
 
+- `warden` now exits 64, not 2, for wrong arguments, so that a usage error
+  cannot be taken for a denied request, which stays exit 2. A script that reads
+  exit 2 as a usage error needs updating. `--help` and `--version` still exit 0,
+  and `warden-server` keeps exit 2 for wrong arguments.
 - README: says who warden is for and how stable it is, names Tailscale, Docker
   and 1Password as the recommended setup and what each part protects, and adds
   a table of the setups supported today with their security cost. It also lists
