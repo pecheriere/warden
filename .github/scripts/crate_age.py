@@ -1,12 +1,13 @@
 """Fail a PR whose Cargo.lock brings in a crate version published less than 7 days ago.
 
-Compares the registry packages in Cargo.lock at a base revision with the working
-tree (or a head revision). Every crates.io version that is new or changed is looked
-up on crates.io, and one published less than 7 days ago fails the check unless
-.github/crate-age-allow.toml lists that exact version with the RUSTSEC or GitHub
-(GHSA) advisory it fixes. An allow-list entry whose version is no longer in Cargo.lock is stale and
-fails the check too. With --head, Cargo.lock and the allow-list are both read at
-that revision; with --no-base, every version counts as new.
+Compares the registry packages in Cargo.lock and fuzz/Cargo.lock (the fuzz crate is
+its own workspace) at a base revision with the working tree (or a head revision).
+Every crates.io version that is new or changed is looked up on crates.io, and one
+published less than 7 days ago fails the check unless .github/crate-age-allow.toml
+lists that exact version with the RUSTSEC or GitHub (GHSA) advisory it fixes. An
+allow-list entry whose version is in no lockfile is stale and fails the check too.
+With --head, the lockfiles and the allow-list are all read at that revision; with
+--no-base, every version counts as new.
 
 Versions that did not change are never looked up, so a PR that leaves Cargo.lock
 alone makes no network request. A lookup that fails fails the check.
@@ -34,6 +35,7 @@ from typing import IO
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 LOCKFILE = "Cargo.lock"
+FUZZ_LOCKFILE = "fuzz/Cargo.lock"
 ALLOW_LIST = ".github/crate-age-allow.toml"
 MIN_AGE = timedelta(days=7)
 # Cargo records crates.io under this source whichever index protocol it used.
@@ -116,6 +118,15 @@ def registry_crates(lock_text: str) -> set[Crate]:
     return crates
 
 
+def _all_crates(*lock_texts: str | None) -> set[Crate]:
+    """Return the crates.io packages of those lockfiles that exist."""
+    crates: set[Crate] = set()
+    for text in lock_texts:
+        if text is not None:
+            crates |= registry_crates(text)
+    return crates
+
+
 def load_allow_list(text: str) -> dict[Crate, str]:
     """Return the allowed crate versions and the reason for each."""
     data = _toml(text, "allow-list")
@@ -153,12 +164,24 @@ def check(
     lookup: Lookup,
     now: datetime,
 ) -> list[str]:
-    """Return one error per problem; an empty list means the PR passes.
+    """Check one lockfile: see `check_crates`.
 
     `base_lock` is None when the base has no Cargo.lock, so every version is new.
     """
-    head = registry_crates(head_lock)
-    base = registry_crates(base_lock) if base_lock is not None else set()
+    return check_crates(_all_crates(base_lock), _all_crates(head_lock), allow_text, lookup, now)
+
+
+def check_crates(
+    base: set[Crate],
+    head: set[Crate],
+    allow_text: str,
+    lookup: Lookup,
+    now: datetime,
+) -> list[str]:
+    """Return one error per problem; an empty list means the PR passes.
+
+    A version already in `base`, from either lockfile, is not new.
+    """
     allowed = load_allow_list(allow_text)
 
     errors: list[str] = []
@@ -181,7 +204,7 @@ def check(
                 ".github/crate-age-allow.toml (see the README).",
             )
     errors.extend(
-        f"allow-list entry {crate} is stale: that version is not in {LOCKFILE}. Remove it."
+        f"allow-list entry {crate} is stale: that version is in no lockfile. Remove it."
         for crate in sorted(set(allowed) - head)
     )
     return errors
@@ -306,6 +329,14 @@ def head_files(rev: str | None) -> tuple[str, str]:
     return lock, file_at(rev, ALLOW_LIST) or ""
 
 
+def fuzz_lock_at(rev: str | None) -> str | None:
+    """Return the fuzz lockfile at git `rev`, or in the working tree if None; None if absent."""
+    if rev is not None:
+        return file_at(rev, FUZZ_LOCKFILE)
+    path = ROOT / FUZZ_LOCKFILE
+    return path.read_text(encoding="utf-8") if path.exists() else None
+
+
 def user_agent() -> str:
     """Identify this check to crates.io, with the repository when run in Actions."""
     repository = os.environ.get("GITHUB_REPOSITORY")
@@ -332,8 +363,15 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         base = None if args.no_base else file_at(args.base, LOCKFILE)
+        base_fuzz = None if args.no_base else file_at(args.base, FUZZ_LOCKFILE)
         head, allow_text = head_files(args.head)
-        errors = check(base, head, allow_text, CratesIo(user_agent()), datetime.now(UTC))
+        errors = check_crates(
+            _all_crates(base, base_fuzz),
+            _all_crates(head, fuzz_lock_at(args.head)),
+            allow_text,
+            CratesIo(user_agent()),
+            datetime.now(UTC),
+        )
     except (ValueError, TypeError, OSError) as err:
         errors = [str(err)]
 

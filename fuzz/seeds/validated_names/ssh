@@ -1,0 +1,1 @@
+{"goal": "log in", "access": {"kind": "ssh", "target": "switch-01", "user": "build", "public_key": "ssh-ed25519 AAAA"}, "window": "4h"}

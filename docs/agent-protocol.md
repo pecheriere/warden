@@ -257,6 +257,9 @@ string    signature          the SSH signature of the preimage: string
                              preimage as ecdsa-sha2-nistp256 specifies)
 ```
 
+The blob must be exactly this encoding, with every length correct and nothing
+extra; `ssh-keygen` and `ssh-agent` produce it.
+
 Through an `ssh-agent`, send `SSH_AGENTC_SIGN_REQUEST` (message 13) with the
 key blob, the preimage as the data and flags 0; the
 `SSH_AGENT_SIGN_RESPONSE` (message 14) carries the `signature` field above,
