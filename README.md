@@ -98,7 +98,7 @@ deciding. If nobody answers, the request expires after 10 minutes and the
 agent has to ask again, and a grant lasts at most 4 hours. So an agent working
 through the night stops when its grant ends, or when it needs something you
 did not approve while you are asleep. That is the trade: you stay in the loop,
-and the agent holds nothing for good.
+and the agent holds no access that lasts.
 
 ## How it works
 
