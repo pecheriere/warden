@@ -612,7 +612,7 @@ async fn a_hand_edit_is_refused_until_seal_policy_runs() {
         .output()
         .unwrap();
     assert!(seal.status.success(), "{}", stderr(&seal));
-    assert!(stdout(&seal).contains("1 API secret"), "{}", stdout(&seal));
+    assert!(stdout(&seal).contains("1 API entry"), "{}", stdout(&seal));
     assert!(
         fs::read_to_string(&policy_file)
             .unwrap()

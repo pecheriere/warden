@@ -270,7 +270,7 @@ fn sealing_refuses_a_draft_cut_short_at_any_byte() {
 
 fn entries(result: Result<super::SealedPolicy, super::SealError>) -> (usize, usize) {
     let sealed = result.unwrap();
-    (sealed.targets, sealed.api_secrets)
+    (sealed.targets, sealed.api_entries)
 }
 
 /// The hand edit from start to finish: refused until sealed, and the file a reader

@@ -190,9 +190,9 @@ async fn main() -> Result<ExitCode> {
                     .context("the seal task failed")?
                     .with_context(|| format!("sealing {shown}"))?;
             println!(
-                "{shown} sealed: {} target(s), {} API secret(s). Entries and secrets are not \
+                "{shown} sealed: {} target(s), {} API entry(ies). Entries and secrets are not \
                  checked here: run warden-server doctor.",
-                sealed.targets, sealed.api_secrets
+                sealed.targets, sealed.api_entries
             );
         }
     }

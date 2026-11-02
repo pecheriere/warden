@@ -39,7 +39,7 @@ pub struct SealedPolicy {
     /// Entries under `[targets]`.
     pub targets: usize,
     /// Entries under `[api_secrets]`.
-    pub api_secrets: usize,
+    pub api_entries: usize,
 }
 
 /// `draft` as a sealed policy file: its text through its `[end_of_policy]` line, then the
@@ -137,7 +137,7 @@ pub fn seal_policy_file(policy: &Path, draft: Option<&Path>) -> Result<SealedPol
         .map_err(|e| whole("the policy file could not be replaced:", &e))?;
     Ok(SealedPolicy {
         targets: parsed.targets.len(),
-        api_secrets: parsed.api_secrets.len(),
+        api_entries: parsed.api_secrets.len(),
     })
 }
 
