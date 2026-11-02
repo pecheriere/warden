@@ -116,7 +116,11 @@ fn run(policy: &ApiSecretPolicy, req: &ProxyRequest) {
     match check(policy, req, MAX_BODY) {
         Ok(prepared) => check_prepared(policy, req, &prepared),
         Err(refusal) => {
-            let in_name = req.headers.iter().any(|(name, _)| name.contains(SENTINEL));
+            // A refusal may name the header, in lower case: that is not its value.
+            let in_name = req
+                .headers
+                .iter()
+                .any(|(name, _)| name.to_ascii_lowercase().contains(SENTINEL));
             assert!(
                 in_name || !refusal.to_string().contains(SENTINEL),
                 "a refusal repeats a header value"
