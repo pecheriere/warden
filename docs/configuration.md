@@ -171,8 +171,9 @@ deployment exits 7 with `--strict`.
 | `audit.waiting` | No audit log entries are waiting in the database. They wait there when the log could not take them; a running server writes them once it can. | The database exists but cannot be read. |
 | `listener.api`, `listener.approval`, `listener.relay` | A process accepts TCP connections on the address, and the address is not `0.0.0.0` or `::`. This does not prove the process is warden. The relay is checked only when it is on. | The connection neither succeeds nor is refused. |
 | `data.directory` | The database's directory belongs to doctor's user, with no group or other permissions (0700). | The path cannot be read. |
-| `data.database`, `data.audit-log`, `data.audience` | Each is a regular file (not a symbolic link) of doctor's user, not writable by group or others. | The path cannot be read. |
-| `data.relay-host-key` | The same, with no group or other permissions (0600). Only when the relay is on. | The path cannot be read. |
+| `data.database`, `data.audit-log`, `data.audience` | Each is a regular file (not a symbolic link) of doctor's user, with no group or other permissions (0600). The server corrects the permissions when it starts, or refuses to start if it cannot. | The path cannot be read. |
+| `data.database-wal`, `data.database-shm` | The same, for each that exists. | The path cannot be read. |
+| `data.relay-host-key` | The same, and the server refuses to start rather than correct it. Only when the relay is on. | The path cannot be read. |
 | `tailscale.funnel-off`, `tailscale.serve` | Never. | Always: from inside its container warden cannot see Tailscale's configuration. The output says what to run on the host. |
 
 What doctor does and does not do:

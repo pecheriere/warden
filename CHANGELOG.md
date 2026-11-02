@@ -8,11 +8,15 @@ All notable changes to this project are recorded here. The format follows
 
 ### Security
 
-- The image's `/data` directory now has the mode 0700 the Dockerfile asks for; it
-  was 0755. A new named or anonymous volume takes that mode. One first used with
-  an earlier image keeps 0755, which `warden-server doctor` reports:
-  `docs/deployment.md` shows how to correct it. Bind mounts are unchanged. CI now
-  checks the owner and mode in the built image.
+- warden keeps its files private to its user. The database and its `-wal` and
+  `-shm` files, the audit log and the audience are created 0600, and corrected at
+  start if they have group or other permissions; a file that cannot be corrected
+  stops warden with a message naming it. The data directory is set to 0700 when
+  warden's own non-root user owns it, and a warning is logged otherwise.
+  `warden-server doctor` now fails on any of these with such permissions. See
+  [Upgrading](docs/upgrading.md) if another user's tool reads these files.
+- The image's `/data` directory has the mode 0700 the Dockerfile asks for, and
+  CI checks its owner and mode in the built image.
 - The `warden` CLI no longer links `rsa` or `crypto-bigint` 0.5, and the broker
   no longer links `crypto-bigint` 0.5, which clears RUSTSEC-2026-0387 from the
   tree. The CLI talks to `ssh-agent` with a small client of its own instead of

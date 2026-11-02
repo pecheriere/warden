@@ -321,6 +321,9 @@ pub enum AuditError {
     /// The system clock is before 1970 or out of range.
     #[error("system clock unusable")]
     Clock,
+    /// The log could not be kept private to warden's user.
+    #[error(transparent)]
+    Private(#[from] crate::private_files::PrivateFileError),
 }
 
 fn compute_hash(prev: &str, body: &Body<'_>) -> Result<String, serde_json::Error> {
@@ -611,6 +614,7 @@ fn open_blocking(path: &Path) -> Result<(File, Head), AuditError> {
         .read(true)
         .mode(0o600)
         .open(path)?;
+    crate::private_files::make_private(&file, path)?;
     let head = load_locked(&file)?;
     Ok((file, head))
 }

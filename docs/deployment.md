@@ -518,15 +518,26 @@ You can also build it from this repository:
 
 The image runs as uid 65532, has no shell, and writes only to `/data`, which it
 ships with mode 0700 and owned by that user. What `/data` is at runtime depends
-on how it is mounted, and `warden-server doctor` checks it (`data.directory`):
+on how it is mounted:
 
 - **A new named or anonymous volume** takes the owner and mode from the image.
 - **A bind mount** keeps the owner and mode of the host's directory. If the
   directory does not exist, Docker creates it owned by root, and warden cannot
   start: create it first, as [the steps below](#the-compose-file) do.
-- **A named volume first used with v0.8.1 or earlier** has mode 0755, and keeps it
-  when you upgrade. As the image has no shell, correct it from another image:
-  `docker run --rm -v <volume>:/volume debian:bookworm-slim chmod 0700 /volume`.
+
+warden keeps its files private to its user, whichever you use. It creates them
+0600, and at each start it corrects any it finds with group or other permissions:
+the database and its `-wal` and `-shm` files, the audit log and the audience. It
+does the same for the data directory, 0700, when its own non-root user owns it.
+
+- **A file it cannot correct stops warden**, with a message naming the file: for
+  example, one owned by another user or on a read-only mount. A file that is
+  already private needs no change, so it can be on a read-only mount. A database
+  cannot, as warden writes to it.
+- **A directory it cannot correct** gets a warning in the log, and warden starts:
+  the files in it are private without its help. `warden-server doctor` fails it
+  until you correct it.
+- **Tools that read these files** must run as warden's user or as root.
 
 ### Networks
 

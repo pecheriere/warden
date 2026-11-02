@@ -19,6 +19,7 @@ use warden_broker::config::{BackendSettings, Config, DEFAULT_AUDIENCE_PATH, pars
 use warden_broker::identity::TailscaleServeIdentity;
 use warden_broker::notify::{ChannelSettings, Fallback, Notifier};
 use warden_broker::policy::{LocalBackend, OnePasswordConnect, SecretBackend};
+use warden_broker::private_files::{self, DirectoryState};
 use warden_broker::proxy::CallSlots;
 use warden_broker::relay::host_key::RelayHostKey;
 use warden_broker::relay::{RelayEndpoint, RelayLimits, RelayServer, host_key};
@@ -470,6 +471,19 @@ async fn secret_backend(config: &Config, audit: &Arc<AuditLog>) -> Result<Arc<dy
 }
 
 async fn build_app(config: &Arc<Config>) -> Result<App> {
+    let directory = private_files::data_directory(&config.db_path);
+    match private_files::tighten_data_directory(&config.db_path).await {
+        DirectoryState::Tightened => {
+            tracing::info!(path = %directory.display(), "data directory set to mode 0700");
+        }
+        DirectoryState::Left { reason } => tracing::warn!(
+            path = %directory.display(),
+            %reason,
+            "the data directory has group or other permissions and warden left them; \
+             warden's files in it stay private, and warden-server doctor fails it"
+        ),
+        _ => {}
+    }
     let pool = store::open(&config.db_path).await?;
     let audit = Arc::new(
         AuditLog::open(&config.audit_path)
