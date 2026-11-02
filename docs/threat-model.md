@@ -685,9 +685,10 @@ This does not cover:
 - **Encryption.** The files are in clear on disk. Protecting a stolen disk or backup
   is the host's job.
 - **Copies.** A backup is as private as where it is put and how it is made.
-- **Changes while warden runs.** Modes are checked when a file is opened, at start
-  and by each server command. A file loosened afterwards stays so until the next start;
-  `warden-server doctor` reports it.
+- **Changes while warden runs.** Modes are corrected when a file is opened, at start
+  and by server commands that change data. `warden-server doctor` and `audit verify`
+  only read, and change no mode. A file loosened afterwards stays so until the next
+  start; `warden-server doctor` reports it.
 - **Names and sizes in a directory warden leaves alone.** If others can read the data
   directory, warden warns and starts: they can see the files' names, sizes and times,
   not their contents.
