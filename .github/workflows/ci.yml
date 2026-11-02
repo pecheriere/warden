@@ -60,7 +60,7 @@ jobs:
     # check (#97). On pull requests and main only: a release does not wait for it.
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 25
     env:
       # Test helpers, which never ship, are not code to cover.
       COVERAGE_IGNORE: crates/broker/src/testkit|/tests\.rs$
