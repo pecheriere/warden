@@ -35,10 +35,12 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
+use p256::ecdsa::signature::Verifier as _;
 use sha2::{Digest as _, Sha256};
 use sqlx::SqlitePool;
 use ssh_encoding::{Decode as _, Reader as _};
-use ssh_key::{HashAlg, PublicKey, SshSig};
+use ssh_key::public::{EcdsaPublicKey, KeyData};
+use ssh_key::{HashAlg, Mpint, PublicKey, SshSig};
 use warden_broker_proto::signing::{
     AGENT_HEADER, MAX_CLOCK_SKEW_SECS, NAMESPACE, NONCE_HEADER, Nonce, SIGNATURE_HEADER,
     SignedRequestParts, TIMESTAMP_HEADER, canonical_message, parse_timestamp,
@@ -288,8 +290,69 @@ fn check_signature(key: &PublicKey, signature: &SshSig, message: &[u8]) -> Resul
     if signature.public_key() != key.key_data() {
         return Err(Refusal::Unauthorized("signed by another key"));
     }
-    key.verify(NAMESPACE, message, signature)
-        .map_err(|_| Refusal::Unauthorized("signature does not verify"))
+    if !sshsig_verifies(key, signature, message) {
+        return Err(Refusal::Unauthorized("signature does not verify"));
+    }
+    Ok(())
+}
+
+/// Whether `signature` is by `key` over `message`, in `signature`'s own
+/// namespace and with its own hash: the caller has checked those. False for
+/// a key that is neither Ed25519 nor ECDSA P-256, the only types enrolment
+/// accepts.
+///
+/// P-256 goes to the `p256` crate rather than `key.verify`, which `ssh-key`
+/// 0.6 only implements with crypto-bigint 0.5 (RUSTSEC-2026-0387). This can
+/// return to `key.verify` with `ssh-key` 0.7.
+#[must_use]
+pub fn sshsig_verifies(key: &PublicKey, signature: &SshSig, message: &[u8]) -> bool {
+    match key.key_data() {
+        KeyData::Ed25519(_) => key
+            .verify(signature.namespace(), message, signature)
+            .is_ok(),
+        KeyData::Ecdsa(EcdsaPublicKey::NistP256(point)) => {
+            p256_sshsig_verifies(point.as_bytes(), key, signature, message).unwrap_or(false)
+        }
+        _ => false,
+    }
+}
+
+/// `None` where a part cannot be parsed, which is a failure like `false`.
+fn p256_sshsig_verifies(
+    point: &[u8],
+    key: &PublicKey,
+    signature: &SshSig,
+    message: &[u8],
+) -> Option<bool> {
+    let raw = signature.signature();
+    if signature.public_key() != key.key_data() || raw.algorithm() != key.algorithm() {
+        return Some(false);
+    }
+    let signed = SshSig::signed_data(signature.namespace(), signature.hash_alg(), message).ok()?;
+    let parsed = p256_signature(raw.as_bytes())?;
+    let verifying = p256::ecdsa::VerifyingKey::from_sec1_bytes(point).ok()?;
+    Some(verifying.verify(&signed, &parsed).is_ok())
+}
+
+/// An SSH ECDSA signature blob (`mpint r`, `mpint s`) as a P-256 signature.
+/// `from_scalars` refuses `r` or `s` of zero or not below the curve's order.
+fn p256_signature(mut blob: &[u8]) -> Option<p256::ecdsa::Signature> {
+    let reader = &mut blob;
+    let r = field_bytes(&Mpint::decode(reader).ok()?)?;
+    let s = field_bytes(&Mpint::decode(reader).ok()?)?;
+    if !reader.is_finished() {
+        return None;
+    }
+    p256::ecdsa::Signature::from_scalars(r, s).ok()
+}
+
+/// A non-negative `mpint` as big-endian P-256 field bytes, if it fits.
+fn field_bytes(value: &Mpint) -> Option<p256::FieldBytes> {
+    let bytes = value.as_positive_bytes()?;
+    let mut out = p256::FieldBytes::default();
+    let start = out.len().checked_sub(bytes.len())?;
+    out[start..].copy_from_slice(bytes);
+    Some(out)
 }
 
 /// Middleware: authenticate a signed request (see the module
@@ -436,15 +499,18 @@ pub async fn sweep_nonces(pool: &SqlitePool, now: i64) -> Result<u64, sqlx::Erro
 #[cfg(test)]
 mod tests {
     use axum::http::HeaderValue;
+    use serde_json::Value;
+    use ssh_encoding::Encode as _;
     use ssh_key::rand_core::OsRng;
-    use ssh_key::{Algorithm, EcdsaCurve, PrivateKey};
+    use ssh_key::{Algorithm, Mpint, PrivateKey, PublicKey, SshSig};
 
     use std::time::Duration;
 
     use super::{
         BodyReadTimeout, HeaderMap, MAX_SIGNATURE_LEN, NAMESPACE, Refusal, check_signature,
-        decode_signature, has_signing_headers,
+        decode_signature, has_signing_headers, p256_signature, sshsig_verifies,
     };
+    use crate::test_keys::{P256, random_key, sign};
     use ssh_key::HashAlg;
 
     fn reason(result: Result<(), Refusal>) -> &'static str {
@@ -484,25 +550,20 @@ mod tests {
 
     #[test]
     fn signature_must_be_by_the_key_in_the_namespace_with_an_allowed_hash() {
-        for algorithm in [
-            Algorithm::Ed25519,
-            Algorithm::Ecdsa {
-                curve: EcdsaCurve::NistP256,
-            },
-        ] {
-            let key = PrivateKey::random(&mut OsRng, algorithm).unwrap();
+        for algorithm in [Algorithm::Ed25519, P256] {
+            let key = random_key(algorithm);
             let public = key.public_key();
             let other = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
             let message = b"warden-request-v1\n";
             for hash in [HashAlg::Sha512, HashAlg::Sha256] {
-                let good = key.sign(NAMESPACE, hash, message).unwrap();
+                let good = sign(&key, NAMESPACE, hash, message);
                 check_signature(public, &good, message).unwrap();
                 assert_eq!(
                     reason(check_signature(public, &good, b"other")),
                     "signature does not verify"
                 );
             }
-            let file = key.sign("file", HashAlg::Sha512, message).unwrap();
+            let file = sign(&key, "file", HashAlg::Sha512, message);
             assert_eq!(
                 reason(check_signature(public, &file, message)),
                 "signature for another namespace"
@@ -513,6 +574,110 @@ mod tests {
                 "signed by another key"
             );
         }
+    }
+
+    /// The P-256 signature made by `ssh-keygen -Y sign` and published in
+    /// `docs/agent-protocol.md` verifies, bound to its message and its key.
+    #[test]
+    fn published_p256_vector_verifies() {
+        let fixture: Value =
+            serde_json::from_str(include_str!("../../proto/tests/fixtures/signing-v1.json"))
+                .unwrap();
+        let p256 = &fixture["ecdsa_p256"];
+        let public = PublicKey::from_openssh(p256["public_key"].as_str().unwrap()).unwrap();
+        let index = usize::try_from(p256["vector"].as_u64().unwrap()).unwrap();
+        let vectors = fixture["vectors"].as_array().unwrap();
+        let message = vectors[index]["message"].as_str().unwrap().as_bytes();
+        let other = vectors[1 - index]["message"].as_str().unwrap().as_bytes();
+        let armored = format!(
+            "-----BEGIN SSH SIGNATURE-----\n{}\n-----END SSH SIGNATURE-----\n",
+            p256["signature"]
+                .as_str()
+                .unwrap()
+                .as_bytes()
+                .chunks(70)
+                .map(|c| std::str::from_utf8(c).unwrap())
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        let signature = SshSig::from_pem(armored).unwrap();
+        check_signature(&public, &signature, message).unwrap();
+        assert!(!sshsig_verifies(&public, &signature, other));
+        let ed25519 = PublicKey::from_openssh(fixture["public_key"].as_str().unwrap()).unwrap();
+        assert!(!sshsig_verifies(&ed25519, &signature, message));
+    }
+
+    /// The `mpint r`, `mpint s` blob of a signature.
+    fn blob(r: &[u8], s: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        Mpint::from_positive_bytes(r)
+            .unwrap()
+            .encode(&mut out)
+            .unwrap();
+        Mpint::from_positive_bytes(s)
+            .unwrap()
+            .encode(&mut out)
+            .unwrap();
+        out
+    }
+
+    /// `r` and `s` must be canonical, in range and all there is: the group
+    /// order `n` and above, zero, a value too long, a negative value and
+    /// trailing bytes are refused.
+    #[test]
+    fn p256_signature_blob_is_strict() {
+        const ORDER: [u8; 32] = [
+            0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff, 0xbc, 0xe6, 0xfa, 0xad, 0xa7, 0x17, 0x9e, 0x84, 0xf3, 0xb9, 0xca, 0xc2,
+            0xfc, 0x63, 0x25, 0x51,
+        ];
+        let one = [1_u8];
+        // Shorter than the field is fine: it is padded.
+        assert!(p256_signature(&blob(&one, &one)).is_some());
+        let mut below = ORDER;
+        below[31] -= 1;
+        assert!(p256_signature(&blob(&below, &below)).is_some());
+
+        assert!(p256_signature(&blob(&ORDER, &one)).is_none());
+        assert!(p256_signature(&blob(&one, &ORDER)).is_none());
+        assert!(p256_signature(&blob(&[0xff; 32], &one)).is_none());
+        assert!(p256_signature(&blob(&[0_u8; 0], &one)).is_none());
+        assert!(p256_signature(&blob(&one, &[0_u8; 0])).is_none());
+        assert!(p256_signature(&blob(&[1; 33], &one)).is_none());
+        let mut trailing = blob(&one, &one);
+        trailing.push(0);
+        assert!(p256_signature(&trailing).is_none());
+        // 0x80 without the leading zero that makes it positive: negative.
+        let negative = [0, 0, 0, 1, 0x80, 0, 0, 0, 1, 1];
+        assert!(p256_signature(&negative).is_none());
+        assert!(p256_signature(&[]).is_none());
+    }
+
+    /// A valid signature wrapped with another key's algorithm name, and keys
+    /// enrolment does not accept, verify nothing.
+    #[test]
+    fn signature_type_must_match_the_key() {
+        let key = random_key(P256);
+        let message = b"m";
+        let good = sign(&key, NAMESPACE, HashAlg::Sha512, message);
+        assert!(sshsig_verifies(key.public_key(), &good, message));
+
+        let ed = random_key(Algorithm::Ed25519);
+        let wrong_type = SshSig::new(
+            key.public_key().key_data().clone(),
+            NAMESPACE,
+            HashAlg::Sha512,
+            ed.sign(NAMESPACE, HashAlg::Sha512, b"m")
+                .unwrap()
+                .signature()
+                .clone(),
+        )
+        .unwrap();
+        assert!(!sshsig_verifies(key.public_key(), &wrong_type, message));
+
+        let p384 = "ecdsa-sha2-nistp384 AAAAE2VjZHNhLXNoYTItbmlzdHAzODQAAAAIbmlzdHAzODQAAABhBJIBXLctzYt9bmZlMumBipjA4vHiyyHO3nzzd23kZbPXxSvhyPEOmOu5QNqWE20d1FTeOp4A7Qd+j6+0XEEByQpwrwRdzR57rXWdtzURc0kdZt0Lqb7+C8kM/AIZ688HvQ==";
+        let p384 = PublicKey::from_openssh(p384).unwrap();
+        assert!(!sshsig_verifies(&p384, &good, message));
     }
 
     #[test]

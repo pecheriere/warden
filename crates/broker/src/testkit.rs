@@ -1110,7 +1110,7 @@ impl TestBroker {
     /// # Panics
     /// If the key cannot be generated or the agent cannot be added.
     pub async fn add_signing_agent(&self, name: &str, algorithm: Algorithm) -> PrivateKey {
-        let key = PrivateKey::random(&mut OsRng, algorithm).expect("signing key generation");
+        let key = crate::test_keys::random_key(algorithm);
         let line = key.public_key().to_openssh().expect("encode public key");
         let public = agents::AgentPublicKey::parse(&line).expect("acceptable signing key");
         let name = AgentName::try_from(name.to_owned()).expect("valid agent name");
@@ -1502,9 +1502,7 @@ impl TestBroker {
 #[must_use]
 pub fn request_signature(key: &PrivateKey, parts: &SignedRequestParts<'_>) -> String {
     let message = canonical_message(parts).expect("signable request");
-    let signature = key
-        .sign(NAMESPACE, HashAlg::Sha512, message.as_bytes())
-        .expect("sign request");
+    let signature = crate::test_keys::sign(key, NAMESPACE, HashAlg::Sha512, message.as_bytes());
     let mut blob = Vec::new();
     signature.encode(&mut blob).expect("encode signature");
     STANDARD.encode(blob)

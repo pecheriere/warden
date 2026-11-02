@@ -510,7 +510,7 @@ mod tests {
     }
 
     #[test]
-    fn ecdsa_p256_vector_verifies() {
+    fn ecdsa_p256_vector_parses() {
         let fixture = fixture();
         let p256 = &fixture.ecdsa_p256;
         let public = PublicKey::from_openssh(&p256.public_key).unwrap();
@@ -518,16 +518,9 @@ mod tests {
         let message = &fixture.vectors[p256.vector].message;
         let signature = SshSig::from_pem(armor(&p256.signature)).unwrap();
         assert_eq!(signature.hash_alg(), HashAlg::Sha512);
-        public
-            .verify(PROTOCOL, message.as_bytes(), &signature)
-            .unwrap();
-        // Bound to the message and to the key.
-        let other = &fixture.vectors[1 - p256.vector].message;
-        assert!(
-            public
-                .verify(PROTOCOL, other.as_bytes(), &signature)
-                .is_err()
-        );
+        assert_eq!(signature.public_key(), public.key_data());
+        // The signature itself is verified where the broker verifies P-256
+        // (`signed::tests::published_p256_vector_verifies`).
         let ed25519 = PublicKey::from_openssh(&fixture.public_key).unwrap();
         assert!(
             ed25519

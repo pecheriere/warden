@@ -24,6 +24,7 @@ thiserror.workspace = true
 unicode-properties.workspace = true
 
 [dev-dependencies]
-# Checks the signing test vectors against an independent SSHSIG
-# implementation (Ed25519 and P-256): the signature crypto is test-only.
-ssh-key = { workspace = true, features = ["std", "ed25519", "getrandom", "p256"] }
+# Checks the Ed25519 signing test vectors against an independent SSHSIG
+# implementation: the signature crypto is test-only. The P-256 vector is
+# checked in the broker, which verifies P-256 itself.
+ssh-key = { workspace = true, features = ["ed25519", "getrandom"] }

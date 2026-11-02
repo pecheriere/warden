@@ -473,7 +473,8 @@ pub async fn signing_key(
     }
     let key: Option<String> = row.try_get("public_key")?;
     key.map(|line| {
-        PublicKey::from_openssh(&line).map_err(|e| AgentError::Db(sqlx::Error::Decode(Box::new(e))))
+        PublicKey::from_openssh(&line)
+            .map_err(|e| AgentError::Db(sqlx::Error::Decode(e.to_string().into())))
     })
     .transpose()
 }

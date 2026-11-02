@@ -635,7 +635,7 @@ mod tests {
 
         let agent = TestAgent::start();
         let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
-        agent.add(&key).await;
+        agent.add(&key);
         let audience = Audience::random();
         let signer = Signer::new(
             "bot".parse().unwrap(),

@@ -19,13 +19,10 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use anyhow::{Context as _, Result, anyhow, bail, ensure};
 use serde::{Deserialize, Serialize};
-use ssh_agent_lib::agent::Session as _;
-use ssh_agent_lib::proto::{
-    AddIdentity, AddIdentityConstrained, KeyConstraint, PrivateCredential, PrivateKeyData,
-};
-use ssh_key::private::KeypairData;
-use ssh_key::{Algorithm, Certificate, PrivateKey, PublicKey};
+use ssh_key::{Certificate, PrivateKey, PublicKey};
 use warden_broker_proto::{Id, TargetName, UnixUser};
+
+use crate::ssh_agent::{AgentClient, NewIdentity};
 
 /// Longest Unix socket path, NUL excluded, accepted everywhere (macOS
 /// `sun_path` holds 104 bytes; Linux 108).
@@ -299,18 +296,15 @@ pub async fn add_cert(
         cert.public_key() == key.public_key().key_data(),
         "certificate is not for this request's key"
     );
-    let keypair = key
+    let key = key
         .key_data()
         .ed25519()
-        .ok_or_else(|| anyhow!("only Ed25519 keys are supported"))?
-        .clone();
+        .ok_or_else(|| anyhow!("only Ed25519 keys are supported"))?;
     add_identity(
         agent,
-        PrivateCredential::Cert {
-            algorithm: Algorithm::Ed25519,
-            certificate: Box::new(cert.clone()),
-            privkey: PrivateKeyData::Ed25519(keypair),
-            comment: "warden grant".to_owned(),
+        NewIdentity::Certificate {
+            key,
+            certificate: cert,
         },
         secs,
     )
@@ -324,33 +318,20 @@ pub async fn add_cert(
 /// If `key` is not Ed25519 or the agent refuses.
 pub async fn add_key(agent: &GrantAgent, key: &PrivateKey, lifetime: Duration) -> Result<()> {
     let secs = lifetime_secs(lifetime)?;
-    let keypair = key
+    let key = key
         .key_data()
         .ed25519()
-        .ok_or_else(|| anyhow!("only Ed25519 keys are supported"))?
-        .clone();
-    add_identity(
-        agent,
-        PrivateCredential::Key {
-            privkey: KeypairData::Ed25519(keypair),
-            comment: "warden grant".to_owned(),
-        },
-        secs,
-    )
-    .await
+        .ok_or_else(|| anyhow!("only Ed25519 keys are supported"))?;
+    add_identity(agent, NewIdentity::Key(key), secs).await
 }
 
-/// Add `credential` to `agent` with a lifetime of `secs`.
-async fn add_identity(agent: &GrantAgent, credential: PrivateCredential, secs: u32) -> Result<()> {
+/// Add `identity` to `agent` with a lifetime of `secs`.
+async fn add_identity(agent: &GrantAgent, identity: NewIdentity<'_>, secs: u32) -> Result<()> {
     let stream = tokio::net::UnixStream::connect(&agent.socket)
         .await
         .with_context(|| format!("cannot connect to ssh-agent at {}", agent.socket.display()))?;
-    let mut client = ssh_agent_lib::client::Client::new(stream);
-    client
-        .add_identity_constrained(AddIdentityConstrained {
-            identity: AddIdentity { credential },
-            constraints: vec![KeyConstraint::Lifetime(secs)],
-        })
+    AgentClient::new(stream)
+        .add_constrained(identity, "warden grant", secs)
         .await
         .map_err(|e| anyhow!("ssh-agent refused the key: {e}"))
 }
@@ -388,9 +369,12 @@ pub fn write_known_hosts(dir: &Path, host: &str, port: u16, keys: &[String]) -> 
     };
     let mut contents = String::new();
     for raw in keys {
-        let mut key = PublicKey::from_openssh(raw).context("grant has an invalid host key")?;
+        let mut key = PublicKey::from_openssh(raw)
+            .map_err(|e| anyhow!("grant has an invalid host key: {e}"))?;
         key.set_comment("");
-        let line = key.to_openssh().context("cannot encode host key")?;
+        let line = key
+            .to_openssh()
+            .map_err(|e| anyhow!("cannot encode host key: {e}"))?;
         contents.push_str(&pattern);
         contents.push(' ');
         contents.push_str(line.trim_end());
@@ -587,9 +571,6 @@ mod tests {
     use ssh_key::{Algorithm, PrivateKey};
     use warden_broker_proto::Id;
 
-    use ssh_agent_lib::agent::Session as _;
-    use ssh_agent_lib::proto::PublicCredential;
-
     use super::{
         GrantRecord, Route, add_key, cleanup_expired_in, is_listening, is_safe_host, kill,
         load_grants, parse_agent_pid, record, remove_stale_temps, socket_dir, socket_path,
@@ -726,13 +707,13 @@ mod tests {
         let stream = tokio::net::UnixStream::connect(&agent.socket)
             .await
             .unwrap();
-        let mut client = ssh_agent_lib::client::Client::new(stream);
-        let ids = client.request_identities().await.unwrap();
-        assert_eq!(ids.len(), 1);
-        assert_eq!(
-            ids[0].credential,
-            PublicCredential::Key(key.public_key().key_data().clone())
-        );
+        let ids = crate::ssh_agent::AgentClient::new(stream)
+            .identities()
+            .await
+            .unwrap();
+        let mut wanted = Vec::new();
+        ssh_encoding::Encode::encode(key.public_key().key_data(), &mut wanted).unwrap();
+        assert_eq!(ids, [wanted]);
     }
 
     #[tokio::test]

@@ -15,8 +15,6 @@ use anyhow::{Context as _, Result, anyhow, bail, ensure};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use sha2::{Digest as _, Sha256};
-use ssh_agent_lib::agent::Session as _;
-use ssh_agent_lib::proto::{PublicCredential, SignRequest};
 use ssh_encoding::Encode as _;
 use ssh_key::{HashAlg, PublicKey, SshSig};
 use warden_broker_proto::AgentName;
@@ -25,6 +23,8 @@ use warden_broker_proto::signing::{
     SigningKeyError, SigningPublicKey, TIMESTAMP_HEADER, canonical_message,
 };
 use zeroize::Zeroizing;
+
+use crate::ssh_agent::AgentClient;
 
 /// Environment variable naming the default `ssh-agent` socket.
 pub const SSH_AUTH_SOCK: &str = "SSH_AUTH_SOCK";
@@ -178,11 +178,11 @@ impl Signer {
         format!("the ssh-agent at {}", self.socket.display())
     }
 
-    async fn connect(&self) -> Result<ssh_agent_lib::client::Client<tokio::net::UnixStream>> {
+    async fn connect(&self) -> Result<AgentClient<tokio::net::UnixStream>> {
         let stream = tokio::net::UnixStream::connect(&self.socket)
             .await
             .with_context(|| format!("cannot connect to {}", self.agent_place()))?;
-        Ok(ssh_agent_lib::client::Client::new(stream))
+        Ok(AgentClient::new(stream))
     }
 
     /// Check that the `ssh-agent` holds the signing key.
@@ -193,15 +193,19 @@ impl Signer {
         let listed = tokio::time::timeout(AGENT_TIMEOUT, async {
             self.connect()
                 .await?
-                .request_identities()
+                .identities()
                 .await
                 .map_err(|e| anyhow!("{} cannot list its keys: {e}", self.agent_place()))
         })
         .await
         .map_err(|_| anyhow!("{} did not answer", self.agent_place()))??;
-        let wanted = PublicCredential::Key(self.key.key_data().clone());
+        let mut wanted = Vec::new();
+        self.key
+            .key_data()
+            .encode(&mut wanted)
+            .map_err(|e| anyhow!("cannot encode the key: {e}"))?;
         ensure!(
-            listed.iter().any(|id| id.credential == wanted),
+            listed.contains(&wanted),
             "{} does not hold the key {}; add it (ssh-add -L lists what it holds)",
             self.agent_place(),
             self.fingerprint()
@@ -255,12 +259,7 @@ impl Signer {
     /// preimage, and its signature is wrapped into the SSHSIG blob.
     async fn sign(&self, message: &[u8]) -> Result<String> {
         let preimage = SshSig::signed_data(NAMESPACE, HASH_ALG, message)
-            .context("cannot build the SSHSIG preimage")?;
-        let request = SignRequest {
-            credential: PublicCredential::Key(self.key.key_data().clone()),
-            data: preimage,
-            flags: 0,
-        };
+            .map_err(|e| anyhow!("cannot build the SSHSIG preimage: {e}"))?;
         let refused = |e: &dyn fmt::Display| {
             anyhow!(
                 "{} refused to sign with the key {} ({e}); check that it holds the key \
@@ -272,7 +271,7 @@ impl Signer {
         let signature = tokio::time::timeout(AGENT_TIMEOUT, async {
             self.connect()
                 .await?
-                .sign(request)
+                .sign(self.key.key_data(), &preimage)
                 .await
                 .map_err(|e| refused(&e))
         })
@@ -298,11 +297,11 @@ impl Signer {
             self.fingerprint()
         );
         let sshsig = SshSig::new(self.key.key_data().clone(), NAMESPACE, HASH_ALG, signature)
-            .context("cannot build the SSHSIG")?;
+            .map_err(|e| anyhow!("cannot build the SSHSIG: {e}"))?;
         let mut blob = Vec::new();
         sshsig
             .encode(&mut blob)
-            .context("cannot encode the SSHSIG")?;
+            .map_err(|e| anyhow!("cannot encode the SSHSIG: {e}"))?;
         Ok(STANDARD.encode(blob))
     }
 }
@@ -314,8 +313,6 @@ pub mod testing {
     use std::process::{Child, Command, Stdio};
     use std::time::{Duration, Instant};
 
-    use ssh_agent_lib::agent::Session as _;
-    use ssh_agent_lib::proto::{AddIdentity, PrivateCredential};
     use ssh_key::PrivateKey;
 
     /// A throwaway `ssh-agent` in a private directory, killed on drop.
@@ -363,19 +360,10 @@ pub mod testing {
             }
         }
 
-        /// Load `key` into the agent over its socket (no file on disk).
-        pub async fn add(&self, key: &PrivateKey) {
-            let stream = tokio::net::UnixStream::connect(&self.socket).await.unwrap();
-            let mut client = ssh_agent_lib::client::Client::new(stream);
-            client
-                .add_identity(AddIdentity {
-                    credential: PrivateCredential::Key {
-                        privkey: key.key_data().clone(),
-                        comment: "warden test".to_owned(),
-                    },
-                })
-                .await
-                .unwrap();
+        /// Load `key` into the agent with `ssh-add`, as the agent's owner
+        /// would: the CLI itself only adds Ed25519 grant keys.
+        pub fn add(&self, key: &PrivateKey) {
+            warden_broker::test_keys::ssh_add(key, &self.socket);
         }
     }
 }
@@ -390,7 +378,9 @@ mod tests {
     use sha2::{Digest as _, Sha256};
     use ssh_encoding::Decode as _;
     use ssh_key::rand_core::OsRng;
-    use ssh_key::{Algorithm, EcdsaCurve, HashAlg, PrivateKey, SshSig};
+    use ssh_key::{Algorithm, HashAlg, PrivateKey, SshSig};
+    use warden_broker::signed::sshsig_verifies;
+    use warden_broker::test_keys::{P256, random_key};
     use warden_broker_proto::signing::{
         Audience, NAMESPACE, Nonce, PUBLISHED_TEST_KEYS, SignedRequestParts, canonical_message,
     };
@@ -423,14 +413,8 @@ mod tests {
         assert_eq!(sig.reserved(), [] as [u8; 0]);
         assert_eq!(sig.hash_alg(), HashAlg::Sha512);
         assert_eq!(sig.public_key(), key.public_key().key_data());
-        key.public_key()
-            .verify(NAMESPACE, message.as_bytes(), &sig)
-            .unwrap();
-        assert!(
-            key.public_key()
-                .verify(NAMESPACE, b"another message", &sig)
-                .is_err()
-        );
+        assert!(sshsig_verifies(key.public_key(), &sig, message.as_bytes()));
+        assert!(!sshsig_verifies(key.public_key(), &sig, b"another message"));
     }
 
     /// Verify `header` with OpenSSH's own `ssh-keygen -Y verify`.
@@ -476,14 +460,9 @@ mod tests {
     #[tokio::test]
     async fn sshsig_from_agent_verifies() {
         let agent = TestAgent::start();
-        for algorithm in [
-            Algorithm::Ed25519,
-            Algorithm::Ecdsa {
-                curve: EcdsaCurve::NistP256,
-            },
-        ] {
-            let key = PrivateKey::random(&mut OsRng, algorithm.clone()).unwrap();
-            agent.add(&key).await;
+        for algorithm in [Algorithm::Ed25519, P256] {
+            let key = random_key(algorithm.clone());
+            agent.add(&key);
             let signer = signer(&key, &agent.socket);
             signer.check_key_loaded().await.unwrap();
 
@@ -527,7 +506,7 @@ mod tests {
     async fn each_request_gets_a_fresh_nonce() {
         let agent = TestAgent::start();
         let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
-        agent.add(&key).await;
+        agent.add(&key);
         let signer = signer(&key, &agent.socket);
         let a = signer.sign_request("GET", "/v1/grants", b"").await.unwrap();
         let b = signer.sign_request("GET", "/v1/grants", b"").await.unwrap();
@@ -581,13 +560,7 @@ mod tests {
         let parsed = parse_signing_key(&line).unwrap();
         assert_eq!(parsed.comment(), "");
         assert_eq!(parsed.key_data(), ed.public_key().key_data());
-        let p256 = PrivateKey::random(
-            &mut OsRng,
-            Algorithm::Ecdsa {
-                curve: EcdsaCurve::NistP256,
-            },
-        )
-        .unwrap();
+        let p256 = random_key(P256);
         assert!(parse_signing_key(&p256.public_key().to_openssh().unwrap()).is_ok());
 
         for (line, why) in [

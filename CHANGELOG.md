@@ -6,11 +6,24 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- The `warden` CLI no longer links `rsa` or `crypto-bigint` 0.5, and the broker
+  no longer links `crypto-bigint` 0.5, which clears RUSTSEC-2026-0387 from the
+  tree. The CLI talks to `ssh-agent` with a small client of its own instead of
+  `ssh-agent-lib`, and the broker verifies ECDSA P-256 request signatures with
+  `p256` 0.14 instead of through `ssh-key` 0.6. RUSTSEC-2023-0071 stays exempted
+  for the `rsa` pre-release that russh pins, which only verifies targets' RSA
+  host keys. Nothing changes for agents.
+
 ### Added
 
 - CI measures test coverage with `cargo llvm-cov`, including the Linux-only
   relay tests, and reports it in each run's summary. No threshold fails the
   build yet.
+- Project documents: `CONTRIBUTING.md` (where to discuss, reporting bugs, the
+  test policy), `GOVERNANCE.md`, `CODE_OF_CONDUCT.md`, `docs/roadmap.md`,
+  `docs/building.md` and `docs/upgrading.md`.
 - `warden-demo`: try the approval flow on one machine with no setup
   ([docs/demo.md](docs/demo.md)). A separate, unpublished binary that is not
   part of `warden-server` or the image; a CI guard keeps it that way. It is not
@@ -48,6 +61,10 @@ All notable changes to this project are recorded here. The format follows
 
 ### Changed
 
+- `warden` now exits 64, not 2, for wrong arguments, so that a usage error
+  cannot be taken for a denied request, which stays exit 2. A script that reads
+  exit 2 as a usage error needs updating. `--help` and `--version` still exit 0,
+  and `warden-server` keeps exit 2 for wrong arguments.
 - README: says who warden is for and how stable it is, names Tailscale, Docker
   and 1Password as the recommended setup and what each part protects, and adds
   a table of the setups supported today with their security cost. It also lists
@@ -56,6 +73,10 @@ All notable changes to this project are recorded here. The format follows
   request is denied, expires or is revoked, or there is no active grant.
 - `warden http` now exits 5, not 1, when the broker says the grant has expired,
   and removes its local record.
+- `SECURITY.md`: a first response within 14 days (it said "a few days"), how
+  reports are handled, credit for reporters, where vulnerabilities are
+  published, and how to get a fix, including that a pinned Docker image does not
+  change until you change the pin.
 
 ## [0.8.1] - 2026-11-01
 
