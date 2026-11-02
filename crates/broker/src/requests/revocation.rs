@@ -266,7 +266,7 @@ impl Requests {
 
     /// Record how a proxied call that was stopped ended. Access is gone already, so
     /// as for the change that ended it, the log cannot hold this up: the entry
-    /// waits in the database if the log does not take it within [`WRITE_WAIT`]. A
+    /// waits in the database if the log does not take it within 2 s. A
     /// call stopped because the database cannot be read may find it still cannot
     /// store the entry, and then goes straight to the log. The entry is lost only if
     /// both fail, which is logged.
