@@ -53,6 +53,10 @@ All notable changes to this project are recorded here. The format follows
   request is denied, expires or is revoked, or there is no active grant.
 - `warden http` now exits 5, not 1, when the broker says the grant has expired,
   and removes its local record.
+- `SECURITY.md`: a first response within 14 days (it said "a few days"), how
+  reports are handled, credit for reporters, where vulnerabilities are
+  published, and how to get a fix, including that a pinned Docker image does not
+  change until you change the pin.
 
 ## [0.8.1] - 2026-11-01
 
