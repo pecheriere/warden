@@ -6,42 +6,63 @@ and [the agent documentation](../agent-usage.md) describe that correctly. They
 change only when the code does. Tracking issue:
 [#107](https://github.com/pecheriere/warden/issues/107).
 
-## Recommendation
+## Where this ends up
 
-**Do not build this now.** Use server-side automation for what it covers, and
-have the agent ask in the morning for the rest. Build fixed API actions only if
-the owner can show a real need that those leave uncovered.
+**What the owner wants.** An agent working while the owner sleeps gets stuck on
+a prompt nobody is awake to answer. The owner wants to approve specific requests
+or actions in advance, so that it can carry on. This is a real need, and the
+owner has stated it.
 
-1. **The obvious uses do not need warden to change.** A fixed job at a fixed
-   time is a cron job, and a status check can be a scheduled job that publishes
-   its result. A prompt-injected agent has no way to fire a job it has no
-   trigger for, which beats every limit below. See [the
-   comparison](#fixed-actions-against-server-side-automation).
-2. **The owner must supply the evidence.** No usage data was collected for this
-   document. What is needed is [listed
-   below](#the-evidence-that-would-change-this), and without it this feature
-   adds unattended access to a security broker for a need nobody has shown.
-3. **If the evidence is there, build only fixed API actions, written by the
-   owner in the vault.** An action is one complete HTTP request with a name:
-   method, exact path, exact query and fixed body, with no headers beyond its
-   content type and the secret's own. The owner defines it in 1Password. The
-   agent asks for a few of them by name, the owner approves the set with a
-   passkey, and from then on the agent can say "run `nightly-import`" and
-   nothing else. It supplies no byte of the request.
-4. **Such an approval has hard limits:** one agent, at most 12 hours, at most 8
+**What cannot be done safely: answering a prompt nobody foresaw.** No safe
+design for that was found. An approval must bind to an exact scope, and a
+request not yet known has none. A scope wide enough to include an unforeseen
+request is wide enough for a prompt-injected agent to choose what goes in it.
+That is what a long grant, an open parameter, a pattern or a shell all come down
+to, so they are refused below. **An agent that hits an unforeseen prompt will
+still stop and wait for morning.** Nothing in this document changes that.
+
+**What can be done: requests known before bedtime.** The owner can approve
+exact, fixed requests in advance, each with a hard limit. This is much narrower
+than the need, and it mainly helps with polling a fixed status endpoint or
+starting a fixed job. Most of what stops a coding agent (a push, a shell
+command, a request whose details it learns during the work) stays stopped.
+
+**If the owner goes ahead, the recommendation is fixed API actions.** They are
+the narrowest option that is still useful, they meet every hard rule on the
+recommended layout, and the agent writes no part of the request. **Server-side automation is not the
+answer to this need.** It does not help with an unforeseen prompt either, and it
+holds a standing credential that runs until someone removes it, which is the
+always-on access warden exists to avoid. It is worth comparing only for a job
+that truly runs on a schedule.
+
+**The choice is the owner's.** [The real cost of each is
+below](#the-choice-for-the-owner). In short, fixed actions cost new code in a
+security broker, a passkey step each night, and a new way for an agent to do
+harm while nobody watches, in exchange for unblocking only what could be written
+down in advance.
+
+## The recommended option
+
+1. **Fixed API actions, written by the owner in the vault.** An action is one
+   complete HTTP request with a name: method, exact path, exact query and fixed
+   body, with no headers beyond its content type and the secret's own. The owner
+   defines it in 1Password. The agent asks for a few of them by name, the owner
+   approves the set with a passkey, and from then on the agent can say "run
+   `nightly-import`" and nothing else. It supplies no byte of the request.
+2. **Each approval has hard limits:** one agent, at most 12 hours, at most 8
    actions, a use count on each action, one use at a time, and at least 60
    seconds between uses of an action. It starts when approved. It cannot be
    renewed, extended, edited or repeated.
-5. **It is a new, separate kind of object.** It is not a grant, and creating or
+3. **It is a new, separate kind of object.** It is not a grant, and creating or
    approving ordinary requests never looks at it. With no advance approval,
    every request still needs a person, because that code path does not change.
-6. **Assume nobody reads a single notification until morning.** The owner is
+4. **Assume nobody reads a single notification until morning.** The owner is
    asleep or on a plane. Revoking and alerts help if they happen to be awake,
    but the hard limits must be acceptable by themselves. The test for adding an
    action to a set is: **would I accept this firing every allowed time, at the
    worst possible moment, with no warning?** If not, it stays out.
 
-**Left out on purpose, even then:**
+**Left out on purpose:**
 
 - **SSH of any kind.** Certificates cannot meet the hard rules at all. The relay
   could, with exact commands and a new restricted session type, but warden
@@ -57,11 +78,10 @@ the owner can show a real need that those leave uncovered.
   under [Why matching commands does not
   work](#why-matching-commands-does-not-work).
 
-**What this does not solve.** Even if built, an agent working on code through
-the night still stops at a push, a shell command or any request whose details it
-only learns during the work. For those, the honest answer is that the agent
-works locally, records what it needs and asks in the morning. That widens
-nothing and needs no code.
+**What this does not solve.** As said above, an agent still stops at a push, a
+shell command or any request whose details it only learns during the work. It
+can work locally, record what it needs and ask in the morning. That widens
+nothing, and it means the work waits.
 
 ## What warden does today
 
@@ -129,10 +149,10 @@ The agent makes ordinary proxied calls, checked against a list.
 
   The owner sees a tidy line on the page and has approved far more than it says.
 
-### C. Fixed API actions, defined in the vault (only if the need is shown)
+### C. Fixed API actions, defined in the vault (recommended if the owner goes ahead)
 
 One whole request, fixed by the owner, invoked by name. Details are
-[below](#design-of-the-first-version-if-one-is-built).
+[below](#design-of-the-first-version).
 
 - **Trusts:** the vault, which is already a root of trust, the origin, and the
   owner's judgment when writing the action.
@@ -228,13 +248,16 @@ branch rules.
 - **Trusts:** the machine and the job, which are outside warden. The job holds
   its own standing credential, needs no passkey, runs until someone removes it
   and is not in warden's audit log. warden itself trusts nothing new.
-- **Fails:** agent work that needs something the job does not do waits for
-  morning. A job that reads something the agent can change has the same mutable
-  state problem as a fixed action.
+- **Fails:** an agent stuck on a prompt stays stuck until morning, which is the
+  need this issue is about. The job's credential is always on, every night,
+  whether or not the owner chose that night. A job that reads something the
+  agent can change has the same mutable state problem as a fixed action.
 
-This is the baseline every other option must beat. [The comparison
-below](#fixed-actions-against-server-side-automation) checks whether C does.
-Narrow service-side tokens are worth having under every option.
+Asking in the morning is the baseline: it widens nothing, and the work waits.
+Automation is not that baseline. It takes the agent out of the path by adding
+always-on access somewhere else, which the owner has said is not acceptable as
+an answer. A credential on the agent's own disk is worse, and is out for the
+same reason. Narrow service-side tokens are worth having under every option.
 
 ### How they compare
 
@@ -242,7 +265,7 @@ Narrow service-side tokens are worth having under every option.
 |---|---|---|---|---|---|
 | A. Longer grant | No | API and relay, not cert | API and relay, not cert | Everything in scope | Yes (API, cert) |
 | B. Method and path | Yes | Yes, without query or body | Yes | Query, body, headers, when | Yes |
-| I. Automation, or the morning | Not applicable: the agent has no access | No: the job's own logs | The owner removes the job, outside warden | Nothing, unless it can reach what the job reads | Yes |
+| I. Automation, or the morning | No limit on the job, whose credential is always on. The agent has no access. | No: the job's own logs | The owner removes the job, outside warden | Nothing, unless it can reach what the job reads | Yes |
 | **C. Fixed action** | **Yes** | **Yes, exactly** | **Yes** | **When, how often within the count** | **Yes** |
 | D. One-shot, drafted | Yes (one) | Yes, exactly | Yes | The content, before approval | Yes |
 | F. `force-command` | **No** | **No** | **No** | Stdin, when, how often | Yes |
@@ -251,43 +274,36 @@ Narrow service-side tokens are worth having under every option.
 
 ### Fixed actions against server-side automation
 
-| Need | Server-side automation | Fixed action | Better |
+This compares the two only where automation applies at all. **Neither answers an
+unforeseen prompt.**
+
+| Need | Server-side automation | Fixed action | Weighing |
 |---|---|---|---|
-| A fixed job at a fixed time, such as a nightly import. | Cron, a systemd timer or a CI schedule. The agent has no trigger. | The agent fires it, up to the count, when it likes. | **Automation.** Giving the agent the trigger only adds risk. |
-| Status that the agent checks while working. | A scheduled job publishes a chosen part of the result where the agent can read it, with no credential. | The agent receives the whole response, whenever it asks, and fresher. | **Automation**, unless the agent truly needs a fresher answer than the schedule gives. It also sees less. |
-| A job to run once the agent's work is ready. | Service-side triggers, such as CI on a push, or a worker watching for a marker. The agent then holds the trigger anyway, and a limit on runs must live in the job. | A count, a passkey for this night and warden's audit, in one place, with no new worker. | **Close.** This is the best case for an action, more so if the service has no suitable trigger. |
-| An API with no schedule or trigger of its own, and nowhere to run a job. | Needs a machine to be found and a credential placed on it. The warden host is not the place: it should run nothing else untrusted. | Uses the secret warden already holds. | **Action**, if the owner really has no such machine. |
-| Off by default: the access should exist only on nights the owner chooses. | A standing job and credential, unless the owner enables it each time. | Nothing can fire until tonight's passkey. | **Action**, though it has to be worth a nightly step. |
-| A decision only the agent can make, from what it found. | Not possible. | Possible. | **Neither, comfortably.** The agent's judgment is exactly what a prompt injection subverts. |
+| A fixed job at a fixed time, such as a nightly import. | Cron, a systemd timer or a CI schedule. The agent has no trigger, but the job's credential is always on. | The agent fires it, up to the count, when it likes. Nothing can fire without tonight's passkey. | **A real trade-off.** Automation is safer from the agent. An action is safer against always-on access. |
+| Status that the agent checks while working. | A scheduled job publishes a chosen part of the result where the agent can read it. Standing credential, and the answer is as old as the schedule. | The agent receives the whole response, whenever it asks, within the count. | **A trade-off.** The agent sees less with automation, and gets a fresher answer with an action. |
+| A job to run once the agent's work is ready. | Service-side triggers, such as CI on a push, or a worker watching for a marker. The agent then holds the trigger anyway, and a limit on runs must live in the job. | A count, a passkey for this night and warden's audit, in one place, with no new worker. | **Action.** |
+| An API with no schedule or trigger of its own, and nowhere to run a job. | Needs a machine to be found and a credential placed on it. The warden host is not the place: it should run nothing else untrusted. | Uses the secret warden already holds. | **Action.** |
+| Access that exists only on nights the owner chooses. | Not what a schedule does, unless the owner enables it each time. | Nothing can fire until tonight's passkey. | **Action.** |
+| Whether to fire a known request, based on what the agent found. | Not possible. | Possible. | **Action, with care.** The agent's judgment is exactly what a prompt injection subverts. |
+| **A request nobody foresaw.** | Not possible. | Not possible: the request must exist in the vault. | **Neither.** It waits for morning. |
 
-**The cost is not equal either.** Automation changes nothing in warden. An
-action needs a table, a route, a CLI command, a page, a new way to ring, vault
-items and a wider threat model, and every owner who never uses it still carries
-that code in their security broker. Writing a vault item also takes about as
-much planning as writing a cron line.
+### The choice for the owner
 
-**What is left.** An action is the better answer only when all of these hold:
-the agent's timing matters, the request is fully known in advance, the worst
-moment is acceptable, and server-side automation is unavailable or would hold a
-credential somewhere worse. That may be a real need. Nothing here shows that it
-is common.
+| Choice | What it gets | What it costs |
+|---|---|---|
+| **Fixed API actions** (recommended if going ahead) | An agent can carry on past requests that were written down before bed, within hard limits, with passkey consent for that night and every use in warden's audit. | A table, a route, a CLI command, a page, a new kind of notification and a wider threat model, in a security broker, for every owner. A vault item for each action, and a passkey step each night, which can become a habit. An agent that can fire each action at the worst moment, every allowed time, with nobody watching ([What could go wrong](#what-could-go-wrong)). A halt can be used as a pretext. Sessions of one agent share it (#49). Unforeseen prompts remain stuck. |
+| **A read-only first version of the same** | The same for `GET` and `HEAD`, with the harm limited to what those endpoints return. | The same code. Starting a job stays stuck. |
+| **No change** | Every request keeps needing a person, and nothing new can go wrong. | An agent stops at any prompt nobody answers, and the work waits for morning. The need stays unmet. |
 
-### The evidence that would change this
+Before choosing, it helps to name two or three requests that stopped real work
+and ask whether each was fully known before bed and would pass the worst-moment
+test. In the audit log, `request_created` and `expired` entries show requests
+that went unanswered overnight, though an agent that knows nobody is there may
+never ask. If they would all need a parameter, a shell or a push, fixed actions
+would not have helped, and **the answer is to stay with no change rather than to
+loosen this.**
 
-The owner supplies it, since nobody else can:
-
-- **The audit log, as a start.** `request_created` and `expired` entries show
-  requests that went unanswered overnight. This undercounts: an agent that knows
-  nobody is there may never ask.
-- **For two or three real cases:** the exact request, and whether it was fully
-  known before bed; why a scheduled job or a service-side trigger would not have
-  done; how much work was lost by waiting for morning; and whether it passes the
-  worst-moment test.
-
-If the cases need a parameter, a shell or a push, they are not fixed actions,
-and **the outcome is not to build this, rather than to loosen it.**
-
-## Design of the first version, if one is built
+## Design of the first version
 
 ### The action
 
@@ -317,9 +333,9 @@ fails with an error naming the field. The path and query must pass the checks in
 `rules.rs`.
 
 **An action has no other headers.** The broker sends the secret's header, the
-`content_type`, the `Accept-Encoding` it always sets and what HTTP framing needs,
-so there is nothing unbound to approve. An API that requires another header cannot
-be an action in this version.
+`content_type`, the `Accept-Encoding` it always sets and what HTTP framing
+needs, so there is nothing unbound to approve. An API that requires another
+header cannot be an action in this version.
 
 The method says little about the effect, since a `GET` can have side effects. So
 the higher limit for reads is a heuristic, the page does not call anything
@@ -757,9 +773,9 @@ uses, 60 s, 4 KiB. They are starting points for the owner to change.
 
 **Not known:**
 
-- **Whether any of this is needed.** No usage data was collected. The need rests
-  on the issue's description, and the comparison with automation is reasoned
-  from the kinds of use, not from real overnight work.
+- **How much of the need fixed actions would meet.** No usage data was
+  collected. The usefulness and the comparison with automation are reasoned from
+  the kinds of use, not from real overnight work.
 - **How usable the page is at this length on a phone,** with 8 actions and their
   bodies.
 - **Whether a ring before a use is reliable enough** on real notifiers, where
@@ -767,11 +783,9 @@ uses, 60 s, 4 KiB. They are starting points for the owner to change.
 
 ## Open questions for the owner
 
-1. **What real overnight need would automation and the morning leave
-   uncovered?** This decides everything else. Please supply [the
-   evidence](#the-evidence-that-would-change-this). Without it the
-   recommendation is not to build this, and the remaining questions apply only
-   if it is built.
+1. **Go ahead with fixed actions, knowing they leave unforeseen prompts stuck?**
+   See [the choice](#the-choice-for-the-owner). The remaining questions apply if
+   so.
 2. **Is it acceptable that an agent's other sessions share it (#49),** given the
    argument above? Or should #49's proof of possession come first, at the cost
    of a long-running process holding a key?
