@@ -2277,6 +2277,24 @@ async fn revoked_while_a_session_waits_to_record_its_start_opens_nothing() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn revoke_closes_live_session_while_audit_appends_are_held() {
+    let s = key_target().await;
+    let agent = approved_agent(&s.broker, "bot").await;
+    let (c, _channel) = hold_session(&s, &agent.key).await;
+    let audit = s.broker.state().audit.clone();
+    let stall = audit.stall_appends(|_| true);
+    let revoke = {
+        let requests = s.broker.state().requests.clone();
+        let grant = agent.grant_id.clone();
+        tokio::spawn(async move { requests.revoke_grant(&grant, "owner").await })
+    };
+    let revoked = Instant::now();
+    assert_both_sides_closed(&s, &c, 0, revoked + Duration::from_secs(10)).await;
+    assert_eq!(revoke.await.unwrap().unwrap(), AuditOutcome::Missing);
+    assert!(stall.holding() >= 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn agent_revoke_closes_sessions_when_the_audit_log_cannot_be_written() {
     let s = key_target().await;
     let agent = approved_agent(&s.broker, "bot").await;
