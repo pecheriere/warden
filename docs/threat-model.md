@@ -487,8 +487,9 @@ These were recorded during implementation and are accepted for this release.
     out before repeating the call.
   - **The log does not hold this up.** A stopped call's `proxy_call` entry is treated
     like the revocation's (see "Ending access does not wait for the log"): stored in
-    the database, then written to the log, waiting 2 s at most, and the agent gets its
-    answer either way. It is lost only in a crash before it is stored, or if neither
+    the database, then written to the log, waiting 2 s at most, and a stalled log does
+    not hold up the agent's answer. With every database connection busy, the call is
+    still stopped, but the answer waits for a free connection. The entry is lost only in a crash before it is stored, or if neither
     the database nor the log can take it, which is what the server log's error then
     holds; `proxy_call_started` is still there. The entry of a call that ran to its
     end is different: if it cannot be written, the agent gets an error and no response,

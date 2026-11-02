@@ -103,7 +103,7 @@ Read the message on stderr, then act on the exit code:
 | 2 | Denied. | Do not send the same request again. Stop, and ask the person what to change. Change the request only as they say. |
 | 3 | No decision in time. | Tell the person you need the access. Try again later, not in a loop. |
 | 4 | The grant was revoked. | It may have been on purpose. Check with the person before asking again. If the message says the call was already out, it may have taken effect: find out before repeating it. |
-| 5 | No active grant covers this. It was never requested, or it expired or was revoked. | If the task still needs it, make a new request with an honest goal. Do not widen it beyond what the task needs. |
+| 5 | No active grant covers this. It was never requested, or it expired or was revoked. | If the message says the call was already out, it may have taken effect: find out before repeating it. If the task still needs it, make a new request with an honest goal. Do not widen it beyond what the task needs. |
 | 6 | The request was cancelled. | Someone withdrew it. Ask again only if the task still needs it. |
 | 8 | The broker stopped your `warden http` call while it was out. | It may have taken effect: find out before repeating it. If this repeats, tell the person. |
 | 64 | Your command is wrong. The message shows the usage. | Fix the command and run it again. |
