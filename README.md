@@ -69,7 +69,9 @@ command with `op run`, and never see the secret itself. But each use is
 approved on the computer, with the desktop app unlocked. That works while
 you sit next to the agent. It does not work when you are away from that
 computer, or when the agent runs on another machine. The request waits for
-an unlock or a fingerprint you cannot give from where you are.
+an unlock or a fingerprint you cannot give from where you are. Nothing is more
+frustrating than coming back to your Mac to find the agent has sat on a
+1Password prompt the whole time.
 
 The usual way around this is a standing credential on the agent's machine,
 such as an API token, an SSH key or a vault service account token. Those
