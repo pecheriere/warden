@@ -158,7 +158,7 @@ const CANNOT_TELL: &str = "cannot be checked for a mount of the single file: thi
 fn check_not_a_mount(file: &File) -> Result<(), Refusal> {
     use rustix::fs::{AtFlags, StatxFlags, statx};
 
-    statx_rule(statx(
+    statx_rule(&statx(
         file,
         c"",
         AtFlags::EMPTY_PATH,
@@ -168,9 +168,11 @@ fn check_not_a_mount(file: &File) -> Result<(), Refusal> {
 
 /// The decision on what the `statx` call returned.
 #[cfg(target_os = "linux")]
-fn statx_rule(result: rustix::io::Result<rustix::fs::Statx>) -> Result<(), Refusal> {
-    let stat = result.map_err(statx_failed)?;
-    mount_rule(stat.stx_attributes_mask, stat.stx_attributes)
+fn statx_rule(result: &rustix::io::Result<rustix::fs::Statx>) -> Result<(), Refusal> {
+    match result {
+        Ok(stat) => mount_rule(stat.stx_attributes_mask, stat.stx_attributes),
+        Err(errno) => Err(statx_failed(*errno)),
+    }
 }
 
 /// A kernel without `statx`, or a sandbox that forbids it, cannot answer: name what
@@ -606,12 +608,12 @@ mod tests {
 
         for errno in [Errno::NOSYS, Errno::PERM, Errno::ACCESS] {
             assert_eq!(
-                super::statx_rule(Err(errno)),
+                super::statx_rule(&Err(errno)),
                 Err(Refusal::Rule(super::CANNOT_TELL))
             );
         }
         assert!(matches!(
-            super::statx_rule(Err(Errno::IO)),
+            super::statx_rule(&Err(Errno::IO)),
             Err(Refusal::Io(_))
         ));
     }
