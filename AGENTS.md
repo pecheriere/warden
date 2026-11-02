@@ -41,7 +41,7 @@ Commit messages and PR descriptions carry no AI attribution lines
 | `crates/broker/src/testkit` | test helpers (throwaway `sshd`, fixtures), behind the `testkit` feature |
 | `crates/cli` | `warden-broker-cli`, the `warden` command agents run |
 | `docs/` | user and design documentation |
-| `site/` | the landing page on GitHub Pages: static HTML and CSS, no scripts, no external resources |
+| `site/` | the landing page on GitHub Pages: static HTML and CSS, no scripts, no external resources. It names no version and leaves setup commands to the README, so a release does not touch it |
 | `deploy/systemd` | the systemd unit that `docs/deployment-systemd.md` installs |
 | `scripts/` | CI guards and UI check tools (each script documents its usage) |
 
@@ -104,7 +104,7 @@ Semantic versioning, one version for the whole workspace.
    package and the internal crates' dependency entries), updates
    `Cargo.lock`, moves `## [Unreleased]` to a dated `## [x.y.z]`
    section in `CHANGELOG.md` (noting any new migration), and updates every
-   mention of the previous version in the README, `docs/` and `site/` (install
+   mention of the previous version in the README and `docs/` (install
    commands, image tags, attestation examples). The notes saying that
    binaries start after v0.8.1 stay as they are.
 2. After it merges, the maintainer, or an agent the maintainer has

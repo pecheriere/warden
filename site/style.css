@@ -126,9 +126,7 @@ font-family:var(--mono);font-size:14px;line-height:1.55}
 .nb{white-space:nowrap}
 .out{color:var(--muted)}
 .inline{margin-top:10px}
-/* On a phone, commands in the setup steps also use the numbers' indent. */
-@media (max-width:599px){.cmd pre{padding:12px;font-size:13px}
-.setup .cmd{margin-left:-42px}}
+@media (max-width:599px){.cmd pre{padding:12px;font-size:13px}}
 
 /* Use cases: laid out like a grant card. */
 .use{gap:14px}
@@ -153,18 +151,18 @@ font-family:var(--mono);font-size:14px;line-height:1.55}
 /* Start */
 .track{display:grid;gap:24px;margin-top:40px;padding-top:32px;border-top:1px solid var(--line)}
 .track:first-of-type{border-top:0;padding-top:0;margin-top:32px}
+.real{display:grid;gap:24px;margin-top:40px;padding-top:32px;border-top:1px solid var(--line)}
+.real-copy{display:flex;flex-direction:column;gap:14px}
+.real-copy>p:not(.cta),.needs li{color:var(--muted)}
+.needs{margin-top:8px}
 .track-side,.track-main{display:flex;flex-direction:column;gap:14px;min-width:0}
 .track-side>p:not(.label):not(.badge){color:var(--muted)}
 .track-side li{color:var(--muted)}
 .badge{align-self:flex-start;display:inline-flex;align-items:center;gap:6px;padding:5px 10px;border-radius:10px;
 font-size:14px;font-weight:700;border:1.5px solid}
 .modify{background:var(--warn-bg);color:var(--warn-ink);border-color:var(--warn-line)}
-.setup{list-style:none;margin:0;padding:0;counter-reset:setup;gap:26px}
-.setup>li{position:relative;display:flex;flex-direction:column;gap:10px;min-width:0;padding-left:42px;counter-increment:setup}
-.setup>li::before{content:counter(setup);position:absolute;left:0;top:-5px;width:30px;height:30px;border-radius:50%;
-display:flex;align-items:center;justify-content:center;background:var(--soft);color:var(--soft-ink);font-weight:800;font-size:14px}
-.setup p{color:var(--muted)}
-@media (min-width:860px){.track{grid-template-columns:340px minmax(0,1fr);gap:48px}}
+@media (min-width:860px){.track{grid-template-columns:340px minmax(0,1fr);gap:48px}
+.real{grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:48px}}
 
 /* Docs */
 .doc-grid{list-style:none;margin:28px 0 0;padding:0;display:grid;gap:14px}

@@ -82,7 +82,7 @@
 <section class="hero" aria-labelledby="pitch">
   <div class="wrap hero-grid">
     <div class="hero-copy">
-      <p class="chip"><span class="dot" aria-hidden="true"></span>Early: release 0.8.1, with no independent security review</p>
+      <p class="chip"><span class="dot" aria-hidden="true"></span>Early, before 1.0, with no independent security review</p>
       <h1 id="pitch"><span>Your agent asks.</span> <span>You approve from your phone.</span> <span>The access expires.</span></h1>
       <p class="lede">warden is a self-hosted approval broker for AI agents and scripts. An agent asks for SSH or API access and says why. You approve with a passkey for a time window, the agent gets that access and no reusable secret, and every step goes in an audit log.</p>
       <p class="cta">
@@ -260,7 +260,7 @@
           <li><strong>Attested releases.</strong> Check where the image was built before you run it:
             <figure class="cmd inline">
 <pre><code>gh attestation verify \
-  oci://ghcr.io/pecheriere/warden:0.8.1 \
+  oci://ghcr.io/pecheriere/warden:&lt;version&gt; \
   --owner pecheriere</code></pre>
             </figure>
           </li>
@@ -326,96 +326,28 @@ cat "$WARDEN_DEMO_DIR/audit.jsonl"</code></pre>
       </div>
     </div>
 
-    <div class="track">
-      <div class="track-side">
-        <h3>Then run the recommended setup</h3>
-        <p>Tailscale, Docker and 1Password, on a Linux server dedicated to warden. All three are required today. Each server has one owner, who approves every request. One owner can have many agents, but there are no teams or roles.</p>
+    <div class="real">
+      <div class="real-copy">
+        <h3>For a real setup</h3>
+        <p>Run warden with Tailscale, Docker and 1Password, all required today, on a Linux server dedicated to it. Each server has one owner, who approves every request. One owner can have many agents, but there are no teams or roles.</p>
+        <p class="cta">
+          <a class="btn primary" href="https://github.com/pecheriere/warden#quick-start">README quick start</a>
+          <a class="btn ghost" href="https://github.com/pecheriere/warden/blob/main/docs/deployment.md">Deployment guide</a>
+        </p>
+        <p>Approving without Tailscale (<a href="https://github.com/pecheriere/warden/issues/75">#75</a>) and secrets without 1Password (<a href="https://github.com/pecheriere/warden/issues/76">#76</a>) are planned and do not exist yet.</p>
+      </div>
+      <div>
         <p class="label">You need</p>
-        <ul class="plain tight">
-          <li>A Linux server on a <a href="https://tailscale.com">Tailscale</a> tailnet, and to be comfortable running it</li>
+        <ul class="plain tight needs">
+          <li>A Linux host, and to be comfortable running it</li>
+          <li>A <a href="https://tailscale.com">Tailscale</a> tailnet</li>
           <li>Docker Engine 28 or later and Compose 2.33 or later</li>
           <li>A 1Password account that can run a Connect server</li>
           <li>A phone with a passkey, on the tailnet</li>
           <li>Home Assistant or ntfy for notifications</li>
           <li>On each agent machine, the <code>warden</code> CLI and OpenSSH</li>
         </ul>
-        <p>This is the short path. <a href="https://github.com/pecheriere/warden/blob/main/docs/deployment.md">The deployment guide</a> explains each step and why it matters; follow it for a real setup.</p>
-        <p>Approving without Tailscale (<a href="https://github.com/pecheriere/warden/issues/75">#75</a>) and secrets without 1Password (<a href="https://github.com/pecheriere/warden/issues/76">#76</a>) are planned and do not exist yet.</p>
       </div>
-      <ol class="track-main setup">
-        <li>
-          <h4>Tailscale</h4>
-          <p>Tag the server <code>tag:warden-host</code>. Plan two Services: <code>svc:warden</code> (the approval UI), granted to your phone only, and <code>svc:warden-api</code> (the agent API), granted to the agent machines only. Add policy tests so agent machines can never reach the approval UI. <a href="https://github.com/pecheriere/warden/blob/main/docs/deployment.md#2-tailscale">The policy and commands</a>.</p>
-        </li>
-        <li>
-          <h4>1Password</h4>
-          <p>In a private directory, because this writes a credentials file there and prints a token once (<a href="https://github.com/pecheriere/warden/blob/main/docs/deployment.md#3-1password">how to move both safely</a>):</p>
-          <figure class="cmd">
-<pre><code>op vault create Warden
-op connect server create warden-connect --vaults Warden
-op connect token create warden-read \
-  --server warden-connect --vault Warden,r
-op item create --vault Warden --category "SSH Key" \
-  --title warden-ssh-ca --tags warden:ssh-ca \
-  --ssh-generate-key ed25519</code></pre>
-          </figure>
-        </li>
-        <li>
-          <h4>Run Connect and warden</h4>
-          <p>With <a href="https://github.com/pecheriere/warden/blob/main/docs/deployment.md#5-run-warden">the Compose file</a>, <a href="https://github.com/pecheriere/warden/blob/main/docs/configuration.md">your settings</a> and <a href="https://github.com/pecheriere/warden/blob/main/docs/notifications.md">a notification channel</a>, which warden needs in order to start. Verify the image first:</p>
-          <figure class="cmd">
-<pre><code>gh attestation verify \
-  oci://ghcr.io/pecheriere/warden:0.8.1 \
-  --owner pecheriere</code></pre>
-          </figure>
-        </li>
-        <li>
-          <h4>Publish the Services</h4>
-          <figure class="cmd">
-<pre><code>tailscale serve --service=svc:warden \
-  --https=443 --bg http://172.31.250.10:8081
-tailscale serve --service=svc:warden-api \
-  --https=443 --bg http://172.31.250.10:8080</code></pre>
-          </figure>
-        </li>
-        <li>
-          <h4>Enroll your passkey</h4>
-          <p>Then open the printed URL on your phone and enter the code.</p>
-          <figure class="cmd">
-<pre><code>docker compose exec warden /warden-server enroll</code></pre>
-          </figure>
-        </li>
-        <li>
-          <h4>Add a target</h4>
-          <p>Create its item in the vault and let the host trust the CA for that target only. <a href="https://github.com/pecheriere/warden/blob/main/docs/ssh-targets.md">SSH targets</a>, <a href="https://github.com/pecheriere/warden/blob/main/docs/1password-items.md#api-secret">API secrets</a>.</p>
-        </li>
-        <li>
-          <h4>Enroll an agent and log in</h4>
-          <p>This uses a signing key. <a href="https://github.com/pecheriere/warden/blob/main/docs/agent-usage.md#one-time-setup">Which key to use</a>. The CLI build needs Rust 1.99 or later; releases after v0.8.1 also attach binaries.</p>
-          <figure class="cmd">
-            <figcaption>On the server, with the agent's public key line</figcaption>
-<pre><code>docker compose exec warden /warden-server agent add build-agent \
-  --public-key "ssh-ed25519 AAAA… build-agent"</code></pre>
-          </figure>
-          <figure class="cmd">
-            <figcaption>On the agent machine</figcaption>
-<pre><code>cargo install --locked \
-  --git https://github.com/pecheriere/warden \
-  --tag v0.8.1 warden-broker-cli
-warden login --server https://warden-api.example.ts.net \
-  --agent build-agent --ssh-key ~/.ssh/build-agent.pub</code></pre>
-          </figure>
-        </li>
-        <li>
-          <h4>Request and use access</h4>
-          <figure class="cmd">
-<pre><code>warden request ssh web-01 --user build-agent --for 15m \
-  --goal "restart the web container after the config change in PR #42"
-warden ssh web-01 -- docker restart web
-warden revoke &lt;grant-id&gt;</code></pre>
-          </figure>
-        </li>
-      </ol>
     </div>
   </div>
 </section>
