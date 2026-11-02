@@ -75,6 +75,19 @@ All notable changes to this project are recorded here. The format follows
   published, and how to get a fix, including that a pinned Docker image does not
   change until you change the pin.
 
+### Security
+
+- A certificate is no longer given out if its `cert_issued` audit entry cannot
+  be written. The entry is now written with the approval, before anything is
+  committed: if it fails, nothing is approved, the owner is told so and can try
+  again, and the request stays pending.
+- Making a passkey enrollment code is audited as `enrollment_code_created`, and
+  no code is made if that entry cannot be written. The entry holds neither the
+  code nor its hash. Audit logs with these entries cannot be read by
+  `warden-server audit verify` from an older release.
+- A failed agent creation or key change that had already written an audit entry
+  now records that it did not take effect.
+
 ## [0.8.1] - 2026-11-01
 
 The `v0.8.0` tag was created by mistake, before the version bump, and was

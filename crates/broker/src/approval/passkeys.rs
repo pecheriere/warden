@@ -23,7 +23,7 @@ use webauthn_rs::prelude::{
 };
 
 use crate::audit::{AuditError, AuditEvent, AuditLog};
-use crate::requests::{Clock, audit_and_commit, begin};
+use crate::requests::{Clock, CommitError, audit_and_commit, begin};
 
 /// How long a begun ceremony may be finished, in seconds.
 pub const CEREMONY_TTL_SECS: i64 = 120;
@@ -103,14 +103,11 @@ pub enum PasskeyError {
     Internal(&'static str),
 }
 
-impl From<crate::requests::RequestError> for PasskeyError {
-    fn from(e: crate::requests::RequestError) -> Self {
-        use crate::requests::RequestError;
+impl From<CommitError> for PasskeyError {
+    fn from(e: CommitError) -> Self {
         match e {
-            RequestError::Db(e) => Self::Db(e),
-            RequestError::Audit(e) => Self::Audit(e),
-            RequestError::Encoding(e) => Self::Encoding(e),
-            _ => Self::Internal("recording the passkey change failed"),
+            CommitError::Db(e) => Self::Db(e),
+            CommitError::Audit(e) => Self::Audit(e),
         }
     }
 }
@@ -214,10 +211,11 @@ impl Passkeys {
     }
 
     /// Create a one-time enrollment code valid for 600 s from `now`: 12
-    /// base32 characters, stored only as a SHA-256 hash.
+    /// base32 characters, stored only as a SHA-256 hash. The code exists
+    /// only if its creation was audited.
     ///
     /// # Errors
-    /// Randomness or storage failures.
+    /// Randomness, storage or audit failures.
     pub async fn create_enrollment_code(&self, now: i64) -> Result<String, PasskeyError> {
         let mut bytes = [0_u8; CODE_LEN];
         getrandom::fill(&mut bytes)
@@ -231,12 +229,19 @@ impl Passkeys {
             .bind(now)
             .execute(&mut *tx)
             .await?;
+        let expires_at = now + ENROLLMENT_TTL_SECS;
         sqlx::query("INSERT INTO enrollment_codes (code_hash, expires_at) VALUES (?, ?)")
             .bind(code_hash(&code))
-            .bind(now + ENROLLMENT_TTL_SECS)
+            .bind(expires_at)
             .execute(&mut *tx)
             .await?;
-        tx.commit().await?;
+        audit_and_commit(
+            &self.audit,
+            tx,
+            vec![AuditEvent::EnrollmentCodeCreated { expires_at }],
+            "creation of an enrollment code",
+        )
+        .await?;
         Ok(code)
     }
 

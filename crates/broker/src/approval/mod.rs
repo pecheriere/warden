@@ -22,7 +22,6 @@ use warden_broker_proto::{
 use webauthn_rs::prelude::{PublicKeyCredential, RegisterPublicKeyCredential};
 
 use crate::AppState;
-use crate::audit::AuditEvent;
 use crate::identity::Owner;
 use crate::policy::{ApiScope, ApiSecretPolicy, CaKey, SshMode, SshTarget};
 use crate::proxy::CallInfo;
@@ -57,6 +56,12 @@ const HISTORY_LIMIT: u32 = 100;
 /// The destination (SSH host, port, host keys; API origin, path prefix,
 /// methods, header, format, CA) differs from what the owner was shown.
 const DESTINATION_CHANGED: &str = "policy changed; reload and review";
+
+/// What the owner is told when a change could not be recorded. The change was
+/// rolled back, so what they asked for can simply be tried again.
+const AUDIT_UNAVAILABLE: &str = "the audit log could not be written, so nothing changed and no \
+                                 access was given. Try again; if it keeps failing, check the \
+                                 server's log";
 
 /// Recorded as `by` when the owner revokes a grant from the UI.
 const REVOKED_BY_OWNER: &str = "owner";
@@ -303,6 +308,10 @@ fn request_error(e: &RequestError) -> Response {
         }
         RequestError::Rejected(_) => json_error(StatusCode::BAD_REQUEST, e.to_string()),
         RequestError::Unavailable(detail) => backend_unavailable(detail),
+        RequestError::Audit(cause) => {
+            tracing::error!(error = %cause, "could not write the audit log; change rolled back");
+            json_error(StatusCode::SERVICE_UNAVAILABLE, AUDIT_UNAVAILABLE)
+        }
         RequestError::UnknownTarget(_)
         | RequestError::UnknownSecret(_)
         | RequestError::TargetInvalid { .. }
@@ -583,14 +592,14 @@ async fn approve_finish(
         Ok(passkey_id) => passkey_id,
         Err(e) => return passkey_error(&e),
     };
-    let (grant, issued) = match &view.destination {
+    let grant = match &view.destination {
         Destination::Ssh(target) if target.mode == SshMode::Relay => {
             // `check_policy` already refused a relay target without a relay.
             let Some(relay) = relay else {
                 return json_error(StatusCode::CONFLICT, RELAY_NOT_CONFIGURED);
             };
             match relay_grant(&view, relay, binding.window, now) {
-                Ok(grant) => (grant, None),
+                Ok(grant) => grant,
                 Err((context, cause)) => return internal(context, &cause),
             }
         }
@@ -600,16 +609,18 @@ async fn approve_finish(
                 Err(e) => return backend_unavailable(&e),
             };
             match ssh_grant(&view, target, &ca, binding.window, now) {
-                Ok((grant, key_id)) => (grant, Some(key_id)),
+                Ok(grant) => grant,
                 Err((context, cause)) => return internal(context, &cause),
             }
         }
         Destination::Api(policy) => match api_grant(&view.request, policy, binding.window, now) {
-            Ok(grant) => (grant, None),
+            Ok(grant) => grant,
             Err((context, cause)) => return internal(context, &cause),
         },
     };
-    let (grant_id, not_after) = (grant.grant_id.clone(), grant.not_after);
+    let grant_id = grant.grant_id.clone();
+    // The certificate stays in `grant` until this commits, with its
+    // `cert_issued` entry already written; if that fails, it is dropped here.
     match state
         .requests
         .mark_approved(&token, binding.window, grant, &passkey_id)
@@ -618,18 +629,6 @@ async fn approve_finish(
         Ok(()) => {}
         Err(RequestError::NotFound | RequestError::AlreadyDecided) => return undecidable(),
         Err(e) => return request_error(&e),
-    }
-    if let Some(key_id) = issued {
-        let issued = AuditEvent::CertIssued {
-            grant_id: grant_id.clone(),
-            key_id,
-            not_after,
-        };
-        if let Err(e) = state.audit.append(issued).await {
-            // The approval itself is committed and audited; record loudly
-            // that the issuance entry is missing.
-            tracing::error!(grant = %grant_id, error = %e, "could not audit certificate issuance");
-        }
     }
     tracing::info!(request = %view.id, grant = %grant_id, "request approved");
     done(format!("Approved for {}.", window_label(binding.window)))
@@ -649,15 +648,14 @@ fn validity(window: Window, now: i64) -> Result<(i64, i64), GrantFailure> {
 
 /// The grant for approving `view` on SSH `target` with `window` at `now`:
 /// valid from `now` for exactly the window, with a certificate signed by
-/// `ca`. Also returns the certificate's key id. Errors name the failed step
-/// and its cause.
+/// `ca`. Errors name the failed step and its cause.
 fn ssh_grant(
     view: &PendingView,
     target: &SshTarget,
     ca: &CaKey,
     window: Window,
     now: i64,
-) -> Result<(GrantView, String), GrantFailure> {
+) -> Result<GrantView, GrantFailure> {
     let Access::Ssh {
         target: target_name,
         user,
@@ -692,7 +690,7 @@ fn ssh_grant(
         .map(PublicKey::to_openssh)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| ("host key encoding", e.to_string()))?;
-    let grant = GrantView {
+    Ok(GrantView {
         grant_id,
         not_before,
         not_after,
@@ -703,8 +701,7 @@ fn ssh_grant(
             user: user.clone(),
             host_keys,
         }),
-    };
-    Ok((grant, cert.key_id().to_owned()))
+    })
 }
 
 /// The grant for approving `view` on a relay target with `window` at `now`:

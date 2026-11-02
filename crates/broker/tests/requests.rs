@@ -1166,6 +1166,7 @@ async fn every_transition_is_audited() {
             "request_created",
             "notified",
             "approved",
+            "cert_issued",
             "grant_revoked",
             "request_created",
             "notified",
@@ -1175,7 +1176,7 @@ async fn every_transition_is_audited() {
             "agent_revoked",
         ]
     );
-    assert_eq!(audit::verify(&h.audit_path).unwrap(), 13);
+    assert_eq!(audit::verify(&h.audit_path).unwrap(), 14);
 }
 
 #[tokio::test]

@@ -21,6 +21,7 @@ use warden_broker_proto::signing::{SigningKeyError, SigningPublicKey};
 use zeroize::Zeroizing;
 
 use crate::audit::{AuditError, AuditEvent, AuditLog};
+use crate::requests::{CommitError, audit_and_commit, begin};
 
 /// Prefix of every agent key.
 const KEY_PREFIX: &str = "wdn_";
@@ -297,14 +298,6 @@ pub async fn add_audited(
     Ok(key)
 }
 
-/// Start a write transaction at once (`BEGIN IMMEDIATE`), so a read followed
-/// by a write cannot fail with `SQLITE_BUSY` when the lock upgrade is refused.
-async fn begin_immediate(
-    pool: &SqlitePool,
-) -> Result<sqlx::Transaction<'_, sqlx::Sqlite>, sqlx::Error> {
-    pool.begin_with("BEGIN IMMEDIATE").await
-}
-
 /// The agent other than `name` that has registered `key`, if any. Revoked
 /// agents keep their key, so they count.
 async fn other_key_owner(
@@ -325,6 +318,15 @@ async fn other_key_owner(
         .transpose()
 }
 
+impl From<CommitError> for AgentError {
+    fn from(e: CommitError) -> Self {
+        match e {
+            CommitError::Audit(e) => Self::Audit(e),
+            CommitError::Db(e) => Self::Db(e),
+        }
+    }
+}
+
 /// Create a key-signed agent registered with `key`, recording
 /// [`AuditEvent::AgentAdded`] and [`AuditEvent::AgentKeySet`]. The agent
 /// exists only if both entries were written.
@@ -341,7 +343,7 @@ pub async fn add_key_audited(
     name: &AgentName,
     key: &AgentPublicKey,
 ) -> Result<(), AgentError> {
-    let mut tx = begin_immediate(pool).await?;
+    let mut tx = begin(pool).await?;
     if let Some(owner) = other_key_owner(&mut tx, name, key).await? {
         return Err(AgentError::KeyInUse(owner));
     }
@@ -362,18 +364,16 @@ pub async fn add_key_audited(
         }
         Err(e) => return Err(e.into()),
     }
-    audit
-        .append(AuditEvent::AgentAdded {
+    let events = vec![
+        AuditEvent::AgentAdded {
             agent: name.clone(),
-        })
-        .await?;
-    audit
-        .append(AuditEvent::AgentKeySet {
+        },
+        AuditEvent::AgentKeySet {
             agent: name.clone(),
             fingerprint: key.fingerprint().to_owned(),
-        })
-        .await?;
-    tx.commit().await?;
+        },
+    ];
+    audit_and_commit(audit, tx, events, &format!("creation of agent {name}")).await?;
     Ok(())
 }
 
@@ -394,7 +394,7 @@ pub async fn set_key_audited(
     name: &AgentName,
     key: &AgentPublicKey,
 ) -> Result<(), AgentError> {
-    let mut tx = begin_immediate(pool).await?;
+    let mut tx = begin(pool).await?;
     let revoked_at: Option<Option<i64>> =
         sqlx::query_scalar("SELECT revoked_at FROM agents WHERE name = ?")
             .bind(name.as_str())
@@ -417,13 +417,17 @@ pub async fn set_key_audited(
     .bind(name.as_str())
     .execute(&mut *tx)
     .await?;
-    audit
-        .append(AuditEvent::AgentKeySet {
-            agent: name.clone(),
-            fingerprint: key.fingerprint().to_owned(),
-        })
-        .await?;
-    tx.commit().await?;
+    let event = AuditEvent::AgentKeySet {
+        agent: name.clone(),
+        fingerprint: key.fingerprint().to_owned(),
+    };
+    audit_and_commit(
+        audit,
+        tx,
+        vec![event],
+        &format!("key change of agent {name}"),
+    )
+    .await?;
     Ok(())
 }
 

@@ -67,6 +67,13 @@ pub fn principal(target: &TargetName, user: &UnixUser) -> String {
     format!("warden:{target}:{user}")
 }
 
+/// The key id of the certificate of `agent`'s grant `grant_id`, which is what
+/// `cert_issued` records and what a target logs when it accepts one.
+#[must_use]
+pub fn key_id(agent: &AgentName, grant_id: &Id) -> String {
+    format!("warden:{agent}:{grant_id}")
+}
+
 /// Issue a user certificate for `input.public_key`, signed by `ca`.
 ///
 /// # Errors
@@ -102,7 +109,7 @@ pub fn issue(ca: &crate::policy::CaKey, input: &IssueInput<'_>) -> Result<Certif
     builder
         .serial(OsRng.next_u64())?
         .cert_type(CertType::User)?
-        .key_id(format!("warden:{}:{}", input.agent, input.grant_id))?
+        .key_id(key_id(input.agent, input.grant_id))?
         .valid_principal(principal(input.target, input.user))?
         .extension("permit-pty", "")?;
     Ok(builder.sign(ca.private_key())?)

@@ -131,6 +131,56 @@ guarantee because the server is the trusted party:
   One certificate is issued per grant. The grant id is not a bearer credential
   and cannot mint further certificates.
 
+## What the audit log can miss
+
+The audit log is the evidence warden leaves, so an action that gives access
+must not happen without its entry.
+
+- **Written first, or the action does not happen.** Creating, approving,
+  denying, cancelling, expiring and revoking requests and grants, adding an
+  agent or changing its key, enrolling or removing a passkey and making an
+  enrollment code write their entries before the database commit. A proxied
+  call and a relay session write theirs before anything reaches the target. If
+  the entry cannot be written, the change is rolled back and the caller gets an
+  error. A bearer agent's row is written first and revoked if its entry cannot
+  be written; its key is shown only after that entry, so the row cannot be used.
+- **`cert_issued` fails closed.** A certificate cannot be revoked before it
+  expires, so one with no entry would be access with no evidence and no way to
+  take it back. `cert_issued` is therefore written with `approved`, before the
+  commit. The certificate is signed in memory and reaches the agent only through
+  the grant that commit stores, so if either entry cannot be written, it is
+  dropped without having left the broker. The owner, who is looking at the
+  approval page, sees that nothing changed and no access was given, and can
+  approve again, which signs a new certificate. The agent is not told: its
+  request is still `pending`, which is true, and ends in a decision or `expired`
+  as usual. It gets a 5xx instead if the log is still failing when the request
+  expires, because expiry is audited too.
+- **Entries can overstate, not understate.** Entries come before the commit, so
+  a failed commit can leave an entry for a change that did not happen; an `error`
+  entry then says so. A crash at that moment leaves no such `error` entry: an
+  `approved` with no matching grant in the database means the approval did not
+  take effect, and no certificate left the broker.
+- **Written after the fact, and only logged if that fails.** `notified`,
+  `relay_session_ended`, `relay_session_refused` and `relay_login_refused`
+  record something that already happened and gave no new access, so nothing can
+  be refused any more. The server log has an error when one is lost. A session's
+  end is also missing after a crash; its `relay_session_started` is still there.
+- **Not recorded at all.** Attempts that change nothing are not in the audit log:
+  a failed passkey assertion (a counter regression is recorded), a wrong
+  enrollment code, a call on a grant that is revoked or expired, a signed request
+  that fails verification. They come from callers who passed the checks in front
+  of those endpoints, and some are in the server log. An enrollment code that is
+  spent but never finishes enrolling is not recorded either; only `passkey_enrolled`
+  shows that it was used. An `enrollment_code_created` entry holds neither the
+  code nor its hash, so it cannot be matched to one enrollment.
+- **A log that cannot be written stops warden.** With a full disk, or after a
+  failed write (which needs a restart to repair), no request can be created,
+  approved, denied or revoked, and pending requests cannot expire. This includes
+  the owner revoking a grant, which then ends only at its expiry or once the log
+  works again. This is the fail-closed choice: a grant's window is still enforced
+  from the database, and relay sessions and proxied calls cannot start without
+  their entries. Watch the disk that holds the log.
+
 ## Authentication of callers
 
 - Every endpoint on both listeners requires the `Tailscale-User-Login` header

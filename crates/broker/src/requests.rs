@@ -16,7 +16,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use sha2::{Digest as _, Sha256};
 use sqlx::sqlite::SqliteRow;
-use sqlx::{Row as _, Sqlite, SqliteConnection, SqlitePool, Transaction};
+use sqlx::{Row as _, SqliteConnection, SqlitePool};
 use tokio::sync::broadcast;
 use url::Url;
 use warden_broker_proto::{
@@ -29,6 +29,12 @@ use crate::audit::{AuditError, AuditEvent, AuditLog};
 use crate::notify::{Doorbell, Notifier, doorbell};
 use crate::policy::{ApiSecretPolicy, PolicyError, SecretBackend, SshMode, SshTarget};
 use crate::relay::{LiveSessions, RelayEndpoint};
+use crate::ssh_ca;
+
+mod transition;
+
+use self::transition::detached;
+pub(crate) use self::transition::{CommitError, audit_and_commit, begin};
 
 /// How long a request waits for the owner, in seconds.
 const PENDING_TTL_SECS: i64 = 600;
@@ -175,7 +181,7 @@ pub enum RequestError {
     /// The database failed.
     #[error("database error: {0}")]
     Db(#[from] sqlx::Error),
-    /// The audit log could not record the transition.
+    /// The audit log could not record the transition, so it did not happen.
     #[error(transparent)]
     Audit(#[from] AuditError),
     /// Stored data could not be encoded or decoded.
@@ -204,6 +210,15 @@ impl RequestError {
                 reason,
             },
             other => other.into(),
+        }
+    }
+}
+
+impl From<CommitError> for RequestError {
+    fn from(e: CommitError) -> Self {
+        match e {
+            CommitError::Audit(e) => Self::Audit(e),
+            CommitError::Db(e) => Self::Db(e),
         }
     }
 }
@@ -717,7 +732,8 @@ impl Requests {
             vec![failed],
             &format!("notification failure of request {id}"),
         )
-        .await
+        .await?;
+        Ok(())
     }
 
     /// The state of `agent`'s request `id`. While it is pending and `wait`
@@ -914,13 +930,17 @@ impl Requests {
     }
 
     /// Approve the pending request behind `token` with `grant`, atomically:
-    /// either the request flips to approved and the grant is stored, or
-    /// nothing changes.
+    /// either the request flips to approved, the grant is stored and both
+    /// are audited (with `cert_issued` for a grant holding a certificate), or
+    /// nothing changes and the request stays pending. A grant's certificate
+    /// reaches the agent only through the stored grant, so a certificate that
+    /// could not be audited never leaves the broker.
     ///
     /// # Errors
     /// [`RequestError::NotFound`] for an unknown token;
     /// [`RequestError::AlreadyDecided`] if the request is no longer pending,
-    /// has expired or its agent was revoked.
+    /// has expired or its agent was revoked; [`RequestError::Audit`] if an
+    /// entry could not be written.
     pub async fn mark_approved(
         &self,
         token: &str,
@@ -971,30 +991,37 @@ impl Requests {
             return Err(self.not_pending(&hash).await);
         };
         let id: Id = parse(&row, "id")?;
-        let agent: String = row.try_get("agent")?;
+        let agent: AgentName = parse(&row, "agent")?;
         sqlx::query(
             "INSERT INTO grants (id, request_id, agent, window_secs, not_before, not_after, view) \
              VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(grant.grant_id.as_str())
         .bind(id.as_str())
-        .bind(agent)
+        .bind(agent.as_str())
         .bind(window_secs)
         .bind(grant.not_before)
         .bind(grant.not_after)
         .bind(serde_json::to_string(&grant)?)
         .execute(&mut *tx)
         .await?;
-        let approved = AuditEvent::Approved {
+        let mut events = vec![AuditEvent::Approved {
             id: id.clone(),
-            grant_id: grant.grant_id,
+            grant_id: grant.grant_id.clone(),
             window_secs,
             passkey_id: passkey_id.to_owned(),
-        };
+        }];
+        if matches!(grant.access, GrantAccess::Ssh(_)) {
+            events.push(AuditEvent::CertIssued {
+                key_id: ssh_ca::key_id(&agent, &grant.grant_id),
+                grant_id: grant.grant_id,
+                not_after: grant.not_after,
+            });
+        }
         audit_and_commit(
             &self.audit,
             tx,
-            vec![approved],
+            events,
             &format!("approval of request {id}"),
         )
         .await?;
@@ -1480,64 +1507,6 @@ pub async fn revoke_agent(
     Ok(affected)
 }
 
-/// Record `events`, then commit `tx`.
-///
-/// The audit entries come first so no change ever lands unaudited. If a
-/// later step fails after something was recorded (a further entry or the
-/// commit), an `Error { context: "commit" }` entry states that `transition`
-/// did not take effect.
-pub(crate) async fn audit_and_commit(
-    audit: &AuditLog,
-    tx: Transaction<'static, Sqlite>,
-    events: Vec<AuditEvent>,
-    transition: &str,
-) -> Result<(), RequestError> {
-    let mut recorded = false;
-    for event in events {
-        if let Err(e) = audit.append(event).await {
-            if recorded {
-                record_not_committed(audit, transition, &e.to_string()).await;
-            }
-            return Err(e.into());
-        }
-        recorded = true;
-    }
-    if let Err(e) = tx.commit().await {
-        record_not_committed(audit, transition, &e.to_string()).await;
-        return Err(e.into());
-    }
-    Ok(())
-}
-
-async fn record_not_committed(audit: &AuditLog, transition: &str, cause: &str) {
-    let event = AuditEvent::Error {
-        context: "commit".to_owned(),
-        message: format!("{transition} did not take effect: {cause}"),
-    };
-    if let Err(e) = audit.append(event).await {
-        tracing::error!(transition, error = %e, "could not record an uncommitted transition");
-    }
-}
-
-/// Run a state transition to completion on its own task, so dropping the
-/// caller (for example a disconnected HTTP client) never stops it halfway.
-async fn detached<T>(
-    work: impl Future<Output = Result<T, RequestError>> + Send + 'static,
-) -> Result<T, RequestError>
-where
-    T: Send + 'static,
-{
-    tokio::spawn(work)
-        .await
-        .map_err(|_| RequestError::Internal("state transition task failed"))?
-}
-
-/// Start a write transaction that takes the write lock up front, so
-/// concurrent writers queue on the busy timeout instead of failing.
-pub(crate) async fn begin(pool: &SqlitePool) -> Result<Transaction<'static, Sqlite>, sqlx::Error> {
-    pool.begin_with("BEGIN IMMEDIATE").await
-}
-
 /// Wait for a bus message about `id`. `true` means re-read (it changed or
 /// messages were missed); `false` means the bus is gone.
 async fn next_change(rx: &mut broadcast::Receiver<Id>, id: &Id) -> bool {
@@ -1665,13 +1634,9 @@ pub async fn sweep_loop(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        ACTIVE_RELAY_GRANTS, AuditEvent, AuditLog, ENDED_GRANTS, LIVE_SSH_KEYS, RequestError,
-        audit_and_commit, begin,
-    };
+    use super::{ACTIVE_RELAY_GRANTS, ENDED_GRANTS, LIVE_SSH_KEYS};
     use crate::store;
     use sqlx::Row as _;
-    use warden_broker_proto::Id;
 
     /// The query plan of `sql`, one step per line.
     async fn plan(pool: &sqlx::SqlitePool, sql: &str) -> Vec<String> {
@@ -1775,52 +1740,5 @@ mod tests {
                 ("revoked".to_owned(), true),
             ]
         );
-    }
-
-    #[tokio::test]
-    async fn failed_commit_is_recorded_as_not_taking_effect() {
-        let dir = tempfile::tempdir().unwrap();
-        let pool = store::open(&dir.path().join("warden.db")).await.unwrap();
-        let path = dir.path().join("audit.jsonl");
-        let audit = AuditLog::open(&path).await.unwrap();
-
-        // A deferred foreign-key violation makes the commit itself fail.
-        let mut tx = begin(&pool).await.unwrap();
-        sqlx::query("PRAGMA defer_foreign_keys = ON")
-            .execute(&mut *tx)
-            .await
-            .unwrap();
-        sqlx::query(
-            "INSERT INTO grants (id, request_id, agent, window_secs, not_before, not_after, view) \
-             VALUES ('g', 'no-such-request', 'a', 900, 0, 900, '{}')",
-        )
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-        let id = Id::random();
-        let result = audit_and_commit(
-            &audit,
-            tx,
-            vec![AuditEvent::Denied { id: id.clone() }],
-            &format!("denial of request {id}"),
-        )
-        .await;
-        assert!(matches!(result, Err(RequestError::Db(_))), "{result:?}");
-
-        let text = std::fs::read_to_string(&path).unwrap();
-        let lines: Vec<&str> = text.lines().collect();
-        assert_eq!(lines.len(), 2, "{text}");
-        assert!(lines[0].contains(r#""type":"denied""#));
-        assert!(lines[1].contains(r#""context":"commit""#), "{text}");
-        assert!(
-            lines[1].contains(&format!("denial of request {id} did not take effect")),
-            "{text}"
-        );
-        assert_eq!(crate::audit::verify(&path).unwrap(), 2);
-        let grants: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM grants")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-        assert_eq!(grants, 0);
     }
 }

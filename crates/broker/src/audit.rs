@@ -82,7 +82,9 @@ pub enum AuditEvent {
         /// Request id.
         id: Id,
     },
-    /// A certificate was issued.
+    /// A certificate was issued. Written with the approval, before anything
+    /// is committed: the certificate is not given out if this entry cannot
+    /// be written.
     CertIssued {
         /// Grant id.
         grant_id: Id,
@@ -191,6 +193,12 @@ pub enum AuditEvent {
     AgentRevoked {
         /// Agent name.
         agent: AgentName,
+    },
+    /// A one-time passkey enrollment code was made on the host. Neither the
+    /// code nor its hash is recorded.
+    EnrollmentCodeCreated {
+        /// When the code stops working, unix seconds.
+        expires_at: i64,
     },
     /// A passkey was enrolled.
     PasskeyEnrolled {
