@@ -60,7 +60,9 @@ That adds `Signed-off-by: Your Name <your address>` from your git identity. The
 line is public for good, so use an address you are happy to publish: GitHub's
 `users.noreply.github.com` address for your account works. To add missing
 sign-offs to a branch, run `git rebase --signoff origin/main` and push with
-`git push --force-with-lease`.
+`git push --force-with-lease`. That signs with your committer address, so if
+your own commit's author address differs, the check stays red until you also run
+`git commit --amend --reset-author -s` on it.
 
 Coding agents have [their own rule](AGENTS.md#sign-off-dco).
 

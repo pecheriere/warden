@@ -190,6 +190,35 @@ class SignOffTest(RepoTest):
         self.assertEqual(self.run_pull_request()[0], 0)
 
 
+class ModesAgreeTest(RepoTest):
+    """A message that passes on a pull request must pass once it is in a squash commit."""
+
+    def check_both(self, message: str) -> tuple[int, int]:
+        """Return the exit status of both checks for a commit with this message."""
+        self.commit(message)
+        return self.run_pull_request()[0], self.run_main("squash", "--commit", "HEAD")[0]
+
+    def test_forms_both_checks_refuse(self) -> None:
+        """Forms git reads as a trailer but `git commit -s` never writes fail in both."""
+        for line in (
+            "signed-off-by: alice <alice@example.com>",
+            "SIGNED-OFF-BY: alice <alice@example.com>",
+            "Signed-off-by : alice <alice@example.com>",
+            "Signed-off-by:alice <alice@example.com>",
+            "Signed-off-by: alice\n  <alice@example.com>",
+            "Signed-off-by:\n alice <alice@example.com>",
+            "Signed-off-by: alice <alice@example.com>\r",
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(self.check_both(f"Change\n\n{line}\n"), (1, 1))
+
+    def test_forms_both_checks_accept(self) -> None:
+        """What `git commit -s` writes passes in both, also below a `---` line."""
+        for message in (SIGNED, f"Change\n\n---\nDetails.\n\n{SIGNED.splitlines()[-1]}\n"):
+            with self.subTest(message=message):
+                self.assertEqual(self.check_both(message), (0, 0))
+
+
 class MergeTest(RepoTest):
     """Merge commits, which `gh pr update-branch` creates without a sign-off."""
 

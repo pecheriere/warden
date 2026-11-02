@@ -41,16 +41,21 @@ MERGE_PARENTS = 2  # An update merge has two; a merge of more is never a clean o
 DEPENDABOT_ACCOUNT_ID = 49699333
 DEPENDABOT_ADDRESS = "49699333+dependabot[bot]@users.noreply.github.com"
 
-SIGN_OFF_VALUE = r"[^\s<>](?:[^<>\n]*[^\s<>])? <([^\s<>@]+@[^\s<>@]+)>"
-TRAILER_VALUE = re.compile(SIGN_OFF_VALUE)
-SQUASH_LINE = re.compile(rf"^Signed-off-by: {SIGN_OFF_VALUE}$", re.MULTILINE)
+# What `git commit -s` writes, as one whole line: both checks read this form, so a
+# message that passes on a pull request also passes once it is in a squash commit.
+SIGN_OFF_LINE = re.compile(
+    r"^Signed-off-by: [^\s<>](?:[^<>\n]*[^\s<>])? <([^\s<>@]+@[^\s<>@]+)>$", re.MULTILINE
+)
 
 MISSING = "no Signed-off-by trailer at the end of the commit message"
 WRONG_ADDRESS = "no Signed-off-by trailer with the commit author's address"
 SQUASH_MISSING = "no Signed-off-by line in the squash commit's message"
 HELP = (
     "Add the sign-off with `git rebase --signoff <base>` and push again with "
-    "`git push --force-with-lease`. CONTRIBUTING.md explains what it means."
+    "`git push --force-with-lease`. That signs with your committer address, so if your "
+    "commit's author address differs, fix your own commit with "
+    "`git commit --amend --reset-author -s` as well. "
+    "CONTRIBUTING.md explains what it means."
 )
 SQUASH_HELP = "The sign-off was lost at merge time: do not replace the default squash message."
 
@@ -66,7 +71,7 @@ class Commit(NamedTuple):
     author_address: str
     tree: str
     parents: tuple[str, ...]
-    sign_offs: tuple[str, ...]
+    trailer_block: str
 
 
 def _git(*args: str) -> subprocess.CompletedProcess[bytes]:
@@ -91,16 +96,16 @@ def _resolve(revision: str) -> str:
 
 
 def _read_commit(sha: str) -> Commit:
-    """Read a commit. NUL cannot occur in the fields, so it separates them safely."""
+    """Read a commit. NUL cannot occur in the fields, so it separates them safely.
+
+    `%(trailers)` with no options is git's trailer block exactly as written; options
+    would normalize the key's case and spacing, and join folded lines.
+    """
     output = _git_output(
-        "log",
-        "-1",
-        "--no-show-signature",
-        "--format=%ae%x00%T%x00%P%x00%(trailers:key=Signed-off-by,valueonly,unfold)",
-        sha,
+        "log", "-1", "--no-show-signature", "--format=%ae%x00%T%x00%P%x00%(trailers)", sha
     )
-    author_address, tree, parents, trailers = output.split("\0", 3)
-    return Commit(sha, author_address, tree, tuple(parents.split()), tuple(trailers.splitlines()))
+    author_address, tree, parents, trailer_block = output.split("\0", 3)
+    return Commit(sha, author_address, tree, tuple(parents.split()), trailer_block)
 
 
 def _commits_between(base: str, head: str) -> list[Commit]:
@@ -121,17 +126,11 @@ def _is_clean_merge(commit: Commit) -> bool:
     return result.returncode == 0 and result.stdout.decode(errors="replace").strip() == commit.tree
 
 
-def _addressed_by(value: str) -> str | None:
-    """Return the address of a well-formed sign-off value."""
-    match = TRAILER_VALUE.fullmatch(value)
-    return match.group(1).casefold() if match else None
-
-
 def problem_with(commit: Commit, *, opened_by_dependabot: bool) -> str | None:
     """Return what is wrong with a pull request's commit, or None when it passes."""
     if opened_by_dependabot and commit.author_address == DEPENDABOT_ADDRESS:
         return None
-    addresses = {_addressed_by(value) for value in commit.sign_offs} - {None}
+    addresses = {address.casefold() for address in SIGN_OFF_LINE.findall(commit.trailer_block)}
     if commit.author_address.casefold() in addresses:
         return None
     if _is_clean_merge(commit):
@@ -167,7 +166,7 @@ def check_squash(revision: str) -> int:
     sha = _resolve(revision)
     message = _git_output("log", "-1", "--no-show-signature", "--format=%B", sha)
     _subject, _, body = message.partition("\n")
-    failures = [] if SQUASH_LINE.search(body) else [(sha, SQUASH_MISSING)]
+    failures = [] if SIGN_OFF_LINE.search(body) else [(sha, SQUASH_MISSING)]
     return _report(failures, 1, SQUASH_HELP)
 
 

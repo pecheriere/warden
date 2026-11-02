@@ -6,10 +6,16 @@ name: dco
 # `dco` checks the commits of a pull request and is the check to require.
 # `dco-squash` checks the squash commit after the merge: GitHub writes that
 # commit's message at merge time, so nothing can check it sooner. It only runs on
-# pushes to main, so it must never be a required check.
+# pushes to main. On a pull request it is skipped, which GitHub counts as passing,
+# so requiring it would enforce nothing.
 
 on:
   pull_request:
+    # `edited` because retargeting a pull request changes which commits it adds,
+    # and a result already on the head commit would otherwise still count. There is
+    # no filter for retargeting alone: a job skipped on a title edit would replace
+    # a failed result, so every edit reruns the check.
+    types: [opened, synchronize, reopened, edited]
   push:
     branches: [main]
 
