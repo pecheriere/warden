@@ -39,8 +39,8 @@ For a real setup, go on to the [recommended setup](#recommended-setup) and the
 
 ## Who warden is for
 
-warden is for people who run AI agents or scripts, often while away from the
-computer, and want them to reach their own servers, devices and APIs without holding a
+warden is for people who leave AI agents or scripts working for them while
+they get on with something else, and want them to reach their own servers, devices and APIs without holding a
 standing credential. You run the server yourself, so you need to be
 comfortable administering a Linux host and a tailnet.
 
