@@ -180,9 +180,9 @@ exception: stopping access matters more than recording it.
   expires, because expiry is audited too.
 - **Apart from revocations, entries can overstate, not understate.** Entries
   come before the commit, so a failed commit can leave an entry for a change that did not happen; an `error`
-  entry then says so. A crash at that moment leaves no such `error` entry: an
-  `approved` with no matching grant in the database means the approval did not
-  take effect, and no certificate left the broker.
+  entry then says so. A crash at that moment, or a failure to write the `error`
+  entry too, leaves none: an `approved` with no matching grant in the database
+  means the approval did not take effect, and no certificate left the broker.
 - **Written after the fact, and only logged if that fails.** `notified`,
   `relay_session_ended`, `relay_session_refused` and `relay_login_refused`
   record something that already happened and gave no new access, so nothing can
