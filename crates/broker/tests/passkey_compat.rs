@@ -5,7 +5,8 @@
 //! of the `passkeys` table exactly as a broker on `webauthn-rs` 0.5.5 wrote
 //! them, through the real enrollment and approval routes, with the private
 //! keys of the throwaway authenticators that made them. Never regenerate the
-//! file with a newer library: its age is the point.
+//! file with a newer library: its age is the point. The one-off generator is
+//! in commit 22eb498 of pull request #140.
 //!
 //! The authenticator here is deliberately independent of `webauthn-rs` and of
 //! `webauthn-authenticator-rs`: it writes the JSON that `warden.js` posts and
