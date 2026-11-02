@@ -63,6 +63,9 @@ python3 -I .github/scripts/crate_age.py --base main
 uvx zizmor@1.31.1 .   # when a workflow or the Dependabot config changes
 ```
 
+- CI's `coverage` job also measures test coverage with `cargo llvm-cov`,
+  shown in the run's summary with the lcov file as an artifact. It is not a
+  required check and no threshold fails it yet (#97).
 - The toolchain is pinned in `rust-toolchain.toml`. Clippy `all` and
   `pedantic` are denied workspace-wide and `unsafe_code` is forbidden.
 - On Linux, the relay's password-target tests need

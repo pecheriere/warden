@@ -8,6 +8,9 @@ All notable changes to this project are recorded here. The format follows
 
 ### Added
 
+- CI measures test coverage with `cargo llvm-cov`, including the Linux-only
+  relay tests, and reports it in each run's summary. No threshold fails the
+  build yet.
 - `warden-demo`: try the approval flow on one machine with no setup
   ([docs/demo.md](docs/demo.md)). A separate, unpublished binary that is not
   part of `warden-server` or the image; a CI guard keeps it that way. It is not
