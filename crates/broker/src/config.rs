@@ -14,6 +14,7 @@ use zeroize::Zeroizing;
 use crate::notify::{ChannelKind, ChannelList, parse_channels};
 use crate::policy::onepassword::parse_host_port;
 use crate::proxy::ProxyLimits;
+use crate::requests::RequestLimits;
 use crate::signed::BodyReadTimeout;
 
 /// Largest value accepted for `WARDEN_RELAY_MAX_SESSIONS`: each session
@@ -239,6 +240,12 @@ pub struct Config {
     /// `WARDEN_PROXY_MAX_CALLS` (default 16, 1 to 256, at least the
     /// per-agent limit) the calls in flight at once.
     pub proxy: ProxyLimits,
+    /// How many requests each agent may make;
+    /// `WARDEN_REQUEST_MAX_PENDING_PER_AGENT` (default 5, 1 to 256),
+    /// `WARDEN_REQUEST_MAX_NEW_PER_AGENT` (default 10, 1 to 1024, at least the
+    /// pending limit) and `WARDEN_REQUEST_LIMIT_WINDOW_SECS` (default 600, 60
+    /// to 3600).
+    pub requests: RequestLimits,
     /// The SSH relay.
     pub relay: RelayConfig,
     /// How long the body of a signed request may take to arrive. Not set
@@ -290,6 +297,61 @@ fn proxy_limits(get: &impl Fn(&'static str) -> Option<String>) -> Result<ProxyLi
         });
     }
     Ok(proxy)
+}
+
+/// A whole number in `range` from the variable `var`, or `default` if unset.
+fn bounded_u32(
+    get: &impl Fn(&'static str) -> Option<String>,
+    var: &'static str,
+    range: std::ops::RangeInclusive<u32>,
+    reason: &'static str,
+    default: u32,
+) -> Result<u32, ConfigError> {
+    get(var).map_or(Ok(default), |raw| {
+        raw.trim()
+            .parse()
+            .ok()
+            .filter(|n| range.contains(n))
+            .ok_or(ConfigError::Invalid { var, reason })
+    })
+}
+
+/// The per-agent request limits from the environment, defaults where unset.
+/// The window is capped so that no setting can block an agent for long.
+fn request_limits(
+    get: &impl Fn(&'static str) -> Option<String>,
+) -> Result<RequestLimits, ConfigError> {
+    let defaults = RequestLimits::default();
+    let limits = RequestLimits {
+        max_pending: bounded_u32(
+            get,
+            "WARDEN_REQUEST_MAX_PENDING_PER_AGENT",
+            1..=256,
+            "must be a whole number from 1 to 256",
+            defaults.max_pending,
+        )?,
+        max_new: bounded_u32(
+            get,
+            "WARDEN_REQUEST_MAX_NEW_PER_AGENT",
+            1..=1024,
+            "must be a whole number from 1 to 1024",
+            defaults.max_new,
+        )?,
+        window_secs: bounded_u32(
+            get,
+            "WARDEN_REQUEST_LIMIT_WINDOW_SECS",
+            60..=3600,
+            "must be a whole number of seconds from 60 to 3600",
+            defaults.window_secs,
+        )?,
+    };
+    if limits.max_pending > limits.max_new {
+        return Err(ConfigError::Invalid {
+            var: "WARDEN_REQUEST_MAX_PENDING_PER_AGENT",
+            reason: "must not exceed WARDEN_REQUEST_MAX_NEW_PER_AGENT",
+        });
+    }
+    Ok(limits)
 }
 
 /// The secret in the file at `path`, which `var` names: one line, without its
@@ -408,6 +470,7 @@ impl Config {
         let notify = parse_channels(&lookup)?;
 
         let proxy = proxy_limits(&get)?;
+        let requests = request_limits(&get)?;
 
         let relay = RelayConfig {
             listen: addr("WARDEN_RELAY_LISTEN", "127.0.0.1:2222")?,
@@ -446,6 +509,7 @@ impl Config {
             vault: get("WARDEN_OP_VAULT").unwrap_or_else(|| "Warden".to_owned()),
             notify,
             proxy,
+            requests,
             relay,
             body_read_timeout: BodyReadTimeout::default(),
         })
@@ -463,6 +527,7 @@ mod tests {
 
     use super::{Config, ConfigError, MAX_SECRET_FILE_BYTES};
     use crate::notify::ChannelSettings;
+    use crate::requests::RequestLimits;
 
     const TOKEN_FILE: &str = "WARDEN_OP_CONNECT_TOKEN_FILE";
     const SECRET: &str = "ops_not-a-real-token";
@@ -484,6 +549,67 @@ mod tests {
             .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
             .collect();
         move |var| vars.iter().find(|(k, _)| k == var).map(|(_, v)| v.clone())
+    }
+
+    fn request_limits(extra: &[(&str, &str)]) -> Result<RequestLimits, ConfigError> {
+        let mut vars = vec![("WARDEN_OP_CONNECT_TOKEN", SECRET)];
+        vars.extend_from_slice(extra);
+        Config::from_lookup(lookup(&vars)).map(|config| config.requests)
+    }
+
+    #[test]
+    fn request_limits_default_and_can_be_set() {
+        assert_eq!(request_limits(&[]).unwrap(), RequestLimits::default());
+        assert_eq!(
+            request_limits(&[
+                ("WARDEN_REQUEST_MAX_PENDING_PER_AGENT", "2"),
+                ("WARDEN_REQUEST_MAX_NEW_PER_AGENT", "2"),
+                ("WARDEN_REQUEST_LIMIT_WINDOW_SECS", "60"),
+            ])
+            .unwrap(),
+            RequestLimits {
+                max_pending: 2,
+                max_new: 2,
+                window_secs: 60,
+            }
+        );
+    }
+
+    #[test]
+    fn request_limits_out_of_range_are_refused() {
+        for (var, value) in [
+            ("WARDEN_REQUEST_MAX_PENDING_PER_AGENT", "0"),
+            ("WARDEN_REQUEST_MAX_PENDING_PER_AGENT", "257"),
+            ("WARDEN_REQUEST_MAX_PENDING_PER_AGENT", "many"),
+            ("WARDEN_REQUEST_MAX_NEW_PER_AGENT", "0"),
+            ("WARDEN_REQUEST_MAX_NEW_PER_AGENT", "1025"),
+            ("WARDEN_REQUEST_LIMIT_WINDOW_SECS", "59"),
+            ("WARDEN_REQUEST_LIMIT_WINDOW_SECS", "3601"),
+        ] {
+            let got = request_limits(&[(var, value)]);
+            assert!(
+                matches!(got, Err(ConfigError::Invalid { var: named, .. }) if named == var),
+                "{var}={value}: {got:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn pending_limit_must_fit_under_the_new_request_limit() {
+        let got = request_limits(&[
+            ("WARDEN_REQUEST_MAX_PENDING_PER_AGENT", "6"),
+            ("WARDEN_REQUEST_MAX_NEW_PER_AGENT", "5"),
+        ]);
+        assert!(
+            matches!(
+                got,
+                Err(ConfigError::Invalid {
+                    var: "WARDEN_REQUEST_MAX_PENDING_PER_AGENT",
+                    ..
+                })
+            ),
+            "{got:?}"
+        );
     }
 
     fn secret_file(dir: &TempDir, name: &str, content: &[u8], mode: u32) -> String {

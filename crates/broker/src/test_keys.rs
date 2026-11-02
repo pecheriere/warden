@@ -31,13 +31,24 @@ pub fn random_key(algorithm: Algorithm) -> PrivateKey {
         return PrivateKey::random(&mut OsRng, algorithm).expect("key generation");
     }
     let mut scalar = [0_u8; 32];
-    let signing = loop {
+    loop {
         OsRng.fill_bytes(&mut scalar);
-        // Almost every 32 bytes are a valid scalar; try again if not.
-        if let Ok(signing) = SigningKey::from_slice(&scalar) {
-            break signing;
+        if let Some(key) = p256_key(&scalar) {
+            return key;
         }
-    };
+    }
+}
+
+/// The P-256 key with private scalar `scalar`, or `None` if `scalar` cannot be
+/// one here: almost every 32 bytes can. Those starting with a zero byte cannot,
+/// because [`Mpint`] drops that byte and `ssh-key` decodes only full-length
+/// scalars. Tests have no need of those keys, and leaving them out costs 1 key
+/// in 256 a second try.
+fn p256_key(scalar: &[u8; 32]) -> Option<PrivateKey> {
+    if scalar[0] == 0 {
+        return None;
+    }
+    let signing = SigningKey::from_slice(scalar).ok()?;
     // `ssh-key` offers no constructor without its `p256` feature, but decodes
     // the OpenSSH form: curve, public point, private scalar.
     let mut encoded = Vec::new();
@@ -48,12 +59,12 @@ pub fn random_key(algorithm: Algorithm) -> PrivateKey {
         .as_ref()
         .encode(&mut encoded)
         .expect("encode point");
-    Mpint::from_positive_bytes(&scalar)
+    Mpint::from_positive_bytes(scalar)
         .expect("scalar")
         .encode(&mut encoded)
         .expect("encode scalar");
     let keypair = EcdsaKeypair::decode(&mut encoded.as_slice()).expect("decode keypair");
-    PrivateKey::new(KeypairData::Ecdsa(keypair), "").expect("private key")
+    Some(PrivateKey::new(KeypairData::Ecdsa(keypair), "").expect("private key"))
 }
 
 /// An SSHSIG by `key`, [`Algorithm::Ed25519`] or [`P256`], over `message`.
@@ -117,4 +128,33 @@ fn write_private(key: &PrivateKey, path: &Path) {
         .expect("create key file")
         .write_all(text.as_bytes())
         .expect("write key file");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{P256, p256_key};
+
+    fn scalar_starting(first: u8) -> [u8; 32] {
+        let mut scalar = [1_u8; 32];
+        scalar[0] = first;
+        scalar
+    }
+
+    #[test]
+    fn a_scalar_starting_with_a_zero_byte_is_skipped_rather_than_a_panic() {
+        assert!(p256_key(&scalar_starting(0)).is_none());
+    }
+
+    #[test]
+    fn a_scalar_out_of_range_is_skipped() {
+        assert!(p256_key(&[0xff; 32]).is_none());
+    }
+
+    #[test]
+    fn scalars_with_the_top_bit_clear_or_set_make_a_key() {
+        for first in [0x01, 0x7f, 0x80, 0xfe] {
+            let key = p256_key(&scalar_starting(first)).expect("key");
+            assert_eq!(key.algorithm(), P256);
+        }
+    }
 }

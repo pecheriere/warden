@@ -439,6 +439,7 @@ The broker refuses, with a message that names the rule (exit 1):
   outside the allowed prefix or has dot segments, `//`, `;`, `\` or encoded
   separators;
 - a method or path the policy, narrowed to the grant, does not allow;
+- more than 100 headers;
 - headers you may not set: `Host`, `Content-Length`, `Connection` and other
   hop-by-hop headers, the secret's own header, `Accept-Encoding`, `Range`,
   `If-Range`, method or URL override headers, and forwarding or
@@ -495,6 +496,11 @@ is reported once on stderr and never stops the command.
 | 22 | `warden http --fail` got an upstream status of 400 or more. The body is still written to stdout. |
 | 64 | Wrong arguments: nothing ran. The message on stderr shows the usage. Fix the command and run it again. |
 | 130 | Interrupted with Ctrl-C while `warden request` waited; the pending request was cancelled (or, if the broker did not answer in time or Ctrl-C was pressed again, left to expire). Also Ctrl-C while an approved grant was being installed; the message names the grant to revoke. |
+
+A broker error includes being over the [request limits](configuration.md#request-limits):
+an agent can have 5 requests pending and make 10 new ones per 10 minutes by
+default. The message says how long to wait. Do not retry sooner: reuse a grant
+or a pending request where you can.
 
 `warden http` exits 0 for any upstream status unless `--fail` is given. A
 refusal or failure by the broker (policy violation, other 409s, timeout, size
