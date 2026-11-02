@@ -45,14 +45,22 @@ pub enum HostKeyError {
         reason: &'static str,
     },
     /// The key could not be generated or encoded.
+    /// (Not a `#[source]`: `ssh_key::Error` only implements `Error` with the
+    /// `std` feature, which stays off, see the workspace manifest.)
     #[error("relay host key: {0}")]
-    Key(#[from] ssh_key::Error),
+    Key(ssh_key::Error),
     /// The blocking file work could not run to completion.
     #[error("relay host key: loading task failed")]
     Task,
     /// The key could not be handed to the SSH server.
     #[error("relay host key: cannot be loaded into the SSH server")]
     Server,
+}
+
+impl From<ssh_key::Error> for HostKeyError {
+    fn from(e: ssh_key::Error) -> Self {
+        Self::Key(e)
+    }
 }
 
 /// The relay's Ed25519 host key. The private half is wiped from memory when

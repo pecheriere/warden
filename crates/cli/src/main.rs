@@ -8,13 +8,14 @@ mod guidance;
 mod http;
 mod sign;
 mod ssh;
+mod ssh_agent;
 
 use std::io::{BufRead as _, IsTerminal as _};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context as _, Result, bail, ensure};
+use anyhow::{Context as _, Result, anyhow, bail, ensure};
 use clap::{Parser, Subcommand};
 use ssh_key::rand_core::OsRng;
 use ssh_key::{Algorithm, Certificate, PrivateKey};
@@ -499,7 +500,9 @@ async fn login_with_key(login: KeyLogin) -> Result<()> {
         server,
         agent,
         ssh_key: Some(SshKeyConfig {
-            public_key: key.to_openssh().context("cannot encode the public key")?,
+            public_key: key
+                .to_openssh()
+                .map_err(|e| anyhow!("cannot encode the public key: {e}"))?,
             agent_socket,
             audience: audience.clone(),
         }),
@@ -544,12 +547,12 @@ async fn cancel(id: &Id) -> Result<()> {
 
 async fn request_ssh(target: TargetName, user: UnixUser, window: Window, goal: Goal) -> Result<()> {
     let (config, client) = client()?;
-    let key =
-        PrivateKey::random(&mut OsRng, Algorithm::Ed25519).context("cannot generate a key")?;
+    let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519)
+        .map_err(|e| anyhow!("cannot generate a key: {e}"))?;
     let public_key = key
         .public_key()
         .to_openssh()
-        .context("cannot encode the public key")?;
+        .map_err(|e| anyhow!("cannot encode the public key: {e}"))?;
     let req = CreateRequest {
         goal,
         access: Access::Ssh {
@@ -939,7 +942,7 @@ fn ssh_setup<'a>(
                 host_keys: &ssh.host_keys,
                 certificate: Some(
                     Certificate::from_openssh(&ssh.certificate)
-                        .context("the grant's certificate is invalid")?,
+                        .map_err(|e| anyhow!("the grant's certificate is invalid: {e}"))?,
                 ),
             },
             &ssh.user,
