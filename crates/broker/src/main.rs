@@ -2,6 +2,7 @@
 
 use std::io::IsTerminal as _;
 use std::path::PathBuf;
+use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -14,7 +15,6 @@ use url::Url;
 use warden_broker::approval::passkeys::{self, Passkeys};
 use warden_broker::audit::AuditLog;
 use warden_broker::config::{Config, DEFAULT_AUDIENCE_PATH, parse_public_url};
-use warden_broker::health;
 use warden_broker::identity::TailscaleServeIdentity;
 use warden_broker::notify::{ChannelSettings, Fallback, Notifier};
 use warden_broker::policy::OnePasswordConnect;
@@ -23,6 +23,7 @@ use warden_broker::relay::host_key::RelayHostKey;
 use warden_broker::relay::{RelayEndpoint, RelayLimits, RelayServer, host_key};
 use warden_broker::requests::{self, Clock as _, Requests, SystemClock};
 use warden_broker::{AppState, agents, audience, audit, build_routers, enrollment, store};
+use warden_broker::{doctor, health};
 use warden_broker_proto::AgentName;
 
 #[derive(Parser)]
@@ -42,6 +43,18 @@ enum Command {
     /// Inspect the audit log.
     #[command(subcommand)]
     Audit(AuditCommand),
+    /// Check the configuration and say what to fix. Read-only unless
+    /// --send-test-notification is given. Exits 1 when a check failed, otherwise
+    /// 0, listing what could not be checked and how to check it by hand.
+    Doctor {
+        /// Send a test notification through every channel: it reaches the
+        /// owner's phone.
+        #[arg(long)]
+        send_test_notification: bool,
+        /// Exit 7 when nothing failed but some check could not run.
+        #[arg(long)]
+        strict: bool,
+    },
     /// Print a one-time code (valid 10 minutes) for enrolling a passkey.
     Enroll,
     /// Probe the agent API's /healthz (for container health checks); exits 0
@@ -130,24 +143,35 @@ async fn open_audit() -> Result<AuditLog> {
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
-    let command = match Cli::parse().command {
-        Command::Agent(command) => command,
+async fn main() -> Result<ExitCode> {
+    match Cli::parse().command {
+        Command::Agent(command) => agent(command).await?,
         Command::Audit(AuditCommand::Verify) => {
             let path = audit_path()?;
             let count =
                 audit::verify(&path).with_context(|| format!("verifying {}", path.display()))?;
             println!("audit log ok: {count} entries");
-            return Ok(());
+        }
+        Command::Doctor {
+            send_test_notification,
+            strict,
+        } => {
+            let report = doctor::live::report(send_test_notification).await;
+            print!("{}", report.render(strict));
+            return Ok(ExitCode::from(report.exit_code(strict)));
         }
         Command::Healthcheck => {
             let listen = health::api_listen(|var| std::env::var(var).ok())?;
-            return health::probe(listen).await;
+            health::probe(listen).await?;
         }
-        Command::Serve => return serve().await,
-        Command::Enroll => return enroll().await,
-        Command::Passkey(command) => return passkey(command).await,
-    };
+        Command::Serve => serve().await?,
+        Command::Enroll => enroll().await?,
+        Command::Passkey(command) => passkey(command).await?,
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+async fn agent(command: AgentCommand) -> Result<()> {
     let pool = store::open(&db_path()?).await?;
     match command {
         AgentCommand::Add {

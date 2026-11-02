@@ -102,11 +102,22 @@ Semantic versioning, one version for the whole workspace.
    `Cargo.lock`, moves `## [Unreleased]` to a dated `## [x.y.z]`
    section in `CHANGELOG.md` (noting any new migration), and updates every
    mention of the previous version in the README and `docs/` (install
-   commands, image tags, attestation examples).
-2. After it merges, the maintainer creates the `vx.y.z` release on that
+   commands, image tags, attestation examples). The notes saying that
+   binaries start after v0.8.1 stay as they are.
+2. After it merges, the maintainer, or an agent the maintainer has
+   confirmed, creates a signed annotated `vx.y.z` tag (`git tag -s`) on that
    commit of `main`. `.github/workflows/release.yml` refuses a tag that
    does not match the version, reruns CI, builds the multi-arch image,
-   pushes it to `ghcr.io/pecheriere/warden` and attaches a build-provenance
-   attestation.
+   pushes it to `ghcr.io/pecheriere/warden`, builds the CLI archives, attests
+   both, and leaves a draft release for the tag, with the archives attached
+   and the changelog section as its notes.
+3. When the workflow has finished, the maintainer, or an agent the
+   maintainer has confirmed, checks the draft and publishes it:
+   `gh release edit vx.y.z --draft=false`. Do not use `gh release create`
+   here: releases are immutable, so a release published without the files
+   can never gain them.
 
-Agents do not create releases or tags.
+An agent creates a tag or a release only after asking the maintainer and
+getting a yes for that specific version and commit. A yes for one release
+does not carry over to the next, and being able to run the command is not
+permission to run it.

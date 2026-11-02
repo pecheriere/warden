@@ -38,14 +38,40 @@ In short:
 
 2. The owner runs `warden-server agent add`, which prints the exact
    `warden login` command for the agent's machine.
-3. Install the CLI there and run that command.
+3. Install the CLI there and run that command. `warden doctor` then checks
+   the setup ([what it checks](configuration.md#checking-an-agent-machine)).
 4. Paste [the instructions](agent-instructions.md) into the agent's `AGENTS.md`
    or `CLAUDE.md`.
 
 The rest of this section gives the details.
 
-Install the CLI on the agent's machine (Rust 1.99 or later, and the OpenSSH
-client tools):
+Install the CLI on the agent's machine. It needs the OpenSSH client tools.
+
+Releases after v0.8.1 attach binaries for macOS arm64, Linux amd64 and Linux
+arm64 (fully static, with no dependency on the distribution's libc). Pick a
+release that lists `warden-*.tar.gz` files on the
+[releases page](https://github.com/pecheriere/warden/releases). Checking the
+attestation needs a logged-in [`gh`](https://cli.github.com/):
+
+```sh
+version=x.y.z         # the release you picked
+platform=linux-amd64  # or linux-arm64, macos-arm64
+file="warden-$version-$platform.tar.gz"
+curl -fLO "https://github.com/pecheriere/warden/releases/download/v$version/$file"
+gh attestation verify "$file" --repo pecheriere/warden \
+  --signer-workflow pecheriere/warden/.github/workflows/release.yml \
+  --source-ref "refs/tags/v$version"
+tar -xzf "$file"
+mkdir -p ~/.local/bin
+install -m 0755 "warden-$version-$platform/warden" ~/.local/bin/warden
+```
+
+`~/.local/bin` must be on your `PATH`. On macOS, download with `curl` as above
+rather than a browser: the binary is not notarized, and macOS may block one
+that a browser downloaded.
+
+For v0.8.1 and earlier, or on another platform, build it instead, with Rust
+1.99 or later:
 
 ```sh
 cargo install --locked --git https://github.com/pecheriere/warden --tag v0.8.1 warden-broker-cli
@@ -229,6 +255,9 @@ A bearer key is accepted only together with the owner's Tailscale login, so
 the agent must run on one of the owner's (untagged) devices.
 
 ### Either way
+
+`warden doctor` checks this machine's setup and says what to fix: see
+[Checking an agent machine](configuration.md#checking-an-agent-machine).
 
 The server URL must be `https://`, or plain `http://` to a loopback address.
 The CLI never sets the `Tailscale-User-Login` header: Tailscale Serve adds it
@@ -458,6 +487,7 @@ is reported once on stderr and never stops the command.
 | 4 | The grant was revoked: reported by `warden request`, or by `warden http` when the broker says the grant it used was revoked. `warden http` then removes the stale local record; request access again. |
 | 5 | `warden ssh` or `warden http` found no active grant (for `warden http`, none that covers the method and path), or the broker said the grant `warden http` used has expired, whose local record is then removed. The message gives the `warden request …` command to run if the task needs it. |
 | 6 | The request was cancelled while `warden request` waited for it (`warden request cancel` from another terminal). |
+| 7 | `warden doctor --strict` found no failure, but could not check everything: see [Checking an agent machine](configuration.md#checking-an-agent-machine). Without `--strict` it exits 0 and lists those items. It exits 1 when a check failed. |
 | 22 | `warden http --fail` got an upstream status of 400 or more. The body is still written to stdout. |
 | 130 | Interrupted with Ctrl-C while `warden request` waited; the pending request was cancelled (or, if the broker did not answer in time or Ctrl-C was pressed again, left to expire). Also Ctrl-C while an approved grant was being installed; the message names the grant to revoke. |
 

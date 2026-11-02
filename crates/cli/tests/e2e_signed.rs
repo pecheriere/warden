@@ -397,6 +397,88 @@ async fn e2e_signed_login_request_approve_and_call() {
 
 /// A broker whose audience is not the one expected or pinned: the login
 /// stops, and a call signed for the old audience says why it failed.
+/// The line of `check` in a doctor report.
+fn doctor_line<'a>(report: &'a str, check: &str) -> &'a str {
+    report
+        .lines()
+        .find(|l| l.split_whitespace().any(|word| word == check))
+        .unwrap_or_else(|| panic!("no line for {check} in {report}"))
+}
+
+/// `warden doctor` on this machine: exit 1 before login; once logged in, exit
+/// 0 listing the version (the broker does not publish it), or 7 with
+/// `--strict`; exit 1 when the key's agent is gone, strict or not. It writes
+/// nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn e2e_doctor_reports_and_changes_nothing() {
+    let broker = TestBroker::new().await;
+    broker.clock.set(now());
+    let api = broker.spawn().await.api;
+    let key = broker.add_signing_agent(AGENT, Algorithm::Ed25519).await;
+    let cli = SignedCli::new(&key).await;
+
+    let output = cli.run(&["doctor"]);
+    let report = text(&output.stdout);
+    assert_eq!(output.status.code(), Some(1), "{report}");
+    assert!(
+        doctor_line(&report, "config").starts_with("FAIL"),
+        "{report}"
+    );
+    assert!(!cli.config_path().exists());
+
+    let login = cli.login(&api, &[]);
+    assert!(login.status.success(), "{}", text(&login.stderr));
+    let config = cli.config();
+
+    let output = cli.run(&["doctor"]);
+    let report = text(&output.stdout);
+    assert_eq!(output.status.code(), Some(0), "{report}");
+    assert!(
+        report.contains("Not checked, so not passed: 1."),
+        "{report}"
+    );
+    assert!(report.contains("\n  version: "), "{report}");
+    for check in [
+        "config",
+        "server.reachable",
+        "audience",
+        "protocol",
+        "ssh-agent.key",
+        "broker.accepts-agent",
+    ] {
+        assert!(doctor_line(&report, check).starts_with("pass"), "{report}");
+    }
+    assert!(
+        doctor_line(&report, "version").starts_with("COULD NOT CHECK"),
+        "{report}"
+    );
+    assert_eq!(cli.config(), config);
+
+    let output = cli.run(&["doctor", "--strict"]);
+    let report = text(&output.stdout);
+    assert_eq!(output.status.code(), Some(7), "{report}");
+    assert!(report.contains("\n  version: "), "{report}");
+
+    for args in [&["doctor"][..], &["doctor", "--strict"][..]] {
+        let output = cli
+            .command()
+            .env("SSH_AUTH_SOCK", cli.root.path().join("no-such-agent.sock"))
+            .args(args)
+            .output()
+            .unwrap();
+        let report = text(&output.stdout);
+        assert_eq!(output.status.code(), Some(1), "{args:?}: {report}");
+        assert!(
+            doctor_line(&report, "ssh-agent.key").starts_with("FAIL"),
+            "{report}"
+        );
+        assert!(
+            doctor_line(&report, "broker.accepts-agent").starts_with("COULD NOT CHECK"),
+            "{report}"
+        );
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn e2e_login_refuses_wrong_audience() {
     let broker = TestBroker::without_relay().await;

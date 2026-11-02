@@ -119,7 +119,7 @@ pub fn key_next_steps(
     format!(
         "On the agent machine, run:\n\n  {command}\n\n--ssh-key is the path of the key's .pub \
          file there; change it if the file is elsewhere. The private key stays in the ssh-agent.\
-         \n{note}"
+         \nThen `warden doctor` checks the setup.\n{note}"
     )
 }
 
@@ -140,7 +140,8 @@ pub fn bearer_next_steps(agent: &AgentName, server: Option<&Url>) -> String {
          server = \"{server}\"\n  agent = \"{agent}\"\n\n\
          and set WARDEN_AGENT_KEY from a secret manager whenever warden runs.\n\n\
          Never put the key on a command line or in a repository. A bearer key works only from \
-         a device of the owner's Tailscale login, not from a tagged machine.\n{note}"
+         a device of the owner's Tailscale login, not from a tagged machine.\n\
+         Then `warden doctor` checks the setup.\n{note}"
     )
 }
 
@@ -248,6 +249,16 @@ mod tests {
         assert!(!known.contains("<agent-api-url>"), "{known}");
         let unknown = bearer_next_steps(&agent(), None);
         assert!(unknown.contains("Replace <agent-api-url>"), "{unknown}");
+    }
+
+    #[test]
+    fn steps_end_with_the_setup_check() {
+        for steps in [
+            key_next_steps(&agent(), Some(&server()), None),
+            bearer_next_steps(&agent(), Some(&server())),
+        ] {
+            assert!(steps.contains("`warden doctor`"), "{steps}");
+        }
     }
 
     #[test]
