@@ -291,8 +291,13 @@ These were recorded during implementation and are accepted for this release.
     and there is no shared limit, so one agent cannot use up another's allowance
     or stop the owner from deciding. An agent that uses up its own waits at most
     the window (an hour at the highest setting) for a new request, or 10 minutes
-    for a pending slot. A key that is stolen can only block its own agent. A
-    clock set back can extend the wait by as much as it moved.
+    for a pending slot. A key that is stolen can only block its own agent.
+  - **A clock set back is not a long block.** Requests dated ahead of the clock
+    do not count towards the window, so a step back gives an agent one fresh
+    allowance rather than holding the limit until the clock catches up. Pending
+    requests dated ahead of it do count, as they really are pending until they
+    expire: `Retry-After` then gives that longer wait, and the agent can cancel
+    one to free a slot at once. An agent cannot move the broker's clock.
   - **Refusals cannot fill the audit log.** An agent can send refused requests as
     fast as it can sign them. The first is audited as `request_limited` and the
     rest are counted and written at most once a minute; the count is written by
@@ -306,7 +311,9 @@ These were recorded during implementation and are accepted for this release.
     first, so each refused request still reads the item from 1Password Connect
     and, for a signed request, verifies a signature and stores a nonce. This is
     bounded by who the tailnet policy lets reach the API, as for other refused
-    requests.
+    requests. 1Password Connect is shared, so this is the one way a flooding agent
+    can affect others: by slowing a backend they also read. The server log has
+    one warning per agent per minute at most.
 - **Goals are free text.** The goal is a single line of at most 500 characters
   without control characters or invisible format characters (bidi overrides,
   zero-width characters). The owner decides on the goal alone, and a

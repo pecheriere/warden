@@ -62,7 +62,10 @@ saying how long to wait. A request held back by the limit on new requests waits
 for the window at most, so 10 minutes by default and an hour at the highest
 setting. One held back by the pending limit waits 10 minutes at most, when a
 pending request expires, and less if the owner decides one or the agent cancels
-one. Other agents and the owner's own actions are not affected.
+one. An agent's refusals do not use up another agent's allowance or stop the
+owner from deciding. They are not free, though: each refused request is first
+checked against the policy, which reads 1Password Connect, shared with everyone
+else.
 
 The first refusal is recorded in the audit log as `request_limited`. Further
 ones are counted and written at most once a minute. The owner gets one

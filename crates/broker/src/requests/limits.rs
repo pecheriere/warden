@@ -42,12 +42,14 @@ const PENDING_AT_LIMIT: &str = "\
     WHERE agent = ?1 AND created_at > ?2 AND status = 'pending' AND expires_at > ?3 \
     ORDER BY created_at DESC LIMIT 1 OFFSET ?4";
 
-/// The requests of an agent (`?1`) made after `?2`, newest first; `?3` skips to
-/// the one that is at the limit, which is found through the index without
-/// counting. A row dated after now (the clock was set back) still counts.
+/// The requests of an agent (`?1`) made after `?2` and up to now (`?4`), newest
+/// first; `?3` skips to the one that is at the limit, which is found through
+/// the index without counting. A row dated after now (the clock was set back)
+/// does not count: it would hold the limit until the clock caught up, however
+/// far that is, and the window must stay the longest this limit can last.
 const NEW_AT_LIMIT: &str = "\
     SELECT created_at FROM requests \
-    WHERE agent = ?1 AND created_at > ?2 \
+    WHERE agent = ?1 AND created_at > ?2 AND created_at <= ?4 \
     ORDER BY created_at DESC LIMIT 1 OFFSET ?3";
 
 /// How many requests each agent may make.
@@ -114,8 +116,7 @@ impl LimitRefusal {
     }
 }
 
-/// Seconds from `now` to `at`, at least 1 and at most `longest`: the wait is
-/// worth stating even if the clock was set back since `at` was computed.
+/// Seconds from `now` to `at`, at least 1 and at most `longest`.
 fn wait_until(at: i64, now: i64, longest: u32) -> u32 {
     u32::try_from(at.saturating_sub(now))
         .unwrap_or(if at < now { 1 } else { longest })
@@ -151,12 +152,13 @@ pub(super) async fn check(
         .fetch_optional(&mut *conn)
         .await?;
     if let Some(row) = pending {
-        let longest = u32::try_from(PENDING_TTL_SECS)
-            .map_err(|_| RequestError::Internal("pending time out of range"))?;
         let expires_at: i64 = row.try_get("expires_at")?;
+        // Not capped at the pending time: a pending request dated ahead of a
+        // clock set back really is pending until then, and the agent is told
+        // so. It can cancel one to free a slot at once.
         return Err(RequestError::Limited(LimitRefusal::Pending {
             max: limits.max_pending,
-            retry_after_secs: wait_until(expires_at, now, longest),
+            retry_after_secs: wait_until(expires_at, now, u32::MAX),
         }));
     }
     let window = i64::from(limits.window_secs);
@@ -164,6 +166,7 @@ pub(super) async fn check(
         .bind(agent.as_str())
         .bind(now - window)
         .bind(i64::from(limits.max_new) - 1)
+        .bind(now)
         .fetch_optional(&mut *conn)
         .await?;
     if let Some(row) = recent {
@@ -300,9 +303,16 @@ impl Requests {
     /// failure here is logged and the next refusal tries again.
     pub(super) async fn record_refusal(&self, agent: &AgentName, refusal: LimitRefusal) {
         let now = self.clock.now();
-        tracing::warn!(agent = %agent, %refusal, "request refused by a limit");
         let steps = self.refusals.note(agent, refusal, now);
+        // As often as the audit entry, not per refusal: refused requests must
+        // not be able to fill the server's log either.
         if let Some(tally) = steps.audit {
+            tracing::warn!(
+                agent = %agent,
+                %refusal,
+                refused = tally.pending.saturating_add(tally.rate),
+                "requests refused by a limit"
+            );
             self.write_tally(agent, tally).await;
         }
         if steps.notify {

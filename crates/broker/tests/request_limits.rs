@@ -336,3 +336,49 @@ async fn wait_for_audit_entries(broker: &TestBroker, kind: &str, count: usize) {
     .await
     .expect("audit entries within 5 s");
 }
+
+#[tokio::test]
+async fn a_clock_set_back_does_not_hold_the_rate_limit_past_its_window() {
+    let broker = broker().await;
+    let key = broker.add_agent("build-agent").await;
+    let first = created_id(&broker, &key, 0).await;
+    let second = created_id(&broker, &key, 1).await;
+    cancel(&broker, &key, &first).await;
+    let third = created_id(&broker, &key, 2).await;
+    cancel(&broker, &key, &second).await;
+    cancel(&broker, &key, &third).await;
+    assert_eq!(
+        create(&broker, &key, 3).await.status,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+
+    // Requests dated ahead of the clock do not count, so nothing outlasts the
+    // wait the agent is told, and requests made from here on count as usual.
+    broker.clock.advance(-1000);
+    for slot in 3..5 {
+        let id = created_id(&broker, &key, slot).await;
+        cancel(&broker, &key, &id).await;
+    }
+    created_id(&broker, &key, 5).await;
+    let refused = create(&broker, &key, 6).await;
+    assert_eq!(refused.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(refused.header("retry-after"), "300");
+    broker.clock.advance(300);
+    created_id(&broker, &key, 6).await;
+}
+
+#[tokio::test]
+async fn after_a_clock_set_back_the_pending_wait_is_stated_as_it_is() {
+    let broker = broker().await;
+    let key = broker.add_agent("build-agent").await;
+    let first = created_id(&broker, &key, 0).await;
+    created_id(&broker, &key, 1).await;
+    broker.clock.advance(-1000);
+    let refused = create(&broker, &key, 2).await;
+    assert_eq!(refused.status, StatusCode::TOO_MANY_REQUESTS);
+    // They expire 600 s after they were made, 1600 s from this clock's now.
+    assert_eq!(refused.header("retry-after"), "1600");
+    // Cancelling frees a slot at once, whatever the clock says.
+    cancel(&broker, &key, &first).await;
+    created_id(&broker, &key, 2).await;
+}
