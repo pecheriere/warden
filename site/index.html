@@ -103,19 +103,19 @@
   <div class="wrap">
     <p class="label">Why</p>
     <h2 id="why-h">Agents need access. The usual ways to give it fall short.</h2>
-    <p class="intro">An agent that diagnoses or operates your own infrastructure has to reach servers, appliances and the APIs running on them. Often it does this while you are not at the computer.</p>
+    <p class="intro">An agent that diagnoses or operates your own infrastructure has to reach servers, appliances and the APIs running on them. You leave it working for you and get on with something else, often away from the computer it runs on.</p>
     <div class="why-grid">
       <article class="card">
         <h3>A reusable key on the agent's machine</h3>
-        <p>An SSH key, API token or vault service account token works unattended. It also works for anything, at any time, and the agent, or whatever compromises it, holds it for good.</p>
+        <p>An SSH key, API token or vault service account token works unattended. It also works for anything, at any time, and the agent, or whatever compromises it, holds it for good. warden exists because that is not an acceptable price for never getting stuck: no password on the agent's disk, and no access that is always on.</p>
       </article>
       <article class="card">
         <h3>Approving each use at the computer</h3>
-        <p>A password manager can keep the secret from the agent, but each use is approved on the computer, with the desktop app unlocked. Overnight, or on another machine, the request waits for a fingerprint nobody can give.</p>
+        <p>A password manager can keep the secret from the agent, but each use is approved on the computer, with the desktop app unlocked. Away from that computer, or with the agent on another machine, the request waits for a fingerprint you cannot give from there. Nothing is more frustrating than coming back to your Mac to find the agent has sat on a 1Password prompt the whole time.</p>
       </article>
       <article class="answer">
         <h3>warden moves the approval to your phone</h3>
-        <p>The agent asks for one piece of access, with a stated goal and a short window. You approve or deny it from wherever you are. Secrets stay in your vault and on your warden server.</p>
+        <p>The agent asks for one piece of access, with a stated goal and a short window. You approve or deny it from wherever you are. Secrets stay in your vault and on your warden server. It still needs a person: if nobody answers, the request expires after 10 minutes and the agent has to ask again, and a grant lasts at most 4 hours. If you are asleep, the agent waits.</p>
       </article>
     </div>
   </div>

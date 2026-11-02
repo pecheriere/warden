@@ -39,10 +39,11 @@ For a real setup, go on to the [recommended setup](#recommended-setup) and the
 
 ## Who warden is for
 
-warden is for people who run AI agents or scripts, often unattended, and
-want them to reach their own servers, devices and APIs without holding a
-standing credential. You run the server yourself, so you need to be
-comfortable administering a Linux host and a tailnet.
+warden is for people who leave AI agents or scripts working for them while
+they get on with something else, and want them to reach their own servers,
+devices and APIs without holding a standing credential. You run the server
+yourself, so you need to be comfortable administering a Linux host and a
+tailnet.
 
 Each warden server has one owner, who approves every request. One owner can
 have many agents, but there are no teams, roles or shared approvals.
@@ -66,14 +67,18 @@ Password managers already keep secrets away from agents. With 1Password,
 for example, an agent can use an SSH key through the SSH agent or run a
 command with `op run`, and never see the secret itself. But each use is
 approved on the computer, with the desktop app unlocked. That works while
-you sit next to the agent. It does not work unattended: overnight, while
-you are away, or when the agent runs on another machine. The request waits
-for an unlock or a fingerprint that nobody can give.
+you sit next to the agent. It does not work when you are away from that
+computer, or when the agent runs on another machine. The request waits for
+an unlock or a fingerprint you cannot give from where you are. Nothing is more
+frustrating than coming back to your Mac to find the agent has sat on a
+1Password prompt the whole time.
 
 The usual way around this is a standing credential on the agent's machine,
 such as an API token, an SSH key or a vault service account token. Those
 work unattended, but they also work for anything at any time, and the
-agent (or whatever compromises it) holds them for good.
+agent (or whatever compromises it) holds them for good. warden exists because
+that is not an acceptable price for never getting stuck: no password on the
+agent's disk, and no access that is always on.
 
 Password managers are starting to close this gap. As of late 2026,
 1Password lets some personal agents sign in to websites after you approve
@@ -87,6 +92,13 @@ warden takes a different approach: approval moves to your phone. The agent
 asks for one piece of access, for one stated goal and a short window. You
 approve or deny it from wherever you are. The secrets stay in your vault
 and on the warden server, and the agent only gets access that expires.
+
+warden still needs a person. It frees you from the computer, not from
+deciding. If nobody answers, the request expires after 10 minutes and the
+agent has to ask again, and a grant lasts at most 4 hours. So an agent working
+through the night stops when its grant ends, or when it needs something you
+did not approve while you are asleep. That is the trade: you stay in the loop,
+and the agent holds no access that lasts.
 
 ## How it works
 
