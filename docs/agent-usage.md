@@ -345,9 +345,11 @@ The approval page shows the same fingerprint. A mismatch means the request
 the owner sees is not yours, and they should deny it.
 
 Only one request per agent and target (or secret and scope) can be pending
-at a time. If another one is already waiting, `warden request` stops and
-prints that request's fingerprint. It does not wait on a request it did not
-make.
+at a time. An identical request (same goal, window and key) waits on the
+pending one. If the pending one differs, `warden request` stops without making
+a new one, as it does not wait on a request it did not make. It prints the
+pending request's ID and fingerprint, says that it expires within 10 minutes of
+being made, and gives the command to withdraw it: `warden request cancel <id>`.
 
 ### Waiting for the decision
 

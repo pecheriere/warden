@@ -160,6 +160,9 @@ All notable changes to this project are recorded here. The format follows
   reports are handled, credit for reporters, where vulnerabilities are
   published, and how to get a fix, including that a pinned Docker image does not
   change until you change the pin.
+- When `warden request` stops because a different request is already pending, it
+  prints that request's ID, how to withdraw it (`warden request cancel <id>`) and
+  that it expires within 10 minutes of being made, not only its fingerprint.
 
 ### Security
 

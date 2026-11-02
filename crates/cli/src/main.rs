@@ -723,10 +723,7 @@ async fn request_grant(
         // The broker answered with another pending request of this agent for
         // the same target or secret, made with a different goal, window or
         // (for SSH) key: approving it would not grant what was asked here.
-        bail!(
-            "a request {subject} is already pending (fingerprint {}); wait for it to be decided or expire",
-            created.fingerprint
-        );
+        bail!(guidance::already_pending(subject, &created));
     }
     eprintln!(
         "request {}, fingerprint {} — waiting for approval…",
