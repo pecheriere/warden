@@ -287,6 +287,7 @@ it; follow it for a real setup.
 | [Agent instructions](docs/agent-instructions.md) | A block to paste into an agent's `AGENTS.md` or `CLAUDE.md`. |
 | [Examples](docs/agent-examples.md) | An SSH deployment and an API call, end to end. |
 | [Agent protocol](docs/agent-protocol.md) | The agent API, for writing another client. |
+| [Reproducing a build](docs/reproducing-builds.md) | Rebuilding a release and comparing it with what was published. |
 | [Threat model](docs/threat-model.md) | What warden protects, what it does not, and what it assumes. |
 | [Design](docs/design.md) | The design and its decisions. |
 | [Design language](docs/design-language.md) | The approval UI's visual design. |

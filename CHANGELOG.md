@@ -21,6 +21,12 @@ All notable changes to this project are recorded here. The format follows
 - Project documents: `CONTRIBUTING.md` (where to discuss, reporting bugs, the
   test policy), `GOVERNANCE.md`, `CODE_OF_CONDUCT.md`, `docs/roadmap.md`,
   `docs/building.md` and `docs/upgrading.md`.
+- Release builds are meant to be repeatable from the next release:
+  [docs/reproducing-builds.md](docs/reproducing-builds.md) says how to rebuild one
+  and what must match, and a workflow builds each output twice and compares them.
+  The CLI no longer holds the build machine's paths, the image's times come from
+  the commit, BuildKit is pinned, and `rust-toolchain.toml` names an exact Rust
+  version. `scripts/package-cli.sh` now needs `python3`.
 - `warden-demo`: try the approval flow on one machine with no setup
   ([docs/demo.md](docs/demo.md)). A separate, unpublished binary that is not
   part of `warden-server` or the image; a CI guard keeps it that way. It is not
