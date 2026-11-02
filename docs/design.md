@@ -40,7 +40,9 @@ and secure by construction.
 3. The agent never receives a reusable secret: SSH uses ephemeral keys and
    short-lived certificates; relay and proxy credentials never leave the
    broker.
-4. Every request, decision, grant and use is recorded in an audit log.
+4. Every request, decision and grant, and every use that passes through warden,
+   is recorded in an audit log. Certificate logins go straight to the target, so
+   only the target's `sshd` logs them.
 5. The approval is bound to the exact request and window (a passkey assertion
    checked against state the server keeps for that request and window; see
    [Approval binding](threat-model.md#approval-binding)), and only the owner's
@@ -52,8 +54,9 @@ and secure by construction.
 - Multiple approvers, quorum, teams, RBAC.
 - Keystroke/session recording for SSH (session start/end and bytes only).
 - Revocation of already-issued certificates on target hosts (KRL
-  distribution). Short windows are the mitigation; revoke stops new issuance
-  and kills relay sessions.
+  distribution). Short windows limit new logins; revoke stops new issuance
+  and kills relay sessions. A login already open on a certificate target outlives
+  both, as `sshd` checks a certificate only when it authenticates.
 - Secret managers other than 1Password, and notifiers other than the built-in
   Home Assistant Companion and ntfy channels. The interfaces must make adding
   them easy; implementations are not in v1.
@@ -180,8 +183,9 @@ enabled ones in priority order in `WARDEN_NOTIFY`.
    - relay: the relay's address and host key (the agent logs in with the
      approved ephemeral key);
    - proxy: a grant id usable for proxied calls until expiry.
-7. **Use.** Every use (SSH cert issuance, relay session start/end, proxied
-   call: method, URL, status, bytes) is audited against the grant. For relay
+7. **Use.** Every use warden takes part in (SSH cert issuance, relay session
+   start/end, proxied call: method, URL, status, bytes) is audited against the
+   grant. The logins made with a certificate are not: warden is not on that path. For relay
    sessions and proxied calls the entry comes first, and without it nothing
    happens. A certificate's entry comes after the audited approval, and if it
    cannot be written, this is only logged.
@@ -572,8 +576,8 @@ agent, in one of two ways:
   server-side only as a hash, sent as `Authorization: Bearer` on every API
   call, and accepted only together with the owner's Serve identity header.
   A request carrying both a bearer key and `Warden-*` headers is refused. The
-  agent is allowed to know its key: it can only request access, never
-  approve.
+  agent is allowed to know its key: it can request access and use the agent's
+  grants, never approve. See the threat model for what a copied key can do.
 - **Never through Funnel.** The agent API is for tailnet peers only. Every
   route of its listener, `/healthz` and `/v1/info` included, refuses with
   401 a request carrying `Tailscale-Funnel-Request` (set by Serve on

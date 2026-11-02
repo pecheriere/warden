@@ -676,7 +676,8 @@ first. Signed; no body. `200` with a JSON array of grants, each
 End one of the agent's grants as soon as the work is done. Signed; no
 body. Relay sessions on the grant are killed and `api` calls refused.
 Certificates already issued stay valid on the target until they expire,
-which is why windows are short.
+which is why windows are short, and a login already open on the target continues
+after that. End your own sessions when you revoke.
 
 - `204`: revoked (also if it already was); no body.
 - `404` `{"error":"not found"}`: unknown id, or another agent's grant.

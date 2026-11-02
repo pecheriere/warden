@@ -112,7 +112,7 @@ and on the warden server, and the agent only gets access that expires.
    opens the approval page, reachable only from your phone over Tailscale,
    and you approve with a passkey, or deny.
 3. **Use.** The agent gets exactly what you approved, for the window you
-   chose, and every step is written to a tamper-evident audit log.
+   chose, and warden writes what it does to a tamper-evident audit log.
 
 What warden can grant:
 
@@ -288,14 +288,16 @@ it; follow it for a real setup.
   enrolled device, on an approval page that only your phone can reach.
 - **Bounded grants.** At most four hours, one target or secret, the account
   or methods you approved. API requests are read-only unless the agent asks
-  for more, and the page says so.
+  for more, and the page says so. On a certificate target the limit is on new
+  logins: [one already open continues](docs/threat-model.md#accepted-residual-risks).
 - **No standing secrets on the agent machine.** SSH keys are made per
   request and live only in memory; API and relay credentials never leave
   warden; a key-signed agent stores nothing secret.
 - **Nothing on the internet.** warden is reachable only over your tailnet,
   never through Funnel.
-- **Audited.** Every request, decision and use goes to a hash-chained audit
-  log. Secrets never reach the log or the notifications.
+- **Audited.** Every request, decision, relay session and API call goes to a
+  hash-chained audit log. Certificate logins go straight to the target, so
+  only its `sshd` logs them. Secrets never reach the log or the notifications.
 
 warden does not protect against whoever controls the warden host (it is the
 root of trust) or the 1Password vault, against an approved agent or code on

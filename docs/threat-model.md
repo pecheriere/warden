@@ -36,10 +36,13 @@ warden does **not** protect against:
 - **The owner approving a misleading goal.** warden shows the goal, the
   scope and a fingerprint; it cannot judge whether the goal is honest.
 - **What happens on the target or API during the window.** An approved
-  shell or API scope can do anything it permits until the grant ends.
+  shell or API scope can do anything it permits until the grant ends. On a
+  certificate target warden does not see the logins at all, and a login already
+  open does not end with the grant.
 - **Instant revocation everywhere.** An issued certificate stays valid on
-  its target until it expires (issue
-  [#35](https://github.com/pecheriere/warden/issues/35)), and a proxied API
+  its target until it expires, and an open login to a certificate target continues
+  even after that (issue
+  [#35](https://github.com/pecheriere/warden/issues/35)). A proxied API
   call already in flight runs to completion (issue
   [#44](https://github.com/pecheriere/warden/issues/44)).
 
@@ -54,7 +57,7 @@ out.
 |---|---|
 | Owner (phone, workstation) | Root of trust. Holds the passkey. Edits the 1Password vault. |
 | The warden host (its root, its container runtime) | Root of trust. Can read everything warden holds and act as warden. |
-| Agent (for example an AI coding agent on the owner's workstation) | Semi-trusted: well-intentioned but may be prompt-injected. Bounded by its stated goal, the approved window, and the targets and users the vault allows. It can only request access, never approve it. |
+| Agent (for example an AI coding agent on the owner's workstation) | Semi-trusted: well-intentioned but may be prompt-injected. Bounded by its stated goal, the approved window, and the targets and users the vault allows. It can request access and use what was granted, never approve it. |
 | warden server | Trusted. Holds a read-only 1Password Connect token in memory, and for short times what it reads with it: the SSH CA private key, from the read at an approval until the certificate is signed, API secrets during a call, and relay login credentials (see below). Compromise of the server is compromise of everything it brokers, so it is hardened accordingly. |
 | 1Password Connect | Trusted secret backend. Reachable only from warden, on its own network, and unable to reach warden's listeners. |
 | Notifiers (Home Assistant Companion, ntfy, push providers) | Untrusted doorbells. They receive the goal text, agent, target and a link, and nothing else. They cannot approve anything. Which channels are used is fixed at startup from a compile-time set (`WARDEN_NOTIFY`); agents cannot influence it. |
@@ -249,15 +252,24 @@ These were recorded during implementation and are accepted for this release.
 - **Bearer agent keys are bearer credentials.** Anyone who obtains a bearer
   agent key can replay it from a host that can reach the API with the
   owner's login (key-signed agents do not have this problem; switch an agent
-  with `warden-server agent set-key`). The impact is bounded: a key
-  can only create requests, and every request still needs a passkey approval
-  that shows the agent name and goal. A leaked key is revoked with
-  `warden-server agent revoke`.
-- **Certificates cannot be revoked before they expire.** Revoking a grant
-  stops new issuance and the CLI's use of it, but a certificate already issued
-  stays valid on target hosts until it expires. The windows are short (at most
-  four hours) and each certificate is bound to a key that exists only in the
-  agent's memory. Distributing a revocation list to targets is out of scope.
+  with `warden-server agent set-key`). The key is the agent, so whoever holds it
+  can use the agent's live API grants within their scope, read the answers, list
+  and revoke its grants, and cancel its requests. A signing key copied from a file
+  gives the same, without needing the owner's login. Neither can approve anything:
+  each new request still needs a passkey approval that shows the agent name and
+  goal. Neither can use a live SSH grant, which needs that grant's ephemeral key. A
+  leaked key is revoked with `warden-server agent revoke`, which ends all of this.
+- **Certificates cannot be revoked before they expire, and open logins outlive
+  them.** Revoking a grant stops new issuance and the CLI's use of it, but a
+  certificate already issued stays valid on target hosts until it expires. The
+  windows are short (at most four hours) and each certificate is bound to a key
+  that exists only in the agent's memory, which limits new logins. It does not
+  limit a login already open: `sshd` checks a certificate when it authenticates,
+  so a session, and whatever it left running, continues after the window and after
+  a revocation, until something on the target ends it. warden cannot see or end it.
+  Use relay mode where sessions must end on time.
+  [Ending them by hand](assurance-case.md#the-ssh-ca-key) is possible. Distributing
+  a revocation list to targets is out of scope.
 - **Revocation from the server CLI is not instant for waiting clients.** A
   `warden-server agent revoke` run from the command line changes the database,
   but the running server only re-reads it when a long poll wakes, so a waiting
@@ -292,6 +304,9 @@ These were recorded during implementation and are accepted for this release.
   notifies the owner. That can wear the owner down and make a careless approval
   more likely, and the `requests` table and audit log grow without limit. Revoking
   the agent stops it.
+- **Certificate logins are not audited.** They go straight to the target. warden
+  records the approval and the certificate, and the target's `sshd` logs the login
+  with the certificate's key id. Ship those logs if you need that trail.
 - **A certificate's `cert_issued` entry can be missing.** The approval is committed
   and audited first. If writing the entry for the certificate then fails, this is
   logged and the grant stands. The `approved` entry still names the grant.

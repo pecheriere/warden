@@ -34,11 +34,11 @@ its guarantees hold only under the
 |---|---|---|
 | R1 | No access without the owner's passkey. An agent can only ask. | [`approve_finish`](../crates/broker/src/approval/mod.rs) issues a grant only after [`finish_approval`](../crates/broker/src/approval/passkeys.rs) verifies the assertion, with user verification required. |
 | R2 | An approval applies to the one request and window the owner saw. | [`ApprovalBinding`](../crates/broker/src/approval/passkeys.rs), checked again in `approve_finish`. See [how it binds](threat-model.md#approval-binding), and its limit below. |
-| R3 | Access is bounded in time and scope, and the agent cannot widen it. | `check_policy` in [`approval/mod.rs`](../crates/broker/src/approval/mod.rs); [`ssh_ca::issue`](../crates/broker/src/ssh_ca.rs); [`proxy/rules.rs`](../crates/broker/src/proxy/rules.rs); `scope` in [`policy/mod.rs`](../crates/broker/src/policy/mod.rs). |
+| R3 | Access is bounded in time and scope, and the agent cannot widen it. On a certificate target the time bound applies to new logins only: [an open login outlives the certificate](threat-model.md#accepted-residual-risks). | `check_policy` in [`approval/mod.rs`](../crates/broker/src/approval/mod.rs); [`ssh_ca::issue`](../crates/broker/src/ssh_ca.rs); [`proxy/rules.rs`](../crates/broker/src/proxy/rules.rs); `scope` in [`policy/mod.rs`](../crates/broker/src/policy/mod.rs). |
 | R4 | The agent never receives a reusable secret: no CA key, API secret or relay credential. | Grant types in [`proto/src/lib.rs`](../crates/proto/src/lib.rs) carry no secret field. [`proxy/client.rs`](../crates/broker/src/proxy/client.rs) adds the secret itself and [`proxy/redact.rs`](../crates/broker/src/proxy/redact.rs) redacts answers. |
 | R5 | A secret reaches only the place the owner configured. | Exact origin match in `check_url` ([`proxy/rules.rs`](../crates/broker/src/proxy/rules.rs)); no redirects and no proxy in `client_for` ([`proxy/client.rs`](../crates/broker/src/proxy/client.rs)); pinned host keys in `check_server_key` ([`relay/onward.rs`](../crates/broker/src/relay/onward.rs)). |
 | R6 | Secrets are not logged, audited, sent to notifiers or put in errors. | `Debug` of secret types prints `<redacted>` ([`policy/mod.rs`](../crates/broker/src/policy/mod.rs), [`agents.rs`](../crates/broker/src/agents.rs), [`config.rs`](../crates/broker/src/config.rs)); fixed upstream errors in `ProxyError` ([`proxy/client.rs`](../crates/broker/src/proxy/client.rs)); the `Scrubber` in [`doctor/mod.rs`](../crates/broker/src/doctor/mod.rs). |
-| R7 | Every request, decision, grant and use is recorded, and a change to the record can be detected unless the whole file is rewritten. | [`audit.rs`](../crates/broker/src/audit.rs) (hash chain), `audit_and_commit` in [`requests.rs`](../crates/broker/src/requests.rs). See [the exceptions](security-assessment.md#findings-of-this-review). |
+| R7 | Every request, decision and grant is recorded, and every use that passes through warden: relay sessions and proxied calls. A change to the record can be detected unless the whole file is rewritten. **warden does not see certificate logins** (B9 below): it records the issue, and only the target's `sshd` logs the login. | [`audit.rs`](../crates/broker/src/audit.rs) (hash chain), `audit_and_commit` in [`requests.rs`](../crates/broker/src/requests.rs). Exceptions: findings [F4, F5 and F15](security-assessment.md#findings-of-this-review). |
 | R8 | When state cannot be read, warden refuses. | Fail-closed paths are listed under [Fail-safe defaults](#3-secure-design-principles). |
 | R9 | An agent always gets an explicit outcome. | `RequestStatus` in [`proto/src/lib.rs`](../crates/proto/src/lib.rs). |
 | R10 | The demo cannot reach a real deployment. | [`scripts/check-demo-not-shipped.sh`](../scripts/check-demo-not-shipped.sh), run in CI, also against the built image. |
@@ -78,7 +78,7 @@ trusted, but it is weaker than a signature over the request itself.
 | **B6** Broker to notifiers | The agent, the access, a shortened goal, a link | The notifier and its push provider | A link alone approves nothing; redirects off; errors drop the URL | [`notify/mod.rs`](../crates/broker/src/notify/mod.rs) |
 | **B7** Broker to API origin | The real secret, the agent's call; the answer | The origin's answer, the agent's call | Rules checked before sending; verified TLS; compressed answers refused; size and time limits; redaction | [`proxy/`](../crates/broker/src/proxy/mod.rs) |
 | **B8** Broker to relay target | The onward login | The target, until its pinned key is proven | Host key checked before the credential is sent; only pinned algorithms; channels opened by the target are refused | [`relay/onward.rs`](../crates/broker/src/relay/onward.rs) |
-| **B9** Agent to certificate target | A certificate limited to one principal | warden is not on this path | The target's `sshd` decides, using the [principal mapping](threat-model.md#deployment-assumptions); warden sees no logins | [`ssh_ca.rs`](../crates/broker/src/ssh_ca.rs), [`cli/src/ssh.rs`](../crates/cli/src/ssh.rs) |
+| **B9** Agent to certificate target | A certificate limited to one principal | warden is not on this path | The target's `sshd` decides, using the [principal mapping](threat-model.md#deployment-assumptions); warden sees no logins and cannot end one | [`ssh_ca.rs`](../crates/broker/src/ssh_ca.rs), [`cli/src/ssh.rs`](../crates/cli/src/ssh.rs) |
 
 Two more lines matter:
 
@@ -333,7 +333,7 @@ a live deployment**. Try one before you need it.
 | **Notifier URL or token** | Environment, or a `_FILE` | Replace it and restart. | As above. |
 | **Key-signed agent's key** | The agent's machine; the broker holds the public half | Make a new key, then `warden-server agent set-key <name> '<line>'`. | The old key stops at once, even with the server running: the key is read for every request. Grants stay. Keys already enrolled by any agent, revoked or not, are refused. |
 | **Bearer agent key** | The agent's machine; the broker holds a hash | There is no command to replace it. Better: move to a signing key with `agent set-key`. Otherwise `agent revoke <name>` and `agent add` under a **new** name, as a revoked name stays taken. | `set-key` deletes the bearer key at once. `revoke` also ends the agent's requests and grants. |
-| **Ephemeral key, certificate** | The agent's per-grant `ssh-agent` | Nothing to do: a new one for each request. | Ends with the window. |
+| **Ephemeral key, certificate** | The agent's per-grant `ssh-agent` | Nothing to do: a new one for each request. | No new login after the window. A login already open continues. |
 | **Relay host key** | The file at `WARDEN_RELAY_HOST_KEY_PATH` | Stop warden, move the file away, start warden: it makes a new one. | Each relay grant stores the old public key, so its logins are refused by the agent's `ssh` until it asks again. Revoke those grants first. |
 | **Passkey** | The owner's authenticator; the broker holds the public key | `warden-server enroll` to add the new one, `warden-server passkey remove <id>` to remove the old one. | Takes effect at once. |
 | **Passkey's relying party** | `WARDEN_PUBLIC_URL` | Changing the host invalidates every passkey: enroll again. | |
@@ -353,13 +353,39 @@ hold several CA keys.
    to confirm that a target accepts the new certificate.
 5. Wait for the old certificates to end. Four hours after step 3 is enough, as
    that is the longest window.
-6. Remove the old public key from every target.
+6. Remove the old public key from every target, and reload `sshd` if the key was
+   in a `TrustedUserCAKeys` file.
 
-If the old key may be compromised, do step 6 straight away, without waiting. It
-also ends every certificate that key signed, including live ones, which is the
-one way to [revoke certificates](threat-model.md#accepted-residual-risks) today.
-Agents with a live grant then have to ask again. Anyone holding the old key could
-have signed any principal, so also read the targets' logs for the period.
+**If the old key may be compromised**, or you must cut certificate access off now,
+do step 6 straight away. That refuses new logins with any certificate that key
+signed, and it is the one way warden's setup offers to
+[revoke certificates](threat-model.md#accepted-residual-risks) today. Agents with a
+live grant have to ask again.
+
+**It does not end sessions that are already open**, and neither does a certificate
+expiring: `sshd` checks a certificate when it authenticates, and not afterwards.
+We confirmed this on a throwaway OpenSSH 10.3 server: a session kept running after
+its certificate expired and after the CA was removed and `sshd` reloaded, while new
+logins were refused. So on each target, also:
+
+7. See what the account is running: `ps -u <user>`. `who` is not enough, as it
+   misses sessions without a terminal.
+8. If the account is [used by warden alone](ssh-targets.md#the-recommended-setup-one-user-per-agent),
+   end all of it with `pkill -KILL -u <user>`. That also ends what a session left
+   running in the background. On an account that does other work too, this would
+   stop that as well, so kill the processes you identified instead.
+9. Look for what would outlast this: cron jobs, added `authorized_keys` lines,
+   services, and anything started under another account through `sudo`, which
+   `pkill -u` does not match. warden cannot see any of it. Anyone holding the old
+   key could also have signed any principal, so read each target's `sshd` log for
+   the period: it names each certificate's key id and CA.
+
+These steps have not been run as a drill on a real target. Check that they work on
+yours, in particular on an appliance whose tools differ.
+
+To refuse one certificate and not the whole CA, `sshd`'s `RevokedKeys` setting takes
+a list of keys ([`sshd_config(5)`](https://man.openbsd.org/sshd_config#RevokedKeys)).
+It too applies to new logins only.
 
 ## 8. How the project keeps this true
 

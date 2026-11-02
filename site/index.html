@@ -170,7 +170,7 @@
       </li>
       <li class="step third">
         <h3>Every step is audited</h3>
-        <p>Requests, decisions and uses go to a hash-chained log. <code>warden-server audit verify</code> detects an edited, reordered or removed entry before the last one. Your history page lists every request.</p>
+        <p>Requests, decisions, relay sessions and API calls go to a hash-chained log; certificate logins are in the target's own log. <code>warden-server audit verify</code> detects an edited, reordered or removed entry before the last one. Your history page lists every request.</p>
         <figure class="phone">
           <picture>
             <source srcset="img/history-dark.webp" media="(prefers-color-scheme: dark)">
@@ -201,7 +201,7 @@
         </div>
         <div class="field">
           <p class="label">Limit</p>
-          <p>Revoking stops new use through warden, but an issued certificate stays valid on the host until it expires, at most 4 hours (<a href="https://github.com/pecheriere/warden/issues/35">#35</a>).</p>
+          <p>Revoking stops new use through warden, but an issued certificate stays valid on the host until it expires, at most 4 hours, and a login already open continues after that (<a href="https://github.com/pecheriere/warden/issues/35">#35</a>).</p>
         </div>
       </article>
       <article class="card use">
@@ -275,7 +275,7 @@
           <li><strong>A grant used for another task.</strong> Grants are not tied to a task, so everything running as that OS user can use them (<a href="https://github.com/pecheriere/warden/issues/49">#49</a>).</li>
           <li><strong>A misleading goal you approve.</strong> warden shows the goal, the scope and a fingerprint. It cannot judge whether the goal is honest.</li>
           <li><strong>What happens during the window.</strong> An approved shell or API scope can do anything it permits until the grant ends.</li>
-          <li><strong>Instant revocation everywhere.</strong> Issued certificates last until they expire, and API calls in flight finish.</li>
+          <li><strong>Instant revocation everywhere.</strong> Issued certificates last until they expire, open logins to those hosts continue after that, and API calls in flight finish.</li>
           <li><strong>An audit log rewritten whole.</strong> Whoever can rewrite the whole file can rewrite the chain, so ship the log somewhere the server cannot modify.</li>
         </ul>
       </div>

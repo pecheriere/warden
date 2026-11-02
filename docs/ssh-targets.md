@@ -166,9 +166,13 @@ login to the agent accounts.
 
 Revoking a grant stops warden from issuing anything more for it, but a
 certificate already issued stays valid on the target until it expires: sshd
-checks it offline (see [issue #35][i35]). Short windows are the defence.
-To cut an approved agent off at once, lock its account on the target or
-remove its principal line.
+checks it offline (see [issue #35][i35]). Short windows limit new logins. A login
+already open is another matter: sshd checks a certificate when it authenticates,
+so the session continues after the certificate expires and after a revocation.
+To cut an approved agent off at once, remove its principal line or lock its
+account, which refuses new logins, and then end what is running, for example
+`pkill -KILL -u <user>` on an account warden alone uses. See
+[the emergency steps](assurance-case.md#the-ssh-ca-key).
 
 [i35]: https://github.com/pecheriere/warden/issues/35
 
