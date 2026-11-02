@@ -6,6 +6,16 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- The `warden` CLI no longer links `rsa` or `crypto-bigint` 0.5, and the broker
+  no longer links `crypto-bigint` 0.5, which clears RUSTSEC-2026-0387 from the
+  tree. The CLI talks to `ssh-agent` with a small client of its own instead of
+  `ssh-agent-lib`, and the broker verifies ECDSA P-256 request signatures with
+  `p256` 0.14 instead of through `ssh-key` 0.6. RUSTSEC-2023-0071 stays exempted
+  for the `rsa` pre-release that russh pins, which only verifies targets' RSA
+  host keys. Nothing changes for agents.
+
 ### Added
 
 - `warden-demo`: try the approval flow on one machine with no setup

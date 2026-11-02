@@ -6,23 +6,20 @@ version = 2
 yanked = "deny"
 unmaintained = "all"
 ignore = [
-    # rsa and crypto-bigint come in through ssh-agent-lib 0.6.0, which enables
-    # ssh-key 0.6's "crypto" feature (RSA and NIST curves) unconditionally.
-    # The pre-release rsa 0.10.0-rc comes in through russh 0.65.0 (directly
-    # and through ssh-key 0.7.0-rc), whose "rsa" feature the relay enables
-    # only to verify the signatures of targets' pinned RSA host keys (the
-    # relay negotiates only rsa-sha2-256 and -512, though russh accepts a
-    # SHA-1 signature from the key's holder). Both are used for public-key
-    # operations only, which the Marvin timing attack of RUSTSEC-2023-0071
-    # does not affect. warden only ever holds Ed25519 private keys (the CA,
-    # the CLI's ephemeral keys, the relay host key and relay targets' login
-    # keys, which are refused unless Ed25519), so no RSA or NIST-curve
-    # private-key operation and no vulnerable crypto-bigint path runs.
-    # Remove these entries once the dependencies drop RSA or the advisories
-    # are patched; revisit the rsa 0.10 pre-release when russh moves to a
-    # stable rsa release.
-    { id = "RUSTSEC-2023-0071", reason = "rsa 0.9 via ssh-agent-lib and rsa 0.10.0-rc via russh 0.65.0; RSA only verifies host-key signatures, never with a private key" },
-    { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5 pulled in by ssh-key NIST curves via ssh-agent-lib; only Ed25519 is used" },
+    # The only rsa in the tree is the pre-release 0.10.0-rc.18, pinned exactly
+    # by russh 0.65.0 (directly and through ssh-key 0.7.0-rc), in the broker
+    # only: the CLI does not link it. The relay enables russh's "rsa" feature
+    # to verify the signatures of targets' pinned RSA host keys (it negotiates
+    # only rsa-sha2-256 and -512, though russh accepts a SHA-1 signature from
+    # the key's holder). The advisory, the Marvin attack, is about private-key
+    # operations, and warden has no RSA private key: the CA, the relay's host
+    # key and targets' login keys are refused unless Ed25519, and the relay
+    # accepts only Ed25519 keys from agents. Agents' ECDSA P-256 request
+    # signatures are made by their own ssh-agent and only verified here.
+    # Remove this when russh moves to an rsa release that fixes the advisory
+    # (RustCrypto/RSA merged the fixes on 2026-11-01, unreleased at the time
+    # of writing), or if warden stops supporting RSA host keys on targets.
+    { id = "RUSTSEC-2023-0071", reason = "rsa 0.10.0-rc via russh 0.65.0, broker only: public-key verification of pinned host keys; warden holds no RSA private key" },
 ]
 
 [licenses]
