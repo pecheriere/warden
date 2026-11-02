@@ -33,6 +33,9 @@ All notable changes to this project are recorded here. The format follows
   The CLI no longer holds the build machine's paths, the image's times come from
   the commit, BuildKit is pinned, and `rust-toolchain.toml` names an exact Rust
   version. `scripts/package-cli.sh` now needs `python3`.
+- Fuzz targets for signed agent requests, agent-supplied keys and names, the
+  proxy rules and redaction, run by a scheduled CI job (`fuzz/`, see "Fuzzing"
+  in `AGENTS.md`). The fuzz crate is not part of the workspace or the image.
 - `warden-demo`: try the approval flow on one machine with no setup
   ([docs/demo.md](docs/demo.md)). A separate, unpublished binary that is not
   part of `warden-server` or the image; a CI guard keeps it that way. It is not
@@ -80,6 +83,8 @@ All notable changes to this project are recorded here. The format follows
   cannot be taken for a denied request, which stays exit 2. A script that reads
   exit 2 as a usage error needs updating. `--help` and `--version` still exit 0,
   and `warden-server` keeps exit 2 for wrong arguments.
+- A `Warden-Signature` must be the exact SSHSIG encoding, as `ssh-keygen` and
+  `ssh-agent` produce it (`docs/agent-protocol.md`).
 - README: says who warden is for and how stable it is, names Tailscale, Docker
   and 1Password as the recommended setup and what each part protects, and adds
   a table of the setups supported today with their security cost. It also lists

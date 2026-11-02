@@ -45,6 +45,7 @@ is not one: see [Sign-off](#sign-off-dco).
 | `docs/` | user and design documentation |
 | `site/` | the landing page on GitHub Pages: static HTML and CSS, no scripts, no external resources. It names no version and leaves setup commands to the README, so a release does not touch it |
 | `deploy/systemd` | the systemd unit that `docs/deployment-systemd.md` installs |
+| `fuzz` | `cargo-fuzz` targets for code that parses untrusted input; its own workspace, on its own nightly |
 | `scripts/` | CI guards and UI check tools (each script documents its usage) |
 
 ## Before you push
@@ -61,6 +62,8 @@ cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo test --workspace --all-features --locked
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps --locked
 cargo deny check
+cargo deny --manifest-path fuzz/Cargo.toml check
+cargo metadata --locked --manifest-path fuzz/Cargo.toml --format-version 1 > /dev/null
 python3 -I .github/scripts/crate_age.py --base main
 uvx zizmor@1.31.1 .   # when a workflow or the Dependabot config changes
 ```
@@ -84,6 +87,39 @@ uvx zizmor@1.31.1 .   # when a workflow or the Dependabot config changes
   `.github/crate-age-allow.toml` (see "Dependency age" in the README).
 - GitHub Actions are pinned to the full commit SHA of a release at least
   7 days old.
+
+## Fuzzing
+
+`fuzz/` holds `cargo-fuzz` targets for the input an attacker reaches most
+easily. It is its own workspace, so workspace builds and the image never
+compile it, with the nightly pinned in `fuzz/rust-toolchain.toml` and its own
+`fuzz/Cargo.lock`. The lints match the workspace's, `unsafe_code = "forbid"`
+included.
+
+```sh
+cargo install cargo-fuzz --version 0.13.2 --locked
+scripts/fuzz.sh 60 redaction   # one target for 60 seconds
+scripts/fuzz.sh 60             # each target for 60 seconds
+```
+
+`.github/workflows/fuzz.yml` runs each target for 3 minutes every night, and
+on pull requests that change the fuzzing setup. It also runs `cargo fmt` and
+clippy on the crate from `fuzz/`, which `--workspace` does not reach.
+
+- A change to a requirement in `Cargo.toml` or to the workspace version
+  needs `fuzz/Cargo.lock` updated too: `cargo update --workspace` in `fuzz/`.
+  CI refuses a stale one. Keep the versions the root `Cargo.lock` has.
+- A crash is treated as a possible vulnerability, because this repository is
+  public: follow `SECURITY.md`. Do not put the input or its details in an
+  issue, pull request or commit message until a fix is released. CI withholds
+  the fuzzer's output for the same reason; it logs the target and seed.
+- Fix it, then add the input to `fuzz/seeds/<target>`, the committed
+  corpus: every run replays it. Add the input in or after the release of the
+  fix. A local run keeps what it discovers in the ignored `fuzz/corpus`.
+- A new target needs a `[[bin]]` entry in `fuzz/Cargo.toml` and a seed.
+  Check a property where one exists, not only that nothing panics.
+- Private steps reach the targets through `warden_broker::signed::fuzzing`,
+  behind the `fuzzing` feature, which nothing that ships may enable.
 
 ## Changes and pull requests
 
@@ -130,8 +166,9 @@ it does not replace that rule: add no other trailer for the agent.
 Semantic versioning, one version for the whole workspace.
 
 1. A release pull request bumps `version` in `Cargo.toml` (the workspace
-   package and the internal crates' dependency entries), updates
-   `Cargo.lock`, moves `## [Unreleased]` to a dated `## [x.y.z]`
+   package and the internal crates' dependency entries) and in the internal
+   crates' entries in `fuzz/Cargo.toml`, updates `Cargo.lock` and
+   `fuzz/Cargo.lock`, moves `## [Unreleased]` to a dated `## [x.y.z]`
    section in `CHANGELOG.md` (noting any new migration), and updates every
    mention of the previous version in the README and `docs/` (install
    commands, image tags, attestation examples). The notes saying that
