@@ -22,8 +22,33 @@ Contents:
 
 ## One-time setup
 
-Install the CLI on the agent's machine (Rust 1.99 or later, and the OpenSSH
-client tools):
+Install the CLI on the agent's machine. It needs the OpenSSH client tools.
+
+Releases after v0.8.1 attach binaries for macOS arm64, Linux amd64 and Linux
+arm64 (fully static, with no dependency on the distribution's libc). Pick a
+release that lists `warden-*.tar.gz` files on the
+[releases page](https://github.com/pecheriere/warden/releases). Checking the
+attestation needs a logged-in [`gh`](https://cli.github.com/):
+
+```sh
+version=x.y.z         # the release you picked
+platform=linux-amd64  # or linux-arm64, macos-arm64
+file="warden-$version-$platform.tar.gz"
+curl -fLO "https://github.com/pecheriere/warden/releases/download/v$version/$file"
+gh attestation verify "$file" --repo pecheriere/warden \
+  --signer-workflow pecheriere/warden/.github/workflows/release.yml \
+  --source-ref "refs/tags/v$version"
+tar -xzf "$file"
+mkdir -p ~/.local/bin
+install -m 0755 "warden-$version-$platform/warden" ~/.local/bin/warden
+```
+
+`~/.local/bin` must be on your `PATH`. On macOS, download with `curl` as above
+rather than a browser: the binary is not notarized, and macOS may block one
+that a browser downloaded.
+
+For v0.8.1 and earlier, or on another platform, build it instead, with Rust
+1.99 or later:
 
 ```sh
 cargo install --locked --git https://github.com/pecheriere/warden --tag v0.8.1 warden-broker-cli
