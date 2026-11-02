@@ -89,9 +89,9 @@ uvx zizmor@1.31.1 .   # when a workflow or the Dependabot config changes
   `CHANGELOG.md` ([Keep a Changelog](https://keepachangelog.com/en/1.1.0/)).
 - When behaviour changes, update the docs in the same pull request: the
   README, `docs/configuration.md`, `docs/deployment.md`,
-  `docs/agent-usage.md`, `docs/agent-protocol.md`,
-  `docs/threat-model.md` and `site/index.html` must stay consistent with the
-  code.
+  `docs/agent-usage.md`, `docs/agent-protocol.md`, `docs/building.md`,
+  `docs/upgrading.md`, `docs/threat-model.md` and `site/index.html` must stay
+  consistent with the code.
 - **Approval UI pages** follow `docs/design-language.md`. Render and
   screenshot them with `scripts/screenshot-pages.sh <out-dir>` at the sizes
   the PR template lists, light and dark, and attach the screenshots.
