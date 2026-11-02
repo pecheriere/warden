@@ -233,9 +233,9 @@ These were recorded during implementation and are accepted for this release.
   described under "Deployment assumptions": an unprivileged process, no
   capabilities and, in a container, no other container on its network.
 - **Signing protects the key, not the machine.** A key-signed agent's
-  signature stops credential theft (nothing reusable is stored or sent; a
-  key in the Secure Enclave, a TPM or a PIV token cannot be copied off the
-  machine), replay (single-use nonce, 60 s window) and reuse against another
+  signature stops credential theft on the wire (nothing reusable is sent), and at
+  rest when the key is in hardware (a key in the Secure Enclave, a TPM or a PIV
+  token cannot be copied off the machine; a key file can), replay (single-use nonce, 60 s window) and reuse against another
   broker (the audience) or another endpoint or body (all signed). It does not
   stop code running as the agent's operating-system user: whatever can reach
   the agent's `ssh-agent` socket can ask it to sign, for as long as it runs

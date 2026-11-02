@@ -7,8 +7,10 @@ get a notification on your phone, read the goal and exactly what would be
 granted, and approve with a passkey. warden then hands out access for a limited
 window. When the window ends, API calls through warden are refused and relay
 sessions are closed. On an SSH certificate target new logins stop, but a session
-already open keeps running until it ends or is ended on the target. The agent
-never holds a long-lived secret.
+already open keeps running until it ends or is ended on the target. The agent's
+machine holds no reusable SSH key, API token or target password, only the agent's
+own identity key, which can ask for access and use active grants but cannot approve
+anything.
 
 The [project page](https://pecheriere.github.io/warden/) shows the flow, the
 use cases and how to start.
@@ -44,7 +46,7 @@ For a real setup, go on to the [recommended setup](#recommended-setup) and the
 
 warden is for people who leave AI agents or scripts working for them while
 they get on with something else, and want them to reach their own servers,
-devices and APIs without holding a standing credential. You run the server
+devices and APIs without holding a standing credential for them. You run the server
 yourself, so you need to be comfortable administering a Linux host and a
 tailnet.
 
@@ -80,8 +82,10 @@ The usual way around this is a standing credential on the agent's machine,
 such as an API token, an SSH key or a vault service account token. Those
 work unattended, but they also work for anything at any time, and the
 agent (or whatever compromises it) holds them for good. warden exists because
-that is not an acceptable price for never getting stuck: no password on the
-agent's disk, and no access that is always on.
+that is not an acceptable price for never getting stuck: no SSH key, API token or
+target password on the agent's machine, and no access that is always on. The agent
+keeps only its own identity key. That key can ask for access and use active grants,
+but cannot approve anything, and it cannot be copied only if it is held in hardware.
 
 Password managers are starting to close this gap. As of late 2026,
 1Password lets some personal agents sign in to websites after you approve
@@ -99,9 +103,9 @@ and on the warden server, and the agent only gets access for a limited window.
 warden still needs a person. It frees you from the computer, not from
 deciding. If nobody answers, the request expires after 10 minutes and the
 agent has to ask again, and a grant lasts at most 4 hours. So an agent working
-through the night can start nothing new once its grant ends, or when it needs
-something you did not approve while you are asleep. That is the trade: you stay
-in the loop, and the agent holds no secret that lasts.
+through the night has to stop and wait when its grant ends, or when it needs
+something you have not approved, until you wake up. That is the trade: you stay in
+the loop, and the agent holds no lasting credential for your servers or APIs.
 
 ## How it works
 
@@ -133,7 +137,7 @@ What warden can grant:
 
 | Access | How the agent gets it | What the agent never sees |
 |--------|-----------------------|---------------------------|
-| **SSH, certificate mode** | A certificate signed by warden's SSH CA, for a key that exists only in memory. It is valid for new logins during the window. A session already open keeps running after it, and warden cannot end it. | Any reusable key. |
+| **SSH, certificate mode** | A certificate signed by warden's SSH CA, for a key that exists only in memory. It is valid for new logins during the window. A session already open keeps running after it, and warden cannot end it. | A reusable key for the target. |
 | **SSH, relay mode** (appliances, password-only hosts) | A session through warden's SSH relay; warden logs in to the target. warden closes the session when the window ends or the grant is revoked. | The target's key or password. |
 | **HTTP API calls** | warden makes each call, adds the secret, and returns the answer with the secret redacted. Calls are refused once the window ends or the grant is revoked. | The API secret. |
 
@@ -311,9 +315,12 @@ it; follow it for a real setup.
   or methods you approved. API requests are read-only unless the agent asks
   for more, and the page says so. On a certificate target the limit is on new
   logins: [one already open continues](docs/threat-model.md#accepted-residual-risks).
-- **No standing secrets on the agent machine.** SSH keys are made per
-  request and live only in memory; API and relay credentials never leave
-  warden; a key-signed agent stores nothing secret.
+- **No standing credentials for your systems on the agent machine.** SSH keys
+  are made per request and live only in memory; API and relay credentials never
+  leave warden. The agent keeps only its own identity key, a signing key or a
+  bearer key. It can ask for access and use active grants until you revoke the
+  agent, but cannot approve anything. A key in hardware cannot be copied; a key
+  file or a bearer key [can be](docs/security-assessment.md#ranked-risks).
 - **Nothing on the internet.** warden is reachable only over your tailnet,
   never through Funnel.
 - **Audited.** Every request, decision, relay session and API call goes to a

@@ -21,7 +21,9 @@ warden is a small, self-hosted **approval broker**. The agent asks for access
 with a stated goal; the owner gets a notification on their phone that shows
 *why* (the goal) and *exactly what* is being granted; the owner approves with
 a passkey for a time window; the agent then gets the access **without ever
-holding a long-lived secret in clear**.
+holding a long-lived credential for the target or API**. It holds only its own
+identity key, which can ask for access and use active grants but cannot approve
+anything.
 
 It is an open-source project, so it must be clean, generic in its interfaces,
 and secure by construction.
@@ -39,7 +41,7 @@ and secure by construction.
 2. One approval covers a **goal for a time window**, not each command.
 3. The agent never receives a reusable secret: SSH uses ephemeral keys and
    short-lived certificates; relay and proxy credentials never leave the
-   broker.
+   broker. Its own identity key (§9) is the one thing it keeps.
 4. Every request, decision and grant, and every use that passes through warden,
    is recorded in an audit log. Certificate logins go straight to the target, so
    only the target's `sshd` logs them.
@@ -569,9 +571,9 @@ agent, in one of two ways:
   128 KiB/s: 10 s for 16 KiB, 16 s for the 2 MiB of a proxied call; 408),
   the signature and then the nonce, in that
   order; it records a nonce only once the signature
-  verified, keeps it 10 minutes and sweeps it with the request sweeper. No
-  reusable secret is stored on the agent's machine and a captured request
-  cannot be replayed. **Key-signed agents do not need the owner's
+  verified, keeps it 10 minutes and sweeps it with the request sweeper. A
+  key in hardware cannot be copied off the agent's machine, a key in a file can,
+  and a captured request cannot be replayed. **Key-signed agents do not need the owner's
   `Tailscale-User-Login`** (tagged devices have none): who may reach the API
   is decided by the tailnet policy (see the threat model).
 - **Agent keys** (bearer, legacy): one per agent (e.g. `laptop`), created
@@ -596,7 +598,8 @@ agent, in one of two ways:
   immediately, cancels its pending requests, ends its grants and kills its
   relay sessions.
 - For a bearer key on macOS, the CLI reads the key from the Keychain (not a
-  config file); a signing key leaves nothing secret on the machine.
+  config file); a signing key in hardware leaves nothing on the machine that can
+  be copied.
 
 The approval page, the notification (Home Assistant and ntfy) and the
 `request_created` audit summary say whether an API request can modify

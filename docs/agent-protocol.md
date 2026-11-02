@@ -16,9 +16,9 @@ the agent never sees.
 
 Agents authenticate every API call by **signing it with an SSH key** whose
 public half the owner enrolled on the broker (the *signing key*). The key
-can live in hardware (a TPM, a YubiKey) behind an `ssh-agent`, so
-no reusable secret is stored on the agent's machine and a captured request
-cannot be replayed. Older agents authenticate with a bearer key instead (see
+can live in hardware (a TPM, a YubiKey) behind an `ssh-agent`, so that it
+cannot be copied off the agent's machine (a key in a file can), and a captured
+request cannot be replayed. Older agents authenticate with a bearer key instead (see
 [Bearer keys](#bearer-keys-legacy)); a new client should sign.
 
 Contents:
@@ -962,7 +962,8 @@ Never use the signing key for anything else, and never use it as the
 
 What signing protects:
 
-- **No reusable secret on the wire or at rest.** A request is useless to
+- **No reusable secret on the wire, nor at rest if the key is in hardware.** A
+  request is useless to
   whoever captures it: the nonce is single-use, the timestamp limits it to 60
   seconds, the audience to one broker, and the signature covers the method,
   path, query and body, so it cannot be redirected to another endpoint, grant
