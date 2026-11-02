@@ -30,6 +30,9 @@ testkit = [
     "dep:tower",
     "dep:webauthn-authenticator-rs",
 ]
+# The private parsing steps of signed requests, for the fuzz targets in `fuzz/`.
+# Adds no dependency, and nothing that ships enables it.
+fuzzing = []
 
 [dependencies]
 anyhow.workspace = true

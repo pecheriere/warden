@@ -404,7 +404,9 @@ class GitRepoTest(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         # main() must never reach crates.io from these tests.
-        self.lookup = FakeLookup({Crate("webpki-root-certs", "1.0.10"): NEW})
+        # main() reads the real clock, so "young" has to be young by that clock, not by NOW.
+        young = datetime.now(UTC) - timedelta(days=3)
+        self.lookup = FakeLookup({Crate("webpki-root-certs", "1.0.10"): young})
         client = mock.patch.object(crate_age, "CratesIo", return_value=self.lookup)
         client.start()
         self.addCleanup(client.stop)
@@ -510,6 +512,37 @@ class GitRepoTest(unittest.TestCase):
         status, out = self.run_main("--base", base)
         self.assertEqual(status, 1)
         self.assertIn("webpki-root-certs 1.0.10", out)
+
+    def test_main_checks_the_fuzz_lockfile(self) -> None:
+        """A young version that only the fuzz crate uses fails like any other."""
+        base = self.commit({"Cargo.lock": lockfile(), crate_age.ALLOW_LIST: ""})
+        self.write({crate_age.FUZZ_LOCKFILE: YOUNG_LOCK})
+        status, out = self.run_main("--base", base)
+        self.assertEqual(status, 1)
+        self.assertIn("webpki-root-certs 1.0.10 was published on", out)
+        head = self.commit({})
+        status, out = self.run_main("--base", base, "--head", head)
+        self.assertEqual(status, 1)
+        self.assertIn("webpki-root-certs 1.0.10 was published on", out)
+
+    def test_main_does_not_look_up_a_fuzz_version_the_base_already_had(self) -> None:
+        """A version unchanged in the fuzz lockfile is not new."""
+        base = self.commit(
+            {
+                "Cargo.lock": lockfile(),
+                crate_age.FUZZ_LOCKFILE: YOUNG_LOCK,
+                crate_age.ALLOW_LIST: "",
+            },
+        )
+        self.assertEqual(self.run_main("--base", base), (0, mock.ANY))
+        self.assertEqual(self.lookup.calls, [])
+
+    def test_main_allow_list_covers_the_fuzz_lockfile(self) -> None:
+        """An entry for a version only the fuzz crate uses is allowed, and not stale."""
+        base = self.commit({"Cargo.lock": lockfile(), crate_age.ALLOW_LIST: ""})
+        self.write({crate_age.FUZZ_LOCKFILE: YOUNG_LOCK, crate_age.ALLOW_LIST: YOUNG_ALLOWED})
+        self.assertEqual(self.run_main("--base", base), (0, mock.ANY))
+        self.assertEqual(self.lookup.calls, [])
 
     def test_main_reports_an_unknown_base_as_an_annotation(self) -> None:
         """A bad revision fails with an annotation rather than a traceback."""

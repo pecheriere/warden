@@ -1,2 +1,5 @@
 target
 __pycache__/
+fuzz/corpus
+fuzz/artifacts
+fuzz/coverage

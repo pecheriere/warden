@@ -1,0 +1,7 @@
+# cargo-fuzz needs nightly (sanitizers and coverage instrumentation). This file
+# applies only inside fuzz/, so the workspace keeps its own pinned stable
+# toolchain. Bump the date by hand, to a nightly at least 7 days old.
+[toolchain]
+channel = "nightly-2026-10-20"
+components = ["rustfmt", "clippy"]
+profile = "minimal"
