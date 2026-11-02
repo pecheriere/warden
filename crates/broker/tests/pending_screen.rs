@@ -98,8 +98,21 @@ fn replacements(broker: &TestBroker) -> usize {
         .count()
 }
 
-/// Make every append to the audit log fail.
-fn break_audit_log(broker: &TestBroker) {
+/// Wait until the entry saying the owner was notified is written: it is the last
+/// thing a new request writes, and it comes from a task of its own.
+async fn until_notified(broker: &TestBroker) {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while !broker.audit_types().iter().any(|t| t == "notified") {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the request was notified");
+}
+
+/// Make every append to the audit log fail, once nothing else is writing to it.
+async fn break_audit_log(broker: &TestBroker) {
+    until_notified(broker).await;
     let mut corrupt = std::fs::read(broker.audit_path()).unwrap();
     corrupt.extend_from_slice(b"not an audit line\n");
     std::fs::write(broker.audit_path(), &corrupt).unwrap();
@@ -327,14 +340,7 @@ async fn an_unreadable_stored_request_fails_the_page_closed() {
 #[tokio::test]
 async fn refreshing_the_list_changes_nothing_and_shows_no_token() {
     let (broker, created, token) = pending().await;
-    // Notified is the last thing a request writes.
-    tokio::time::timeout(Duration::from_secs(30), async {
-        while !broker.audit_types().iter().any(|t| t == "notified") {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("the request was notified");
+    until_notified(&broker).await;
     broker.clock.advance(30);
     let hash = stored_hash(&broker, &created.id).await;
     let log = audit_text(&broker);
@@ -636,7 +642,7 @@ async fn cancelling_after_a_replacement_says_so_on_the_new_link_only() {
 async fn no_link_is_replaced_without_its_audit_entry() {
     let (broker, created, old) = pending().await;
     let hash = stored_hash(&broker, &created.id).await;
-    break_audit_log(&broker);
+    break_audit_log(&broker).await;
     let opened = open(&broker, &created.id).await;
     assert_eq!(
         opened.status,
@@ -883,7 +889,7 @@ async fn deny_behaves_like_the_existing_deny() {
 #[tokio::test]
 async fn deny_does_not_wait_for_the_audit_log() {
     let (broker, created, _) = pending().await;
-    break_audit_log(&broker);
+    break_audit_log(&broker).await;
     let denied = deny(&broker, &created.id).await;
     assert_eq!(denied.status, StatusCode::OK, "{}", denied.body);
     assert!(denied.body.contains("not on record yet"), "{}", denied.body);
