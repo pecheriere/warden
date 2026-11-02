@@ -43,8 +43,16 @@ pub enum CaError {
         not_after: i64,
     },
     /// Building or signing the certificate failed.
+    /// (Not a `#[source]`: `ssh_key::Error` only implements `Error` with the
+    /// `std` feature, which stays off, see the workspace manifest.)
     #[error("signing the certificate failed: {0}")]
-    Sign(#[from] ssh_key::Error),
+    Sign(ssh_key::Error),
+}
+
+impl From<ssh_key::Error> for CaError {
+    fn from(e: ssh_key::Error) -> Self {
+        Self::Sign(e)
+    }
 }
 
 /// The certificate's only principal: `warden:<target>:<user>`.

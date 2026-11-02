@@ -11,12 +11,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use ssh_agent_lib::agent::Session as _;
-use ssh_agent_lib::proto::{AddIdentity, PrivateCredential};
 use ssh_key::rand_core::OsRng;
-use ssh_key::{Algorithm, EcdsaCurve, HashAlg, LineEnding, PrivateKey};
+use ssh_key::{Algorithm, HashAlg, LineEnding, PrivateKey};
 use tempfile::TempDir;
 use warden_broker::policy::{RelayCredential, SshMode, SshTarget};
+use warden_broker::test_keys::P256;
 use warden_broker::testkit::sshd::{Sshd, SshdLogin, current_user};
 use warden_broker::testkit::{CapturingNotifier, HttpsUpstream, TestBroker};
 use warden_broker_proto::{TargetName, UnixUser, Window};
@@ -74,18 +73,9 @@ impl TestAgent {
         Self { child, socket }
     }
 
-    /// Load `key` over the socket: the private key is never in a file.
-    async fn add(&self, key: &PrivateKey) {
-        let stream = tokio::net::UnixStream::connect(&self.socket).await.unwrap();
-        ssh_agent_lib::client::Client::new(stream)
-            .add_identity(AddIdentity {
-                credential: PrivateCredential::Key {
-                    privkey: key.key_data().clone(),
-                    comment: "warden e2e signing key".to_owned(),
-                },
-            })
-            .await
-            .unwrap();
+    /// Load `key` with `ssh-add`, from a private temporary file.
+    fn add(&self, key: &PrivateKey) {
+        warden_broker::test_keys::ssh_add(key, &self.socket);
     }
 }
 
@@ -100,7 +90,7 @@ struct SignedCli {
 impl SignedCli {
     /// A fresh environment whose ssh-agent holds `key`, with its public key
     /// written to `signing.pub`.
-    async fn new(key: &PrivateKey) -> Self {
+    fn new(key: &PrivateKey) -> Self {
         let root = tempfile::Builder::new()
             .prefix("wds")
             .tempdir_in("/tmp")
@@ -109,7 +99,7 @@ impl SignedCli {
             fs::create_dir_all(root.path().join(sub)).unwrap();
         }
         let agent = TestAgent::start(root.path());
-        agent.add(key).await;
+        agent.add(key);
         let public_key = root.path().join("signing.pub");
         fs::write(
             &public_key,
@@ -266,14 +256,7 @@ async fn signed_setup() -> Setup {
     );
     // No stand-in for Tailscale Serve: no owner login on any request.
     let api = broker.spawn().await.api;
-    let key = broker
-        .add_signing_agent(
-            AGENT,
-            Algorithm::Ecdsa {
-                curve: EcdsaCurve::NistP256,
-            },
-        )
-        .await;
+    let key = broker.add_signing_agent(AGENT, P256).await;
     Setup {
         broker,
         upstream,
@@ -367,7 +350,7 @@ async fn ssh_session(s: &Setup, cli: &SignedCli) {
 #[tokio::test(flavor = "multi_thread")]
 async fn e2e_signed_login_request_approve_and_call() {
     let s = signed_setup().await;
-    let cli = SignedCli::new(&s.key).await;
+    let cli = SignedCli::new(&s.key);
 
     let login = cli.login(
         &s.api,
@@ -415,7 +398,7 @@ async fn e2e_doctor_reports_and_changes_nothing() {
     broker.clock.set(now());
     let api = broker.spawn().await.api;
     let key = broker.add_signing_agent(AGENT, Algorithm::Ed25519).await;
-    let cli = SignedCli::new(&key).await;
+    let cli = SignedCli::new(&key);
 
     let output = cli.run(&["doctor"]);
     let report = text(&output.stdout);
@@ -485,7 +468,7 @@ async fn e2e_login_refuses_wrong_audience() {
     broker.clock.set(now());
     let urls = broker.spawn().await;
     let key = broker.add_signing_agent(AGENT, Algorithm::Ed25519).await;
-    let cli = SignedCli::new(&key).await;
+    let cli = SignedCli::new(&key);
     let audience = broker.state().audience.as_str().to_owned();
     let other = "0123456789abcdef0123456789abcdef";
     assert_ne!(audience, other);
@@ -551,7 +534,7 @@ async fn e2e_key_login_over_bearer_login_hints_keychain_cleanup() {
     broker.clock.set(now());
     let urls = broker.spawn().await;
     let key = broker.add_signing_agent(AGENT, Algorithm::Ed25519).await;
-    let cli = SignedCli::new(&key).await;
+    let cli = SignedCli::new(&key);
     fs::create_dir_all(cli.config_path().parent().unwrap()).unwrap();
     fs::write(
         cli.config_path(),
@@ -583,7 +566,7 @@ async fn e2e_signed_login_refusals() {
     broker.clock.set(now());
     let urls = broker.spawn().await;
     let key = broker.add_signing_agent(AGENT, Algorithm::Ed25519).await;
-    let cli = SignedCli::new(&key).await;
+    let cli = SignedCli::new(&key);
 
     let with_path = urls.api.join("api/").unwrap();
     let out = cli.login(&with_path, &[]);
@@ -620,7 +603,7 @@ async fn e2e_signed_login_refusals() {
 
     // A key the agent holds but the broker does not know for this agent.
     let other = broker.add_signing_agent("other", Algorithm::Ed25519).await;
-    cli.agent.add(&other).await;
+    cli.agent.add(&other);
     let other_pub = cli.root.path().join("other.pub");
     fs::write(&other_pub, other.public_key().to_openssh().unwrap()).unwrap();
     let out = cli.run(&[

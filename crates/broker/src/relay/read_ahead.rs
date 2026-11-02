@@ -286,20 +286,19 @@ mod tests {
     }
 
     /// Take chunks off `stream` (without reading them, so they keep their
-    /// room) until the read-ahead is out of room: the chunks taken and the
-    /// room still free account for the whole `budget` (the pump holds none
-    /// for a read), and less than a chunk's minimum is free, so the pump
-    /// waits for room. The agent always has more to send.
+    /// room) until the read-ahead is out of room: less than a chunk's minimum
+    /// of `budget` is outside the chunks, so the pump cannot hold a read and
+    /// waits for room. The agent must send enough to get there.
+    ///
+    /// The room outside the chunks need not show as free: a semaphore assigns
+    /// what it has to a waiter that asked for more, so a short read leaving a
+    /// few bytes free has them taken off the free count until the rest comes.
     async fn take_until_held(
         stream: &mut super::AgentStream,
         chunks: &mut Vec<Chunk>,
         budget: usize,
     ) {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
         loop {
-            while let Ok(chunk) = stream.reader_mut().chunks.try_recv() {
-                chunks.push(chunk);
-            }
             if let Some(first) = chunks.first() {
                 let free = first.room.semaphore().available_permits();
                 let held: usize = chunks.iter().map(|c| c.room.num_permits()).sum();
@@ -307,15 +306,12 @@ mod tests {
                     held + free <= budget,
                     "{held} held, {free} free of {budget}"
                 );
-                if held + free == budget && free < CHUNK_MIN_BYTES {
+                if held + CHUNK_MIN_BYTES > budget {
                     return;
                 }
             }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "the read-ahead did not fill its budget"
-            );
-            tokio::time::sleep(Duration::from_millis(10)).await;
+            let chunk = stream.reader_mut().chunks.recv().await;
+            chunks.push(chunk.expect("the read-ahead ended before filling its budget"));
         }
     }
 
@@ -364,6 +360,61 @@ mod tests {
         read.unwrap();
         assert!(got == sent, "{} bytes of {}", got.len(), sent.len());
         gone.wait().await;
+    }
+
+    /// Send the agent's first `budget - 50` bytes of `sent`, and take them
+    /// until the read-ahead waits for room with those 50 bytes left over: less
+    /// than the chunk's minimum it asks for.
+    async fn fill_leaving_under_a_chunk(
+        agent: &mut tokio::net::TcpStream,
+        stream: &mut super::AgentStream,
+        sent: &[u8],
+        budget: usize,
+    ) -> Vec<Chunk> {
+        agent.write_all(&sent[..budget - 50]).await.unwrap();
+        let mut chunks = Vec::new();
+        take_until_held(stream, &mut chunks, budget).await;
+        assert_full(&chunks, budget);
+        // Let the pump run on to its wait.
+        tokio::task::yield_now().await;
+        chunks
+    }
+
+    #[tokio::test]
+    async fn reading_resumes_a_read_ahead_waiting_with_room_left_over() {
+        const BUDGET: usize = 1000;
+        let (mut agent, socket) = pair().await;
+        let (mut stream, mut gone, _logged_in, _reading) = read_ahead_within(socket, BUDGET);
+        let sent = pattern(2 * u32::try_from(BUDGET).unwrap());
+        let chunks = fill_leaving_under_a_chunk(&mut agent, &mut stream, &sent, BUDGET).await;
+        agent.write_all(&sent[BUDGET - 50..]).await.unwrap();
+        drop(agent);
+        let mut got: Vec<u8> = chunks.iter().flat_map(|c| c.data.clone()).collect();
+        drop(chunks);
+        stream.read_to_end(&mut got).await.unwrap();
+        assert!(got == sent, "{} bytes of {}", got.len(), sent.len());
+        gone.wait().await;
+    }
+
+    #[tokio::test]
+    async fn login_resumes_a_read_ahead_waiting_with_room_left_over() {
+        let (mut agent, socket) = pair().await;
+        let (mut stream, mut gone, mut logged_in, _reading) = read_ahead(socket);
+        let sent = pattern(2 * u32::try_from(PRE_LOGIN_BYTES).unwrap());
+        let chunks =
+            fill_leaving_under_a_chunk(&mut agent, &mut stream, &sent, PRE_LOGIN_BYTES).await;
+        logged_in.raise();
+        agent
+            .write_all(&sent[PRE_LOGIN_BYTES - 50..])
+            .await
+            .unwrap();
+        drop(agent);
+        // Nothing is read: the raised budget alone takes it to the close.
+        gone.wait().await;
+        let mut got: Vec<u8> = chunks.iter().flat_map(|c| c.data.clone()).collect();
+        drop(chunks);
+        stream.read_to_end(&mut got).await.unwrap();
+        assert!(got == sent, "{} bytes of {}", got.len(), sent.len());
     }
 
     #[tokio::test]

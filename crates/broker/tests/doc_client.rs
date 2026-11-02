@@ -7,8 +7,9 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use ssh_key::{Algorithm, EcdsaCurve, LineEnding};
+use ssh_key::{Algorithm, LineEnding};
 use tokio::process::{Child, Command};
+use warden_broker::test_keys::P256;
 use warden_broker::testkit::{CapturingNotifier, TestBroker};
 use warden_broker_proto::Window;
 
@@ -230,8 +231,5 @@ async fn documented_shell_client_works() {
         }
     }
     run_session(Algorithm::Ed25519).await;
-    run_session(Algorithm::Ecdsa {
-        curve: EcdsaCurve::NistP256,
-    })
-    .await;
+    run_session(P256).await;
 }

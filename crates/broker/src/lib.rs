@@ -32,6 +32,8 @@ pub mod requests;
 pub mod signed;
 pub mod ssh_ca;
 pub mod store;
+#[cfg(any(test, feature = "testkit"))]
+pub mod test_keys;
 #[cfg(feature = "testkit")]
 pub mod testkit;
 

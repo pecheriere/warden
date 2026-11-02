@@ -217,16 +217,19 @@ such path, which was searched for on the date above.
 ## 6. Cryptography
 
 warden implements no cryptographic primitive itself. It calls published
-libraries through published protocols.
+libraries through published protocols. It does assemble some of the framing: for a
+P-256 request signature, the broker parses the SSHSIG's signature blob and passes
+the signed data to `p256`, and the CLI has its own small `ssh-agent` client
+([`cli/src/ssh_agent.rs`](../crates/cli/src/ssh_agent.rs)).
 
 | Use | Algorithm | Strength | Library | Code |
 |---|---|---|---|---|
 | SSH CA and certificates | Ed25519, refused otherwise | about 128 bits | `ssh-key` | `CaKey::new` in [`policy/mod.rs`](../crates/broker/src/policy/mod.rs) |
 | Ephemeral agent keys | Ed25519, refused otherwise | about 128 bits | `ssh-key` | `check_ed25519` in [`requests.rs`](../crates/broker/src/requests.rs) |
-| Agent request signatures | SSHSIG with Ed25519 or ECDSA P-256; hash SHA-512 or SHA-256 | about 128 bits | `ssh-key` | `check_signature` in [`signed.rs`](../crates/broker/src/signed.rs) |
+| Agent request signatures | SSHSIG with Ed25519 or ECDSA P-256; hash SHA-512 or SHA-256 | about 128 bits | `ssh-key` for Ed25519, `p256` for P-256 | `check_signature` and `sshsig_verifies` in [`signed.rs`](../crates/broker/src/signed.rs) |
 | Relay host key | Ed25519 | about 128 bits | `ssh-key`, `russh` | [`relay/host_key.rs`](../crates/broker/src/relay/host_key.rs) |
 | Relay target login key | Ed25519, refused otherwise | about 128 bits | `ssh-key`, `russh` | `RelayCredential` in [`policy/mod.rs`](../crates/broker/src/policy/mod.rs) |
-| Pinned target host keys | Ed25519, ECDSA P-256, P-384 or P-521, RSA of at least 2048 bits; verified only | at least 112 bits | `russh`, `ssh-key` | `host_key_algorithms` in [`relay/onward.rs`](../crates/broker/src/relay/onward.rs) |
+| Pinned target host keys | Ed25519, ECDSA P-256, P-384 or P-521, or RSA; verified only | at least 128 bits for the elliptic curves; for RSA, what the operator pinned ([below](#key-lengths)) | `russh`, `ssh-key` | `host_key_algorithms` in [`relay/onward.rs`](../crates/broker/src/relay/onward.rs) |
 | SSH transport (relay, both sides) | `mlkem768x25519-sha256`, `curve25519-sha256`, then Diffie-Hellman with SHA-2: group exchange (at least 3072 bits as a client), groups 14 to 18. ChaCha20-Poly1305, AES-GCM, AES-CTR. HMAC with SHA-2. No compression. | at least 112 bits | `russh` defaults, with `aws-lc-rs` | `SAFE_KEX_ORDER`, `CIPHER_ORDER` and `SAFE_HMAC_ORDER` in `russh` 0.65.0 `negotiation.rs` |
 | Passkeys | ES256 or RS256; user verification required; origin and RP id checked | about 128 bits for ES256 | `webauthn-rs` (OpenSSL) | `COSEAlgorithm::secure_algs` in `webauthn-rs-proto` 0.5.5 |
 | TLS out of the broker and CLI | TLS through `rustls`, certificates verified | as `rustls` configures | `reqwest` with `rustls` | `client_for` in [`proxy/client.rs`](../crates/broker/src/proxy/client.rs) |
@@ -263,13 +266,10 @@ Exceptions you should know about:
 - **The `russh` default list for the relay's own host key names `ssh-rsa`.** The
   relay holds only an Ed25519 host key and accepts only Ed25519 logins, so it is
   never used.
-- **Known advisories in the dependency tree.** `deny.toml` carries two
-  exemptions, for timing attacks that need a secret key in the affected code
-  (`rsa`, RUSTSEC-2023-0071; `crypto-bigint` 0.5, RUSTSEC-2026-0387). warden uses
-  those code paths only for public-key operations. The second exemption's reason
-  string says "only Ed25519 is used", which is out of date, since P-256 signatures
-  are verified through it. Verification handles no secret, so the conclusion stands
-  ([#99](https://github.com/pecheriere/warden/issues/99) re-checks both).
+- **A known advisory in the dependency tree.** `deny.toml` carries one exemption:
+  RUSTSEC-2023-0071, a timing attack on RSA private-key operations, in the `rsa`
+  pre-release that `russh` pins. warden holds no RSA private key, and that code
+  runs only in the broker, to verify the pinned host keys of targets.
 - **Certificate targets.** The login between the agent's `ssh` and the target is
   OpenSSH on both sides, and their settings decide its algorithms.
 
@@ -278,11 +278,13 @@ Exceptions you should know about:
 `crypto_keylength`. Every key warden generates or requires by default meets the
 NIST minimum through 2030 (112 bits of security): see "Strength" above. The keys
 warden holds are Ed25519, and other types are refused rather than warned about.
-RSA keys appear only as pinned host keys of targets, and `ssh-key` refuses one
-under 2048 bits when parsing (`RsaPublicKey::MIN_KEY_SIZE`). The operator can
-weaken only what the operator supplies from outside: a target's host key type
-(within the list above), or a pinned `ca_pem`, whose key sizes warden does not
-inspect beyond what `rustls` accepts.
+RSA keys appear only as pinned host keys of targets. **warden does not check their
+length**, and we found no such check in the libraries it reads with: `ssh-key` 0.6
+parses the item's key without one, and the conversion in `ssh-key` 0.7.0-rc.11, used
+for verifying, has none. So the operator can pin an RSA key that is too short, and must not: pin
+one of at least 2048 bits, or a better type. The operator can weaken only what the
+operator supplies from outside: a target's host key, or a pinned `ca_pem`, whose
+key sizes warden does not inspect beyond what `rustls` accepts.
 
 ### Certificate verification
 

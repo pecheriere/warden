@@ -17,10 +17,11 @@ use http_body_util::channel::Channel;
 use serde_json::json;
 use sha2::{Digest as _, Sha256};
 use ssh_encoding::{Decode as _, Encode as _};
-use ssh_key::{Algorithm, EcdsaCurve, HashAlg, PrivateKey, SshSig};
+use ssh_key::{Algorithm, HashAlg, PrivateKey, SshSig};
 use warden_broker::agents::{self, AgentPublicKey};
 use warden_broker::requests::{self, Clock as _};
 use warden_broker::signed::{BodyReadTimeout, NONCE_RETENTION_SECS};
+use warden_broker::test_keys::{self, P256};
 use warden_broker::testkit::{HttpsUpstream, TEST_OWNER, TestBroker, request_signature};
 use warden_broker_proto::signing::{
     AGENT_HEADER, Audience, NAMESPACE, NONCE_HEADER, Nonce, SIGNATURE_HEADER, SignedRequestParts,
@@ -32,12 +33,6 @@ const UNAUTHORIZED: &str = r#"{"error":"unauthorized"}"#;
 
 /// Largest body of the ordinary agent routes (`api::BODY_LIMIT`).
 const BODY_LIMIT: usize = 16 * 1024;
-
-fn p256() -> Algorithm {
-    Algorithm::Ecdsa {
-        curve: EcdsaCurve::NistP256,
-    }
-}
 
 fn name(agent: &str) -> AgentName {
     AgentName::try_from(agent.to_owned()).unwrap()
@@ -109,7 +104,7 @@ fn parts_of<'a>(
 /// An SSHSIG over `message` with an arbitrary namespace and hash, as a
 /// `Warden-Signature` value.
 fn sign_with(key: &PrivateKey, namespace: &str, hash: HashAlg, message: &str) -> String {
-    encode(&key.sign(namespace, hash, message.as_bytes()).unwrap())
+    encode(&test_keys::sign(key, namespace, hash, message.as_bytes()))
 }
 
 fn encode(signature: &SshSig) -> String {
@@ -126,7 +121,7 @@ fn set_signature(parts: &mut Parts, value: &str) {
 
 #[tokio::test]
 async fn signed_request_accepted() {
-    for algorithm in [Algorithm::Ed25519, p256()] {
+    for algorithm in [Algorithm::Ed25519, P256] {
         let broker = TestBroker::new().await;
         let key = broker.add_signing_agent("bot", algorithm.clone()).await;
 
@@ -402,7 +397,7 @@ async fn tampered_method_target_body_refused() {
 async fn wrong_agent_or_key_refused() {
     let broker = TestBroker::new().await;
     let bot = broker.add_signing_agent("bot", Algorithm::Ed25519).await;
-    let other = broker.add_signing_agent("other", p256()).await;
+    let other = broker.add_signing_agent("other", P256).await;
     let _legacy = broker.add_agent("legacy").await;
     let stranger = PrivateKey::random(&mut ssh_key::rand_core::OsRng, Algorithm::Ed25519).unwrap();
 
