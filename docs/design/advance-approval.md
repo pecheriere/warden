@@ -8,28 +8,40 @@ change only when the code does. Tracking issue:
 
 ## Recommendation
 
-**Build much less than the issue asks for, and only for API calls.**
+**Do not build this now.** Use server-side automation for what it covers, and
+have the agent ask in the morning for the rest. Build fixed API actions only if
+the owner can show a real need that those leave uncovered.
 
-1. **First version: fixed API actions, written by the owner in the vault.** An
-   action is one complete HTTP request with a name: method, exact path, exact
-   query, fixed body and fixed headers. The owner defines it in 1Password. The
+1. **The obvious uses do not need warden to change.** A fixed job at a fixed
+   time is a cron job, and a status check can be a scheduled job that publishes
+   its result. A prompt-injected agent has no way to fire a job it has no
+   trigger for, which beats every limit below. See [the
+   comparison](#fixed-actions-against-server-side-automation).
+2. **The owner must supply the evidence.** No usage data was collected for this
+   document. What is needed is [listed
+   below](#the-evidence-that-would-change-this), and without it this feature
+   adds unattended access to a security broker for a need nobody has shown.
+3. **If the evidence is there, build only fixed API actions, written by the
+   owner in the vault.** An action is one complete HTTP request with a name:
+   method, exact path, exact query and fixed body, with no headers beyond its
+   content type and the secret's own. The owner defines it in 1Password. The
    agent asks for a few of them by name, the owner approves the set with a
    passkey, and from then on the agent can say "run `nightly-import`" and
    nothing else. It supplies no byte of the request.
-2. **Each approval has hard limits:** one agent, at most 12 hours, at most 8
+4. **Such an approval has hard limits:** one agent, at most 12 hours, at most 8
    actions, a use count on each action, one use at a time, and at least 60
    seconds between uses of an action. It starts when approved. It cannot be
    renewed, extended, edited or repeated.
-3. **It is a new, separate kind of object.** It is not a grant, and creating or
+5. **It is a new, separate kind of object.** It is not a grant, and creating or
    approving ordinary requests never looks at it. With no advance approval,
    every request still needs a person, because that code path does not change.
-4. **Assume nobody reads a single notification until morning.** The owner is
+6. **Assume nobody reads a single notification until morning.** The owner is
    asleep or on a plane. Revoking and alerts help if they happen to be awake,
    but the hard limits must be acceptable by themselves. The test for adding an
    action to a set is: **would I accept this firing every allowed time, at the
    worst possible moment, with no warning?** If not, it stays out.
 
-**Left out on purpose:**
+**Left out on purpose, even then:**
 
 - **SSH of any kind.** Certificates cannot meet the hard rules at all. The relay
   could, with exact commands and a new restricted session type, but warden
@@ -45,14 +57,11 @@ change only when the code does. Tracking issue:
   under [Why matching commands does not
   work](#why-matching-commands-does-not-work).
 
-**What this does not solve.** An agent working on code through the night still
-stops at a push, a shell command or any request whose details it only learns
-during the work. This version unblocks a narrow class of work: polling a fixed
-status endpoint, or starting a fixed job. For the rest, the honest answer is
-that the agent works locally, records what it needs and asks in the morning.
-That widens nothing and needs no code. **If fixed actions would not cover real
-overnight work, the right outcome is to build nothing**, not a looser version.
-This is the first open question for the owner.
+**What this does not solve.** Even if built, an agent working on code through
+the night still stops at a push, a shell command or any request whose details it
+only learns during the work. For those, the honest answer is that the agent
+works locally, records what it needs and asks in the morning. That widens
+nothing and needs no code.
 
 ## What warden does today
 
@@ -64,7 +73,7 @@ document was written on.
 | An unanswered request ends after 10 minutes. | `PENDING_TTL_SECS` in [`requests.rs`](../../crates/broker/src/requests.rs) | The owner must be there when the agent asks. This stays. |
 | A window is 15 min, 30 min, 1 h or 4 h, capped per item by the vault's `max_window`. | `Window` in [`proto`](../../crates/proto/src/lib.rs); `check_window` in `requests.rs`, called at creation; `check_policy` in [`approval/mod.rs`](../../crates/broker/src/approval/mod.rs), called at begin and finish | The threat model accepts unrevocable certificates *because* windows are at most four hours. That argument must keep holding. |
 | An approval's binding is held on the server: token hash, window, fingerprint, destination digest, expiry. | `ApprovalBinding` in [`approval/passkeys.rs`](../../crates/broker/src/approval/passkeys.rs) | The page embeds the digest and the item is re-read at begin and at finish. This pattern extends to a set of actions. |
-| **The passkey does not sign the scope.** webauthn-rs generates a random challenge itself. | `start_passkey_authentication` in `passkeys.rs`; `generate_challenge` is private in `webauthn-rs-core` 0.5.5 | "Binds" means the server only accepts this assertion for the stored ceremony. It does not produce a signature over the scope that could be checked later. `design.md` §8.1 still says "the passkey signs the exact key"; the threat model's description is the accurate one. |
+| **The passkey does not sign the scope.** webauthn-rs generates a random challenge itself. | `start_passkey_authentication` in `passkeys.rs`; `generate_challenge` is private in `webauthn-rs-core` 0.5.5 | "Binds" means the server only accepts this assertion for the stored ceremony. It does not produce a signature over the scope that could be checked later. Anything that says the passkey signs the key or the request is wrong; the threat model's description is the accurate one. |
 | API scope is an origin, a path prefix on a segment boundary, and a method list. | `check_url`, `check_method` in [`proxy/rules.rs`](../../crates/broker/src/proxy/rules.rs) | No exact path and no use count exist. |
 | **The query, body and most headers are the agent's**, and the query is not audited. | `check_headers`, `decode_body` in `rules.rs`; `CallRecord::new` in [`api.rs`](../../crates/broker/src/api.rs) | An allow-list of method and path leaves all of this open. |
 | A call is audited before it is sent, and if that fails it is not sent. The policy and secret are read together at call time and compared with the approved digest. | `call` in `api.rs` | Reused as it is. |
@@ -120,10 +129,10 @@ The agent makes ordinary proxied calls, checked against a list.
 
   The owner sees a tidy line on the page and has approved far more than it says.
 
-### C. Fixed API actions, defined in the vault (recommended)
+### C. Fixed API actions, defined in the vault (only if the need is shown)
 
 One whole request, fixed by the owner, invoked by name. Details are
-[below](#design-of-the-first-version).
+[below](#design-of-the-first-version-if-one-is-built).
 
 - **Trusts:** the vault, which is already a root of trust, the origin, and the
   owner's judgment when writing the action.
@@ -209,17 +218,23 @@ A prefix, a pattern or an allowed program with free arguments.
 matching commands does not work](#why-matching-commands-does-not-work) has the
 reasons.
 
-### I. Do nothing in warden
+### I. No advance approval: server-side automation, and asking in the morning
 
-The agent works on what needs no credentials, and asks in the morning.
-Service-side limits still help: a read-only token, a machine account, branch
-rules.
+What must run overnight runs as a scheduled job on a machine the agent cannot
+reach. The agent works on what needs no credentials, and asks in the morning for
+the rest. Service-side limits still help: a read-only token, a machine account,
+branch rules.
 
-- **Trusts:** nothing new.
-- **Fails:** the work waits.
+- **Trusts:** the machine and the job, which are outside warden. The job holds
+  its own standing credential, needs no passkey, runs until someone removes it
+  and is not in warden's audit log. warden itself trusts nothing new.
+- **Fails:** agent work that needs something the job does not do waits for
+  morning. A job that reads something the agent can change has the same mutable
+  state problem as a fixed action.
 
-This is the baseline every other option must beat. Narrow service-side tokens
-are worth having under every option.
+This is the baseline every other option must beat. [The comparison
+below](#fixed-actions-against-server-side-automation) checks whether C does.
+Narrow service-side tokens are worth having under every option.
 
 ### How they compare
 
@@ -227,13 +242,52 @@ are worth having under every option.
 |---|---|---|---|---|---|
 | A. Longer grant | No | API and relay, not cert | API and relay, not cert | Everything in scope | Yes (API, cert) |
 | B. Method and path | Yes | Yes, without query or body | Yes | Query, body, headers, when | Yes |
+| I. Automation, or the morning | Not applicable: the agent has no access | No: the job's own logs | The owner removes the job, outside warden | Nothing, unless it can reach what the job reads | Yes |
 | **C. Fixed action** | **Yes** | **Yes, exactly** | **Yes** | **When, how often within the count** | **Yes** |
 | D. One-shot, drafted | Yes (one) | Yes, exactly | Yes | The content, before approval | Yes |
 | F. `force-command` | **No** | **No** | **No** | Stdin, when, how often | Yes |
 | G. Relay, exact command | Yes | Yes | Yes, in seconds | Nothing about the command if restricted; when | **No** |
 | H. Relay, matching | Yes | Partly | Yes, in seconds | Whatever the matcher misses | **No** |
 
-## Design of the first version
+### Fixed actions against server-side automation
+
+| Need | Server-side automation | Fixed action | Better |
+|---|---|---|---|
+| A fixed job at a fixed time, such as a nightly import. | Cron, a systemd timer or a CI schedule. The agent has no trigger. | The agent fires it, up to the count, when it likes. | **Automation.** Giving the agent the trigger only adds risk. |
+| Status that the agent checks while working. | A scheduled job publishes a chosen part of the result where the agent can read it, with no credential. | The agent receives the whole response, whenever it asks, and fresher. | **Automation**, unless the agent truly needs a fresher answer than the schedule gives. It also sees less. |
+| A job to run once the agent's work is ready. | Service-side triggers, such as CI on a push, or a worker watching for a marker. The agent then holds the trigger anyway, and a limit on runs must live in the job. | A count, a passkey for this night and warden's audit, in one place, with no new worker. | **Close.** This is the best case for an action, more so if the service has no suitable trigger. |
+| An API with no schedule or trigger of its own, and nowhere to run a job. | Needs a machine to be found and a credential placed on it. The warden host is not the place: it should run nothing else untrusted. | Uses the secret warden already holds. | **Action**, if the owner really has no such machine. |
+| Off by default: the access should exist only on nights the owner chooses. | A standing job and credential, unless the owner enables it each time. | Nothing can fire until tonight's passkey. | **Action**, though it has to be worth a nightly step. |
+| A decision only the agent can make, from what it found. | Not possible. | Possible. | **Neither, comfortably.** The agent's judgment is exactly what a prompt injection subverts. |
+
+**The cost is not equal either.** Automation changes nothing in warden. An
+action needs a table, a route, a CLI command, a page, a new way to ring, vault
+items and a wider threat model, and every owner who never uses it still carries
+that code in their security broker. Writing a vault item also takes about as
+much planning as writing a cron line.
+
+**What is left.** An action is the better answer only when all of these hold:
+the agent's timing matters, the request is fully known in advance, the worst
+moment is acceptable, and server-side automation is unavailable or would hold a
+credential somewhere worse. That may be a real need. Nothing here shows that it
+is common.
+
+### The evidence that would change this
+
+The owner supplies it, since nobody else can:
+
+- **The audit log, as a start.** `request_created` and `expired` entries show
+  requests that went unanswered overnight. This undercounts: an agent that knows
+  nobody is there may never ask.
+- **For two or three real cases:** the exact request, and whether it was fully
+  known before bed; why a scheduled job or a service-side trigger would not have
+  done; how much work was lost by waiting for morning; and whether it passes the
+  worst-moment test.
+
+If the cases need a parameter, a shell or a push, they are not fixed actions,
+and **the outcome is not to build this, rather than to loosen it.**
+
+## Design of the first version, if one is built
 
 ### The action
 
@@ -256,14 +310,20 @@ under the same rule as target names):
 | `body`, `content_type` | Optional. The exact body, at most 4 KiB so the page can show it whole. |
 | `max_uses` | At most 100 for `GET` and `HEAD`, at most 10 for anything else. |
 | `max_hours` | The longest approval this action may be part of, at most 12. |
+| `ring` | `each` or `first`: whether every use rings, or only the first. `first` is accepted only with `GET` or `HEAD`, and is never assumed from the method. |
 
 As elsewhere, required fields never fall back to a default, and a malformed item
-fails with an error naming the field. Validation refuses what `rules.rs`
-refuses, including the secret's own header and the headers in `REFUSED_HEADERS`.
+fails with an error naming the field. The path and query must pass the checks in
+`rules.rs`.
 
-The method says little about the effect, since a `GET` can have side effects.
-The higher limit for reads is a heuristic, and the page does not call anything
-"safe".
+**An action has no other headers.** The broker sends the secret's header, the
+`content_type`, the `Accept-Encoding` it always sets and what HTTP framing needs,
+so there is nothing unbound to approve. An API that requires another header cannot
+be an action in this version.
+
+The method says little about the effect, since a `GET` can have side effects. So
+the higher limit for reads is a heuristic, the page does not call anything
+"safe", and how often a use rings is the owner's explicit choice in `ring`.
 
 ### Limits
 
@@ -276,6 +336,7 @@ The higher limit for reads is a heuristic, and the page does not call anything
 | Concurrency | One use at a time per approval. | A slot like `CallSlot`. |
 | Spacing | At least 60 s between uses of an action. | Refused with the time remaining. It does not halt anything. |
 | Live approvals | One per agent. | Refused when requested. |
+| After it ends, for any reason | No new advance request from that agent until the original end time, unless the owner clears this on `/grants` with a passkey. | Refused when requested, and nobody is notified. |
 | Renewal | None. Ending is final. | There is no such route or state. |
 
 **How this interacts with the 4-hour cap: it does not.** `Window` is unchanged
@@ -355,12 +416,12 @@ The page is visibly different from an ordinary approval and follows
   asking again", and needs the passkey.
 
 **Binding.** The digest covers the agent and, for every action, the name, the
-secret's destination digest, the method, path, query, body hash, content type
-and `max_uses`. It is embedded in the page, compared when the ceremony begins,
-and added to `ApprovalBinding` with the duration. The action items are re-read
-at finish, and any difference asks the owner to reload. Editing an item or its
-secret after approval ends the use of that action, as with `destination_digest`
-today.
+secret's destination digest, the method, path, query, body hash, content type,
+`max_uses` and `ring`. It is embedded in the page, compared when the ceremony
+begins, and added to `ApprovalBinding` with the duration. The action items are
+re-read at finish, and any difference asks the owner to reload. Editing an item
+or its secret after approval ends the use of that action, as with
+`destination_digest` today.
 
 **The limit of that binding.** As with every approval today, the passkey proves
 the owner answered this ceremony, not what the page displayed. Whatever
@@ -403,22 +464,25 @@ agent, the action's name and the count: `warden: build-agent used nightly-import
 (2 of 3). Nobody was asked.` It carries no query, body or description, and no
 approval link.
 
-- **Each modifying use rings before it is sent. If no channel can deliver it,
-  the use is not sent and the approval halts.** warden therefore never does an
-  unattended write the owner could not hear about. A notifier outage costs the
-  night's work, which is the right direction to fail.
-- **Reads** ring on the first use only, and every one of them is audited. A read
-  action may have 100 uses, and the same channel carries approval requests: a
-  phone that buzzes all night gets muted, and then the agent's next real request
-  goes unseen. The issue asks for a notice for each use, so this is an open
-  question below.
+- **A use that rings does so before it is sent. If no channel accepts the
+  notice, the use is not sent and the approval halts.** warden then never sends
+  such a use after its notifier refused it. That is all this proves: a ring
+  means a notifier answered 2xx (`check_status` in `notify/mod.rs`), not that
+  the phone got it or anyone saw it. A notifier outage costs the night's work,
+  which is the right direction to fail.
+- **Which uses ring is written in the item, not guessed from the method.**
+  `ring` is `each` or `first`, and `first` needs `GET` or `HEAD`. Every use is
+  audited either way. An action may have 100 uses, and the same channel carries
+  approval requests: a phone that buzzes all night gets muted, and then the
+  agent's next real request goes unseen. The issue asks for a notice for each
+  use, so this is an open question below.
 - **The end always rings**, whatever the reason, with a link to the summary on
   `/grants`.
 
 **Stopping on something unusual.** warden cannot recognise abuse, because the
 requests are the approved ones. It can recognise a few things that a
-well-behaved agent would never do. Each of these audits, rings, and needs a new
-approval to continue:
+well-behaved agent would never do. Each of these audits and rings, and nothing
+more runs under that action or approval:
 
 | What happened | Effect |
 |---|---|
@@ -428,9 +492,33 @@ approval to continue:
 | The action or the secret changed in the vault | That action stops. |
 | A response other than 2xx | That action stops. |
 
-An agent can trip these on purpose, which costs it only its own approval. Being
-too early for the 60 s spacing is refused without a halt, since a retry is
+Being too early for the 60 s spacing is refused without a halt, since a retry is
 normal.
+
+**A halt is also a pretext, and an agent can trip one on purpose.** Asking for
+an action outside the set takes one call. warden then truthfully tells the owner
+the approval has stopped, and the agent can follow up: "warden halted the
+overnight job, please approve again so it can finish." Everything checkable in
+that story is true. Using up the count works the same way. So:
+
+- **No new advance request is accepted after an approval ends**, for any reason,
+  until its original end time. It is refused and nobody is notified, so the
+  agent cannot put that prompt in front of the owner. The owner can clear this
+  on `/grants`, with a passkey, after reading what happened. Nothing the agent
+  sends leads there, and a halt notice carries no link to approve.
+- **The notice says so:** "This may be the agent's doing. Nothing needs you
+  tonight. Read the history first."
+- **Every approval page for that agent shows a banner** until that end time,
+  naming the halt and its time, which the agent's goal cannot remove.
+
+**This does not close it.** An ordinary request must still ring, or the default
+flow would change, so the agent can ask for an ordinary grant with the same
+story, and an ordinary grant is much wider than the action was. Only the banner
+stands in the way of a tired owner. The agent can also end the night's work
+whenever it likes. Both are the price of having halts at all. The alternative is
+to refuse an out-of-scope action without halting, which loses a sign of
+compromise and removes one pretext but not the others, since upstream failures
+and used-up counts remain.
 
 **Revoking.** `/grants` lists live approvals at the top, with uses left and the
 time remaining, and with one Revoke that ends the whole approval.
@@ -491,7 +579,7 @@ what was approved.
 | Reaches another path, method or origin. | **Yes.** |
 | Fires a fourth time, or after the end. | **Yes.** A fourth use also halts the approval. |
 | Uses this to get a grant, a shell or a secret. | **Yes.** The secret stays in the broker, and the same redaction limits apply as in proxy mode. |
-| Asks for more, with a persuasive goal, at 03:00. | **Partly.** It is an ordinary request that rings and needs a passkey. A tired owner who approves it has approved it. It cannot extend the approval, so "please extend" is never real, and docs and the page should say so. |
+| Asks for more, with a persuasive goal, at 03:00. | **Partly.** It is an ordinary request that rings and needs a passkey. A tired owner who approves it has approved it. Nothing extends an approval, and a new advance request is refused after one ends. But a halt it caused is real, so its story can be true in every checkable detail, and it can ask for an ordinary grant. See [the halt pretext](#while-it-runs); the banner is the only thing warden adds. |
 
 ### Is that acceptable?
 
@@ -637,17 +725,17 @@ These go in with the implementation, not before.
     approval.
   - A new section on advance approvals: the table in [What could go
     wrong](#what-could-go-wrong), the trap with mutable state, the nightly-habit
-    risk, and the worst-moment test.
+    risk, the worst-moment test, and the halt pretext with what it leaves open.
 - **Deployment assumptions:** recommend a separate agent with its own OS user
   for overnight work, keep the vault out of the agent's reach (the whole design
   rests on that), and ship the audit log off the host.
 
-The same change updates `design.md` (§7 lifecycle, §8.3, §9, §10, §11, and the
-wrong sentence in §8.1 regardless), `1password-items.md`, `agent-protocol.md`,
-`agent-usage.md`, `agent-instructions.md`, `notifications.md`,
-`configuration.md`, the README's statement that the owner approves every
-request, and the changelog. The approval page and `/grants` need the screenshots
-the pull request template lists. The tables go in a new migration.
+The same change updates `design.md` (§7 lifecycle, §8.3, §9, §10 and §11),
+`1password-items.md`, `agent-protocol.md`, `agent-usage.md`,
+`agent-instructions.md`, `notifications.md`, `configuration.md`, the README's
+statement that the owner approves every request, and the changelog. The approval
+page and `/grants` need the screenshots the pull request template lists. The
+tables go in a new migration.
 
 ## What is certain, and what is not
 
@@ -669,34 +757,35 @@ uses, 60 s, 4 KiB. They are starting points for the owner to change.
 
 **Not known:**
 
-- **Whether fixed actions cover enough real overnight work.** No usage data was
-  collected; this rests on the issue's description.
+- **Whether any of this is needed.** No usage data was collected. The need rests
+  on the issue's description, and the comparison with automation is reasoned
+  from the kinds of use, not from real overnight work.
 - **How usable the page is at this length on a phone,** with 8 actions and their
   bodies.
-- **Whether a ring before each write is reliable enough** on real notifiers,
-  where one failed delivery halts the night's work.
+- **Whether a ring before a use is reliable enough** on real notifiers, where
+  one refused delivery halts the night's work.
 
 ## Open questions for the owner
 
-1. **Is this narrow version useful enough to build?** Name two or three real
-   overnight needs and check them against the definition of an action. If they
-   all need a parameter, a shell or a push, **the recommendation is not to build
-   this now**, not to loosen it. Do you want to do that exercise first?
+1. **What real overnight need would automation and the morning leave
+   uncovered?** This decides everything else. Please supply [the
+   evidence](#the-evidence-that-would-change-this). Without it the
+   recommendation is not to build this, and the remaining questions apply only
+   if it is built.
 2. **Is it acceptable that an agent's other sessions share it (#49),** given the
    argument above? Or should #49's proof of possession come first, at the cost
    of a long-running process holding a key?
-3. **Should modifying actions be allowed in the first version at all?** A
-   read-only first version is safer by a long way, and limits the harm to reads.
-   The recommendation allows fixed writes because a job trigger is the most
-   obvious thing to unblock, but read-only is a defensible start, and would be
-   easy to widen later.
+3. **Should modifying actions be allowed in a first version at all?** A
+   read-only version is safer by a long way, and limits the harm to reads,
+   though it gives up the closest case in the comparison, a job the agent
+   triggers. It would be easy to widen later.
 4. **Are the limits right,** especially 12 hours? It covers one night and does
    not cover a weekend, on purpose.
-5. **Should each read ring?** The issue asks for each use. The recommendation is
-   every write, and only the first read plus the end, to protect the channel
-   that carries real approvals.
-6. **Should a notifier failure halt the approval?** The recommendation is yes
-   for writes. It costs availability.
+5. **Should `ring = first` exist?** The issue asks for a notice for each use. It
+   protects the channel that carries real approvals, at the cost of fewer
+   notices.
+6. **Should a notifier failure halt the approval?** The recommendation is yes.
+   It costs availability.
 7. **Is a one-shot, agent-drafted request (option D) wanted later?** It covers
    what cannot be declared in advance, at the price of the owner reading an
    agent's text.
