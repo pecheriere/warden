@@ -70,6 +70,12 @@ All notable changes to this project are recorded here. The format follows
 - A landing page in `site/`, published to GitHub Pages by
   `.github/workflows/pages.yml`. It is static, with no scripts or external
   resources.
+- `docs/assurance-case.md` (trust boundaries, design principles, how common
+  weaknesses are countered, cryptography, how to replace each credential, including
+  a procedure for the SSH CA key), `docs/security-assessment.md` (a dated ranking
+  of the most likely and most damaging problems; the project's own, not an
+  independent review) and `docs/interfaces.md` (every external interface, with the
+  approval UI's routes and the SSH relay).
 
 ### Changed
 

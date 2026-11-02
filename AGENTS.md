@@ -95,8 +95,10 @@ uvx zizmor@1.31.1 .   # when a workflow or the Dependabot config changes
 - When behaviour changes, update the docs in the same pull request: the
   README, `docs/configuration.md`, `docs/deployment.md`,
   `docs/agent-usage.md`, `docs/agent-protocol.md`, `docs/building.md`,
-  `docs/upgrading.md`, `docs/threat-model.md` and `site/index.html` must stay
-  consistent with the code.
+  `docs/upgrading.md`, `docs/interfaces.md`, `docs/threat-model.md`,
+  `docs/assurance-case.md` and `site/index.html` must stay consistent with the
+  code. A change that moves a risk also updates `docs/security-assessment.md`
+  and its date.
 - **Approval UI pages** follow `docs/design-language.md`. Render and
   screenshot them with `scripts/screenshot-pages.sh <out-dir>` at the sizes
   the PR template lists, light and dark, and attach the screenshots.
@@ -133,7 +135,8 @@ Semantic versioning, one version for the whole workspace.
    section in `CHANGELOG.md` (noting any new migration), and updates every
    mention of the previous version in the README and `docs/` (install
    commands, image tags, attestation examples). The notes saying that
-   binaries start after v0.8.1 stay as they are.
+   binaries start after v0.8.1 stay as they are. A minor release also reviews
+   `docs/security-assessment.md` and updates its date.
 2. After it merges, the maintainer, or an agent the maintainer has
    confirmed, creates a signed annotated `vx.y.z` tag (`git tag -s`) on that
    commit of `main`. `.github/workflows/release.yml` refuses a tag that
