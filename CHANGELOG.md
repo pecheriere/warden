@@ -18,6 +18,12 @@ All notable changes to this project are recorded here. The format follows
 
 ### Added
 
+- Contributions now need a Developer Certificate of Origin sign-off
+  (`git commit -s`). A new `dco` check reads every commit of a pull request, and
+  `CONTRIBUTING.md` explains the rule, including merge commits and Dependabot.
+- CI measures test coverage with `cargo llvm-cov`, including the Linux-only
+  relay tests, and reports it in each run's summary. No threshold fails the
+  build yet.
 - Project documents: `CONTRIBUTING.md` (where to discuss, reporting bugs, the
   test policy), `GOVERNANCE.md`, `CODE_OF_CONDUCT.md`, `docs/roadmap.md`,
   `docs/building.md` and `docs/upgrading.md`.
