@@ -467,7 +467,8 @@ within seconds.
 
 - **Certificates already issued stay valid on the target** until they
   expire: the target checks them offline. Short windows limit that, so
-  revoke as soon as you finish.
+  revoke as soon as you finish. A login already open continues even after the
+  certificate expires, so end your sessions and what they started.
 - **A proxied API call already in flight runs to completion** (at most
   30 s); only new calls are refused.
 

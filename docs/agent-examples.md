@@ -82,7 +82,8 @@ warden revoke <grant-id>
 
 The certificate it already holds stays valid on the host until the window ends
 ([why](ssh-targets.md#revocation-and-certificates)), which is why the window
-should be short.
+should be short. A session already open keeps running even after that, so end it
+when the work is done.
 
 ## An API call
 

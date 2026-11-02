@@ -4,8 +4,13 @@ warden is a self-hosted **approval broker** for AI agents and scripts.
 
 An agent asks for temporary access to a server or an API and says why. You
 get a notification on your phone, read the goal and exactly what would be
-granted, and approve with a passkey. warden then hands out access that
-expires on its own. The agent never holds a long-lived secret.
+granted, and approve with a passkey. warden then hands out access for a limited
+window. When the window ends, API calls through warden are refused and relay
+sessions are closed. On an SSH certificate target new logins stop, but a session
+already open keeps running until it ends or is ended on the target. The agent's
+machine holds no reusable SSH key, API token or target password, only the agent's
+own identity key, which can ask for access and use active grants but cannot approve
+anything.
 
 The [project page](https://pecheriere.github.io/warden/) shows the flow, the
 use cases and how to start.
@@ -41,7 +46,7 @@ For a real setup, go on to the [recommended setup](#recommended-setup) and the
 
 warden is for people who leave AI agents or scripts working for them while
 they get on with something else, and want them to reach their own servers,
-devices and APIs without holding a standing credential. You run the server
+devices and APIs without holding a standing credential for them. You run the server
 yourself, so you need to be comfortable administering a Linux host and a
 tailnet.
 
@@ -77,8 +82,10 @@ The usual way around this is a standing credential on the agent's machine,
 such as an API token, an SSH key or a vault service account token. Those
 work unattended, but they also work for anything at any time, and the
 agent (or whatever compromises it) holds them for good. warden exists because
-that is not an acceptable price for never getting stuck: no password on the
-agent's disk, and no access that is always on.
+that is not an acceptable price for never getting stuck: no SSH key, API token or
+target password on the agent's machine, and no access that is always on. The agent
+keeps only its own identity key. That key can ask for access and use active grants,
+but cannot approve anything, and it cannot be copied only if it is held in hardware.
 
 Password managers are starting to close this gap. As of late 2026,
 1Password lets some personal agents sign in to websites after you approve
@@ -91,14 +98,14 @@ your phone, on a server you run.
 warden takes a different approach: approval moves to your phone. The agent
 asks for one piece of access, for one stated goal and a short window. You
 approve or deny it from wherever you are. The secrets stay in your vault
-and on the warden server, and the agent only gets access that expires.
+and on the warden server, and the agent only gets access for a limited window.
 
 warden still needs a person. It frees you from the computer, not from
 deciding. If nobody answers, the request expires after 10 minutes and the
 agent has to ask again, and a grant lasts at most 4 hours. So an agent working
-through the night stops when its grant ends, or when it needs something you
-did not approve while you are asleep. That is the trade: you stay in the loop,
-and the agent holds no access that lasts.
+through the night has to stop and wait when its grant ends, or when it needs
+something you have not approved, until you wake up. That is the trade: you stay in
+the loop, and the agent holds no lasting credential for your servers or APIs.
 
 ## How it works
 
@@ -124,15 +131,15 @@ and the agent holds no access that lasts.
    opens the approval page, reachable only from your phone over Tailscale,
    and you approve with a passkey, or deny.
 3. **Use.** The agent gets exactly what you approved, for the window you
-   chose, and every step is written to a tamper-evident audit log.
+   chose, and warden writes what it does to a tamper-evident audit log.
 
 What warden can grant:
 
 | Access | How the agent gets it | What the agent never sees |
 |--------|-----------------------|---------------------------|
-| **SSH, certificate mode** | A certificate signed by warden's SSH CA, valid for the window, for a key that exists only in memory. | Any reusable key. |
-| **SSH, relay mode** (appliances, password-only hosts) | A session through warden's SSH relay; warden logs in to the target. | The target's key or password. |
-| **HTTP API calls** | warden makes each call, adds the secret, and returns the answer with the secret redacted. | The API secret. |
+| **SSH, certificate mode** | A certificate signed by warden's SSH CA, for a key that exists only in memory. It is valid for new logins during the window. A session already open keeps running after it, and warden cannot end it. | A reusable key for the target. |
+| **SSH, relay mode** (appliances, password-only hosts) | A session through warden's SSH relay; warden logs in to the target. warden closes the session when the window ends or the grant is revoked. | The target's key or password. |
+| **HTTP API calls** | warden makes each call, adds the secret, and returns the answer with the secret redacted. Calls are refused once the window ends or the grant is revoked. | The API secret. |
 
 ## Recommended setup
 
@@ -287,7 +294,10 @@ it; follow it for a real setup.
 | [Agent instructions](docs/agent-instructions.md) | A block to paste into an agent's `AGENTS.md` or `CLAUDE.md`. |
 | [Examples](docs/agent-examples.md) | An SSH deployment and an API call, end to end. |
 | [Agent protocol](docs/agent-protocol.md) | The agent API, for writing another client. |
+| [External interfaces](docs/interfaces.md) | Everything warden accepts and calls, with the approval UI's routes and the SSH relay. |
 | [Threat model](docs/threat-model.md) | What warden protects, what it does not, and what it assumes. |
+| [Assurance case](docs/assurance-case.md) | Trust boundaries, design principles, weaknesses and cryptography, with pointers to the code, and how to replace each credential. |
+| [Security assessment](docs/security-assessment.md) | A dated ranking of what is most likely to go wrong. The project's own, not an independent review. |
 | [Design](docs/design.md) | The design and its decisions. |
 | [Design language](docs/design-language.md) | The approval UI's visual design. |
 | [Upgrading](docs/upgrading.md) | The upgrade path, and which releases get fixes. |
@@ -303,14 +313,19 @@ it; follow it for a real setup.
   enrolled device, on an approval page that only your phone can reach.
 - **Bounded grants.** At most four hours, one target or secret, the account
   or methods you approved. API requests are read-only unless the agent asks
-  for more, and the page says so.
-- **No standing secrets on the agent machine.** SSH keys are made per
-  request and live only in memory; API and relay credentials never leave
-  warden; a key-signed agent stores nothing secret.
+  for more, and the page says so. On a certificate target the limit is on new
+  logins: [one already open continues](docs/threat-model.md#accepted-residual-risks).
+- **No standing credentials for your systems on the agent machine.** SSH keys
+  are made per request and live only in memory; API and relay credentials never
+  leave warden. The agent keeps only its own identity key, a signing key or a
+  bearer key. It can ask for access and use active grants until you revoke the
+  agent, but cannot approve anything. A key in hardware cannot be copied; a key
+  file or a bearer key [can be](docs/security-assessment.md#ranked-risks).
 - **Nothing on the internet.** warden is reachable only over your tailnet,
   never through Funnel.
-- **Audited.** Every request, decision and use goes to a hash-chained audit
-  log. Secrets never reach the log or the notifications.
+- **Audited.** Every request, decision, relay session and API call goes to a
+  hash-chained audit log. Certificate logins go straight to the target, so
+  only its `sshd` logs them. Secrets never reach the log or the notifications.
 
 warden does not protect against whoever controls the warden host (it is the
 root of trust) or the 1Password vault, against an approved agent or code on
