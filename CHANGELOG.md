@@ -28,6 +28,10 @@ All notable changes to this project are recorded here. The format follows
   to any other host is refused.
 - `docs/agent-instructions.md` tells an agent to name its session, and says that this
   is a claim.
+- The Active grants page shows how long each relay session has been idle (since
+  bytes last moved either way), and when a certificate grant's certificate was
+  issued and when it expires. warden still cannot see logins made with a
+  certificate, and the page says it does not show whether one was used.
 
 ### Fixed
 

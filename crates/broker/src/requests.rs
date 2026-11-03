@@ -304,7 +304,11 @@ pub struct ActiveGrant {
     pub request: CreateRequest,
     /// What the grant gives access to.
     pub access: GrantAccess,
-    /// End of validity, Unix seconds.
+    /// Start of validity, Unix seconds. A certificate grant's only
+    /// certificate is issued at this time.
+    pub not_before: i64,
+    /// End of validity, Unix seconds; also when a certificate grant's
+    /// certificate expires.
     pub not_after: i64,
 }
 
@@ -439,6 +443,11 @@ impl Requests {
     #[must_use]
     pub const fn link_hosts(&self) -> &LinkHosts {
         &self.link_hosts
+    }
+
+    /// The clock this service reads.
+    pub(crate) const fn clock(&self) -> &Arc<dyn Clock> {
+        &self.clock
     }
 
     /// The live relay sessions.
@@ -1225,7 +1234,7 @@ impl Requests {
     /// Storage failures or unreadable stored rows.
     pub async fn active_grants(&self) -> Result<Vec<ActiveGrant>, RequestError> {
         let rows = sqlx::query(
-            "SELECT g.id, g.agent, g.not_after, g.view, r.body, r.fingerprint \
+            "SELECT g.id, g.agent, g.not_before, g.not_after, g.view, r.body, r.fingerprint \
              FROM grants g JOIN requests r ON r.id = g.request_id \
              WHERE g.revoked_at IS NULL AND g.not_after > ? ORDER BY g.not_after, g.id",
         )
@@ -1243,6 +1252,7 @@ impl Requests {
                     fingerprint: parse(row, "fingerprint")?,
                     request: serde_json::from_str(&body)?,
                     access: view.access,
+                    not_before: row.try_get("not_before")?,
                     not_after: row.try_get("not_after")?,
                 })
             })

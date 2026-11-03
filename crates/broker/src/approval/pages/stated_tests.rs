@@ -95,6 +95,7 @@ fn pages(link: &str, hosts: &LinkHosts) -> Vec<(&'static str, String)> {
             user: user(),
             host_keys: Vec::new(),
         }),
+        not_before: NOW - 60,
         not_after: NOW + 1800,
     };
     let past = HistoryEntry {
