@@ -120,7 +120,10 @@ challenge itself, so warden binds the approval differently, with an equivalent
 guarantee because the server is the trusted party. The passkey's signature does
 not itself cover the request: it covers a random challenge, and the link between
 the two is state on the server. So the signature alone cannot prove afterwards
-what was approved, and a compromised broker could misapply it.
+what was approved, and a compromised broker could misapply it. This is deliberate: the
+signature is not evidence of what the owner approved, because a compromised broker
+could show one thing and have the passkey sign another, and needs no signature to act.
+[The design](design/passkey-binding.md) explains the decision.
 
 - The server starts the passkey ceremony for one specific request and window.
   The ceremony state, including the challenge, is kept server-side and keyed
