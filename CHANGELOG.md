@@ -10,9 +10,9 @@ All notable changes to this project are recorded here. The format follows
 
 ### Upgrading
 
-Read [docs/upgrading.md](docs/upgrading.md) and back up warden's data first. Run
-`warden-server doctor` on the new version before switching over: it reports what
-would stop the server.
+Read [docs/upgrading.md](https://github.com/pecheriere/warden/blob/v0.9.0/docs/upgrading.md)
+and back up warden's data first. It also says how to run `warden-server doctor` on the
+new version before starting it, and how to read the result.
 
 - warden refuses to start if others can write to its data directory and it cannot
   correct that, if a file's permissions cannot be corrected, or if a symbolic link
@@ -26,6 +26,16 @@ would stop the server.
   and 8 from it when a call's grant state cannot be read. Scripts that read these
   need checking.
 - Opening a request from the new Pending page stops its notification link working.
+- Each agent is limited to 5 pending requests and 10 new ones per 10 minutes by
+  default, cancelled ones included. A busier agent gets `429`: raise the limits if
+  yours needs more.
+- A `Warden-Signature` must be the exact SSHSIG encoding, as `ssh-keygen` and
+  `ssh-agent` produce it. A client that builds its own needs checking.
+- A proxied call with more than 100 headers gets a 400.
+- A tool reading warden's data as another non-root user, such as a backup job using
+  group permissions, loses access.
+- `warden-server agent revoke` can exit with an error after revoking, when its audit
+  entries could not reach the log. The agent is revoked: read the message.
 
 ### Security
 

@@ -424,9 +424,11 @@ It too applies to new logins only.
   history and required checks.
 - **Releases**: the image and CLI binaries have build-provenance attestations
   ([`release.yml`](../.github/workflows/release.yml)).
-- **Not yet in place**: fuzzing ([#91](https://github.com/pecheriere/warden/issues/91)),
-  measured coverage ([#97](https://github.com/pecheriere/warden/issues/97)) and an
-  independent review.
+- **Fuzzing and coverage**: a scheduled job fuzzes part of the code that parses
+  untrusted input ([#91](https://github.com/pecheriere/warden/issues/91)), and CI
+  measures coverage, with no threshold yet
+  ([#97](https://github.com/pecheriere/warden/issues/97)).
+- **Not yet in place**: an independent review.
 
 When behaviour changes, [`AGENTS.md`](../AGENTS.md) requires the documents to
 change in the same pull request. That includes this page and, for anything that

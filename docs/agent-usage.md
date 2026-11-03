@@ -73,8 +73,8 @@ install -m 0755 "warden-$version-$platform/warden" ~/.local/bin/warden
 rather than a browser: the binary is not notarized, and macOS may block one
 that a browser downloaded.
 
-For v0.8.1 and earlier, or on another platform, build it instead, with Rust
-1.99 or later:
+On another platform, build it instead, with Rust 1.99 or later. For an older
+release, which has no binaries, use its tag in the same command:
 
 ```sh
 cargo install --locked --git https://github.com/pecheriere/warden --tag v0.9.0 warden-broker-cli
