@@ -576,7 +576,7 @@ fn live_area(grant: &ActiveGrant, live: Option<&LiveGrant<'_>>) -> Markup {
                                 " · "
                                 span.nowrap { (bytes(session.bytes_from_target)) " from target" }
                             }
-                            span.nowrap { (idle_label(session.idle_secs)) }
+                            span.nowrap.idle { (idle_label(session.idle_secs)) }
                         }
                     }
                     @for call in calls {
@@ -1486,7 +1486,7 @@ mod tests {
         let (relay, api, cert) = (id(5), id(4), id(2));
         assert!(
             html.contains(&format!(
-                r#"<div class="live-area" data-grant="{relay}" data-kind="relay"><p class="live">2 sessions open</p><ul class="live-list" role="list"><li><span>Session since <time datetime="2027-01-15T07:39:00Z">07:39 UTC</time></span><span><span class="nowrap">1.2 KB to target</span> · <span class="nowrap">3.4 MB from target</span></span><span class="nowrap">Idle 12 min</span></li><li><span>Session since <time datetime="2027-01-15T07:58:25Z">07:58 UTC</time></span><span><span class="nowrap">512 B to target</span> · <span class="nowrap">48.2 KB from target</span></span><span class="nowrap">Active now</span></li></ul></div>"#
+                r#"<div class="live-area" data-grant="{relay}" data-kind="relay"><p class="live">2 sessions open</p><ul class="live-list" role="list"><li><span>Session since <time datetime="2027-01-15T07:39:00Z">07:39 UTC</time></span><span><span class="nowrap">1.2 KB to target</span> · <span class="nowrap">3.4 MB from target</span></span><span class="nowrap idle">Idle 12 min</span></li><li><span>Session since <time datetime="2027-01-15T07:58:25Z">07:58 UTC</time></span><span><span class="nowrap">512 B to target</span> · <span class="nowrap">48.2 KB from target</span></span><span class="nowrap idle">Active now</span></li></ul></div>"#
             )),
             "{html}"
         );

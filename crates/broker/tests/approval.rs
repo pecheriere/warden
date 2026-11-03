@@ -1728,7 +1728,7 @@ async fn grants_page_lists_live_session_under_its_grant() {
 
     assert!(
         page.body
-            .contains(r#"<span class="nowrap">Active now</span>"#),
+            .contains(r#"<span class="nowrap idle">Active now</span>"#),
         "{}",
         page.body
     );
@@ -1736,7 +1736,7 @@ async fn grants_page_lists_live_session_under_its_grant() {
     let page = broker.get("/grants").await;
     assert!(
         page.body
-            .contains(r#"<span class="nowrap">Idle 2 min</span>"#),
+            .contains(r#"<span class="nowrap idle">Idle 2 min</span>"#),
         "{}",
         page.body
     );

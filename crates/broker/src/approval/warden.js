@@ -549,7 +549,7 @@
           el('span', 'nowrap', `${bytes(session.bytes_to_target)} to target`),
           ' · ',
           el('span', 'nowrap', `${bytes(session.bytes_from_target)} from target`)),
-        el('span', 'nowrap', idleLabel(session.idle_secs))));
+        el('span', 'nowrap idle', idleLabel(session.idle_secs))));
     }
     for (const call of calls) {
       list.append(el('li', '',
@@ -557,6 +557,23 @@
         el('span', '', 'since ', clock(call.started_at))));
     }
     area.replaceChildren(el('p', 'live', parts.join(' · ')), list);
+  };
+
+  /** What `renderLive` shows for `live`, without the idle times, which change on
+   *  every poll and are updated in place by `updateIdle`. */
+  const liveKey = (live) => JSON.stringify([
+    live.relay_sessions.map((s) => [s.started_at, s.bytes_to_target, s.bytes_from_target]),
+    live.proxy_calls,
+  ]);
+
+  /** Writes only the idle times that changed, so that a selection in the
+   *  rest of the card survives. The sessions are those last rendered, in order. */
+  const updateIdle = (area, live) => {
+    const nodes = area.querySelectorAll('.idle');
+    live.relay_sessions.forEach((session, i) => {
+      const text = idleLabel(session.idle_secs);
+      if (nodes[i] && nodes[i].textContent !== text) nodes[i].textContent = text;
+    });
   };
 
   /** Session storage key: the grants a reload was last made to show. */
@@ -618,8 +635,11 @@
           continue;
         }
         if (area.dataset.kind === 'cert') continue;
-        const key = JSON.stringify(live);
-        if (shown.get(area.dataset.grant) === key) continue;
+        const key = liveKey(live);
+        if (shown.get(area.dataset.grant) === key) {
+          updateIdle(area, live);
+          continue;
+        }
         shown.set(area.dataset.grant, key);
         renderLive(area, live);
       }

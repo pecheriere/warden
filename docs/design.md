@@ -649,7 +649,8 @@ either side, the same quiet time the relay's idle timeout counts. The session's
 250 ms watchdog notes it from the counters it already reads, by the broker's clock,
 so the path that carries the bytes pays nothing for it; SSH keepalives and window
 changes do not count. `/grants/live` sends seconds rather than a time, so a viewer's
-wrong clock does not change what is shown. A certificate grant shows when its one
+wrong clock does not change what is shown, and a poll that changes only the idle
+time rewrites only that text, so a selection in the card survives. A certificate grant shows when its one
 certificate was issued (at approval) and when it expires, and says that certificate
 logins are not visible to warden, so this does not show whether it was used: the
 logins go straight to the target. The page

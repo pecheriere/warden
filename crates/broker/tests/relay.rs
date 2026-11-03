@@ -1150,8 +1150,14 @@ async fn snapshot_tracks_last_activity() {
 
     channel.data(&b"hello"[..]).await.unwrap();
     // The watchdog notes it at its next check.
+    let deadline = Instant::now() + Duration::from_secs(15);
     while s.broker.live_relay_last_activity() != vec![started + 100] {
-        tokio::task::yield_now().await;
+        assert!(
+            Instant::now() < deadline,
+            "last activity never moved: {:?}",
+            s.broker.live_relay_last_activity()
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
     channel.close().await.unwrap();
