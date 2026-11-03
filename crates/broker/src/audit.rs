@@ -221,6 +221,75 @@ pub enum AuditEvent {
         /// Refused login attempts.
         attempts: u32,
     },
+    /// The broker signed a commit for an agent. Written before the signature
+    /// leaves the broker; it is not given out if this entry cannot be written. It
+    /// means warden signed it for that agent, not that anyone reviewed the change.
+    CommitSigned {
+        /// Grant it was signed under.
+        grant_id: Id,
+        /// The agent.
+        agent: AgentName,
+        /// The id git gives the commit with this signature, as git lays it out. The
+        /// signature stays valid under another layout, which makes another id: use
+        /// `payload_sha256` to tell whether a commit is this one.
+        commit: String,
+        /// Lowercase hex SHA-256 of what was signed: the commit object without its
+        /// signature header.
+        payload_sha256: String,
+        /// Parent ids, as the commit says.
+        parents: Vec<String>,
+        /// Tree id, as the commit says.
+        tree: String,
+        /// The author header, as the commit says: the agent's word, not checked.
+        author: String,
+        /// `SHA256:…` fingerprint of the key that signed.
+        key_fingerprint: String,
+    },
+    /// The broker refused to sign something for an agent. Holds no payload, only
+    /// its digest, since the agent chose those bytes.
+    CommitSigningRefused {
+        /// The agent.
+        agent: AgentName,
+        /// The active grant it had, if any.
+        grant_id: Option<Id>,
+        /// Why (a fixed phrase, never secrets).
+        reason: String,
+        /// Lowercase hex SHA-256 of the payload, if it could be read.
+        payload_sha256: Option<String>,
+    },
+    /// Refusals to sign for an agent beyond those recorded one by one in a minute,
+    /// counted so that refused calls, which an agent can make as fast as it likes,
+    /// cannot fill the log.
+    CommitSigningRefusalsHeld {
+        /// The agent.
+        agent: AgentName,
+        /// How many.
+        count: u64,
+    },
+    /// The owner was told that a commit signing grant is about to end.
+    CommitSigningRenewalNotified {
+        /// The grant.
+        grant_id: Id,
+        /// Name of the channel that delivered the notification.
+        channel: String,
+    },
+    /// A commit signing grant reached its limit of signatures for the day. Written
+    /// once a day per grant; the refusals themselves are recorded as usual.
+    CommitSigningLimitReached {
+        /// The grant.
+        grant_id: Id,
+        /// The agent.
+        agent: AgentName,
+        /// The limit.
+        limit: u32,
+    },
+    /// The owner was told that a commit signing grant reached its daily limit.
+    CommitSigningLimitNotified {
+        /// The grant.
+        grant_id: Id,
+        /// Name of the channel that delivered the notification.
+        channel: String,
+    },
     /// An agent was added.
     AgentAdded {
         /// Agent name.

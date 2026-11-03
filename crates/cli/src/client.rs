@@ -17,6 +17,9 @@ use reqwest::{Method, Response, StatusCode};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use url::{Position, Url};
+use warden_broker_proto::commit_signing::{
+    CommitSigningKeyView, SignCommitRequest, SignCommitResponse,
+};
 use warden_broker_proto::doctor::sanitize;
 use warden_broker_proto::{
     ApiError, CreateRequest, CreatedResponse, GrantView, Id, InfoResponse, ProxyRequest,
@@ -264,6 +267,31 @@ impl Client {
     /// If the server is unreachable or refuses.
     pub async fn grants(&self) -> Result<Vec<GrantView>, CallError> {
         let resp = self.call(Method::GET, self.url("v1/grants")?, None).await?;
+        json(resp, StatusCode::OK).await
+    }
+
+    /// The public half of the broker's commit signing key.
+    ///
+    /// # Errors
+    /// If the server is unreachable, refuses, or holds no such key.
+    pub async fn commit_signing_key(&self) -> Result<CommitSigningKeyView, CallError> {
+        let url = self.url("v1/commit-signing/key")?;
+        let resp = self.call(Method::GET, url, None).await?;
+        json(resp, StatusCode::OK).await
+    }
+
+    /// Have the broker sign a commit under this agent's active grant.
+    ///
+    /// # Errors
+    /// If the server is unreachable or refuses.
+    pub async fn sign_commit(
+        &self,
+        request: &SignCommitRequest,
+    ) -> Result<SignCommitResponse, CallError> {
+        let url = self.url("v1/commit-signing/sign")?;
+        let resp = self
+            .call(Method::POST, url, Some(json_body(request)?))
+            .await?;
         json(resp, StatusCode::OK).await
     }
 

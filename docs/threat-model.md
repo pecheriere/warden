@@ -41,6 +41,9 @@ warden does **not** protect against:
   shell or API scope can do anything it permits until the grant ends. On a
   certificate target warden does not see the logins at all, and a login already
   open does not end with the grant.
+- **What an agent commits while it may sign.** A signature means warden signed the
+  commit for that agent, not that anyone reviewed the change. See
+  [Commit signing](#commit-signing).
 - **Instant revocation everywhere.** An issued certificate stays valid on
   its target until it expires, and an open login to a certificate target continues
   even after that (issue
@@ -61,7 +64,7 @@ from, not that it is safe for real use.
 | Owner (phone, workstation) | Root of trust. Holds the passkey. Edits the 1Password vault. |
 | The warden host (its root, its container runtime) | Root of trust. Can read everything warden holds and act as warden. |
 | Agent (for example an AI coding agent on the owner's workstation) | Semi-trusted: well-intentioned but may be prompt-injected. Bounded by its stated goal, the approved window, and the targets and users the vault allows. It can request access and use what was granted, never approve it. |
-| warden server | Trusted. Holds a read-only 1Password Connect token in memory, and for short times what it reads with it: the SSH CA private key, from the read at an approval until the certificate is signed, API secrets during a call, and relay login credentials (see below). Compromise of the server is compromise of everything it brokers, so it is hardened accordingly. |
+| warden server | Trusted. Holds a read-only 1Password Connect token in memory, and for short times what it reads with it: the SSH CA private key, from the read at an approval until the certificate is signed, the commit signing key while it signs, API secrets during a call, and relay login credentials (see below). Compromise of the server is compromise of everything it brokers, so it is hardened accordingly. |
 | 1Password Connect | Trusted secret backend. Reachable only from warden, on its own network, and unable to reach warden's listeners. |
 | Notifiers (Home Assistant Companion, ntfy, push providers) | Untrusted doorbells. They receive the goal text, the session label the agent stated, agent, target and a link to the approval page, and nothing else. They cannot approve anything. Which channels are used is fixed at startup from a compile-time set (`WARDEN_NOTIFY`); agents cannot influence it. |
 | Tailscale | Transport and network-level identity. The tailnet policy is the outer access control. |
@@ -720,6 +723,124 @@ These were recorded during implementation and are accepted for this release.
 - **A session start is recorded first.** `relay_session_started` is written
   before the first byte reaches the target; if it cannot be written, the
   session does not start.
+
+## Commit signing
+
+A branch that requires signed commits means a signing key wherever commits are made. The
+broker can hold that key instead. The goal is modest, and this must not be read for more:
+**a signature means warden signed the commit for that agent, not that the owner reviewed
+the change.** What it gives is that the key cannot be copied off the agent's machine, that
+every signature is recorded, and that one agent can be cut off. An on-disk key on an agent's
+machine can then be deleted.
+
+**Why this is the one grant that can outlast 4 hours.** Other grants are short because the
+access is broad and has effects outside warden. A signature only says who made a commit,
+one rebase can need dozens, and a grant of 4 hours would mean a prompt every few hours for
+something the owner cannot judge anyway: the phone cannot show a trustworthy diff, because
+the agent would supply it. An approval per commit would be habit, not review, so it would
+add nothing. So a grant lasts 30 days by default, up to `WARDEN_COMMIT_SIGNING_MAX_WINDOW`.
+The windows in days are a separate set: a policy's `max_window` cannot name one, so a target
+or secret stays at 4 hours or less whatever the setting.
+
+What an attacker gets, and what stops it:
+
+- **During a grant, an agent gets anything it commits signed**, for as long as the grant
+  lasts, with no prompt. A prompt-injected agent gets its commits signed too. They show as
+  verified under the account the key is registered on, so a signature is not a reason to
+  skip review. Keep code review as the check on what lands.
+- **The fields in the audit log are the commit's own.** Author, parents and tree are what
+  the agent's commit says, recorded as such. An agent that never stores the commit leaves an
+  entry with no commit behind it, and one that lays the signature out differently gets another
+  commit id: see [what the log can and cannot show](#rotating-the-commit-signing-key).
+- **A signature can be moved to another repository**, since a commit names no repository.
+  warden cannot limit signing to a repository, branch or pull request, and does not ask, as
+  anything an agent said about that could not be checked. Repository limits belong to
+  pushing.
+- **Revoking stops new signatures at once**, including one being recorded when the
+  revocation lands, and does not undo the ones already made.
+- **A compromised warden host can sign anything with this key**, as with everything else it
+  holds. That is one reason release signing must not use this key: see below.
+
+What holds:
+
+- **The key signs in one namespace, and only commits.** Only the `git` SSHSIG namespace, so
+  the key signs for no other purpose, and only a payload that parses strictly as a commit,
+  so not a tag object, a push certificate or anything else.
+  [The rules](agent-protocol.md#commit-signing-grants-kindcommit_signing) refuse whatever git
+  would not have written or another reader could take differently.
+- **One agent's grant does not help another.** Signing looks up the calling agent's own
+  grant, for each signature.
+- **It fails closed.** A database that cannot be read, a key that cannot be read, or an
+  entry that cannot be written all mean no signature. The signature leaves the broker only
+  after its entry is written.
+- **Every refusal is recorded.** Beyond 30 a minute per agent they are counted, so refused
+  calls cannot fill the log. A body over the route's 2 MiB limit is refused before the
+  caller is known, and is not recorded, as on every route.
+- **An agent cannot approve it, and nothing renews by itself.** A grant takes the passkey,
+  and so does renewing it. warden notifies the owner a few days before a grant ends, and the
+  notification names only the agent.
+- **The key is handled like the CA key**: `ssh-ed25519` only, read for each use, in types
+  that wipe it and print nothing, with the same residual copies in HTTP client buffers
+  ([accepted residual risks](#accepted-residual-risks)). It is read for each approval page,
+  each signature and each request for its public half, so it spends little time in memory
+  but more often than the CA key. The owner causes the first; an agent causes the others only
+  with an active grant, and a signature only within its daily limit. An agent with no grant
+  cannot make the broker read it: asking for a grant only checks that a key is configured.
+- **It must not be the SSH CA key.** warden compares the public keys and refuses to approve a
+  grant while they are the same, or while a configured CA cannot be read to tell: several
+  items, a malformed key or an outage. Only a broker with no CA at all has nothing to compare. Doctor fails on it, and
+  with the local backend so does the server's start. With 1Password nothing is read at
+  start, so this is caught at approval and by doctor. A grant is bound to the key it was
+  approved for, so it cannot come to use the CA key later.
+- **A grant has a daily limit of signatures**, 5000 per UTC day by default
+  (`WARDEN_COMMIT_SIGNING_MAX_PER_DAY`), far more than rebases need. Without it an agent with a
+  grant could loop for the life of the grant, writing an entry of a few KB for each signature
+  until the disk holding the audit log filled. It is counted in the database, so a restart does
+  not reset it. At the limit, signing is refused and so the commit fails, the refusal is
+  recorded, and warden tries once that day per grant to notify the owner. Other agents and
+  their grants are not affected. It bounds the log, and does not limit what a grant can sign:
+  the limit is high enough that a compromised agent can sign all it wants within it.
+
+**When signing is not available, the commit fails.** With no grant, or with the broker out
+of reach, git's signing program fails, so `git commit` fails, saying why and how to ask.
+Nothing retries unsigned, wraps git or turns signing off. An agent on its own machine can
+still change its own git configuration, which warden cannot prevent: bypassing takes
+deliberate effort, and an unsigned commit is then visible, and refused by a branch that
+requires signatures. GitHub's documentation says that unsigned commits on a pull request's
+branch can block a squash merge into such a branch, even though GitHub signs the commit that
+lands, so an unsigned commit is not a harmless way around.
+
+**Tags are kept apart for later.** A release verifier should trust a separate key: commits
+and tags share the `git` namespace, and a signature shows only which key made it. With one
+key, a mistake in this payload check could let a commit grant sign a release. So tag objects
+are refused here, and this key must not be listed in `docs/release-signers`.
+
+### Rotating the commit signing key
+
+Replace the key in the backend (the item tagged `warden:commit-signing`, or the file
+`[commit_signing]` names). Every grant made for the old key stops working at once, since a
+grant is bound to the key the owner approved, so agents ask again and each machine runs
+`warden setup git`. Register the new public key on the account.
+
+Signatures made with the old key remain valid for whoever still trusts that key. GitHub's
+documentation says that a commit verified when it was pushed keeps its verified status when
+the key is later rotated or revoked. A commit first pushed after that is checked against the
+keys on the account at that time.
+
+**If the key leaks**, remove it from the account on GitHub at once (revoke it, if the account
+offers that) and replace it as above. By the same documentation, commits already verified
+stay verified, including any an attacker pushed before the removal, so check those by hand.
+Check them against the audit log as below.
+
+**What the log can and cannot show.** Each `commit_signed` entry holds the SHA-256 of what was
+signed: the commit object without its signature header. Its commit id is only the id git gives
+that signature as git lays it out: the signature's lines can be wrapped differently, which
+makes another commit id that still verifies, with the same content. So look a commit up by
+that digest, not by its id. A commit whose digest is in the log was signed through warden. One
+whose digest is not there, but which verifies with this key, was signed some other way, or
+under an entry the log no longer has: someone with control of the warden host can rewrite the
+log. The log does not show whether a commit was stored or pushed, where it went, or whether its
+author line is true.
 
 ## The local secret backend
 

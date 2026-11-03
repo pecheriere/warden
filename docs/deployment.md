@@ -397,6 +397,28 @@ cached: an edit in 1Password takes effect on the next request.
    field labels are exact; [1Password item conventions](1password-items.md)
    is the reference.
 
+6. **Optional: create a commit signing key**, for
+   [signing commits](threat-model.md#commit-signing). Its own key, used for nothing
+   else (warden refuses the SSH CA key here), in an SSH Key item tagged `warden:commit-signing` (exactly one such item):
+
+   ```sh
+   op item create --vault Warden --category "SSH Key" \
+     --title warden-commit-signing --tags warden:commit-signing --ssh-generate-key ed25519
+   op read "op://Warden/warden-commit-signing/public key"
+   ```
+
+   Register the public key as a signing key on the account that commits: the owner's,
+   or a machine account's. Commits then show as verified under that account, which is
+   accurate only as far as it goes: warden signed them for an agent, and nobody reviewed
+   them by that. Moving off a signing key on an agent's machine:
+
+   1. Do the above, get a grant with `warden request signing` and run `warden setup git`
+      on each agent machine, and check that a commit verifies.
+   2. Delete the on-disk key and its copies on other devices, after checking that nothing
+      else uses it.
+   3. A key that also signs releases needs a replacement listed in `docs/release-signers`
+      first. Keep the old public key listed, so that earlier tags still verify.
+
 ## 4. 1Password Connect, hardened
 
 Connect runs as two containers, `connect-api` (which warden calls) and

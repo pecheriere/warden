@@ -109,6 +109,9 @@ impl Requests {
                     .await
                     .map_err(RequestError::from_secret_lookup)?,
             ),
+            Access::CommitSigning {} => {
+                Destination::CommitSigning(self.approvable_commit_signing_policy().await?)
+            }
         })
     }
 

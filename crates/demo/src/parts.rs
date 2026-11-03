@@ -8,7 +8,8 @@ use tokio::sync::mpsc;
 use warden_broker::identity::IdentitySource;
 use warden_broker::notify::{Doorbell, Notifier, NotifyError};
 use warden_broker::policy::{
-    ApiSecretPolicy, CaKey, PolicyError, RelayCredential, SecretBackend, SecretValue, SshTarget,
+    ApiSecretPolicy, CaKey, CommitSigningKey, PolicyError, RelayCredential, SecretBackend,
+    SecretValue, SshTarget,
 };
 use warden_broker_proto::{SecretName, TargetName};
 use zeroize::Zeroizing;
@@ -80,6 +81,18 @@ impl SecretBackend for DemoBackend {
         name: &TargetName,
     ) -> Result<(SshTarget, RelayCredential), PolicyError> {
         Err(PolicyError::NotFound(name.as_str().to_owned()))
+    }
+
+    async fn has_ssh_ca(&self) -> Result<bool, PolicyError> {
+        Ok(false)
+    }
+
+    async fn has_commit_signing_key(&self) -> Result<bool, PolicyError> {
+        Ok(false)
+    }
+
+    async fn commit_signing_key(&self) -> Result<CommitSigningKey, PolicyError> {
+        Err(PolicyError::NoCommitSigningKey)
     }
 
     async fn ssh_ca(&self) -> Result<CaKey, PolicyError> {

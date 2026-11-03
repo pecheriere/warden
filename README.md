@@ -105,7 +105,8 @@ on the server alone), and the agent only gets access for a limited window.
 
 warden still needs a person. It frees you from the computer, not from
 deciding. If nobody answers, the request expires after 10 minutes and the
-agent has to ask again, and a grant lasts at most 4 hours. So an agent working
+agent has to ask again, and a grant lasts at most 4 hours ([signing commits](#signing-commits)
+is the one exception). So an agent working
 through the night has to stop and wait when its grant ends, or when it needs
 something you have not approved, until you wake up. That is the trade: you stay in
 the loop, and the agent holds no lasting credential for your servers or APIs.
@@ -288,6 +289,29 @@ it; follow it for a real setup.
 
 [svc]: https://tailscale.com/kb/1552/tailscale-services
 
+## Signing commits
+
+warden can hold the key that signs an agent's commits, so that a branch requiring
+signed commits does not need a signing key on the agent's machine:
+
+```sh
+warden request signing --goal "Sign build-agent's commits"   # 30 days, after your passkey
+warden setup git                                       # git signs through warden
+git commit -m "..."                                    # signed, with no prompt
+```
+
+The goal is modest and worth stating exactly. warden keeps the key from being copied,
+records every signature (grant, agent, commit, parents, tree, author), and lets you cut
+off one agent at once. **A signature means warden signed the commit for that agent, not
+that you reviewed the change.** During a grant, warden signs anything that agent commits.
+
+With this set up, signing is required: with no active grant, or with the broker out of
+reach, `git commit` fails and says why and how to ask. warden never makes the commit
+unsigned for you. It signs commits only, never tags. See
+[Agent usage](docs/agent-usage.md#signing-commits),
+[Deployment](docs/deployment.md#3-1password) and the
+[threat model](docs/threat-model.md#commit-signing).
+
 ## Documentation
 
 | Document | For |
@@ -322,7 +346,8 @@ it; follow it for a real setup.
 
 - **An agent can only ask.** Every grant needs a passkey approval from your
   enrolled device, on an approval page that only your phone can reach.
-- **Bounded grants.** At most four hours, one target or secret, the account
+- **Bounded grants.** At most four hours (a [commit signing](#signing-commits)
+  grant alone can last longer), one target or secret, the account
   or methods you approved. API requests are read-only unless the agent asks
   for more, and the page says so. On a certificate target the limit is on new
   logins: [one already open continues](docs/threat-model.md#accepted-residual-risks).

@@ -8,6 +8,8 @@ All notable changes to this project are recorded here. The format follows
 
 ### Upgrading
 
+- New migration `0008_commit_signing_renewal`. An older `warden-server audit verify`
+  refuses a log with the new entries.
 - A `request_created` audit entry can have a new `session` field. An older
   `warden-server audit verify` refuses a log with such an entry, and an older
   `warden-server` does not start on one, because it verifies the log when it opens
@@ -18,6 +20,27 @@ All notable changes to this project are recorded here. The format follows
 
 ### Added
 
+- Commit signing through the broker, so that the signing key is not on the agent's
+  machine, every signature is recorded and one agent can be cut off. The broker holds
+  an `ssh-ed25519` key (a 1Password item tagged `warden:commit-signing`, or
+  `[commit_signing]` in a local policy) and signs only the `git` namespace, only what
+  parses strictly as a commit, and only under the agent's own grant. `warden request
+  signing` asks for that grant, `warden setup git` makes `warden` git's signing program,
+  and `git commit` then works with no prompt. A signature means warden signed the commit
+  for that agent, not that anyone reviewed the change. Tag signing is not part of this:
+  a tag object is refused.
+- A commit signing grant lasts 30 days by default, up to
+  `WARDEN_COMMIT_SIGNING_MAX_WINDOW`. It is the only grant allowed past 4 hours, and
+  [the threat model](docs/threat-model.md#commit-signing) says why. warden tells the
+  owner a few days before one ends, and a new Renew button on the grants page takes one
+  passkey approval. Revoking stops new signatures at once. A grant can make 5000
+  signatures per UTC day by default (`WARDEN_COMMIT_SIGNING_MAX_PER_DAY`), so that a
+  looping agent cannot fill the audit log's disk, and warden tries to notify the owner if it gets there.
+- With a commit signing setup, a commit fails, saying why and how to ask for a grant,
+  when the agent has no active grant or the broker cannot be reached. Nothing makes the
+  commit unsigned instead.
+- `warden doctor` and `warden-server doctor` check the commit signing setup, and the SSH CA
+  key cannot also be the commit signing key.
 - Releases attach `warden-server-<version>-<platform>.tar.gz` for Linux amd64 and arm64:
   a static, attested server binary for
   [running without Docker](docs/deployment-systemd.md). The signed manifest lists it, and
