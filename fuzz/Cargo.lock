@@ -3983,6 +3983,7 @@ dependencies = [
  "hex",
  "http",
  "maud",
+ "openssl-sys",
  "p256",
  "reqwest",
  "russh",
