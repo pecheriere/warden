@@ -1,9 +1,9 @@
 # Binding the passkey signature to the request it approves
 
-**Status: proposed. Nothing here is implemented.** [The threat
-model](../threat-model.md#approval-binding) describes what warden does today, and
-changes only when the code or this decision does. Tracking issue:
-[#117](https://github.com/pecheriere/warden/issues/117).
+**Status: decided, not planned.** Nothing here is implemented. The maintainer accepted
+the recommendation below, and [#117](https://github.com/pecheriere/warden/issues/117)
+is closed. [The threat model](../threat-model.md#approval-binding) describes what warden
+does.
 
 ## Recommendation
 
@@ -25,8 +25,6 @@ It would also tempt readers to treat a signature as proof of what the owner appr
 Revisit it if a third party ever has to audit a broker, or if the owner gets a way
 to see the request that does not come from the broker, such as a phone app of its own.
 A `webauthn-rs` API for the challenge would lower the cost, not raise the value.
-
-**The choice is the owner's:** [see the end](#the-choice-for-the-owner).
 
 ## Can the challenge be derived?
 
@@ -176,10 +174,9 @@ it catches the silent certificate that a signature cannot. It leaves one gap: a 
 that also writes a matching fake `approved` entry. That gap is what this design
 would narrow.
 
-## The choice for the owner
+## The decision
 
-1. **Accept the recommendation.** Close #117 as not planned, with one sentence
-   in the threat model saying the signature is deliberately not evidence, and why.
-2. **Build it anyway.** This makes sense only if you will keep the public keys off the
-   host and run the verifier. It would start with asking upstream for an API, and
-   using the JSON swap if they decline.
+Accepted: not planned, with a sentence in the threat model saying that the signature
+is deliberately not evidence, and why. To build it later, start by asking upstream for
+an API, and use the JSON swap if they decline. It would make sense only for someone who
+will keep the public keys off the host and run the verifier.
