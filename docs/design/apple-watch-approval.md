@@ -99,8 +99,9 @@ how it behaves. **[Not confirmed]** marks what the sources do not settle.
 - **Forwarding:** [a push to the iPhone goes to the phone if it is unlocked with the
   screen on, otherwise to a Watch on the wrist and unlocked, otherwise to the
   phone](https://developer.apple.com/documentation/watchos-apps/taking-advantage-of-notification-forwarding).
-  Direct pushes to a Watch appear only there. Apple says that when you [send to both, the
-  user gets one](https://developer.apple.com/documentation/watchos-apps/enabling-and-receiving-notifications).
+  Direct pushes to a Watch appear only there. For a watchOS app with an iOS companion, Apple says
+  that if you send to [both iPhone and Watch](https://developer.apple.com/documentation/watchos-apps/enabling-and-receiving-notifications),
+  the system ensures one notification at the best destination. It says nothing about an iPad.
 - **Unlocking is not a key prompt.**
   [`authenticationRequired`](https://developer.apple.com/documentation/usernotifications/unnotificationactionoptions/authenticationrequired)
   asks the user to unlock, then notifies the app. On a phone already unlocked it asks
@@ -218,36 +219,55 @@ shipping the app counts as a release of something that can approve.
 
 ### Enrollment
 
-A check code alone is not enough, and an earlier draft was wrong about this. A check code
-compared with a page **on the same iPhone** catches only a malicious app. A compromised
-iPhone OS relays the Watch's key, so it can enroll its own key and draw the right code on
-the page. That key then lives off the phone, with no Face ID, until someone revokes it.
+The iPhone carries everything between a Watch and the broker, so a compromised iPhone OS
+could enroll its own key instead. That key would live off the phone, with no Face ID, until
+someone revoked it. Two things have to stop this.
 
-**So the confirmation has to happen on a screen the phone does not draw:**
+**The code must be compared on screens the phone does not draw.** A page rendered on the
+same iPhone catches only a malicious app, as a compromised OS can draw any code on it.
 
-1. In the app, **Add this device**. For a Watch, the iPhone asks over WatchConnectivity,
-   and the Watch creates its key. The app posts the public key, push token and label to
-   `POST /devices/pending`. This is on the approval listener, needs the owner's login,
-   holds at most a few entries for 10 minutes, and has no power at all. It returns the
-   broker's receipt key.
-2. The device shows a **check code**: 60 bits of SHA-256 over its public key and the
-   receipt key it was given, such as `ABCD-EFGH-JKLM`. Covering both catches a swap in
-   either direction.
-3. The owner confirms **on the warden host or a second device**:
-   `warden-server device confirm <code>`, which needs only the host, already the root of
-   trust, like `warden-server enroll` today. Or the passkey-protected `/devices` page on
-   another device, where the [phone-only approval
-   port](../threat-model.md#deployment-assumptions) allows one.
+**The phone must not be able to pick values that make the codes match.** A plain hash of the
+two public keys fails: the phone chooses both its own key and the receipt key it hands the
+Watch, so it can search both sides for a collision, about 2^30 work for a 60-bit code. So each
+side commits before it sees the other's random value, as Bluetooth numeric comparison does:
 
-Confirming on the same phone is possible, because warden cannot tell which screen it is.
-The page says what that gives up. It adds no risk for that phone's own key, since a
-compromised phone already controls that key's prompts.
+1. In the app, **Add this device**. For a Watch, the iPhone asks over WatchConnectivity. The
+   device creates its key `K` and a random `Nd`, and posts only `SHA-256(K, Nd)` to
+   `POST /devices/pending`. This is on the approval listener, needs the owner's login, holds at
+   most four entries for 10 minutes, and has no power at all.
+2. The broker stores that, and returns its receipt key `R` and a fresh random `Nb`.
+3. Only after receiving those, the device sends `K` and `Nd`. The broker checks them against the
+   commitment.
+4. The device and the broker each compute a **check code**: 40 bits of SHA-256 over `K`, `R`, `Nd`
+   and `Nb`, such as `ABCD-EFGH`.
+5. The owner confirms **on the warden host or a second device**: `warden-server device confirm
+   <code>`, typing the code the device shows. That needs only the host, already the root of trust,
+   like `warden-server enroll` today. Or the passkey-protected `/devices` page on another device,
+   where the [phone-only approval port](../threat-model.md#deployment-assumptions) allows one. A
+   code that matches two pending entries is refused.
+
+**Why that is enough.** A phone in the middle must commit its key to the broker, and give the Watch
+its `R` and `Nb`, all before the Watch reveals `Nd`. It then has nothing left to choose, so each run
+has about one chance in 2^40 for each entry it holds, and no offline search helps. Each failed run
+needs the owner to start again. A longer code without the commitment would also work, but 128 bits
+is not something a person compares on a Watch.
+
+**Where it stays weak, which is worth saying plainly:**
+
+- **The phone's or iPad's own key: no protection against a compromised OS, on any path.** That
+  device draws its own half of the comparison, so it can show whatever the host shows. An OS
+  compromised at enrollment can enroll an off-device key, which outlives cleaning the phone. The
+  code still catches a malicious app or a mix-up. The defences are the audit log, the notification
+  and the Devices list.
+- **A Watch confirmed on its own iPhone: the same,** as the phone draws the page. warden cannot tell
+  which screen was used, so this is allowed, and the page says what it gives up.
+- **A phone compromised at enrollment can still lie later,** as a relay. This stops the durable key
+  for a Watch, not the rest.
+
+The push token is not part of this. The first signed call sets it, so it needs no check code.
 
 Passkey ceremonies get a new kind, so an enrollment assertion cannot complete an approval.
 `device_enrolled` is audited and rings the existing notifiers.
-
-**Limit:** a phone compromised at enrollment can still lie later, as a relay. This fixes
-the durable key, not the rest.
 
 ### What is signed
 
@@ -308,7 +328,9 @@ explicit choice, since it is the first way to approve without a check.
 **Buttons on the phone, in this order:** `Review`, `Approve…`, `Deny`. Review comes first
 because a phone's push can be forwarded to a Watch, where a pinch runs the first
 nondestructive action. Deny is destructive and needs an unlocked phone. It needs no key:
-today's deny needs only the owner's login, and the phone has that through Serve.
+it uses the existing `POST /pending/{id}/deny`, which takes the push's request ID, the owner's
+login through Serve, and the same-origin JSON check, and no approval token.
+`POST /approve/{token}/deny` does need the token, which a push does not carry.
 
 **On a Watch, Approve stays rejected as a button.** It has no check for each approval, so a
 button would be a single motion with nothing behind it. Its buttons are `Review` and `Deny`.
@@ -372,7 +394,7 @@ minutes,** and denies anything. Phone keys follow the passkey's limits.
 | Who | What they can do | What they cannot |
 |---|---|---|
 | **The iPhone, as a relay** | **Read every request detail** passing through, which it can already see on the page. **Hide requests** from the Watch's inbox. **Drop a Deny and report success,** which the receipt exposes. **Hold a signed Approve** for up to 30 s, or 120 s without `signed-at`, then deliver or drop it. **Refuse to relay** anything. | **Get a signature for another request.** The Watch signs a hash of what it received, and the broker compares. **Approve with no signature.** **Forge a receipt,** unless it fooled enrollment. |
-| **The iPhone's OS** | All of the above, and everything with its own key and passkey by misleading the owner at the prompt, as with a passkey today. If it is compromised at enrollment and the owner confirms on that phone, it can [enroll its own key](#enrollment). | Use a biometric key without a real match. |
+| **The iPhone's OS** | All of the above, and everything with its own key and passkey by misleading the owner at the prompt, as with a passkey today. If it is compromised at enrollment, it can [enroll a key of its own](#enrollment) in place of its own device's key, or of a Watch's confirmed on that phone. | Use a biometric key without a real match. |
 | **Tailscale or the TLS terminator** | What it can today, such as seeing details. | The [swap in the #75 design](owner-identity.md#one-limit-that-is-easy-to-miss-the-tls-terminator-can-swap-an-approval), for native and Watch approvals: a changed display fails at the broker. |
 | **The broker** | Everything, [as today](../threat-model.md#in-short). It can issue grants with no signature, and get a real signature over false text. | Forge a device's signature. If public keys are off the host and the log is shipped, a claimed approval can be checked, within the limits of [the passkey binding design](passkey-binding.md). |
 | **APNs or the push key** | Spam a device, to train a reflex. Withhold pushes. | Approve, or learn details. Revoke a stolen key at Apple. |
@@ -394,7 +416,7 @@ stay until revoked on the grants page. Find My's erase is not a revocation warde
 
 | Area | Change |
 |---|---|
-| **New `device` module** | Store, routes, signatures, challenges, receipts. `POST /device/v1/inbox`, `/review`, `/decide`, `/token` on the approval router, so `require_owner`, `refuse_funnel` and the same-origin check still apply, with the app sending the matching `Origin`. |
+| **New `device` module** | Store, routes, signatures, challenges, receipts. `POST /device/v1/inbox`, `/review`, `/decide`, `/token` on the approval router, so `require_owner`, `refuse_funnel` and the same-origin JSON check apply as they do to every route there, with the app sending the matching `Origin` and a JSON body. |
 | **Approval pages** | `/devices`, confirm and revoke, following `docs/design-language.md`. |
 | **Shared approval path** | Move grant-building out of `approve_finish`, and mark a request approved by ID and device, without rotating the approval token. |
 | **Database** | A new migration: devices (kind, public key, push token, label, dates, revoked). |
