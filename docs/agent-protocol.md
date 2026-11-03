@@ -541,6 +541,8 @@ Ask the owner for access. Signed; JSON body:
 | `goal` | string | Why access is needed: what you will do and why, naming the change, issue or error. 1 to 500 characters after trimming whitespace, one line: no control characters and no invisible format characters (Unicode category Cf: bidi controls, zero-width characters, BOM, soft hyphen…). The owner decides on it alone; the notification shows the first 200 characters. |
 | `access` | object | What is asked for; see below. |
 | `window` | string | How long the access should last: `15m`, `30m`, `1h` or `4h`. The target's or secret's policy caps it. The owner chooses the window when approving, anything up to that cap, so it may be shorter or longer than the one asked for. |
+| `session` | string, optional | The name the session states for itself, shown to the owner as the agent's claim, and written to the notification and the audit log. 1 to 64 characters after trimming whitespace, under the rules of `goal`, and no line or paragraph separators. |
+| `link` | string, optional | A page about this work, shown to the owner as the agent's claim, and in no notification and no audit entry. `https://<host>/<path>`, at most 256 bytes: lowercase `https://`, a host name of letters, digits, dots and hyphens (no user, password, port, IP address or percent-encoding; an international name as `xn--…`), and a path of printable ASCII without a backslash, a query or a fragment. A `400` otherwise, without quoting the value, and also if the host is not in the owner's [`WARDEN_REQUEST_LINK_HOSTS`](configuration.md#links-in-requests), which is empty by default. It is stored and hashed in its normal form: the host in lowercase, a path of at least `/`, dot segments resolved, and characters such as `<` percent-encoded. |
 
 `access` for SSH (a certificate, or a session through the relay; the
 target's policy decides which, and the agent does not need to know):
@@ -603,8 +605,9 @@ fingerprint of your own request and compare: it is the first 6 bytes of
 the SHA-256 of the JSON array `[<agent name>, <request body>]`, as lowercase
 hex in groups of four (`xxxx-xxxx-xxxx`). The broker hashes its own compact
 JSON encoding of the request: the fields in the order `goal`, `access`,
-`window`; inside `access`, `kind` first, then the other fields in the order
-listed above, absent optional fields left out; the goal trimmed; no
+`window`, `session`, `link`; inside `access`, `kind` first, then the other fields in the order
+listed above, absent optional fields left out; the goal and session trimmed; the
+link in its normal form; no
 whitespace between tokens; only `"`, `\` and control characters escaped,
 other characters as raw UTF-8. Send the body in exactly that form and you
 can hash what you sent:

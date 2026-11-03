@@ -355,6 +355,8 @@ fingerprints match:
   for the same access: leaving out `--methods` and listing the read-only methods
   yourself give different fingerprints.
 
+A [session label or link](#telling-sessions-apart) is part of the fingerprint too.
+
 When it stops, it prints the pending request's ID and fingerprint, says that it
 expires within 10 minutes of being made, and gives the command to withdraw it:
 `warden request cancel <id>`.
@@ -400,6 +402,87 @@ You can cancel only your own requests, and only while they are pending. The
 approval link of a cancelled request shows "Cancelled by the agent." and
 cannot be approved; the request appears as `cancelled` in the owner's
 history and the audit log.
+
+### Telling sessions apart
+
+When several sessions of a coding agent run under one enrolled agent, the owner
+cannot tell from the agent's name which one is asking. A request can say:
+
+```sh
+warden request ssh web-01 --user build-agent --for 15m \
+  --session release-work \
+  --goal "restart the web container after the config change in PR #42"
+```
+
+- **`--session <label>`**, or `WARDEN_SESSION` for every request made from that
+  environment; the option wins, and a blank variable counts as unset. One line of
+  at most 64 characters, with the rules of a goal, and no line or paragraph
+  separators. An invalid one stops the command (exit 64), including one from the
+  variable, so a setup that fills it in must keep it short.
+- **`--link <url>`**: a page about this work, such as a pull request. It works
+  only with hosts the owner has listed in
+  [`WARDEN_REQUEST_LINK_HOSTS`](configuration.md#links-in-requests), which is empty
+  by default. A link to any other host refuses the request, and nothing reaches
+  the owner: make it again without the link. There is no variable for it, so that
+  a setup cannot break every request on a broker without the list.
+
+  A link must be `https://<host>/<path>`, at most 256 bytes: no user or password,
+  no port, no query or fragment, no IP address, only printable ASCII (an
+  international host as `xn--…`). Do not put anything secret in the path: the
+  owner sees it, and the broker stores it.
+
+The owner sees both on the approval page, Pending, Active grants and History, as
+what the agent stated. The label is also in the notification and the audit log.
+The link is in neither. Both are in the [fingerprint](#the-fingerprint), so the
+two are bound to what the owner approves.
+
+**A label is a claim, not an identity.** Sessions under one agent run as the same
+OS user with the same key, so any of them can state any label, and it does not stop
+one session from using another's grant ([issue #49][i49]). Separating sessions
+takes separate OS users and agent keys.
+
+**Only one request per agent and target can be pending, whatever the label.** A
+second session asking for the same thing gets the first one's request back. Its
+fingerprint differs, so `warden request` stops and says so.
+
+**An older broker ignores both.** `warden request` still waits, since the access
+is the same, and warns that the owner does not see them.
+
+#### Where a name comes from in Claude Code
+
+From Claude Code's [documentation](https://code.claude.com/docs/en/env-vars.md),
+which may change; warden depends on none of it:
+
+| What | Available to commands the agent runs? |
+|---|---|
+| Session ID | Yes, `CLAUDE_CODE_SESSION_ID`, an opaque ID. |
+| Session title | No. A [`SessionStart` hook](https://code.claude.com/docs/en/hooks.md) gets `session_title`, but only for a custom title (`--name`, `/rename`). The [status line](https://code.claude.com/docs/en/statusline.md) gets `session_name`. |
+| Session page URL | Not as a URL. `CLAUDE_CODE_REMOTE_SESSION_ID` is set in cloud sessions and `CLAUDE_CODE_BRIDGE_SESSION_ID` during Remote Control, to build one from. A local session without Remote Control has no page. |
+
+So a session does not reliably know its title, and has to be told it or use a short
+ID. A `SessionStart` hook can set the variable for the session's later commands, by
+appending to the file that `CLAUDE_ENV_FILE` names:
+
+```sh
+#!/bin/bash
+# The hook's input is JSON on stdin; session_title is there only for a custom title.
+# An invalid WARDEN_SESSION stops every request, so keep only printable ASCII, which
+# can pass any label check, and cut by bytes, which cannot split a character then.
+input="$(cat)"
+clean() { LC_ALL=C tr -cd ' -~' | head -c 64; }
+label="$(printf '%s' "$input" | jq -r '.session_title // empty' 2>/dev/null | clean)"
+if [ -z "${label// /}" ]; then
+  label="$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null | clean | head -c 8)"
+fi
+# With no usable name, set nothing: the request simply has no label.
+if [ -n "${label// /}" ] && [ -n "${CLAUDE_ENV_FILE:-}" ]; then
+  printf 'export WARDEN_SESSION=%q\n' "$label" >> "$CLAUDE_ENV_FILE"
+fi
+```
+
+A title in another script or with emoji loses those characters, and falls back to the
+ID if nothing is left. This was run with sample input against `warden`'s validation,
+not in a real session.
 
 ## Using a grant
 

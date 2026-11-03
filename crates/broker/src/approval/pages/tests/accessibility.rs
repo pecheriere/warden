@@ -70,7 +70,8 @@ fn every_page_labels_its_two_navigation_landmarks_differently() {
 #[test]
 fn every_pending_card_has_a_heading_under_the_page_title() {
     let entries = pending_entries();
-    let html = super::super::pending(&entries, NOW).into_string();
+    let html =
+        super::super::pending(&entries, &crate::requests::LinkHosts::default(), NOW).into_string();
     assert_eq!(html.matches("<h1").count(), 1, "{html}");
     assert_eq!(
         html.matches(r#"<h2 class="who""#).count(),

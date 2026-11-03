@@ -376,7 +376,9 @@ fn passkey_error(e: &PasskeyError) -> Response {
 
 async fn approve_page(State(state): State<AppState>, Path(token): Path<String>) -> Response {
     match state.requests.pending_for_token(&token).await {
-        Ok(view) => pages::approve(&view, state.clock.now()).into_response(),
+        Ok(view) => {
+            pages::approve(&view, state.requests.link_hosts(), state.clock.now()).into_response()
+        }
         Err(RequestError::NotFound) => match state.requests.is_cancelled(&token).await {
             Ok(true) => (StatusCode::NOT_FOUND, pages::cancelled()).into_response(),
             Ok(false) => (StatusCode::NOT_FOUND, pages::not_pending()).into_response(),
@@ -413,7 +415,8 @@ async fn grants_page(State(state): State<AppState>) -> Response {
             let calls = state.requests.proxy_calls().snapshot();
             let now = state.clock.now();
             let live = live_grants(&grants, &sessions, &calls, now);
-            pages::grants(&grants, &live, now, unwritten).into_response()
+            let hosts = state.requests.link_hosts();
+            pages::grants(&grants, &live, hosts, now, unwritten).into_response()
         }
         (Err(e), _) | (_, Err(e)) => internal_page("grants page", &e),
     }
@@ -436,7 +439,7 @@ async fn grants_live(State(state): State<AppState>) -> Response {
 
 async fn history_page(State(state): State<AppState>) -> Response {
     match state.requests.history(HISTORY_LIMIT).await {
-        Ok(entries) => pages::history(&entries).into_response(),
+        Ok(entries) => pages::history(&entries, state.requests.link_hosts()).into_response(),
         Err(e) => internal_page("history page", &e),
     }
 }

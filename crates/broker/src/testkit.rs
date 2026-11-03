@@ -57,7 +57,7 @@ use crate::policy::{
 };
 use crate::proxy::{CallInfo, ProxyLimits};
 use crate::relay::{RelayEndpoint, RelayLimits, RelayServer, host_key};
-use crate::requests::{Clock, RelayGrantRecord, RequestLimits, Requests};
+use crate::requests::{Clock, LinkHosts, RelayGrantRecord, RequestLimits, Requests};
 use crate::signed::BodyReadTimeout;
 use crate::{AppState, agents, store};
 
@@ -593,10 +593,11 @@ pub struct BaseUrls {
 
 /// The limits a test may change from the broker's defaults; kept across
 /// [`TestBroker::restart`].
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 struct Limits {
     proxy: ProxyLimits,
     requests: RequestLimits,
+    link_hosts: LinkHosts,
     body_read_timeout: BodyReadTimeout,
 }
 
@@ -742,6 +743,21 @@ impl TestBroker {
         .await
     }
 
+    /// Like [`TestBroker::new`], accepting links to `hosts` (comma separated).
+    ///
+    /// # Panics
+    /// If `hosts` is not a valid setting, or any part of the setup fails.
+    pub async fn with_link_hosts(hosts: &str) -> Self {
+        Self::fresh(
+            Limits {
+                link_hosts: LinkHosts::parse(hosts).expect("link hosts"),
+                ..Limits::default()
+            },
+            Some(format!("{RELAY_PUBLIC_HOST}:{RELAY_PUBLIC_PORT}")),
+        )
+        .await
+    }
+
     /// Like [`TestBroker::new`], with agents held to `requests`.
     ///
     /// # Panics
@@ -823,7 +839,7 @@ impl TestBroker {
                 fake: self.backend.clone(),
                 asked: self.policy_source.clone(),
             },
-            self.limits,
+            self.limits.clone(),
             relay,
         )
         .await;
@@ -881,6 +897,7 @@ impl TestBroker {
             relay_endpoint,
         )
         .with_limits(limits.requests)
+        .with_link_hosts(limits.link_hosts.clone())
         .with_call_limits(config.proxy.max_calls_per_agent, config.proxy.max_calls);
         let passkeys = Passkeys::new(
             pool.clone(),
@@ -1274,6 +1291,8 @@ impl TestBroker {
             .to_openssh()
             .expect("encode public key");
         CreateRequest {
+            session: None,
+            link: None,
             goal: Goal::try_from(goal.to_owned()).expect("valid goal"),
             access: Access::Ssh {
                 target: TargetName::try_from("pi".to_owned()).expect("valid target"),
@@ -1306,6 +1325,8 @@ impl TestBroker {
     #[must_use]
     pub fn api_request(secret: &str, goal: &str, window: Window) -> CreateRequest {
         CreateRequest {
+            session: None,
+            link: None,
             goal: Goal::try_from(goal.to_owned()).expect("valid goal"),
             access: Access::Api {
                 secret: SecretName::try_from(secret.to_owned()).expect("valid secret name"),

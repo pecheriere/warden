@@ -54,7 +54,9 @@ fn refusal(error: &RequestError) -> Response {
 /// `GET /pending`.
 pub(super) async fn page(State(state): State<AppState>) -> Response {
     match state.requests.pending_requests().await {
-        Ok(entries) => pages::pending(&entries, state.clock.now()).into_response(),
+        Ok(entries) => {
+            pages::pending(&entries, state.requests.link_hosts(), state.clock.now()).into_response()
+        }
         Err(e) => internal_page("pending page", &e),
     }
 }

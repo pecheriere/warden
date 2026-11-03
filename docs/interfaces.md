@@ -22,7 +22,7 @@ specified. Interfaces with a reference of their own are linked, not repeated.
 | Interface | Why | What it sends | Reference |
 |---|---|---|---|
 | 1Password Connect API | Policy, secrets and the CA key | `GET` requests, with the token as a bearer | [Deployment](deployment.md#3-1password) |
-| Home Assistant webhook, ntfy | Notifications | The agent, the access, a shortened goal, a link | [Notifications](notifications.md) |
+| Home Assistant webhook, ntfy | Notifications | The agent, the access, a stated session label, a shortened goal, a link | [Notifications](notifications.md) |
 | API origins | Proxied calls | The agent's call, with the secret in the policy's header | [HTTP proxy mode](design.md#83-http-proxy-mode-secret-injection) |
 | Relay targets | Relayed sessions | An SSH login with the item's credential | [SSH relay mode](design.md#82-ssh-relay-mode) |
 | Certificate targets | Nothing: the agent's `ssh` connects, and warden never does | A certificate, presented by the agent | [SSH targets](ssh-targets.md) |

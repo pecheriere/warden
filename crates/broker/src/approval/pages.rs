@@ -9,11 +9,17 @@ use warden_broker_proto::{Access, ApiGrant, CreateRequest, GrantAccess, Window};
 
 use super::LiveGrant;
 use crate::policy::{ApiScope, SshMode};
-use crate::requests::{ActiveGrant, Destination, HistoryEntry, PendingView, window_label};
+use crate::requests::{
+    ActiveGrant, Destination, HistoryEntry, LinkHosts, PendingView, window_label,
+};
 
 mod pending;
+mod stated;
+#[cfg(test)]
+mod stated_tests;
 
 pub use self::pending::pending;
+use self::stated::{stated_fields, stated_lines};
 
 /// Every window, shortest first.
 const WINDOWS: [Window; 4] = [Window::M15, Window::M30, Window::H1, Window::H4];
@@ -240,7 +246,7 @@ const fn window_words(window: Window) -> &'static str {
 /// The approval page for a pending request: the details on one side, the
 /// fingerprint and the decision (grant window, Approve, Deny) on the other.
 #[must_use]
-pub fn approve(view: &PendingView, now: i64) -> Markup {
+pub fn approve(view: &PendingView, hosts: &LinkHosts, now: i64) -> Markup {
     let max = view.destination.max_window();
     let default = view.request.window.min(max);
     let remaining = (view.expires_at - now).max(0);
@@ -280,6 +286,7 @@ pub fn approve(view: &PendingView, now: i64) -> Markup {
                         span.label { "Goal" }
                         span { bdi { (view.request.goal) } }
                     }
+                    (stated_fields(&view.request, hosts))
                 }
             }
             div.col {
@@ -612,7 +619,13 @@ fn unwritten_warning(unwritten: i64) -> Markup {
 /// entry per grant) and revoke buttons, under a warning if `unwritten` audit
 /// entries are waiting for the log.
 #[must_use]
-pub fn grants(grants: &[ActiveGrant], live: &[LiveGrant<'_>], now: i64, unwritten: i64) -> Markup {
+pub fn grants(
+    grants: &[ActiveGrant],
+    live: &[LiveGrant<'_>],
+    hosts: &LinkHosts,
+    now: i64,
+    unwritten: i64,
+) -> Markup {
     if grants.is_empty() {
         let content = end_state(
             &Chip {
@@ -635,6 +648,7 @@ pub fn grants(grants: &[ActiveGrant], live: &[LiveGrant<'_>], now: i64, unwritte
                     div.field.tight {
                         span.who #(format!("agent-{}", grant.grant_id)) { bdi { (grant.agent) } }
                         (grant_access(grant))
+                        (stated_lines(&grant.request, hosts))
                         div.meta {
                             span { "Fingerprint " code { (grant.fingerprint) } }
                             span {
@@ -663,7 +677,7 @@ pub fn grants(grants: &[ActiveGrant], live: &[LiveGrant<'_>], now: i64, unwritte
 /// Read-only list of recent requests, newest first: a card per request on a
 /// phone, a table from 720 px.
 #[must_use]
-pub fn history(entries: &[HistoryEntry]) -> Markup {
+pub fn history(entries: &[HistoryEntry], hosts: &LinkHosts) -> Markup {
     if entries.is_empty() {
         let content = end_state(
             &Chip {
@@ -700,7 +714,10 @@ pub fn history(entries: &[HistoryEntry]) -> Markup {
                                 span { span.nowrap { (date) } " " span.nowrap { (time) } }
                             }
                             td.who data-label="Agent" { bdi { (entry.agent) } }
-                            td data-label="Goal" { bdi { (entry.request.goal) } }
+                            td data-label="Goal" {
+                                bdi { (entry.request.goal) }
+                                (stated_lines(&entry.request, hosts))
+                            }
                             td data-label="Access" { code { (subject) } }
                             td data-label="Fingerprint" { code.nowrap { (entry.fingerprint) } }
                             td data-label="Status" { span.chip { (entry.status) } }
@@ -807,7 +824,9 @@ mod tests {
         not_found, not_pending, secs_label, unavailable, utc_parts,
     };
     use crate::policy::{ApiSecretPolicy, SshMode, SshTarget, ValueFormat};
-    use crate::requests::{ActiveGrant, Destination, HistoryEntry, PendingEntry, PendingView};
+    use crate::requests::{
+        ActiveGrant, Destination, HistoryEntry, LinkHosts, PendingEntry, PendingView,
+    };
 
     const NOW: i64 = 1_800_000_000;
 
@@ -852,6 +871,8 @@ mod tests {
 
     fn ssh_request(goal: Goal, window: Window) -> CreateRequest {
         CreateRequest {
+            session: None,
+            link: None,
             goal,
             access: Access::Ssh {
                 target: TargetName::try_from("switch-01".to_owned()).unwrap(),
@@ -864,6 +885,8 @@ mod tests {
 
     fn api_request(goal: Goal, methods: &[&str]) -> CreateRequest {
         CreateRequest {
+            session: None,
+            link: None,
             goal,
             access: Access::Api {
                 secret: SecretName::try_from("home-api".to_owned()).unwrap(),
@@ -1100,6 +1123,68 @@ mod tests {
         ]
     }
 
+    /// `request` with a session label and a link, as long as they get in practice.
+    fn stated(mut request: CreateRequest) -> CreateRequest {
+        request.session = Some("release-work on the nightly pipeline".parse().unwrap());
+        request.link = Some(
+            "https://git.example.com/acme/home-lab/pull/1234"
+                .parse()
+                .unwrap(),
+        );
+        request
+    }
+
+    /// The list a fixture's links are on.
+    fn stated_hosts() -> LinkHosts {
+        LinkHosts::parse("git.example.com").unwrap()
+    }
+
+    /// The pages that show a session label and a link, one on a host off the list.
+    fn stated_pages() -> Vec<(&'static str, Markup)> {
+        let hosts = stated_hosts();
+        let mut request = stated(ssh_request(goal("Deploy the nightly build"), Window::M30));
+        let approve_page = approve(
+            &pending(
+                agent("build-agent"),
+                request.clone(),
+                ssh_destination(SshMode::Cert),
+            ),
+            &hosts,
+            NOW,
+        );
+        let mut entries = pending_entries();
+        entries.truncate(2);
+        entries[0].request = stated(ssh_request(goal("Deploy the nightly build"), Window::H1));
+        entries[1].request = stated(api_request(goal("Read device status"), &["GET"]));
+        let mut active = active_grants();
+        active.truncate(2);
+        active[0].request = request.clone();
+        active[1].request = stated(api_request(goal("Read device status"), &["GET"]));
+        let mut past = history_entries();
+        past[1].request = request.clone();
+        request.link = Some("https://other.example.org/session".parse().unwrap());
+        past[2].request = request.clone();
+        let off_list = approve(
+            &pending(
+                agent("build-agent"),
+                request,
+                ssh_destination(SshMode::Cert),
+            ),
+            &hosts,
+            NOW,
+        );
+        vec![
+            ("approve-stated", approve_page),
+            ("approve-stated-off-list", off_list),
+            ("pending-stated", super::pending(&entries, &hosts, NOW)),
+            (
+                "grants-stated",
+                grants(&active, &idle(&active), &hosts, NOW, 0),
+            ),
+            ("history-stated", history(&past, &hosts)),
+        ]
+    }
+
     /// Every page with fixture data, named for the screenshot script.
     fn pages() -> Vec<(&'static str, Markup)> {
         let long = long_goal();
@@ -1117,6 +1202,7 @@ mod tests {
                         ssh_request(long.clone(), Window::H1),
                         ssh_destination(SshMode::Cert),
                     ),
+                    &LinkHosts::default(),
                     NOW,
                 ),
             ),
@@ -1128,6 +1214,7 @@ mod tests {
                         ssh_request(goal("Deploy the nightly build"), Window::M30),
                         ssh_destination(SshMode::Relay),
                     ),
+                    &LinkHosts::default(),
                     NOW,
                 ),
             ),
@@ -1139,34 +1226,66 @@ mod tests {
                         api_request(goal("Read device status"), &["GET"]),
                         api_destination(),
                     ),
+                    &LinkHosts::default(),
                     NOW,
                 ),
             ),
             (
                 "approve-api-modify",
-                approve(&pending(long_agent(), modify, api_destination()), NOW),
+                approve(
+                    &pending(long_agent(), modify, api_destination()),
+                    &LinkHosts::default(),
+                    NOW,
+                ),
             ),
             ("not-pending", not_pending()),
             ("cancelled", cancelled()),
             ("not-found", not_found()),
             ("unavailable", unavailable("The broker is starting up.")),
             ("internal-error", internal_error()),
-            ("grants-empty", grants(&[], &[], NOW, 0)),
-            ("grants-empty-unwritten", grants(&[], &[], NOW, 2)),
-            ("grants", grants(&active, &idle(&active), NOW, 0)),
-            ("grants-unwritten", grants(&active, &idle(&active), NOW, 2)),
-            ("grants-live", grants(&live_grants, &live, NOW, 0)),
-            ("history-empty", history(&[])),
-            ("history", history(&history_entries())),
+            (
+                "grants-empty",
+                grants(&[], &[], &LinkHosts::default(), NOW, 0),
+            ),
+            (
+                "grants-empty-unwritten",
+                grants(&[], &[], &LinkHosts::default(), NOW, 2),
+            ),
+            (
+                "grants",
+                grants(&active, &idle(&active), &LinkHosts::default(), NOW, 0),
+            ),
+            (
+                "grants-unwritten",
+                grants(&active, &idle(&active), &LinkHosts::default(), NOW, 2),
+            ),
+            (
+                "grants-live",
+                grants(&live_grants, &live, &LinkHosts::default(), NOW, 0),
+            ),
+            ("history-empty", history(&[], &LinkHosts::default())),
+            (
+                "history",
+                history(&history_entries(), &LinkHosts::default()),
+            ),
             ("enroll", enroll()),
-            ("pending-empty", super::pending(&[], NOW)),
-            ("pending", super::pending(&pending_entries(), NOW)),
+            (
+                "pending-empty",
+                super::pending(&[], &LinkHosts::default(), NOW),
+            ),
+            (
+                "pending",
+                super::pending(&pending_entries(), &LinkHosts::default(), NOW),
+            ),
             // The screenshots show the viewport only: these two first.
             (
                 "pending-modify-and-outage",
-                super::pending(&pending_entries()[2..], NOW),
+                super::pending(&pending_entries()[2..], &LinkHosts::default(), NOW),
             ),
         ]
+        .into_iter()
+        .chain(stated_pages())
+        .collect()
     }
 
     /// The text of every tag (`<...>`) in `html`. Maud escapes `<` and `>` in
@@ -1190,6 +1309,13 @@ mod tests {
         assert!(!html.contains("<style"), "{name}: style element");
         assert!(!html.contains("<img"), "{name}: image element");
         for tag in tags(html) {
+            // The one thing a page may point away with, and only for someone to
+            // open: not a resource the page loads.
+            if tag.starts_with(r#"<a class="stated-link" href="https://"#)
+                && tag.ends_with(r#" target="_blank" rel="noopener noreferrer">"#)
+            {
+                continue;
+            }
             let without_svg = tag.replace("http://www.w3.org/2000/svg", "");
             assert!(
                 !without_svg.contains("http://") && !without_svg.contains("https://"),
@@ -1212,9 +1338,9 @@ mod tests {
 
     #[test]
     fn the_grants_page_warns_only_while_entries_are_waiting() {
-        let quiet = grants(&[], &[], NOW, 0).into_string();
+        let quiet = grants(&[], &[], &LinkHosts::default(), NOW, 0).into_string();
         assert!(!quiet.contains("Not in the audit log"), "{quiet}");
-        let html = grants(&[], &[], NOW, 3).into_string();
+        let html = grants(&[], &[], &LinkHosts::default(), NOW, 3).into_string();
         assert!(html.contains("Not in the audit log"), "{html}");
         assert!(html.contains("3 audit log entries"), "{html}");
         assert!(html.contains(r#"role="alert""#), "{html}");
@@ -1261,7 +1387,7 @@ mod tests {
     #[test]
     fn pending_cards_offer_both_decisions_and_never_guess_at_the_scope() {
         let entries = pending_entries();
-        let html = super::pending(&entries, NOW).into_string();
+        let html = super::pending(&entries, &LinkHosts::default(), NOW).into_string();
         assert_eq!(html.matches("<section class=\"card pending\"").count(), 4);
         assert_eq!(html.matches("Approve…</button>").count(), 4, "{html}");
         assert_eq!(html.matches(">Deny</button>").count(), 4, "{html}");
@@ -1275,12 +1401,12 @@ mod tests {
         assert!(!html.contains("<form"), "{html}");
 
         // With the policy unreadable the card does not say read-only or not.
-        let unread = super::pending(&entries[3..], NOW).into_string();
+        let unread = super::pending(&entries[3..], &LinkHosts::default(), NOW).into_string();
         assert!(unread.contains("could not be read"), "{unread}");
         assert!(!unread.contains("Read-only"), "{unread}");
         assert!(!unread.contains("Can modify"), "{unread}");
 
-        let html = super::pending(&[], NOW).into_string();
+        let html = super::pending(&[], &LinkHosts::default(), NOW).into_string();
         assert!(html.contains("Nothing waiting"), "{html}");
         // The empty state refreshes too, and has room for what a denial said.
         assert!(html.contains(r#"data-pending="empty""#), "{html}");
@@ -1296,7 +1422,7 @@ mod tests {
 
     #[test]
     fn marks_the_current_page_in_the_navigation() {
-        let html = grants(&[], &[], NOW, 0).into_string();
+        let html = grants(&[], &[], &LinkHosts::default(), NOW, 0).into_string();
         // Both the inline links and the menu's copy mark it.
         assert_eq!(
             html.matches(r#"<a href="/grants" aria-current="page">"#)
@@ -1326,6 +1452,7 @@ mod tests {
                 api_request(goal("Read device status"), &["GET"]),
                 api_destination(),
             ),
+            &LinkHosts::default(),
             NOW,
         )
         .into_string();
@@ -1347,6 +1474,7 @@ mod tests {
                 ssh_request(goal("Deploy the nightly build"), Window::M30),
                 ssh_destination(SshMode::Cert),
             ),
+            &LinkHosts::default(),
             NOW,
         )
         .into_string();
@@ -1369,6 +1497,7 @@ mod tests {
         request.window = Window::H4;
         let html = approve(
             &pending(agent("build-agent"), request, api_destination()),
+            &LinkHosts::default(),
             NOW,
         )
         .into_string();
@@ -1390,6 +1519,7 @@ mod tests {
                 ssh_request(goal("Deploy the nightly build"), Window::M30),
                 ssh_destination(SshMode::Cert),
             ),
+            &LinkHosts::default(),
             NOW,
         )
         .into_string();
@@ -1413,8 +1543,11 @@ mod tests {
             ("not_found", not_found()),
             ("unavailable", unavailable("x")),
             ("internal_error", internal_error()),
-            ("grants_empty", grants(&[], &[], NOW, 0)),
-            ("history_empty", history(&[])),
+            (
+                "grants_empty",
+                grants(&[], &[], &LinkHosts::default(), NOW, 0),
+            ),
+            ("history_empty", history(&[], &LinkHosts::default())),
         ] {
             let html = page.into_string();
             assert!(
@@ -1448,7 +1581,7 @@ mod tests {
     #[test]
     fn grants_are_cards_with_the_revoke_hook() {
         let active = active_grants();
-        let html = grants(&active, &idle(&active), NOW, 0).into_string();
+        let html = grants(&active, &idle(&active), &LinkHosts::default(), NOW, 0).into_string();
         assert_eq!(
             html.matches(r#"<section class="card grant">"#).count(),
             4,
@@ -1482,7 +1615,7 @@ mod tests {
     #[test]
     fn grants_show_live_activity_under_each_grant() {
         let (active, live) = live_grants_fixture();
-        let html = grants(&active, &live, NOW, 0).into_string();
+        let html = grants(&active, &live, &LinkHosts::default(), NOW, 0).into_string();
         let (relay, api, cert) = (id(5), id(4), id(2));
         assert!(
             html.contains(&format!(
@@ -1532,7 +1665,7 @@ mod tests {
     #[test]
     fn idle_grants_say_nothing_is_live() {
         let active = active_grants();
-        let html = grants(&active, &idle(&active), NOW, 0).into_string();
+        let html = grants(&active, &idle(&active), &LinkHosts::default(), NOW, 0).into_string();
         assert_eq!(
             html.matches(r#"<div class="live-area""#).count(),
             4,
@@ -1548,7 +1681,7 @@ mod tests {
         );
         assert_eq!(html.matches("No calls in flight").count(), 2, "{html}");
         // A grant missing from the live entries renders as idle.
-        let html = grants(&active, &[], NOW, 0).into_string();
+        let html = grants(&active, &[], &LinkHosts::default(), NOW, 0).into_string();
         assert_eq!(html.matches("No calls in flight").count(), 2, "{html}");
     }
 
@@ -1576,7 +1709,7 @@ mod tests {
                 },
             ],
         }];
-        let html = grants(&active, &live, NOW, 0).into_string();
+        let html = grants(&active, &live, &LinkHosts::default(), NOW, 0).into_string();
         assert!(
             html.contains(r#"<p class="live">1 session open · 2 calls in flight</p>"#),
             "{html}"
@@ -1589,7 +1722,7 @@ mod tests {
 
     #[test]
     fn history_labels_every_cell_for_the_phone_cards() {
-        let html = history(&history_entries()).into_string();
+        let html = history(&history_entries(), &LinkHosts::default()).into_string();
         assert!(html.contains(r#"<table class="history">"#), "{html}");
         for label in [
             "Time",
