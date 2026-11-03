@@ -26,6 +26,27 @@ Then follow the steps for your setup, which include how to roll back:
 Do not let an automatic updater upgrade warden, because it would migrate the
 database without a backup.
 
+## Fingerprints as words
+
+From the release after 0.9.0, the approval pages and `warden request` write a
+fingerprint as five words, with the hex form beside them. They are the same 48
+bits, so there is nothing to migrate, and you can upgrade the broker and the CLI in
+either order:
+
+| Broker | CLI | What you compare |
+|---|---|---|
+| New | New | The words, on both |
+| New | 0.9.0 or older | The CLI prints hex: compare it with the hex under the words on the page |
+| 0.9.0 or older | New | The page shows hex: compare it with the hex in brackets in the CLI's line |
+
+Every pair agrees on the hex. The CLI's own check of what the broker answers
+still compares hex, so no pair refuses a request because of this. The API, an agent
+that computes a fingerprint itself, stored requests and the audit log are unchanged,
+and requests made before the upgrade show their words too.
+
+A script that reads the fingerprint from `warden request`'s stderr needs checking:
+the line is now `fingerprint <words> (<hex>)`. Prefer the API's `fingerprint` field.
+
 ## Private files
 
 From 0.9.0, warden keeps its files private to its user, and corrects

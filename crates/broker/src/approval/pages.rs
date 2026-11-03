@@ -5,7 +5,7 @@
 //! Pages carry no inline script; behaviour lives in `/static/warden.js`.
 
 use maud::{DOCTYPE, Markup, html};
-use warden_broker_proto::{Access, ApiGrant, CreateRequest, GrantAccess, Window};
+use warden_broker_proto::{Access, ApiGrant, CreateRequest, Fingerprint, GrantAccess, Window};
 
 use super::LiveGrant;
 use crate::policy::{ApiScope, SshMode};
@@ -173,6 +173,14 @@ fn warning_icon() -> Markup {
     }
 }
 
+/// A fingerprint where it is not the page's main fact: the words people compare,
+/// then the hex that the API, the audit log and older CLIs show.
+fn fingerprint_forms(fingerprint: &Fingerprint) -> Markup {
+    html! {
+        code.fp-words { (fingerprint.words()) } " " code.fp-other { (fingerprint) }
+    }
+}
+
 /// A key: approving or creating with a passkey.
 fn key_icon() -> Markup {
     html! {
@@ -292,7 +300,8 @@ pub fn approve(view: &PendingView, hosts: &LinkHosts, now: i64) -> Markup {
             div.col {
                 section.fp {
                     span.label { "Fingerprint · must match the agent" }
-                    code.fingerprint { (view.fingerprint) }
+                    code.fingerprint { (view.fingerprint.words()) }
+                    span.fp-hex { "In hex " code { (view.fingerprint) } }
                 }
                 div.actions {
                     fieldset {
@@ -650,7 +659,7 @@ pub fn grants(
                         (grant_access(grant))
                         (stated_lines(&grant.request, hosts))
                         div.meta {
-                            span { "Fingerprint " code { (grant.fingerprint) } }
+                            span { "Fingerprint " (fingerprint_forms(&grant.fingerprint)) }
                             span {
                                 "Ends " (clock(grant.not_after))
                                 " (in " (((grant.not_after - now).max(0) + 59) / 60) " min)"
@@ -719,7 +728,7 @@ pub fn history(entries: &[HistoryEntry], hosts: &LinkHosts) -> Markup {
                                 (stated_lines(&entry.request, hosts))
                             }
                             td data-label="Access" { code { (subject) } }
-                            td data-label="Fingerprint" { code.nowrap { (entry.fingerprint) } }
+                            td data-label="Fingerprint" { span { (fingerprint_forms(&entry.fingerprint)) } }
                             td data-label="Status" { span.chip { (entry.status) } }
                             td data-label="Window" {
                                 @match entry.granted_secs {
@@ -1185,6 +1194,43 @@ mod tests {
         ]
     }
 
+    /// Pages showing the longest spelling, five of the longest words: what the
+    /// layouts must hold without clipping.
+    fn longest_fingerprint_pages() -> Vec<(&'static str, Markup)> {
+        let longest = || Fingerprint::try_from("0522-b233-6c22".to_owned()).unwrap();
+        let hosts = LinkHosts::default();
+        let mut view = pending(
+            agent("build-agent"),
+            ssh_request(goal("Deploy the nightly build"), Window::M30),
+            ssh_destination(SshMode::Relay),
+        );
+        view.fingerprint = longest();
+        let mut active = active_grants();
+        for grant in &mut active {
+            grant.fingerprint = longest();
+        }
+        let mut past = history_entries();
+        for entry in &mut past {
+            entry.fingerprint = longest();
+        }
+        let mut waiting = pending_entries();
+        for entry in &mut waiting {
+            entry.fingerprint = longest();
+        }
+        vec![
+            ("approve-longest-fingerprint", approve(&view, &hosts, NOW)),
+            (
+                "grants-longest-fingerprint",
+                grants(&active, &idle(&active), &hosts, NOW, 0),
+            ),
+            ("history-longest-fingerprint", history(&past, &hosts)),
+            (
+                "pending-longest-fingerprint",
+                super::pending(&waiting, &hosts, NOW),
+            ),
+        ]
+    }
+
     /// Every page with fixture data, named for the screenshot script.
     fn pages() -> Vec<(&'static str, Markup)> {
         let long = long_goal();
@@ -1285,6 +1331,7 @@ mod tests {
         ]
         .into_iter()
         .chain(stated_pages())
+        .chain(longest_fingerprint_pages())
         .collect()
     }
 
@@ -1393,6 +1440,7 @@ mod tests {
         assert_eq!(html.matches(">Deny</button>").count(), 4, "{html}");
         for entry in &entries {
             assert!(html.contains(entry.fingerprint.as_str()), "{html}");
+            assert!(html.contains(&entry.fingerprint.words()), "{html}");
         }
         assert!(html.contains("<bdi>Restart switch-01</bdi>"), "{html}");
         assert!(html.contains("Can modify: POST"), "{html}");
@@ -1511,6 +1559,30 @@ mod tests {
         );
     }
 
+    /// The vectors the proto and CLI tests share, computed outside the Rust.
+    #[test]
+    fn approve_page_shows_both_forms_of_the_shared_vectors() {
+        let raw = include_str!("../../../proto/tests/fixtures/fingerprint-words-v1.json");
+        let fixture: serde_json::Value = serde_json::from_str(raw).unwrap();
+        for vector in fixture["vectors"].as_array().unwrap() {
+            let hex = vector["hex"].as_str().unwrap();
+            let mut view = pending(
+                agent("build-agent"),
+                ssh_request(goal("Deploy the nightly build"), Window::M30),
+                ssh_destination(SshMode::Cert),
+            );
+            view.fingerprint = Fingerprint::try_from(hex.to_owned()).unwrap();
+            let html = approve(&view, &LinkHosts::default(), NOW).into_string();
+            let words = format!(
+                r#"<code class="fingerprint">{}</code>"#,
+                vector["words"].as_str().unwrap()
+            );
+            assert!(html.contains(&words), "{words}: {html}");
+            let hex = format!("In hex <code>{hex}</code>");
+            assert!(html.contains(&hex), "{hex}: {html}");
+        }
+    }
+
     #[test]
     fn approve_page_keeps_the_script_hooks() {
         let html = approve(
@@ -1526,7 +1598,8 @@ mod tests {
         for hook in [
             r#"<main class="split" id="approval" data-target=""#,
             r#"<span>Pending · <span id="countdown" data-remaining="240">expires in 4 min</span></span>"#,
-            r#"<code class="fingerprint">ab01-cd01-ef01</code>"#,
+            r#"<code class="fingerprint">exquisite-nautically-cakewalk-oscillator-angelfish</code>"#,
+            r#"<span class="fp-hex">In hex <code>ab01-cd01-ef01</code></span>"#,
             r#"<button class="btn approve" id="approve" type="button">"#,
             r#"<button class="btn deny" id="deny" type="button">Deny</button>"#,
             r#"<p class="result" id="result" role="status"></p>"#,

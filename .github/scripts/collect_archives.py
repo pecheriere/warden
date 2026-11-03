@@ -30,7 +30,7 @@ from pathlib import Path
 
 LINUX = ("linux-amd64", "linux-arm64")
 PLATFORMS = (*LINUX, "macos-arm64")
-LICENSES = ("LICENSE-APACHE", "LICENSE-MIT")
+LICENSES = ("LICENSE-APACHE", "LICENSE-MIT", "NOTICE")
 
 
 @dataclass(frozen=True)

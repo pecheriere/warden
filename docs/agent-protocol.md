@@ -583,7 +583,8 @@ Responses:
 
 - `201`: `{"id":"0b8f4c1e9d2a47f3a5c6e7d8f9a0b1c2","fingerprint":"42d5-403c-c2f0"}`.
   The owner is notified. Show the id and fingerprint to whoever supervises
-  the agent: the approval page shows the same fingerprint.
+  the agent: the approval page shows the same fingerprint, as five words with
+  this hex form under them. This field is always hex.
 - `400`: the body is not valid JSON or a field is invalid (the message says
   which), or the policy refuses the request (the user, window, method or
   path is not allowed; the message names the rule). Not retried, not
@@ -618,6 +619,23 @@ printf '["build-bot",%s]' "$(cat body.json)" | openssl dgst -sha256 -r | cut -c1
 ```
 
 On a mismatch, do not wait on the other request: it is not yours to use.
+Compare the hex: the API never carries the words.
+
+To show your supervisor the words the page leads with, write the same 48 bits as
+one number in base 1296, least significant digit first, five digits, each digit
+an index from 0 into the
+[EFF Short Wordlist 2.0](https://www.eff.org/files/2016/09/08/eff_short_wordlist_2_0.txt)
+(CC BY 4.0, see [NOTICE](../NOTICE)), joined with `-`. The list's second column,
+in order, is the digit's word. Showing only the hex is also fine.
+
+```python
+n = 0x42d5403cc2f0
+words = []
+for _ in range(5):
+    n, digit = divmod(n, 1296)
+    words.append(wordlist[digit])
+"-".join(words)  # oceanic-receipt-varied-amuser-aftershave
+```
 
 A duplicate does not notify the owner again, and no call of this API can. An owner
 who missed the notification finds the request on the Pending page of the approval

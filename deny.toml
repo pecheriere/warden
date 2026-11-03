@@ -40,6 +40,9 @@ allow = [
 exceptions = [
     # LLVM's libFuzzer, linked only into the fuzz targets (fuzz/Cargo.toml).
     { allow = ["NCSA"], crate = "libfuzzer-sys" },
+    # The EFF wordlist fingerprints are written in (NOTICE). Data, not code, and
+    # attribution is all it asks.
+    { allow = ["CC-BY-4.0"], crate = "warden-broker-proto" },
 ]
 
 [bans]

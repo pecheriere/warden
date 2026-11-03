@@ -150,8 +150,8 @@ can reach. Limit Connect's egress as the deployment guide describes.
 You need systemd 249 or later with cgroup v2, a tagged host on the tailnet as in
 [the deployment guide](deployment.md#2-tailscale), and the `ca-certificates` package
 (warden verifies TLS with the system's roots). Check `systemctl --version` for
-`+BPF_FRAMEWORK`: without it, as on Debian 12, `SocketBindAllow` and `SocketBindDeny`
-have no effect. They also need the `libbpf1` package, which a minimal Debian 13 container
+`+BPF_FRAMEWORK`: without it, as on Debian 12 and Ubuntu 24.04, `SocketBindAllow` and
+`SocketBindDeny` have no effect. They also need the `libbpf1` package, which a minimal Debian 13 container
 did not have, and they did nothing without it, with no error. Install it, then run
 `sudo systemctl daemon-reexec`.
 [Section 5](#5-limit-wardens-egress) shows how to check. `IPAddressDeny` needs only cgroup v2.
@@ -597,7 +597,7 @@ without `SocketBindAllow=udp:0`. `scripts/test-systemd-unit-docker.sh` repeats t
 in a Debian 13 container on GitHub's amd64 and arm64 runners. No published binary has been
 run, because none exists yet.
 
-**Not tested:** a clean host or amd64, a real Connect server (the sandboxed call went to
+**Not tested:** a clean host, amd64 beyond that CI check, a real Connect server (the sandboxed call went to
 another HTTPS server), Tailscale Serve and Services, a passkey approval, a notification,
 an upgrade or rollback across a real migration, and an attempt to reach the listeners from
 another LAN machine. A container also differs from a host, so a failure on a real host

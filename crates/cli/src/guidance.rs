@@ -41,11 +41,12 @@ pub const CONTEXT_NOT_SHOWN: &str = "the owner does not see this session label o
 /// expiry time, so this gives the upper limit.
 pub fn already_pending(subject: &str, pending: &CreatedResponse) -> String {
     format!(
-        "a request {subject} is pending (id {id}, fingerprint {fingerprint}), and its fingerprint \
-         differs from this request's, so warden is not waiting on it. It expires within {minutes} \
+        "a request {subject} is pending (id {id}, fingerprint {words} ({fingerprint})), and its \
+         fingerprint differs from this request's, so warden is not waiting on it. It expires within {minutes} \
          minutes of being made, unless the owner decides it first. To withdraw it: warden request \
          cancel {id}",
         id = pending.id,
+        words = pending.fingerprint.words(),
         fingerprint = pending.fingerprint,
         minutes = PENDING_EXPIRY_SECS / 60,
     )
@@ -202,6 +203,33 @@ mod tests {
         for message in [ssh, api] {
             assert!(message.contains("expired or"), "{message}");
             assert!(message.contains("the shortest of"), "{message}");
+        }
+    }
+
+    /// The vectors the proto and broker tests share, computed outside the Rust.
+    #[test]
+    fn already_pending_shows_both_forms_of_the_shared_vectors() {
+        let raw = include_str!("../../proto/tests/fixtures/fingerprint-words-v1.json");
+        let fixture: serde_json::Value = serde_json::from_str(raw).unwrap();
+        for vector in fixture["vectors"].as_array().unwrap() {
+            let message = already_pending(
+                "for switch-01",
+                &CreatedResponse {
+                    id: Id::random(),
+                    fingerprint: vector["hex"]
+                        .as_str()
+                        .unwrap()
+                        .to_owned()
+                        .try_into()
+                        .unwrap(),
+                },
+            );
+            let shown = format!(
+                "fingerprint {} ({})",
+                vector["words"].as_str().unwrap(),
+                vector["hex"].as_str().unwrap()
+            );
+            assert!(message.contains(&shown), "{shown}: {message}");
         }
     }
 

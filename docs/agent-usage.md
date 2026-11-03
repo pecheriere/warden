@@ -338,11 +338,16 @@ is pinned.
 `warden request` prints this to stderr:
 
 ```
-request 0b8f4c1e…, fingerprint b65b-9812-eb72 — waiting for approval…
+request 0b8f4c1e…, fingerprint dozed-crawfish-kayak-ascend-answer (b65b-9812-eb72) — waiting for approval…
 ```
 
 The approval page shows the same fingerprint. A mismatch means the request
 the owner sees is not yours, and they should deny it.
+
+The words and the hex in brackets are the same 48 bits written two ways, not two
+checks: the words are for people, to compare at a glance or read aloud, and the hex
+is what the API and the audit log carry. The page shows both, so an agent or an older
+`warden` that shows only hex can still be compared with it.
 
 Only one request per agent and target (or secret and scope) can be pending
 at a time. If one is pending, `warden request` waits on it only when the
@@ -357,7 +362,8 @@ fingerprints match:
 
 A [session label or link](#telling-sessions-apart) is part of the fingerprint too.
 
-When it stops, it prints the pending request's ID and fingerprint, says that it
+When it stops, it prints the pending request's ID and fingerprint in both forms,
+says that it
 expires within 10 minutes of being made, and gives the command to withdraw it:
 `warden request cancel <id>`.
 

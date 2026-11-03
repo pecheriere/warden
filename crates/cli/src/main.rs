@@ -757,8 +757,10 @@ async fn request_grant(
         Answered::Other => bail!(guidance::already_pending(subject, &created)),
     }
     eprintln!(
-        "request {}, fingerprint {} — waiting for approval…",
-        created.id, created.fingerprint
+        "request {}, fingerprint {} ({}) — waiting for approval…",
+        created.id,
+        created.fingerprint.words(),
+        created.fingerprint
     );
 
     let created_at = unix_now();
