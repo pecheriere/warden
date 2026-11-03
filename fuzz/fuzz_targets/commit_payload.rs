@@ -10,7 +10,7 @@ fuzz_target!(|data: &[u8]| {
     if let Ok(commit) = parse(data) {
         assert!(data.starts_with(b"tree "));
         assert!(!data.contains(&0));
-        assert!(!commit.tree.is_empty());
+        assert_ne!(commit.tree, "");
         let headers = data
             .split(|b| *b == b'\n')
             .take_while(|line| !line.is_empty());
