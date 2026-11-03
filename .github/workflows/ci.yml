@@ -268,6 +268,16 @@ jobs:
         run: |
           file=$(python3 -I .github/scripts/collect_archives.py name "$PRODUCT" "$PLATFORM")
           python3 -I .github/scripts/collect_archives.py check "$PRODUCT" "$PLATFORM" "dist/$file"
+      # The release makes these from its attested archives, in the packages job.
+      - name: Make the CLI's packages, and install them in clean containers
+        if: matrix.product == 'cli' && runner.os == 'Linux'
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          sudo apt-get update && sudo apt-get install -y rpm cpio
+          file=$(python3 -I .github/scripts/collect_archives.py name cli "$PLATFORM")
+          scripts/package-linux.sh "$PLATFORM" "dist/$file" "$RUNNER_TEMP/packages"
+          scripts/test-linux-packages-docker.sh "$PLATFORM" "$RUNNER_TEMP/packages"
       - name: Run the server under the systemd unit
         if: matrix.product == 'server'
         env:

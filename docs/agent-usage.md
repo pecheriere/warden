@@ -73,6 +73,25 @@ install -m 0755 "warden-$version-$platform/warden" ~/.local/bin/warden
 rather than a browser: the binary is not notarized, and macOS may block one
 that a browser downloaded.
 
+On Debian, Ubuntu, Fedora or RHEL, releases after v0.9.0 also attach `.deb` and `.rpm`
+packages of the same binary, which bring in what it needs. Download one, check it the
+same way, and install it. Nothing updates it for you, because there is no package
+repository, so install the next release's package yourself:
+
+```sh
+version=x.y.z
+file="warden_${version}_amd64.deb"      # or arm64
+# file="warden-$version-1.x86_64.rpm"   # or aarch64
+curl -fLO "https://github.com/pecheriere/warden/releases/download/v$version/$file"
+gh attestation verify "$file" --repo pecheriere/warden \
+  --signer-workflow pecheriere/warden/.github/workflows/release.yml \
+  --source-ref "refs/tags/v$version"
+sudo apt install "./$file"              # or: sudo dnf install "./$file"
+```
+
+The packages hold only the CLI. They are not signed with a package key, so
+`dnf install` of a local file relies on the check above.
+
 On another platform, build it instead, with Rust 1.99 or later. For an older
 release, which has no binaries, use its tag in the same command:
 

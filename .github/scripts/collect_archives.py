@@ -11,6 +11,9 @@ nothing the build runs can change the answer.
 `check` looks inside one archive, without unpacking it, for the files it must hold.
 CI runs this on each build.
 
+`packages` prints the names of the CLI's .deb and .rpm files, which
+scripts/package-linux.sh makes and checks from the attested CLI archives.
+
 `collect` runs on the artifacts of one product's builds, in the job that attests
 them and not in a build, and copies the archives into one directory only when each
 is exactly what it should be. That directory is what gets attested.
@@ -65,6 +68,15 @@ def archive_name(product: str, version: str, platform: str) -> str:
         message = f"{product} is not released for {platform}"
         raise ArchiveError(message)
     return f"{spec.prefix}-{version}-{platform}.tar.gz"
+
+
+def package_names(version: str) -> list[str]:
+    """Name the CLI's Linux packages, the only ones a release holds."""
+    return [
+        name
+        for deb_arch, rpm_arch in (("amd64", "x86_64"), ("arm64", "aarch64"))
+        for name in (f"warden_{version}_{deb_arch}.deb", f"warden-{version}-1.{rpm_arch}.rpm")
+    ]
 
 
 def check_archive(path: Path, product: str, version: str, platform: str) -> None:
@@ -140,6 +152,7 @@ def main(argv: list[str]) -> int:
         sub.add_argument("platform", choices=PLATFORMS)
         if command == "check":
             sub.add_argument("archive", type=Path)
+    commands.add_parser("packages")
     sub = commands.add_parser("collect")
     sub.add_argument("product", choices=sorted(PRODUCTS))
     sub.add_argument("artifacts", type=Path)
@@ -150,6 +163,8 @@ def main(argv: list[str]) -> int:
     try:
         if args.command == "name":
             print(archive_name(args.product, version, args.platform))
+        elif args.command == "packages":
+            print("\n".join(package_names(version)))
         elif args.command == "check":
             check_archive(args.archive, args.product, version, args.platform)
             print(f"ok: {args.archive.name}")

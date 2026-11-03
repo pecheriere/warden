@@ -15,6 +15,8 @@ on:
       - .github/workflows/release.yml
       - .github/workflows/build-archives.yml
       - scripts/package-binary.sh
+      - scripts/package-linux.sh
+      - packaging/nfpm.yaml
       - .github/scripts/collect_archives.py
       - crates/demo/NOT-FOR-REAL-USE.txt
       - Dockerfile
@@ -101,6 +103,21 @@ jobs:
         with:
           name: ${{ matrix.product }}-${{ matrix.build.platform }}-${{ matrix.attempt.name }}
           path: ${{ matrix.attempt.checkout }}/dist/${{ steps.archive.outputs.file }}
+          if-no-files-found: error
+          retention-days: 3
+      - name: Make the CLI's packages
+        if: matrix.product == 'cli' && runner.os == 'Linux'
+        env:
+          FILE: ${{ steps.archive.outputs.file }}
+          PLATFORM: ${{ matrix.build.platform }}
+        run: |
+          sudo apt-get update && sudo apt-get install -y rpm cpio
+          scripts/package-linux.sh "$PLATFORM" "dist/$FILE" packages
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: matrix.product == 'cli' && runner.os == 'Linux'
+        with:
+          name: packages-${{ matrix.build.platform }}-${{ matrix.attempt.name }}
+          path: ${{ matrix.attempt.checkout }}/packages/
           if-no-files-found: error
           retention-days: 3
 
@@ -199,6 +216,18 @@ jobs:
               if [ "$product $platform" = 'server macos-arm64' ]; then continue; fi
               compare_archives "$product $platform" "$product-$platform-first" "$product-$platform-second"
             done
+          done
+          for platform in linux-amd64 linux-arm64; do
+            first=$(cd "packages-$platform-first" && ls)
+            second=$(cd "packages-$platform-second" && ls)
+            if [ "$(wc -l <<< "$first")" -ne 2 ] || [ "$first" != "$second" ]; then
+              echo "::error::packages for $platform should have the same two files on each side"
+              status=1
+              continue
+            fi
+            while IFS= read -r file; do
+              compare "package $file" "packages-$platform-first/$file" "packages-$platform-second/$file"
+            done <<< "$first"
           done
           for slug in amd64 arm64; do
             compare "image $slug" "digest-$slug-first/digest-$slug-first" "digest-$slug-second/digest-$slug-second"

@@ -76,6 +76,22 @@ build directory in the binary. So the script always uses
 `.github/workflows/build-archives.yml` has the runner and targets of each
 platform.
 
+## Reproduce a package
+
+The `.deb` and `.rpm` hold the CLI archive's binary, so verify or reproduce that first.
+The commit's time goes in the packages, and `scripts/package-linux.sh` downloads nfpm at
+a version and checksum it pins. It needs `dpkg-deb`, `rpm`, `rpm2cpio` and `cpio`.
+
+```sh
+SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) \
+  scripts/package-linux.sh linux-amd64 "warden-$version-linux-amd64.tar.gz" dist
+```
+
+The same archive gave identical packages on arm64 from two paths and under two host
+names, and the [repeatable build](../.github/workflows/repeatable-build.yml) compares them
+on GitHub's runners. `Installed-Size` and the file list come from the archive, and the RPM's
+build host is pinned in `packaging/nfpm.yaml`.
+
 ## Limits
 
 These are known limits, not gaps in the check.

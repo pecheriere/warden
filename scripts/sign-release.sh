@@ -98,6 +98,11 @@ expected=$(
   for platform in "${linux_platforms[@]}"; do
     echo "warden-server-$version-$platform.tar.gz"
   done
+  # The CLI's Linux packages.
+  echo "warden_${version}_amd64.deb"
+  echo "warden_${version}_arm64.deb"
+  echo "warden-$version-1.x86_64.rpm"
+  echo "warden-$version-1.aarch64.rpm"
 )
 expected=$(LC_ALL=C sort <<< "$expected")
 allowed=$expected$'\n'warden-$version-SHA256SUMS$'\n'warden-$version-SHA256SUMS.sig
@@ -107,7 +112,8 @@ while IFS= read -r asset; do
 done <<< "$assets"
 
 mkdir "$work/assets"
-gh release download "$tag" --repo "$repo" --pattern 'warden-*.tar.gz' --dir "$work/assets"
+gh release download "$tag" --repo "$repo" --dir "$work/assets" \
+  --pattern 'warden-*.tar.gz' --pattern 'warden_*.deb' --pattern 'warden-*.rpm'
 found=$(cd "$work/assets" && LC_ALL=C ls)
 [ "$found" = "$expected" ] || fail "the draft holds unexpected archives:"$'\n'"$found"
 

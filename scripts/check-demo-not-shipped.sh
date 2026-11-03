@@ -129,6 +129,13 @@ expected_builds='    build_args=(-p warden-broker-cli)
 commands="$(grep -v '^ *#' "$script" | grep -E "$cargo_word" || true)"
 [ "$commands" = "  cargo build --config \"build.build-dir='\$build_dir'\" \\" ] \
   || fail "$script runs cargo in an unexpected way: $commands"
+# The packages hold the CLI alone.
+if offending="$(grep -nE 'demo|warden-server' packaging/nfpm.yaml scripts/package-linux.sh | grep -v 'no demo\|the demo is never\|refuses a demo')"; then
+  fail "the packages could hold something other than the CLI: $offending"
+fi
+# shellcheck disable=SC2016 # The literal text of the script's line, not an expansion.
+grep -Fq 'check cli "$platform" "$archive"' scripts/package-linux.sh \
+  || fail "scripts/package-linux.sh does not check that it was given the CLI's archive"
 grep -qx ' *prefix=warden-demo' "$script" || fail "the demo's archive is not named as a demo"
 [ -s crates/demo/NOT-FOR-REAL-USE.txt ] || fail "the demo's notice file is missing"
 grep -qx ' *extra_file=crates/demo/NOT-FOR-REAL-USE.txt' "$script" \

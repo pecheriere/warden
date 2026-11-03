@@ -45,6 +45,7 @@ is not one: see [Sign-off](#sign-off-dco).
 | `docs/` | user and design documentation |
 | `site/` | the landing page on GitHub Pages: static HTML and CSS, no scripts, no external resources. It names no version and leaves setup commands to the README, so a release does not touch it |
 | `deploy/systemd` | the systemd unit that `docs/deployment-systemd.md` installs |
+| `packaging` | the nfpm configuration for the CLI's `.deb` and `.rpm` |
 | `fuzz` | `cargo-fuzz` targets for code that parses untrusted input; its own workspace, on its own nightly |
 | `scripts/` | CI guards, UI check tools and release signing (each script documents its usage) |
 
@@ -185,8 +186,8 @@ Semantic versioning, one version for the whole workspace.
    `warden-release`. A tag cannot be replaced afterwards, and step 3 refuses one
    from another key. `.github/workflows/release.yml` refuses a tag that
    does not match the version, reruns CI, builds the multi-arch image,
-   pushes it to `ghcr.io/pecheriere/warden`, builds and attests the CLI archives, then
-   the server's, then the demo's, and leaves a draft release for the tag, with the archives attached
+   pushes it to `ghcr.io/pecheriere/warden`, builds and attests the CLI archives and its
+   `.deb` and `.rpm`, then the server's archives, then the demo's, and leaves a draft release for the tag, with the archives attached
    and the changelog section as its notes. If a later step fails, what came before it
    exists but no draft does, and the run's summary says so: rerun the
    failed jobs. A refusal that the archives are not the ones attested is a possible

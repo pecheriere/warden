@@ -10,7 +10,8 @@ name: release
 # It also builds the `warden` CLI, `warden-server` and the local demo on native
 # runners, attests the archives, and leaves them on a draft GitHub release. They build
 # in that order, the crates each adds run only after the one before is attested, and
-# each is attested separately. The image is attested before the server and demo build.
+# each is attested separately. The CLI's .deb and .rpm are made from its attested
+# archives. Those and the image are attested before the server and demo build.
 # The demo is never in the image, and its archive is named as a demo. If a later step
 # fails, what came before exists but there is no draft: the last job says so. Rerun
 # the failed jobs. The workflow never publishes that draft:
@@ -183,10 +184,109 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  packages:
+    # Makes the .deb and .rpm from the attested CLI archives, compiling nothing, and
+    # checks that they hold exactly the expected files and those very binaries. Its
+    # digests are the record for attest-packages: a job output, which another job's
+    # artifact token cannot change. It holds no attestation identity, because it
+    # installs tools and runs nfpm, pinned by version and checksum in the script.
+    needs: attest-cli
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      sums: ${{ steps.sums.outputs.sums }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: names
+        name: Name the files this job may produce
+        run: |
+          {
+            echo 'paths<<END_OF_PATHS'
+            python3 -I .github/scripts/collect_archives.py packages | sed 's|^|dist/|'
+            echo END_OF_PATHS
+          } >> "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: attested-cli
+          path: "${{ runner.temp }}/cli"
+      - name: Refuse anything but the attested CLI archives
+        env:
+          CLI_SUMS: ${{ needs.attest-cli.outputs.sums }}
+        run: |
+          expected=$(printf '%s\n' "$CLI_SUMS" | LC_ALL=C sort)
+          found=$(cd "$RUNNER_TEMP/cli" && sha256sum -- * | LC_ALL=C sort)
+          if [ -z "$CLI_SUMS" ] || [ "$found" != "$expected" ]; then
+            echo "::error::these CLI archives are not the ones that were attested"
+            exit 1
+          fi
+      - name: Install the tools that check the packages
+        run: sudo apt-get update && sudo apt-get install -y rpm cpio
+      - name: Make and check the packages
+        run: |
+          for platform in linux-amd64 linux-arm64; do
+            file=$(python3 -I .github/scripts/collect_archives.py name cli "$platform")
+            scripts/package-linux.sh "$platform" "$RUNNER_TEMP/cli/$file" dist
+          done
+      - id: sums
+        name: Record the digests
+        run: |
+          {
+            echo 'sums<<END_OF_SUMS'
+            (cd dist && sha256sum -- *)
+            echo END_OF_SUMS
+          } >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: archive-packages
+          # The exact files, never a wildcard.
+          path: ${{ steps.names.outputs.paths }}
+          if-no-files-found: error
+          retention-days: 1
+
+  attest-packages:
+    # Attests only files matching exactly the digests the packages job recorded, so a
+    # replaced artifact stops here. It runs nothing from the repository.
+    needs: packages
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: archive-packages
+          path: dist
+      - name: Refuse anything but the packages that were checked
+        env:
+          PACKAGE_SUMS: ${{ needs.packages.outputs.sums }}
+        run: |
+          expected=$(printf '%s\n' "$PACKAGE_SUMS" | LC_ALL=C sort)
+          found=$(cd dist && sha256sum -- * | LC_ALL=C sort)
+          if [ -z "$PACKAGE_SUMS" ] || [ "$found" != "$expected" ]; then
+            echo "::error::these packages are not the ones that were checked"
+            exit 1
+          fi
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/*.deb
+            dist/*.rpm
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: attested-packages
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
   merge:
     # Waits for the CLI too, so that no version gets its image tag unless its
-    # binaries built and were attested.
-    needs: [build, attest-cli]
+    # binaries and packages built and were attested.
+    needs: [build, attest-cli, attest-packages]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -234,7 +334,7 @@ jobs:
   server:
     # After the CLI's attestation and the image's: the server's crates are more than
     # the CLI's, so a file replaced from here on is unattested and refused. Linux only.
-    needs: [merge, attest-cli]
+    needs: [merge, attest-cli, attest-packages]
     uses: $/.github/workflows/build-archives.yml
     with:
       product: server
@@ -292,7 +392,7 @@ jobs:
     # and scripts/sign-release.sh refuse it. `ci` must stay before attestation, so that
     # nothing is published or attested until the tests pass, which leaves the gap
     # "Not covered yet" in docs/verifying-releases.md describes.
-    needs: [merge, attest-cli, attest-server]
+    needs: [merge, attest-cli, attest-packages, attest-server]
     uses: $/.github/workflows/build-archives.yml
     with:
       product: demo
@@ -344,7 +444,7 @@ jobs:
     # with write access to the repository: it runs no code from the build, only
     # gh, and it attaches files to a draft that nobody can download until the
     # owner publishes it.
-    needs: [merge, attest-cli, attest-server, attest-demo]
+    needs: [merge, attest-cli, packages, attest-packages, attest-server, attest-demo]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -362,12 +462,13 @@ jobs:
       - name: Refuse anything but the attested archives
         env:
           CLI_SUMS: ${{ needs.attest-cli.outputs.sums }}
+          PACKAGE_SUMS: ${{ needs.packages.outputs.sums }}
           SERVER_SUMS: ${{ needs.attest-server.outputs.sums }}
           DEMO_SUMS: ${{ needs.attest-demo.outputs.sums }}
         run: |
-          expected=$(printf '%s\n%s\n%s\n' "$CLI_SUMS" "$SERVER_SUMS" "$DEMO_SUMS" | LC_ALL=C sort)
+          expected=$(printf '%s\n%s\n%s\n%s\n' "$CLI_SUMS" "$PACKAGE_SUMS" "$SERVER_SUMS" "$DEMO_SUMS" | LC_ALL=C sort)
           found=$(cd dist && sha256sum -- * | LC_ALL=C sort)
-          if [ -z "$CLI_SUMS" ] || [ -z "$SERVER_SUMS" ] || [ -z "$DEMO_SUMS" ] \
+          if [ -z "$CLI_SUMS" ] || [ -z "$PACKAGE_SUMS" ] || [ -z "$SERVER_SUMS" ] || [ -z "$DEMO_SUMS" ] \
             || [ "$found" != "$expected" ]; then
             echo "::error::the archives to release are not the ones that were attested"
             diff <(echo "$expected") <(echo "$found") || true
@@ -405,16 +506,16 @@ jobs:
             for name in $stale; do
               gh release delete-asset "$GITHUB_REF_NAME" "$name" --yes
             done
-            gh release upload "$GITHUB_REF_NAME" dist/*.tar.gz --clobber
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
           else
-            gh release create "$GITHUB_REF_NAME" dist/*.tar.gz --draft --verify-tag \
+            gh release create "$GITHUB_REF_NAME" dist/* --draft --verify-tag \
               --title "$GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/notes.md"
           fi
 
   report-incomplete:
     # The image and the attestations cannot be taken back, so a later failure leaves
     # the release half done. Say exactly how far it got.
-    needs: [build, cli, attest-cli, merge, server, attest-server, demo, attest-demo, draft-release]
+    needs: [build, cli, attest-cli, packages, attest-packages, merge, server, attest-server, demo, attest-demo, draft-release]
     if: ${{ failure() || cancelled() }}
     runs-on: ubuntu-latest
     steps:
@@ -422,6 +523,7 @@ jobs:
         env:
           IMAGE_RESULT: ${{ needs.merge.result }}
           CLI_RESULT: ${{ needs.attest-cli.result }}
+          PACKAGE_RESULT: ${{ needs.attest-packages.result }}
           SERVER_RESULT: ${{ needs.attest-server.result }}
           DEMO_RESULT: ${{ needs.attest-demo.result }}
           DRAFT_RESULT: ${{ needs.draft-release.result }}
@@ -431,6 +533,7 @@ jobs:
             echo
             echo "- Image pushed and attested: $IMAGE_RESULT"
             echo "- CLI archives attested: $CLI_RESULT"
+            echo "- CLI packages attested: $PACKAGE_RESULT"
             echo "- Server archives attested: $SERVER_RESULT"
             echo "- Demo archives attested: $DEMO_RESULT"
             echo "- Draft release: $DRAFT_RESULT"

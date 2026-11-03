@@ -18,6 +18,10 @@ All notable changes to this project are recorded here. The format follows
 
 ### Added
 
+- Releases attach the `warden` CLI as `.deb` and `.rpm` packages for amd64 and arm64,
+  built from the same binaries, attested and listed in the signed manifest. See
+  [docs/agent-usage.md](docs/agent-usage.md). There is no package repository, so nothing
+  updates them automatically.
 - Releases attach `warden-server-<version>-<platform>.tar.gz` for Linux amd64 and arm64:
   a static, attested server binary for
   [running without Docker](docs/deployment-systemd.md). The signed manifest lists it, and
