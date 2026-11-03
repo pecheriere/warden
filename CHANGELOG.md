@@ -34,6 +34,10 @@ All notable changes to this project are recorded here. The format follows
   commit unsigned instead.
 - `warden doctor` and `warden-server doctor` check the commit signing setup, and the SSH CA
   key cannot also be the commit signing key.
+- The Active grants page shows how long each relay session has been idle (since
+  bytes last moved either way), and when a certificate grant's certificate was
+  issued and when it expires. warden still cannot see logins made with a
+  certificate, and the page says it does not show whether one was used.
 
 ### Fixed
 
