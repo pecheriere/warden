@@ -173,6 +173,15 @@ image digests are not pinned between the jobs that record and use them: a replac
 could only name an image already in the registry, but that image would get the tag and
 the attestation.
 
+**The checks on the `.deb` and `.rpm` share a job with what they check.** The `packages`
+job runs nfpm and the checks on the same runner, where it also has passwordless `sudo`
+to install the tools, and `attest-packages` attests whatever digests that job recorded.
+So a bad nfpm download, despite its pinned checksum, or a bad `rpm` package could change
+a package and the verdict together. The job compiles no dependencies and has no
+attestation identity, and the packages are rebuilt in the
+[repeatable build](reproducing-builds.md), which would show a difference only if the bad
+tool were not on both runners.
+
 **The demo archive itself.** Anything in the demo's dependencies can change the demo
 binary, and the result is attested and signed as the demo. Those checks show which
 workflow produced it, not that its dependencies are honest. It runs on your machine, so

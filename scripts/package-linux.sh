@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Builds the `warden` CLI's .deb and .rpm from a release's CLI archive, compiling
 # nothing, and checks what they hold before anyone relies on them: exactly the expected
-# files, no install scripts, no demo, and the very binary the archive holds.
+# files with the expected modes and owners, so nothing setuid, no install scripts or
+# triggers, no demo, and the very binary the archive holds.
 #
 # Usage: scripts/package-linux.sh <linux-amd64|linux-arm64> <cli-archive> <out-dir>
 #
@@ -83,14 +84,25 @@ config=$PWD/packaging/nfpm.yaml
   "$work/nfpm/nfpm" package --config "$config" --packager rpm --target "$out_dir/$rpm" > /dev/null
 )
 
-expected_files='/usr/bin/warden
-/usr/share/doc/warden/LICENSE-APACHE
-/usr/share/doc/warden/LICENSE-MIT
-/usr/share/doc/warden/NOTICE'
+# Every entry with its mode and owner, so a setuid, setgid or writable file cannot pass.
+expected_deb='drwxr-xr-x root/root ./usr/
+drwxr-xr-x root/root ./usr/bin/
+-rwxr-xr-x root/root ./usr/bin/warden
+drwxr-xr-x root/root ./usr/share/
+drwxr-xr-x root/root ./usr/share/doc/
+drwxr-xr-x root/root ./usr/share/doc/warden/
+-rw-r--r-- root/root ./usr/share/doc/warden/LICENSE-APACHE
+-rw-r--r-- root/root ./usr/share/doc/warden/LICENSE-MIT
+-rw-r--r-- root/root ./usr/share/doc/warden/NOTICE'
+expected_rpm='-rwxr-xr-x root root /usr/bin/warden
+-rw-r--r-- root root /usr/share/doc/warden/LICENSE-APACHE
+-rw-r--r-- root root /usr/share/doc/warden/LICENSE-MIT
+-rw-r--r-- root root /usr/share/doc/warden/NOTICE'
 
-# What dpkg would install, and that it would run nothing while doing so.
-files=$(dpkg-deb --fsys-tarfile "$out_dir/$deb" | tar -t | grep -v '/$' | sed 's|^\./|/|' | LC_ALL=C sort)
-[ "$files" = "$expected_files" ] || fail "$deb holds unexpected files:"$'\n'"$files"
+# What dpkg would install, and that it would run nothing while doing so. A trigger or
+# install script would be one more control file.
+files=$(dpkg-deb --fsys-tarfile "$out_dir/$deb" | tar -tv | awk '{ print $1, $2, $6 }' | LC_ALL=C sort -k3)
+[ "$files" = "$expected_deb" ] || fail "$deb holds unexpected files or modes:"$'\n'"$files"
 mkdir "$work/control"
 dpkg-deb --control "$out_dir/$deb" "$work/control"
 control_files=$(find "$work/control" -mindepth 1 -printf '%f\n' | LC_ALL=C sort | tr '\n' ' ')
@@ -104,10 +116,12 @@ deb_sum=$(dpkg-deb --fsys-tarfile "$out_dir/$deb" | tar -xO ./usr/bin/warden | s
 
 # The same for rpm, which reads a package's headers without its signature here because
 # nfpm signs nothing: the release's attestation and signed manifest cover these files.
-files=$(rpm -qlp --nosignature "$out_dir/$rpm" | LC_ALL=C sort)
-[ "$files" = "$expected_files" ] || fail "$rpm holds unexpected files:"$'\n'"$files"
-scripts=$(rpm -qp --nosignature --scripts "$out_dir/$rpm")
-[ -z "$scripts" ] || fail "$rpm has install scripts: $scripts"
+files=$(rpm -qp --nosignature \
+  --queryformat '[%{FILEMODES:perms} %{FILEUSERNAME} %{FILEGROUPNAME} %{FILENAMES}\n]' "$out_dir/$rpm" \
+  | LC_ALL=C sort -k4)
+[ "$files" = "$expected_rpm" ] || fail "$rpm holds unexpected files or modes:"$'\n'"$files"
+scripts=$(rpm -qp --nosignature --scripts --triggers --filetriggers "$out_dir/$rpm")
+[ -z "$scripts" ] || fail "$rpm has install scripts or triggers: $scripts"
 identity=$(rpm -qp --nosignature --queryformat '%{NAME} %{VERSION} %{RELEASE} %{ARCH}' "$out_dir/$rpm")
 [ "$identity" = "warden $version 1 $rpm_arch" ] || fail "$rpm is not what it should be: $identity"
 rpm_sum=$(rpm2cpio "$out_dir/$rpm" | cpio --quiet -i --to-stdout ./usr/bin/warden | sha256sum | cut -d' ' -f1)
