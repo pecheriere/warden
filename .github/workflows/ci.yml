@@ -63,6 +63,14 @@ jobs:
         run: scripts/check-demo-not-shipped.sh
       - name: Test the release signing script
         run: scripts/test-sign-release.sh
+      - name: Refuse an OpenSSL out of support
+        run: python3 -I .github/scripts/openssl_support.py
+      # So that the tests run against the OpenSSL the server ships with.
+      - name: Build the pinned OpenSSL
+        run: |
+          scripts/build-openssl.sh "$(rustc -vV | sed -n 's/^host: //p')" "$RUNNER_TEMP/openssl"
+          echo "OPENSSL_DIR=$RUNNER_TEMP/openssl" >> "$GITHUB_ENV"
+          echo "OPENSSL_STATIC=1" >> "$GITHUB_ENV"
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - run: cargo test --workspace --all-features --locked
       - name: Build the documentation

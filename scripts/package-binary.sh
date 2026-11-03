@@ -32,9 +32,9 @@ target=$2
 platform=$3
 out_dir=$4
 
-# The server and the demo link OpenSSL through the broker: vendored, so that they
-# need no system libssl. The demo's archive name and notice file label it for
-# someone who only sees the download.
+# The server and the demo link OpenSSL through the broker: statically, from the
+# pinned release, so that they need no system libssl. The demo's archive name and
+# notice file label it for someone who only sees the download.
 extra_file=
 case "$product" in
   cli)
@@ -43,7 +43,7 @@ case "$product" in
     prefix=warden
     ;;
   demo)
-    build_args=(-p warden-demo --features warden-broker/vendored-openssl)
+    build_args=(-p warden-demo)
     bin=warden-demo
     prefix=warden-demo
     extra_file=crates/demo/NOT-FOR-REAL-USE.txt
@@ -56,7 +56,7 @@ case "$product" in
         exit 2
         ;;
     esac
-    build_args=(-p warden-broker --features vendored-openssl)
+    build_args=(-p warden-broker)
     bin=warden-server
     prefix=warden-server
     ;;
@@ -90,6 +90,13 @@ if [ ! -O "$build_dir" ] || [ -L "$build_dir" ]; then
   echo "error: $build_dir is not this user's own directory" >&2
   exit 1
 fi
+case "$product" in
+  server | demo)
+    openssl_dir="$build_dir/openssl-$target"
+    scripts/build-openssl.sh "$target" "$openssl_dir"
+    export OPENSSL_DIR="$openssl_dir" OPENSSL_STATIC=1
+    ;;
+esac
 RUSTFLAGS="--remap-path-prefix=$source_dir=/warden --remap-path-prefix=$cargo_home=/cargo" \
   cargo build --config "build.build-dir='$build_dir'" \
   --release --locked "${build_args[@]}" --target "$target"

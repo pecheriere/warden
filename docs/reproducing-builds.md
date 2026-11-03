@@ -70,9 +70,11 @@ shasum -a 256 dist/*.tar.gz
 
 Compare the result with the hash in the release's `warden-<version>-SHA256SUMS`,
 if it has one, or with the archive you downloaded. You need `python3`, and on Linux
-`musl-tools`. The server and the demo also need `perl` and `make`, for OpenSSL, which records its
-build directory in the binary. So the script always uses
-`/tmp/warden-package-build`, and that one path must match wherever you build.
+`musl-tools`. The server and the demo also need `curl`, `perl` and `make`, for
+OpenSSL: `scripts/build-openssl.sh` downloads the release pinned in
+`scripts/openssl-pin.env`, checks its hash and compiles it. OpenSSL records its build
+directory in the binary. So the script always uses `/tmp/warden-package-build`, and
+that one path must match wherever you build.
 `.github/workflows/build-archives.yml` has the runner and targets of each
 platform.
 

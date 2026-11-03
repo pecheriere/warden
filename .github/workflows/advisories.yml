@@ -4,7 +4,8 @@ name: advisories
 # published today fails the next pull request, whatever it changes. Running it
 # every night on main surfaces a new advisory here first, as a failed scheduled
 # run, before it blocks unrelated work. Pull requests still run the full
-# `cargo deny check` in ci.yml.
+# `cargo deny check` in ci.yml. No advisory is published for a C library's end of
+# support or for every release it makes, so the pinned OpenSSL gets its own check.
 
 on:
   schedule:
@@ -27,3 +28,15 @@ jobs:
           arguments: --all-features --locked
           command: check
           command-arguments: advisories
+
+  openssl:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Refuse an OpenSSL near the end of support or out of date
+        run: python3 -I .github/scripts/openssl_support.py --nightly

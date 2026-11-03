@@ -191,14 +191,17 @@ This has not been tested.
 Build at a release tag, on a machine with the same architecture and the same or an
 older glibc than the host, so that the host needs no compiler. The repository's
 `rust-toolchain.toml` selects the toolchain if you have
-[rustup](https://rustup.rs/). The build also needs a C compiler, `make` and `perl`,
-because `vendored-openssl` compiles OpenSSL and links it statically, as the image does.
+[rustup](https://rustup.rs/). The build also needs a C compiler, `curl`, `make` and `perl`,
+because `scripts/build-openssl.sh` compiles the pinned OpenSSL release, which the
+build links statically, as the image does.
 
 ```sh
 git clone --depth 1 --branch <version tag> https://github.com/pecheriere/warden
 cd warden
 git rev-parse HEAD   # record the commit you built
-cargo build --release --locked -p warden-broker --features vendored-openssl
+scripts/build-openssl.sh "$(rustc -vV | sed -n 's/^host: //p')" "$PWD/target/openssl"
+OPENSSL_DIR="$PWD/target/openssl" OPENSSL_STATIC=1 \
+  cargo build --release --locked -p warden-broker
 ```
 
 The binary is `target/release/warden-server`.

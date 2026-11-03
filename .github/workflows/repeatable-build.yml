@@ -15,6 +15,8 @@ on:
       - .github/workflows/release.yml
       - .github/workflows/build-archives.yml
       - scripts/package-binary.sh
+      - scripts/build-openssl.sh
+      - scripts/openssl-pin.env
       - .github/scripts/collect_archives.py
       - crates/demo/NOT-FOR-REAL-USE.txt
       - Dockerfile

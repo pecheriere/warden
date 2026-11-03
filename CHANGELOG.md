@@ -15,6 +15,9 @@ All notable changes to this project are recorded here. The format follows
   audit log from the backup taken before the upgrade.
 - Upgrade the broker before relying on labels and links: an older broker ignores
   them, and `warden request` warns that the owner does not see them.
+- If you build the server from source: the `vendored-openssl` feature is gone. Run
+  `scripts/build-openssl.sh` and set `OPENSSL_DIR` and `OPENSSL_STATIC`, as
+  [docs/building.md](docs/building.md) shows, or link a system OpenSSL.
 
 ### Added
 
@@ -43,6 +46,11 @@ All notable changes to this project are recorded here. The format follows
 
 ### Changed
 
+- The image, the server binaries and the demo binaries link OpenSSL 3.5.9, the current
+  release of the 3.5 long-term support line, in place of 3.6.3, as support for 3.6 has
+  ended. It is built from a release tarball pinned by hash, and stored passkeys are
+  unaffected. A check now fails CI when the pinned line's support ends, and a nightly run
+  fails 90 days before that or when a newer release of the line is out.
 - Fingerprints are easier to compare: the approval pages and `warden request` now write
   one as five English words, such as `oceanic-receipt-varied-amuser-aftershave`, with the hex
   form beside them. They are the same 48 bits, so nothing about the API, the database or

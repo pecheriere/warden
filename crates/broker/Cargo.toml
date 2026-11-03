@@ -17,7 +17,6 @@ workspace = true
 [features]
 # Build OpenSSL from source and link it statically, so the container image
 # needs no system libssl (webauthn-rs links OpenSSL).
-vendored-openssl = ["dep:openssl", "openssl/vendored"]
 # Test helpers (fake clock and notifiers) for this crate's integration tests.
 testkit = [
     "dep:http-body-util",
@@ -70,7 +69,6 @@ warden-broker-proto.workspace = true
 webauthn-rs.workspace = true
 maud.workspace = true
 zeroize.workspace = true
-openssl = { workspace = true, optional = true }
 # Optional: only for the testkit feature (in-process test broker, soft passkey).
 http-body-util = { workspace = true, optional = true }
 hyper = { workspace = true, optional = true }
