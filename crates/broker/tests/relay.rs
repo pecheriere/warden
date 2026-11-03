@@ -1600,13 +1600,14 @@ async fn login_grant_lookup_is_bounded() {
         .authenticate_publickey(TARGET, russh_key(&agent.key))
         .await;
     // Refused once the 1.5 s lookup bound (plus the 1 s rejection delay)
-    // is over. Without that bound the 10 s login timeout hangs up instead,
-    // which is not a failed login.
+    // is over.
     assert!(
         matches!(auth, Ok(AuthResult::Failure { .. })),
         "{auth:?} after {:?}",
         asked.elapsed()
     );
+    // Without that bound the 10 s login timeout has hung up by now, so this
+    // fails on the closed connection.
     c.handle
         .disconnect(Disconnect::ByApplication, "", "en")
         .await
@@ -2649,6 +2650,9 @@ async fn hung_grant_query_still_fails_closed_and_expires() {
 async fn connection_closed_once_its_session_is_over() {
     let s = key_target_with(RelayLimits {
         stall_timeout: Duration::from_secs(2),
+        // Past the deadline below, so that only the session being over can
+        // close the connection in time.
+        start_timeout: Duration::from_secs(600),
         ..RelayLimits::default()
     })
     .await;
