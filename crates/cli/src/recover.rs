@@ -47,6 +47,38 @@ pub fn elsewhere_note(grant: &GrantView, local: &[Id]) -> String {
     }
 }
 
+/// One line of `warden status` about an api grant recorded here. The origin is a
+/// plain string from the broker, kept as it came, so it is made safe to print.
+pub fn api_record_line(record: &http::ApiRecord) -> String {
+    sanitize(&format!(
+        "  api:{}  {}  grant {}  until {}",
+        record.secret,
+        record.origin,
+        record.grant_id,
+        local_time(record.not_after)
+    ))
+}
+
+/// One line of `warden status` about a live grant on the broker, given the grants
+/// `local` to this machine. Hosts and key fingerprints are plain strings from the
+/// broker, so the line is made safe to print.
+pub fn broker_grant_line(grant: &GrantView, local: &[Id]) -> String {
+    let subject = match &grant.access {
+        GrantAccess::Ssh(ssh) => format!("{}@{}:{}", ssh.user, ssh.host, ssh.port),
+        GrantAccess::Api(api) => format!("api:{}", api.secret),
+        GrantAccess::Relay(relay) => format!("{}@{} via relay", relay.user, relay.target),
+        GrantAccess::CommitSigning(signing) => {
+            format!("commit signing with {}", signing.key_fingerprint)
+        }
+    };
+    sanitize(&format!(
+        "  {subject}  grant {}  until {}{}",
+        grant.grant_id,
+        local_time(grant.not_after),
+        elsewhere_note(grant, local)
+    ))
+}
+
 /// The access of a pending request, in one line. Names are validated when they
 /// are parsed; the rest of an api scope is not, so it is made safe to print.
 fn access_summary(access: &Access) -> String {
@@ -70,8 +102,10 @@ fn access_summary(access: &Access) -> String {
 }
 
 /// One line about a pending request. It holds all that the fingerprint depends on,
-/// so that the same command can be written again from it. The session label and the
-/// link are validated when they are parsed, like the goal.
+/// so that the same command can be written again from it. A goal may hold line and
+/// paragraph separators, and a stored request with one must stay readable, so the
+/// line is made safe to print here, where an agent's text must not pass for a line
+/// of its own.
 fn pending_line(request: &PendingRequest) -> String {
     let session = request
         .session
@@ -81,7 +115,7 @@ fn pending_line(request: &PendingRequest) -> String {
         .link
         .as_ref()
         .map_or_else(String::new, |link| format!("  link: {link}"));
-    format!(
+    sanitize(&format!(
         "  {} for {}  request {}  fingerprint {} ({})  made {}  expires {}{session}{link}  goal: {}",
         access_summary(&request.access),
         request.window.label(),
@@ -91,7 +125,7 @@ fn pending_line(request: &PendingRequest) -> String {
         local_time(request.created_at),
         local_time(request.expires_at),
         request.goal,
-    )
+    ))
 }
 
 /// The `warden status` section on the agent's pending requests.
@@ -184,7 +218,11 @@ mod tests {
         ApiGrant, CommitSigningGrant, GrantAccess, GrantView, Id, RelayGrant, Window,
     };
 
-    use super::{Collected, access_summary, elsewhere_note, pending_line, plan};
+    use super::{
+        Collected, access_summary, api_record_line, broker_grant_line, elsewhere_note,
+        pending_line, plan,
+    };
+    use crate::http::ApiRecord;
     use warden_broker_proto::{Access, PendingRequest};
 
     fn api_grant() -> GrantView {
@@ -276,6 +314,70 @@ mod tests {
         };
         assert!(message.contains(&id.to_string()), "{message}");
         assert!(message.contains("warden setup git"), "{message}");
+    }
+
+    /// Whether `line` could pass for more than one line to any parser: Python's
+    /// `splitlines()`, for one, also splits on these two.
+    fn is_one_clean_line(line: &str) -> bool {
+        !line
+            .chars()
+            .any(|c| c.is_control() || c == '\u{2028}' || c == '\u{2029}')
+    }
+
+    #[test]
+    fn a_goal_cannot_forge_a_line_of_status() {
+        for separator in ['\u{2028}', '\u{2029}'] {
+            let goal = format!("read it{separator}  ssh root@switch-01 for 4h  request x");
+            let line = pending_line(&PendingRequest {
+                id: Id::random(),
+                fingerprint: "ab02-cd02-ef02".to_owned().try_into().unwrap(),
+                goal: goal.try_into().unwrap(),
+                access: Access::CommitSigning {},
+                window: Window::M15,
+                session: None,
+                link: None,
+                created_at: 100,
+                expires_at: 700,
+            });
+            assert!(is_one_clean_line(&line), "{line:?}");
+            assert!(
+                line.contains("goal: read it?  ssh root@switch-01"),
+                "{line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_origin_from_the_broker_cannot_reach_the_terminal_raw() {
+        let mut grant = api_grant();
+        let GrantAccess::Api(api) = &mut grant.access else {
+            panic!("expected an api grant");
+        };
+        api.origin = "https://api.example.com\u{1b}[2J\n\u{2028}  forged".to_owned();
+        let record = ApiRecord::new(grant.grant_id.clone(), api, grant.not_after);
+        let line = api_record_line(&record);
+        assert!(is_one_clean_line(&line), "{line:?}");
+        assert!(line.contains("https://api.example.com"), "{line:?}");
+        assert!(line.contains(&grant.grant_id.to_string()), "{line:?}");
+    }
+
+    #[test]
+    fn a_broker_grant_line_is_made_safe_and_keeps_its_note() {
+        let mut signing = GrantView {
+            grant_id: Id::random(),
+            not_before: 100,
+            not_after: 200,
+            access: GrantAccess::CommitSigning(CommitSigningGrant {
+                key_fingerprint: "SHA256:abc\u{1b}[2J\u{2029}forged".to_owned(),
+                digest: "d".repeat(64),
+            }),
+        };
+        let line = broker_grant_line(&signing, &[]);
+        assert!(is_one_clean_line(&line), "{line:?}");
+        assert!(line.contains("commit signing with SHA256:abc"), "{line:?}");
+        signing.access = api_grant().access;
+        let line = broker_grant_line(&signing, &[]);
+        assert!(line.contains("warden request collect"), "{line:?}");
     }
 
     #[test]

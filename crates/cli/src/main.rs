@@ -1264,13 +1264,7 @@ async fn status() -> Result<()> {
     println!("local api grants:");
     for (path, record) in http::load()? {
         match record {
-            Ok(r) => println!(
-                "  api:{}  {}  grant {}  until {}",
-                r.secret,
-                r.origin,
-                r.grant_id,
-                local_time(r.not_after)
-            ),
+            Ok(r) => println!("{}", recover::api_record_line(&r)),
             Err(e) => println!("  {}: {e:#}", path.display()),
         }
     }
@@ -1278,20 +1272,7 @@ async fn status() -> Result<()> {
     let (_, client) = client()?;
     println!("broker grants:");
     for g in client.grants().await? {
-        let subject = match &g.access {
-            GrantAccess::Ssh(ssh) => format!("{}@{}:{}", ssh.user, ssh.host, ssh.port),
-            GrantAccess::Api(api) => format!("api:{}", api.secret),
-            GrantAccess::Relay(relay) => format!("{}@{} via relay", relay.user, relay.target),
-            GrantAccess::CommitSigning(signing) => {
-                format!("commit signing with {}", signing.key_fingerprint)
-            }
-        };
-        println!(
-            "  {subject}  grant {}  until {}{}",
-            g.grant_id,
-            local_time(g.not_after),
-            recover::elsewhere_note(&g, &local)
-        );
+        println!("{}", recover::broker_grant_line(&g, &local));
     }
     recover::print_pending(&client).await
 }
