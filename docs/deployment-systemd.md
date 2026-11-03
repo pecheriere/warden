@@ -593,8 +593,9 @@ also run under this unit on 257, in the same kind of container, with the local b
 `libbpf1` installed, so that the bind rules were enforced. warden started and answered
 `healthcheck`, with no shared library loaded, no capabilities and seccomp on. Under the
 whole unit, `warden-server doctor` resolved a name and made a TLS call, which failed
-without `SocketBindAllow=udp:0`. `scripts/test-systemd-unit.sh` repeats this in CI, on
-GitHub's amd64 and arm64 runners. No published binary has been run, because none exists yet.
+without `SocketBindAllow=udp:0`. `scripts/test-systemd-unit-docker.sh` repeats this in CI,
+in a Debian 13 container on GitHub's amd64 and arm64 runners. No published binary has been
+run, because none exists yet.
 
 **Not tested:** a clean host or amd64, a real Connect server (the sandboxed call went to
 another HTTPS server), Tailscale Serve and Services, a passkey approval, a notification,

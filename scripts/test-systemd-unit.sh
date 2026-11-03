@@ -10,6 +10,8 @@
 # approval.
 #
 # Usage: sudo scripts/test-systemd-unit.sh --throwaway-host <warden-server binary>
+# scripts/test-systemd-unit-docker.sh runs it in a container, which is usually what you
+# want, and is what CI does.
 #
 # It creates a user and writes under /etc, /usr/local and /var/lib, so it refuses to
 # run without that flag. It needs root, a running systemd with BPF_FRAMEWORK, libbpf,
