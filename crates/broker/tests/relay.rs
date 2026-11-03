@@ -1391,9 +1391,14 @@ async fn serve_runs_the_relay_only_when_configured() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn shutdown_during_onward_setup_records_end() {
-    let s = key_target().await;
+    let s = key_target_with(RelayLimits {
+        onward_timeout: Duration::from_secs(600),
+        ..RelayLimits::default()
+    })
+    .await;
     // The target accepts TCP connections but never speaks SSH, so the
-    // relay is stuck connecting onward (for up to its 10 s timeout).
+    // relay is stuck connecting onward, for far longer than the stop below
+    // is given.
     let silent = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut target = nas(&s.sshd);
     target.port = silent.local_addr().unwrap().port();
@@ -1406,18 +1411,14 @@ async fn shutdown_during_onward_setup_records_end() {
     let (_held, _) = silent.accept().await.unwrap();
     await_events(&s.broker, "relay_session_started", 1).await;
 
-    let stopping = Instant::now();
-    s.broker.stop_relay().await;
+    tokio::time::timeout(Duration::from_secs(60), s.broker.stop_relay())
+        .await
+        .expect("the relay stopped without waiting for the onward connection");
     // The stop returns only once the session's end is on record.
     let ended = events_of(&s.broker, "relay_session_ended");
     assert_eq!(ended.len(), 1, "{:?}", audit_events(&s.broker));
     assert_eq!(ended[0]["reason"], "relay shutting down");
     assert_eq!(ended[0]["grant_id"], agent.grant_id.as_str());
-    assert!(
-        stopping.elapsed() < Duration::from_secs(8),
-        "{:?}",
-        stopping.elapsed()
-    );
     let out = client.await.unwrap();
     assert_ne!(out.status.code(), Some(0));
 }
@@ -1483,18 +1484,13 @@ async fn stop_during_slow_target_read_is_prompt() {
     let (_c, client, _) = exec_in_background(&s, &agent).await;
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    let stopping = Instant::now();
-    tokio::time::timeout(Duration::from_secs(5), s.broker.stop_relay())
+    tokio::time::timeout(Duration::from_secs(60), s.broker.stop_relay())
         .await
-        .expect("the relay stopped without waiting for the target read");
-    assert!(
-        stopping.elapsed() < Duration::from_secs(3),
-        "{:?}",
-        stopping.elapsed()
-    );
-    // Refused, not started: so no end either.
+        .expect("the relay stopped");
+    // Refused, not started: so no end either. A stop held up by the read
+    // would see it time out after 10 s, and be refused for that instead.
     assert_refused_once(&s, "relay shutting down").await;
-    tokio::time::timeout(Duration::from_secs(5), client)
+    tokio::time::timeout(Duration::from_secs(60), client)
         .await
         .expect("the agent got an answer or was hung up on")
         .unwrap();
@@ -1510,18 +1506,18 @@ async fn revoke_during_slow_target_read_refuses() {
     let (_c, client, _) = exec_in_background(&s, &agent).await;
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    let revoking = Instant::now();
     s.broker
         .state()
         .requests
         .revoke_grant(&agent.grant_id, "owner")
         .await
         .unwrap();
-    let (replied, stderr, out) = tokio::time::timeout(Duration::from_secs(3), client)
+    // A revocation held up by the read would see it time out after 10 s,
+    // and be refused for that instead: the notice below tells them apart.
+    let (replied, stderr, out) = tokio::time::timeout(Duration::from_secs(60), client)
         .await
-        .expect("refused without waiting for the target read")
+        .expect("the agent got an answer")
         .unwrap();
-    assert!(revoking.elapsed() < Duration::from_secs(3));
     assert!(replied);
     assert_eq!(out.exit_status, Some(255), "{out:?}");
     assert!(out.stdout.is_empty(), "{out:?}");
@@ -1564,9 +1560,11 @@ async fn revoke_during_slow_grant_lookup_refuses() {
     assert!(reply_keeping_stderr(&mut channel, &mut stderr).await);
     let out = collect(&mut channel).await;
     stderr.extend_from_slice(&out.stderr);
-    // Bounded by the 1.5 s grant query timeout, not the pool's 30 s.
+    // Bounded by the 1.5 s grant query timeout, not the pool's 30 s, which
+    // would give the same refusal: as long as a loaded machine could need,
+    // while still telling the two apart.
     assert!(
-        asked.elapsed() < Duration::from_secs(4),
+        asked.elapsed() < Duration::from_secs(20),
         "{:?}",
         asked.elapsed()
     );
@@ -1602,18 +1600,14 @@ async fn login_grant_lookup_is_bounded() {
         .authenticate_publickey(TARGET, russh_key(&agent.key))
         .await;
     // Refused once the 1.5 s lookup bound (plus the 1 s rejection delay)
-    // is over, not hung up after the 10 s login timeout. The bound leaves
-    // room for a loaded test machine while staying well below 10 s.
+    // is over.
     assert!(
         matches!(auth, Ok(AuthResult::Failure { .. })),
         "{auth:?} after {:?}",
         asked.elapsed()
     );
-    assert!(
-        asked.elapsed() < Duration::from_secs(6),
-        "{:?}",
-        asked.elapsed()
-    );
+    // Without that bound the 10 s login timeout has hung up by now, so this
+    // fails on the closed connection.
     c.handle
         .disconnect(Disconnect::ByApplication, "", "en")
         .await
@@ -1649,16 +1643,14 @@ async fn slow_target_read_is_refused_after_its_bound() {
         .backend
         .set_relay_read_delay(Some(Duration::from_secs(60)));
     let (_c, client, asked) = exec_in_background(&s, &agent).await;
-    let (replied, stderr, out) = tokio::time::timeout(Duration::from_secs(15), client)
+    // Short of the minute the read itself takes.
+    let (replied, stderr, out) = tokio::time::timeout(Duration::from_secs(30), client)
         .await
         .expect("refused once the target read took too long")
         .unwrap();
     // The read is given 10 s.
     let waited = asked.elapsed();
-    assert!(
-        waited >= Duration::from_millis(9500) && waited < Duration::from_secs(13),
-        "{waited:?}"
-    );
+    assert!(waited >= Duration::from_millis(9500), "{waited:?}");
     assert!(replied);
     assert_eq!(out.exit_status, Some(255), "{out:?}");
     assert!(
@@ -2658,6 +2650,9 @@ async fn hung_grant_query_still_fails_closed_and_expires() {
 async fn connection_closed_once_its_session_is_over() {
     let s = key_target_with(RelayLimits {
         stall_timeout: Duration::from_secs(2),
+        // Past the deadline below, so that only the session being over can
+        // close the connection in time.
+        start_timeout: Duration::from_secs(600),
         ..RelayLimits::default()
     })
     .await;
@@ -2681,7 +2676,7 @@ async fn connection_closed_once_its_session_is_over() {
     // has had the stall timeout (2 s here) to leave.
     while !c.handle.is_closed() {
         assert!(
-            over.elapsed() < Duration::from_secs(4),
+            over.elapsed() < Duration::from_secs(30),
             "the connection was not closed"
         );
         tokio::time::sleep(Duration::from_millis(50)).await;

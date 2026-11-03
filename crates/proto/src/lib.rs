@@ -57,6 +57,7 @@ macro_rules! string_newtype {
     };
 }
 
+pub mod commit_signing;
 pub mod doctor;
 mod session;
 pub mod signing;
@@ -64,6 +65,7 @@ mod wordlist;
 mod words;
 
 pub use self::session::{SessionLabel, SessionLink};
+pub use commit_signing::CommitSigningGrant;
 
 /// 16 bytes of OS randomness as 32 lowercase hex characters.
 ///
@@ -223,7 +225,10 @@ impl TryFrom<String> for Goal {
 }
 string_newtype!(Goal);
 
-/// Access window length.
+/// Access window length. The windows up to 4 hours are for SSH and API access;
+/// the windows in days are for commit signing only, and neither parsing a
+/// policy's `max_window` nor a target's or secret's limit can ever admit one
+/// (see [`Window::commit_signing`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum Window {
     /// 15 minutes.
@@ -238,6 +243,18 @@ pub enum Window {
     /// 4 hours.
     #[serde(rename = "4h")]
     H4,
+    /// 1 day: commit signing only.
+    #[serde(rename = "1d")]
+    D1,
+    /// 7 days: commit signing only.
+    #[serde(rename = "7d")]
+    D7,
+    /// 30 days: commit signing only.
+    #[serde(rename = "30d")]
+    D30,
+    /// 90 days: commit signing only.
+    #[serde(rename = "90d")]
+    D90,
 }
 
 impl Window {
@@ -249,10 +266,43 @@ impl Window {
             Self::M30 => 1800,
             Self::H1 => 3600,
             Self::H4 => 14400,
+            Self::D1 => 86_400,
+            Self::D7 => 604_800,
+            Self::D30 => 2_592_000,
+            Self::D90 => 7_776_000,
+        }
+    }
+
+    /// The windows a commit signing grant may have, shortest first.
+    pub const COMMIT_SIGNING: [Self; 4] = [Self::D1, Self::D7, Self::D30, Self::D90];
+
+    /// The default window of a commit signing grant.
+    pub const COMMIT_SIGNING_DEFAULT: Self = Self::D30;
+
+    /// Whether this is one of the windows of a commit signing grant.
+    #[must_use]
+    pub const fn is_commit_signing(self) -> bool {
+        matches!(self, Self::D1 | Self::D7 | Self::D30 | Self::D90)
+    }
+
+    /// Parse a commit signing window: `1d`, `7d`, `30d` or `90d`. Kept apart from
+    /// [`FromStr`], which every policy's `max_window` goes through, so that no
+    /// target or secret can be given a window this long.
+    ///
+    /// # Errors
+    /// If `s` is anything else.
+    pub fn commit_signing(s: &str) -> Result<Self, ParseError> {
+        match s {
+            "1d" => Ok(Self::D1),
+            "7d" => Ok(Self::D7),
+            "30d" => Ok(Self::D30),
+            "90d" => Ok(Self::D90),
+            _ => Err(ParseError::new("window", "must be one of 1d, 7d, 30d, 90d")),
         }
     }
 }
 
+/// Covers the windows of SSH and API access only: see [`Window::commit_signing`].
 impl FromStr for Window {
     type Err = ParseError;
 
@@ -295,6 +345,9 @@ pub enum Access {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         path_prefix: Option<String>,
     },
+    /// Commit signing by the broker's key, in the agent's name.
+    #[serde(rename = "commit_signing")]
+    CommitSigning {},
 }
 
 /// The methods that cannot modify anything on the server.
@@ -482,6 +535,9 @@ pub enum GrantAccess {
     Api(ApiGrant),
     /// SSH session relayed by the broker.
     Relay(RelayGrant),
+    /// Commit signing by the broker's key.
+    #[serde(rename = "commit_signing")]
+    CommitSigning(CommitSigningGrant),
 }
 
 /// SSH relay grant details: the agent connects to the broker's relay, which
@@ -700,6 +756,32 @@ mod tests {
         assert!("2h".parse::<Window>().is_err());
         assert!(serde_json::from_str::<Window>("\"2h\"").is_err());
         assert!(Window::M15 < Window::M30 && Window::H1 < Window::H4);
+    }
+
+    #[test]
+    fn day_windows_are_for_commit_signing_only() {
+        // Every policy's `max_window` is parsed with `FromStr`.
+        for text in ["1d", "7d", "30d", "90d"] {
+            assert!(text.parse::<Window>().is_err(), "{text}");
+            let window = Window::commit_signing(text).unwrap();
+            assert!(window.is_commit_signing());
+            assert!(window > Window::H4, "a limit of 4h must refuse {text}");
+            assert_eq!(
+                serde_json::from_str::<Window>(&format!("\"{text}\"")).unwrap(),
+                window
+            );
+        }
+        assert!(Window::commit_signing("4h").is_err());
+        assert!(!Window::H4.is_commit_signing());
+        assert_eq!(Window::D30.secs(), 30 * 86_400);
+    }
+
+    #[test]
+    fn commit_signing_access_serde_shape() {
+        let access = Access::CommitSigning {};
+        let json = serde_json::to_string(&access).unwrap();
+        assert_eq!(json, r#"{"kind":"commit_signing"}"#);
+        assert_eq!(serde_json::from_str::<Access>(&json).unwrap(), access);
     }
 
     #[test]

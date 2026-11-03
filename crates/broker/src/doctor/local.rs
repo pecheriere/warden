@@ -18,7 +18,7 @@ pub(super) fn checks(probe: LocalProbe, checks: &mut Vec<Check>) {
                 reason,
                 "Fix the policy file and its permissions: see docs/local-backend.md.",
             ));
-            for name in [ENTRIES, CA] {
+            for name in [ENTRIES, CA, "commit-signing"] {
                 checks.push(Check::could_not_check(
                     name,
                     "Not checked: the policy file is not usable.",
@@ -31,6 +31,7 @@ pub(super) fn checks(probe: LocalProbe, checks: &mut Vec<Check>) {
             api_secrets,
             problems,
             ca,
+            commit_signing,
         } => {
             checks.push(Check::pass(
                 POLICY,
@@ -52,6 +53,10 @@ pub(super) fn checks(probe: LocalProbe, checks: &mut Vec<Check>) {
                 )
             });
             checks.push(ca_check(ca));
+            checks.push(super::commit_signing::check(
+                Some(commit_signing),
+                super::commit_signing::Backend::Local,
+            ));
         }
     }
     checks.push(Check::could_not_check(
@@ -97,7 +102,7 @@ mod tests {
     use warden_broker_proto::doctor::{Check, Status};
 
     use super::{CA, ENTRIES, POLICY, checks};
-    use crate::policy::{CaProbe, LocalProbe};
+    use crate::policy::{CaProbe, CommitSigningProbe, LocalProbe};
 
     fn statuses(probe: LocalProbe) -> Vec<(String, Status)> {
         let mut list: Vec<Check> = Vec::new();
@@ -116,6 +121,7 @@ mod tests {
             api_secrets: 1,
             problems,
             ca,
+            commit_signing: CommitSigningProbe::NotConfigured,
         }
     }
 

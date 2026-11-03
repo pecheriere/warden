@@ -41,6 +41,7 @@ apple-native-keyring-store.workspace = true
 keyring-core.workspace = true
 
 [dev-dependencies]
+hex.workspace = true
 warden-broker = { workspace = true, features = ["testkit"] }
 # The documented demo flow, driven with this CLI (tests/e2e_demo.rs). A test
 # dependency only: the CLI itself never builds or links the demo.

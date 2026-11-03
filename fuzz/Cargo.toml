@@ -41,6 +41,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "commit_payload"
+path = "fuzz_targets/commit_payload.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "signature_blob"
 path = "fuzz_targets/signature_blob.rs"
 test = false

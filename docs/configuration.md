@@ -43,6 +43,8 @@ Values are never echoed in errors.
 | `WARDEN_REQUEST_MAX_PENDING_PER_AGENT` | `5` | Requests of one agent that may wait for the owner at once, 1 to 256, at most the limit on new requests. See [Request limits](#request-limits). |
 | `WARDEN_REQUEST_MAX_NEW_PER_AGENT` | `10` | New requests one agent may make per window, 1 to 1024. See [Request limits](#request-limits). |
 | `WARDEN_REQUEST_LIMIT_WINDOW_SECS` | `600` (10 minutes) | Length of that sliding window, 60 to 3600 seconds. |
+| `WARDEN_COMMIT_SIGNING_MAX_WINDOW` | `30d` | The longest [commit signing](threat-model.md#commit-signing) grant: `1d`, `7d`, `30d` or `90d`. Lowering it does not shorten grants already made. It cannot apply to anything else: no other grant can pass 4 hours. |
+| `WARDEN_COMMIT_SIGNING_MAX_PER_DAY` | `5000` | Signatures per commit signing grant per UTC day, 1 to 1000000. At the limit commits fail until the next day, and warden tries once to notify the owner. See [the threat model](threat-model.md#commit-signing). |
 | `WARDEN_REQUEST_LINK_HOSTS` | unset (no links) | The hosts a request may link to, separated by commas. See [Links in requests](#links-in-requests). |
 | `WARDEN_RELAY_PUBLIC_ADDR` | unset | Where agents reach the SSH relay, `host:port`. Unset turns the relay off: requests for relay targets are refused. |
 | `WARDEN_RELAY_LISTEN` | `127.0.0.1:2222` | The SSH relay listener. Used only when `WARDEN_RELAY_PUBLIC_ADDR` is set. |
@@ -195,6 +197,7 @@ deployment exits 7 with `--strict`.
 | `connect.vault` | The token can see `WARDEN_OP_VAULT`. | Connect gave no useful answer, or refused the token. |
 | `connect.token-read-only` | Never. | Always: Connect does not report a token's permissions, and doctor will not attempt a write. Check how the token was created. |
 | `ssh-ca` | The CA key loads, or there is no CA item and no certificate target needs one. | Connect or the vault is not usable, or a target item cannot be read. |
+| `commit-signing` | The commit signing key loads, or none is configured, which leaves signing off. A key that cannot be used, or that is also the SSH CA key, is a failure. | Connect or the vault is not usable, or the key cannot be read. |
 | `local.policy`, `local.entries`, `local.host-boundary` | Instead of `connect.*`, with `WARDEN_SECRET_BACKEND=local`. See [Checking it](local-backend.md#checking-it). | |
 | `notify` | Never. | Without `--send-test-notification`: nothing was sent. |
 | `notify.<channel>` | With the flag: the channel accepts the message. | Never. |
@@ -326,14 +329,17 @@ cargo install --locked --git https://github.com/pecheriere/warden --tag v0.9.0 w
 | `warden login --server <url> --agent <name>` | Sets up a bearer-key agent: reads the key from stdin and stores it in the macOS Keychain. macOS only. |
 | `warden request ssh <target> --user <user> --for <window> --goal "<goal>" [--session <label>] [--link <url>]` | Asks for SSH access and waits for the decision. `--session` defaults to `WARDEN_SESSION`; see [Telling sessions apart](agent-usage.md#telling-sessions-apart). |
 | `warden request api <secret> [--methods <M,…>] [--path <prefix>] --for <window> --goal "<goal>" [--session <label>] [--link <url>]` | Asks for brokered API calls and waits. Read-only (`GET`, `HEAD`) without `--methods`. |
+| `warden request signing [--for <1d\|7d\|30d\|90d>] --goal "<goal>" [--session <label>] [--link <url>]` | Asks for commit signing, 30 days by default, and waits. See [Signing commits](agent-usage.md#signing-commits). |
 | `warden request cancel <id>` | Withdraws one of this agent's pending requests. |
 | `warden ssh <target> [-- <command>…]` | Runs `ssh` through the active grant for the target that stays valid longest. |
 | `warden http <secret> <METHOD> <url> [-H 'Name: value']… [-d <body> \| --data-file <path\|->] [-i] [--fail]` | Makes one HTTPS call through an `api` grant. |
+| `warden setup git [--local]` | Has git sign every commit through the broker: sets `gpg.format`, `gpg.ssh.program`, `user.signingkey` and `commit.gpgsign`, in git's global configuration or with `--local` the repository's, and prints what it replaced. Needs an active commit signing grant, to read the broker's public key. |
 | `warden doctor [--strict]` | Checks this machine's setup and says what to fix. See [Checking an agent machine](#checking-an-agent-machine). |
 | `warden status` | Lists the grants on this machine and the broker's view of this agent's grants. |
 | `warden revoke <grant>` | Revokes a grant on the broker and stops its local `ssh-agent`. |
 
-A window is `15m`, `30m`, `1h` or `4h`. Exit codes are in
+A window is `15m`, `30m`, `1h` or `4h`, and for commit signing `1d`, `7d`, `30d` or
+`90d`. Exit codes are in
 [Agent usage](agent-usage.md#exit-codes).
 
 ### Checking an agent machine
@@ -351,6 +357,7 @@ exits 7 when nothing failed but a check could not run.
 | `protocol` | The broker accepts signed requests. Only for a key-signed agent, when the broker answered. | Never. |
 | `ssh-agent.key` or `bearer-key` | The `ssh-agent` holds the signing key, or the bearer key is available. | There is no usable configuration. |
 | `broker.accepts-agent` | The broker accepts one authenticated `GET /v1/grants`. A 4xx answer is a failure. | The credential is not available, or the broker is unreachable or answers 5xx. |
+| `git.signing` | Git does not sign through warden here, or it does and all of it is right, with an active grant. A setting that does not match, or no grant, is a failure: commits would fail. | The credential is not available, or the broker is unreachable or answers 5xx. |
 | `version` | Never. | Always: the broker does not publish its version. Doctor prints the CLI's, to compare with `warden-server --version`. |
 
 Because of `version`, a working machine exits 0, and 7 with `--strict`.

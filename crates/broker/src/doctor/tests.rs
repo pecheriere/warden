@@ -15,7 +15,7 @@ use warden_broker_proto::doctor::{
 use super::{Environment, ListenerProbe, PasskeyProbe, PathFacts, examine, invalid_config_report};
 use crate::config::{Config, ConfigError};
 use crate::notify::{ChannelSettings, Doorbell, NotifyError};
-use crate::policy::{CaProbe, LocalProbe, VaultProbe};
+use crate::policy::{CaProbe, CommitSigningProbe, LocalProbe, VaultProbe};
 
 const TOKEN: &str = "connect-token-do-not-leak-0123456789";
 const WEBHOOK_ID: &str = "webhook-id-do-not-leak-0123456789";
@@ -90,6 +90,10 @@ impl Fake {
 impl Environment for Fake {
     async fn vault(&self) -> VaultProbe {
         self.vault.clone()
+    }
+
+    async fn commit_signing(&self) -> CommitSigningProbe {
+        CommitSigningProbe::NotConfigured
     }
 
     async fn ca(&self) -> CaProbe {

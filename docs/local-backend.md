@@ -198,6 +198,25 @@ Publish the `.pub` file it also writes to your targets, as in
 [SSH targets](ssh-targets.md). warden reads only the files the policy names, so
 that file can stay or go.
 
+### `[commit_signing]`
+
+Optional: leave it out and commit signing is off. `private_key_file` names an unencrypted
+`ssh-ed25519` key, used for nothing else, under the same rules as `[ca]`. A key that cannot
+be used, that is also the `[ca]` key, or that sits beside a `[ca]` key that cannot be read,
+stops the server from starting like any other entry:
+
+```toml
+[commit_signing]
+private_key_file = "commit-signing"
+```
+
+```sh
+ssh-keygen -t ed25519 -N '' -C warden-commit-signing -f /var/lib/warden/secrets/commit-signing
+```
+
+Register the `.pub` file as a signing key on the account that commits. See
+[signing commits](threat-model.md#commit-signing).
+
 ## The secret files
 
 Each secret is a file of its own in `WARDEN_LOCAL_SECRETS_DIR`, named in the policy

@@ -29,6 +29,8 @@ use crate::proxy::{self, CallEnd, CallInfo, CallSlot, GrantChecks, GrantState, N
 use crate::requests::{BACKEND_UNAVAILABLE, RequestError};
 use crate::signed;
 
+mod commit_signing;
+
 /// Largest accepted request body, in bytes.
 const BODY_LIMIT: usize = 16 * 1024;
 
@@ -71,6 +73,14 @@ pub fn router(state: AppState) -> Router {
             agent(post(cancel_request), BODY_LIMIT),
         )
         .route("/v1/grants", agent(get(list_grants), BODY_LIMIT))
+        .route(
+            "/v1/commit-signing/key",
+            agent(get(commit_signing::public_key), BODY_LIMIT),
+        )
+        .route(
+            "/v1/commit-signing/sign",
+            agent(post(commit_signing::sign), PROXY_BODY_LIMIT),
+        )
         .route(
             "/v1/grants/{id}/revoke",
             agent(post(revoke_grant), BODY_LIMIT),
@@ -385,7 +395,9 @@ async fn api_grant_status(
     } else {
         match view.access {
             GrantAccess::Api(grant) => Ok(grant),
-            GrantAccess::Ssh(_) | GrantAccess::Relay(_) => Err(Unusable::NotApi),
+            GrantAccess::Ssh(_) | GrantAccess::Relay(_) | GrantAccess::CommitSigning(_) => {
+                Err(Unusable::NotApi)
+            }
         }
     })
 }

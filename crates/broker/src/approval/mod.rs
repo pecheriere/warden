@@ -37,6 +37,7 @@ use self::passkeys::{ApprovalBinding, PasskeyError};
 pub mod pages;
 pub mod passkeys;
 mod pending;
+mod renew;
 
 /// The browser glue, served as `/static/warden.js`.
 const SCRIPT: &str = include_str!("warden.js");
@@ -94,6 +95,7 @@ pub fn router(state: AppState) -> Router {
         .route("/grants", get(grants_page))
         .route("/grants/live", get(grants_live))
         .route("/grants/{id}/revoke", post(revoke_grant))
+        .route("/grants/{id}/renew", post(renew::renew))
         .route("/history", get(history_page))
         .route("/enroll", get(enroll_page))
         .route("/enroll/begin", post(enroll_begin))
@@ -396,7 +398,8 @@ async fn approve_page(State(state): State<AppState>, Path(token): Path<String>) 
             e @ (RequestError::UnknownTarget(_)
             | RequestError::UnknownSecret(_)
             | RequestError::TargetInvalid { .. }
-            | RequestError::SecretInvalid { .. }),
+            | RequestError::SecretInvalid { .. }
+            | RequestError::Rejected(_)),
         ) => (
             StatusCode::SERVICE_UNAVAILABLE,
             pages::unavailable(&e.to_string()),
@@ -488,6 +491,7 @@ fn check_policy(
         (Access::Api { .. }, Destination::Api(policy)) => {
             api_scope(&view.request, policy).map(drop)
         }
+        (Access::CommitSigning {}, Destination::CommitSigning(_)) => Ok(()),
         _ => Err("the request does not match its policy kind".to_owned()),
     }
 }
@@ -508,7 +512,9 @@ pub(crate) fn api_scope(
             path_prefix,
             ..
         } => policy.scope(methods.as_deref(), path_prefix.as_deref()),
-        Access::Ssh { .. } => Err("the request does not match its policy kind".to_owned()),
+        Access::Ssh { .. } | Access::CommitSigning {} => {
+            Err("the request does not match its policy kind".to_owned())
+        }
     }
 }
 
@@ -638,6 +644,15 @@ async fn approve_finish(
         }
         Destination::Api(policy) => match api_grant(&view.request, policy, binding.window, now) {
             Ok(grant) => grant,
+            Err((context, cause)) => return internal(context, &cause),
+        },
+        Destination::CommitSigning(policy) => match validity(binding.window, now) {
+            Ok((not_before, not_after)) => GrantView {
+                grant_id: Id::random(),
+                not_before,
+                not_after,
+                access: GrantAccess::CommitSigning(policy.grant()),
+            },
             Err((context, cause)) => return internal(context, &cause),
         },
     };
