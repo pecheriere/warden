@@ -106,8 +106,10 @@ Verify the manifest's signature first, as in step 2. Then pin
 
 ## 4. Verify the source
 
-Release tags are signed with the same key. This checks a tag in a clone, whatever
-your git configuration says:
+From v0.9.0, release tags are signed with the same key as the manifest, and the
+output below should name it (see step 1). The older key still passes this check, so
+a tag alone does not show which key was meant: the manifest does. This checks a tag
+in a clone, whatever your git configuration says:
 
 ```sh
 tag=vx.y.z
@@ -139,9 +141,9 @@ signature covers that image.
 
 The private key is not on GitHub: the repository has no Actions secret holding it,
 no workflow uses it, and only its public half is listed on the account and in this
-repository. From v0.9.0 it is held in 1Password, which asks the maintainer to approve
-each signature, so it is not in a file that a process on the maintainer's machine
-could read. The release workflow
+repository. From v0.9.0 it is held in 1Password, not in a file on the maintainer's
+machine, and 1Password asks the maintainer to approve its use. 1Password can remember
+an approval for a while, so this is not a separate prompt for every signature. The release workflow
 cannot sign the manifest, which is why the maintainer signs it after the workflow
 has finished, with `scripts/sign-release.sh`, before publishing the draft.
 

@@ -7,8 +7,9 @@
 # Usage: scripts/sign-release.sh vX.Y.Z [public-key-file]
 #
 # The key defaults to git's user.signingkey, and must be listed in
-# docs/release-signers. The script refuses to sign unless the tag carries a good
-# signature from a listed key and was signed under that name, the draft holds
+# docs/release-signers for the warden-release namespace. The script refuses to
+# sign unless the tag carries a good signature from that same key and was signed
+# under that name, the draft holds
 # exactly the expected files, and each archive and the image have a build
 # attestation from the release workflow at that tag and at the tag's commit. It
 # then uploads warden-<version>-SHA256SUMS and its .sig to the draft. It never
@@ -55,14 +56,22 @@ esac
 [ -r "$key" ] || fail "cannot read the public key: $key"
 read -r key_type key_blob _ < "$key"
 grep -Fq "$key_type $key_blob" "$signers" || fail "the key is not listed in $signers"
+grep -F "$key_type $key_blob" "$signers" | grep -q 'namespaces="[^"]*warden-release' \
+  || fail "the key may not sign manifests: $signers limits it to other namespaces"
+key_fingerprint=$(ssh-keygen -lf "$key" | awk '{ print $2 }')
 
 # Checks the tag with ssh-keygen directly, so that the result depends on the
 # list in this repository and not on this machine's git configuration.
 git cat-file tag "refs/tags/$tag" > "$work/tag" 2> /dev/null || fail "$tag is not an annotated tag here: git fetch --tags"
 sed -n '/^-----BEGIN SSH SIGNATURE-----$/,$p' "$work/tag" > "$work/tag.sig"
 sed '/^-----BEGIN SSH SIGNATURE-----$/,$d' "$work/tag" > "$work/tag.payload"
-ssh-keygen -Y verify -f "$signers" -I "$identity" -n git -s "$work/tag.sig" < "$work/tag.payload" > /dev/null \
+tag_check=$(ssh-keygen -Y verify -f "$signers" -I "$identity" -n git -s "$work/tag.sig" < "$work/tag.payload" 2>&1) \
   || fail "$tag has no good signature from a key in $signers"
+# An older key stays listed so that its tags verify, but a new release's tag must
+# come from the key that signs its manifest. Otherwise git's default key can sign a
+# tag without anyone noticing.
+[ "${tag_check##* }" = "$key_fingerprint" ] \
+  || fail "$tag was signed by another key, not $key_fingerprint: sign the tag with the release key"
 # A signed tag object can be moved to another ref, so its signed name must match.
 signed_name=$(sed -n 's/^tag //p' "$work/tag.payload" | head -n 1)
 [ "$signed_name" = "$tag" ] || fail "the tag at $tag was signed as $signed_name"

@@ -19,11 +19,13 @@ image_digest=$(printf 'image' | shasum -a 256 | cut -d' ' -f1)
 
 ssh-keygen -q -t ed25519 -N '' -C test-release -f "$work/release-key"
 ssh-keygen -q -t ed25519 -N '' -C test-other -f "$work/other-key"
+ssh-keygen -q -t ed25519 -N '' -C test-old -f "$work/old-key"
 
 repo=$work/repo
 mkdir -p "$repo/scripts" "$repo/docs"
 cp "$root/scripts/sign-release.sh" "$repo/scripts/"
-printf '%s namespaces="git,warden-release" %s\n' "$identity" "$(cat "$work/release-key.pub")" > "$repo/docs/release-signers"
+printf '%s namespaces="git" %s\n' "$identity" "$(cat "$work/old-key.pub")" > "$repo/docs/release-signers"
+printf '%s namespaces="git,warden-release" %s\n' "$identity" "$(cat "$work/release-key.pub")" >> "$repo/docs/release-signers"
 git -C "$repo" init -q
 git -C "$repo" add .
 git -C "$repo" config user.name test
@@ -110,6 +112,8 @@ must_refuse() {
 # A tag signed by a key that is not listed comes first, then the good tag.
 git -C "$repo" config user.signingkey "$work/other-key.pub"
 git -C "$repo" tag -s -m other-signer v9.9.9
+git -C "$repo" config user.signingkey "$work/old-key.pub"
+git -C "$repo" tag -s -m old-signer v5.5.5
 git -C "$repo" config user.signingkey "$work/release-key.pub"
 git -C "$repo" tag -a --no-sign -m unsigned v8.8.8
 git -C "$repo" tag -s -m "warden $version" "$tag"
@@ -122,6 +126,8 @@ must_refuse 'unsigned tag' 'no good signature' v8.8.8
 must_refuse 'tag that does not exist' 'not an annotated tag' v7.7.7
 must_refuse 'signed tag moved to another name' 'signed as' v6.6.6
 must_refuse 'signing key that is not listed' 'not listed' "$tag" "$work/other-key.pub"
+must_refuse 'tag signed by an older listed key' 'signed by another key' v5.5.5
+must_refuse 'older key signing a manifest' 'may not sign manifests' v5.5.5 "$work/old-key.pub"
 
 echo 0000000000000000000000000000000000000000 > "$STUB/remote-commit"
 must_refuse 'tag that differs on GitHub' 'on GitHub' "$tag"

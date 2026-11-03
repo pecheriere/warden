@@ -139,6 +139,9 @@ new version before starting it, and how to read the result.
 - Project documents: `CONTRIBUTING.md` (where to discuss, reporting bugs, the
   test policy), `GOVERNANCE.md`, `CODE_OF_CONDUCT.md`, `docs/roadmap.md`,
   `docs/building.md` and `docs/upgrading.md`.
+- The release signing key changes from v0.9.0. The new key is
+  `SHA256:ntKexh209NMYbpJ61FiTDYFpGUFZEr7v4BDlWEU1ATk`, held in 1Password. The older
+  key stays in `docs/release-signers` for tags only, so that earlier tags still verify.
 - Releases get a manifest of the archives' and the image's hashes, signed by the
   maintainer off GitHub (`warden-<version>-SHA256SUMS` and its `.sig`), and
   [docs/verifying-releases.md](docs/verifying-releases.md) says how to verify

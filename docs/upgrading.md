@@ -46,7 +46,8 @@ their permissions when it starts. Most setups need do nothing, but check these:
 `warden-server doctor` reports these, and it changes nothing. Older versions have
 no `doctor`, so run it on the new version. For Docker, stop warden, as the documented
 Compose file gives it a fixed address that a second container cannot share, then
-pull the new image and run `docker compose run --rm warden doctor`. Read the result
+change the image pin in your Compose file to the new version and run
+`docker compose run --rm warden doctor`, which pulls it. Read the result
 with care, as warden is not running and has not started on the new version yet:
 
 - The listener checks fail because nothing is listening. That is expected here.
