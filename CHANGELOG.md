@@ -41,6 +41,10 @@ All notable changes to this project are recorded here. The format follows
   commit unsigned instead.
 - `warden doctor` and `warden-server doctor` check the commit signing setup, and the SSH CA
   key cannot also be the commit signing key.
+- Releases attach `warden-server-<version>-<platform>.tar.gz` for Linux amd64 and arm64:
+  a static, attested server binary for
+  [running without Docker](docs/deployment-systemd.md). The signed manifest lists it, and
+  `scripts/sign-release.sh` requires it on a draft. Docker stays the recommended setup.
 - `warden request --session <label>`, or `WARDEN_SESSION`, says which session of an
   agent is asking. The approval page, Pending, Active grants, History, the
   notification and the audit log show it as what the agent stated, not as verified.
@@ -77,6 +81,7 @@ All notable changes to this project are recorded here. The format follows
 
 ### Fixed
 
+- `warden-server --version` names `warden-server`, not `warden-broker`.
 - Approval UI accessibility: the selected grant window now has a border with at
   least 3:1 contrast against its track in light and dark, the two navigation
   landmarks have different labels, each card on the pending screen is a heading a

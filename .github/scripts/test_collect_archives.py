@@ -64,6 +64,14 @@ class Names(unittest.TestCase):
             archive_name("demo", VERSION, "macos-arm64"), "warden-demo-1.2.3-macos-arm64.tar.gz"
         )
 
+    def test_the_server_is_for_linux_only(self) -> None:
+        """A macOS server is not something a release may hold."""
+        self.assertEqual(
+            archive_name("server", VERSION, "linux-arm64"), "warden-server-1.2.3-linux-arm64.tar.gz"
+        )
+        with self.assertRaisesRegex(ArchiveError, "not released"):
+            archive_name("server", VERSION, "macos-arm64")
+
 
 class CheckArchive(unittest.TestCase):
     """What must be inside one archive."""
@@ -172,6 +180,37 @@ class Collect(unittest.TestCase):
         names = {path.name for path in collect("cli", artifacts, self.out, VERSION)}
         self.assertEqual(names, {archive_name("cli", VERSION, p) for p in PLATFORMS})
 
+    def test_collects_the_two_server_archives(self) -> None:
+        """The server has no macOS archive, and its absence is not a refusal."""
+        artifacts = self.artifacts.parent / "server-artifacts"
+        for platform in collect_archives.LINUX:
+            artifact = artifacts / f"archive-server-{platform}"
+            artifact.mkdir(parents=True)
+            good_archive(artifact, "server", platform)
+        names = {path.name for path in collect("server", artifacts, self.out, VERSION)}
+        self.assertEqual(
+            names, {archive_name("server", VERSION, p) for p in collect_archives.LINUX}
+        )
+
+    def test_refuses_a_server_artifact_for_macos(self) -> None:
+        """Nothing outside the product's platforms is carried along."""
+        artifacts = self.artifacts.parent / "server-artifacts"
+        for platform in PLATFORMS:
+            (artifacts / f"archive-server-{platform}").mkdir(parents=True)
+        with self.assertRaisesRegex(ArchiveError, "extra"):
+            collect("server", artifacts, self.out, VERSION)
+
+    def test_refuses_the_demo_in_a_server_artifact(self) -> None:
+        """A demo must never pass as a server."""
+        artifacts = self.artifacts.parent / "server-artifacts"
+        for platform in collect_archives.LINUX:
+            artifact = artifacts / f"archive-server-{platform}"
+            artifact.mkdir(parents=True)
+            good_archive(artifact, "server", platform)
+        good_archive(artifacts / "archive-server-linux-amd64", "demo", "linux-amd64")
+        with self.assertRaisesRegex(ArchiveError, "should hold only"):
+            collect("server", artifacts, self.out, VERSION)
+
     def test_refuses_a_demo_job_planting_the_cli_archive(self) -> None:
         """The demo's build scripts may not supply the file named for the CLI."""
         good_archive(self.artifacts / "archive-demo-linux-amd64", "cli", "linux-amd64")
@@ -266,10 +305,21 @@ class Workflows(unittest.TestCase):
         demo = self.needs("demo")
         self.assertIn("merge", demo)
         self.assertIn("attest-cli", demo)
+        self.assertIn("attest-server", demo)
         self.assertIn("attest-cli", self.needs("merge"))
         self.assertIn("needs: cli", self.needs("attest-cli"))
         self.assertIn("product: cli", job_text("release.yml", "cli"))
         self.assertIn("product: demo", demo)
+
+    def test_the_server_builds_only_after_the_cli_and_image_are_attested(self) -> None:
+        """Its crates are more than the CLI's, so it runs after the CLI's attestation."""
+        server = self.needs("server")
+        self.assertIn("merge", server)
+        self.assertIn("attest-cli", server)
+        self.assertIn("product: server", server)
+        self.assertIn("linux-arm64", server)
+        self.assertNotIn("macos", server)
+        self.assertIn("needs: server", self.needs("attest-server"))
 
     def test_each_product_is_checked_and_attested_alone(self) -> None:
         """Only demo-named files can get the demo job's attestation."""
@@ -280,7 +330,11 @@ class Workflows(unittest.TestCase):
         self.assertIn("pattern: archive-demo-*", demo)
         self.assertIn("collect_archives.py collect demo", demo)
         self.assertIn("subject-path: dist/warden-demo-*.tar.gz", demo)
-        for job in (cli, demo):
+        server = job_text("release.yml", "attest-server")
+        self.assertIn("pattern: archive-server-*", server)
+        self.assertIn("collect_archives.py collect server", server)
+        self.assertIn("subject-path: dist/warden-server-*.tar.gz", server)
+        for job in (cli, server, demo):
             self.assertNotIn("merge-multiple", job)
             # One download only: nothing may replace a file between check and attestation.
             self.assertEqual(job.count("download-artifact"), 1)
@@ -292,6 +346,7 @@ class Workflows(unittest.TestCase):
         self.assertIn("pattern: attested-*", job)
         self.assertNotIn("archive-", job.split("Take the release notes", 1)[0])
         self.assertIn("needs.attest-cli.outputs.sums", job)
+        self.assertIn("needs.attest-server.outputs.sums", job)
         self.assertIn("needs.attest-demo.outputs.sums", job)
         self.assertLess(job.index("Refuse anything but"), job.index("gh release upload"))
 
@@ -299,7 +354,15 @@ class Workflows(unittest.TestCase):
         """The image and attestations stay, so a failure must not be silent."""
         job = job_text("release.yml", "report-incomplete")
         self.assertIn("failure()", job)
-        for needed in ("merge", "attest-cli", "demo", "attest-demo", "draft-release"):
+        for needed in (
+            "merge",
+            "attest-cli",
+            "server",
+            "attest-server",
+            "demo",
+            "attest-demo",
+            "draft-release",
+        ):
             self.assertIn(needed, job.split("steps:", 1)[0])
 
     def test_repeatable_builds_upload_only_their_exact_file(self) -> None:
@@ -312,6 +375,10 @@ class Workflows(unittest.TestCase):
     def test_ci_checks_what_each_build_produced(self) -> None:
         """A dropped notice fails on the pull request, not on a release tag."""
         self.assertIn("collect_archives.py check", job_text("ci.yml", "binaries"))
+
+    def test_ci_runs_the_server_under_the_unit(self) -> None:
+        """A unit can stop a static binary resolving names, which only running it shows."""
+        self.assertIn("scripts/test-systemd-unit-docker.sh", job_text("ci.yml", "binaries"))
 
 
 if __name__ == "__main__":

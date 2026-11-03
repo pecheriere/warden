@@ -28,7 +28,8 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
-PLATFORMS = ("linux-amd64", "linux-arm64", "macos-arm64")
+LINUX = ("linux-amd64", "linux-arm64")
+PLATFORMS = (*LINUX, "macos-arm64")
 LICENSES = ("LICENSE-APACHE", "LICENSE-MIT", "NOTICE")
 
 
@@ -39,6 +40,7 @@ class Product:
     prefix: str
     binary: str
     extra_files: tuple[str, ...] = ()
+    platforms: tuple[str, ...] = PLATFORMS
 
 
 PRODUCTS = {
@@ -48,6 +50,7 @@ PRODUCTS = {
         binary="warden-demo",
         extra_files=("NOT-FOR-REAL-USE.txt",),
     ),
+    "server": Product(prefix="warden-server", binary="warden-server", platforms=LINUX),
 }
 
 
@@ -57,7 +60,11 @@ class ArchiveError(Exception):
 
 def archive_name(product: str, version: str, platform: str) -> str:
     """Name the one file the job for this product and platform may produce."""
-    return f"{PRODUCTS[product].prefix}-{version}-{platform}.tar.gz"
+    spec = PRODUCTS[product]
+    if platform not in spec.platforms:
+        message = f"{product} is not released for {platform}"
+        raise ArchiveError(message)
+    return f"{spec.prefix}-{version}-{platform}.tar.gz"
 
 
 def check_archive(path: Path, product: str, version: str, platform: str) -> None:
@@ -92,7 +99,7 @@ def check_archive(path: Path, product: str, version: str, platform: str) -> None
 
 def collect(product: str, artifacts: Path, out: Path, version: str) -> list[Path]:
     """Copy a product's archives into `out` if each artifact holds exactly its own file."""
-    wanted = {f"archive-{product}-{platform}": platform for platform in PLATFORMS}
+    wanted = {f"archive-{product}-{platform}": platform for platform in PRODUCTS[product].platforms}
     found = {entry.name for entry in artifacts.iterdir()}
     if found != set(wanted):
         message = (

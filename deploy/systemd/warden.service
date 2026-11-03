@@ -107,11 +107,14 @@ MemorySwapMax=0
 # of Connect, the DNS resolver, the notifiers and the API origins. IPAddress*
 # need cgroup v2, and SocketBind* also a systemd built with BPF_FRAMEWORK, which
 # Debian 12's is not. Where they are unsupported the service still starts, without
-# them, so check them as the guide describes.
+# them, so check them as the guide describes. udp:0 is for the release binary: musl's
+# resolver binds its UDP socket to port 0, and names stop resolving if that is refused.
+# It gives only a port the kernel picks, never a chosen one, and tcp:0 stays refused.
 RestrictAddressFamilies=AF_INET AF_INET6
 SocketBindDeny=any
 SocketBindAllow=tcp:8080
 SocketBindAllow=tcp:8081
+SocketBindAllow=udp:0
 IPAddressDeny=any
 IPAddressAllow=localhost
 

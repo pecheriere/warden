@@ -122,7 +122,8 @@ if grep -n "$script" "$workflow"; then
 fi
 builds="$(grep -E '^ *build_args=' "$script")"
 expected_builds='    build_args=(-p warden-broker-cli)
-    build_args=(-p warden-demo --features warden-broker/vendored-openssl)'
+    build_args=(-p warden-demo --features warden-broker/vendored-openssl)
+    build_args=(-p warden-broker --features vendored-openssl)'
 [ "$builds" = "$expected_builds" ] \
   || fail "$script builds something unexpected: $builds"
 commands="$(grep -v '^ *#' "$script" | grep -E "$cargo_word" || true)"

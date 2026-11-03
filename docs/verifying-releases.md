@@ -60,20 +60,21 @@ change as a reason to stop.
 
 A release can hold these archives, and the manifest lists each one it holds. Each
 is built by its own job, and the workflow stops before attesting anything unless each
-job's upload holds exactly its own file. The demo's release build starts only after
-the CLI archives and the image are attested, and is attested separately, so a CLI
-archive changed after that point is refused. That does not cover earlier in the run:
-see [Not covered yet](#not-covered-yet).
+job's upload holds exactly its own file. They are attested one product at a time: the
+CLI and the image first, then the server, then the demo, so an archive changed after
+its attestation is refused. That does not cover earlier in the run: see
+[Not covered yet](#not-covered-yet).
 
 | File | What it is | Platforms | In releases |
 |---|---|---|---|
 | `warden-<version>-<platform>.tar.gz` | The `warden` CLI | `linux-amd64`, `linux-arm64`, `macos-arm64` | v0.9.0 onward |
+| `warden-server-<version>-<platform>.tar.gz` | `warden-server`, for [running without Docker](deployment-systemd.md) | `linux-amd64`, `linux-arm64` | After v0.9.0 |
 | `warden-demo-<version>-<platform>.tar.gz` | [The local demo](demo.md). **Not secure for real use**: verifying it shows where it came from, not that it is safe to rely on. | `linux-amd64`, `linux-arm64`, `macos-arm64` | After v0.9.0 |
 
 ```sh
 version=x.y.z         # the release you picked
 platform=linux-amd64  # or linux-arm64, macos-arm64
-file="warden-$version-$platform.tar.gz"   # or warden-demo-$version-$platform.tar.gz
+file="warden-$version-$platform.tar.gz"   # or warden-server-..., warden-demo-...
 base="https://github.com/pecheriere/warden/releases/download/v$version"
 curl -fLO "$base/$file"
 curl -fLO "$base/warden-$version-SHA256SUMS"
@@ -134,7 +135,7 @@ grep -x "tag $tag" tag.payload   # the name it was signed under; expect one line
 
 | Version | Tag | Image attestation | Archives | Signed manifest |
 |---|---|---|---|---|
-| After v0.9.0 | Signed | Yes | CLI and demo, attested | Yes |
+| After v0.9.0 | Signed | Yes | CLI, server and demo, attested | Yes |
 | v0.9.0 | Signed | Yes | CLI, attested | Yes |
 | v0.8.1 | Signed | Yes | None | **No** |
 | v0.8.0 | Signed | Never released | Never released | No |
@@ -165,8 +166,8 @@ attestation exists until the tests pass. A build script that stole that job's ru
 token could try to replace an artifact from another job in the run, such as a CLI
 archive or an image digest, before it is attested. That file would then be attested
 as genuine. Whether such a token still works after its job ends has not been tested.
-The risk applies to every crate in the workspace, and the demo's extra crates add to
-it. The order of the release's jobs protects only what happens after attestation. The
+The risk applies to every crate in the workspace, and the server's and the demo's extra
+crates add to it. The order of the release's jobs protects only what happens after attestation. The
 image digests are not pinned between the jobs that record and use them: a replaced one
 could only name an image already in the registry, but that image would get the tag and
 the attestation.

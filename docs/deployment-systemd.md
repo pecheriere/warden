@@ -19,9 +19,9 @@ Status:
 - **It does not support SSH relay targets.** They need
   [the sidecar layout](deployment.md#10-the-sidecar-layout-for-relay-targets),
   which is a Docker layout.
-- **Published server binaries are planned, not available.** For now you build
-  from source at a release tag. This also means there is no build attestation to
-  verify yet.
+- **Published server binaries start after v0.9.0.** For v0.9.0 you build from
+  source at the release tag, which has no build attestation to verify. The binaries
+  have not yet run under this unit on a clean host either.
 
 Everything about the tailnet and 1Password that is not repeated here applies
 unchanged: the tailnet policy and its tests, keeping Funnel off and the vault
@@ -63,8 +63,8 @@ Contents:
 | Own filesystem | **Lost.** See below. |
 | Own network namespace | **Lost.** See below. |
 | Only warden can use the listeners' address | **Lost.** See below. |
-| Image pinned by digest, with a verified build attestation | **Lost for now.** See below. |
-| Runtime libraries fixed by the image | **Lost.** See below. |
+| Image pinned by digest, with a verified build attestation | **Replaced** by a release binary whose attestation and signed manifest you verify, or **lost** if you build from source. See below. |
+| Runtime libraries fixed by the image | **Holds** with a release binary, which is static. **Lost** if you build from source. See below. |
 | Health status (`docker ps`) | **Lost.** `warden-server healthcheck` still works; run it from your monitoring. |
 | The sidecar layout, and with it relay targets | **Lost.** Use Docker for relay targets. |
 
@@ -89,13 +89,21 @@ What each loss means:
   page. Moving to low ports would stop this at the cost of a capability, which this
   unit does not give. So a dedicated host is a requirement here, as
   [below](#4-keep-the-listeners-private).
-- **There is no provenance to verify yet.** You trust the tag, your toolchain and
-  the machine that builds. Record the commit you built. Published binaries with
-  attestations are planned.
-- **The host supplies glibc.** The rest is linked statically: Rust crates and, with
-  the feature below, OpenSSL. Host updates patch glibc, so restart warden after them,
-  and only a new warden release patches the rest. The binary must not be built
-  against a newer glibc than the host's.
+- **Provenance depends on how you got the binary.** A release binary has a build
+  attestation and a signed manifest to [verify](verifying-releases.md). Its digest is
+  what you pin: keep the manifest and check the file again before moving the link. If
+  you build from source, you trust the tag, your toolchain and the machine that builds,
+  so record the commit you built.
+- **A release binary is not the image's binary.** It is built from the same source
+  and the same locked dependencies, but it links musl statically, while the image's
+  links glibc from a distroless base. Everything it needs is inside it, so host updates
+  change nothing in it, and only a new warden release patches it. Its allocator is
+  slower under load, which should not matter at warden's request rates. It also
+  [resolves names differently](#name-resolution-in-a-release-binary).
+- **With a build from source, the host supplies glibc.** The rest is linked statically:
+  Rust crates and, with the feature below, OpenSSL. Host updates patch glibc, so
+  restart warden after them, and only a new warden release patches the rest. The binary
+  must not be built against a newer glibc than the host's.
 
 The result is a smaller attack surface on the host (no container runtime, if Connect
 runs elsewhere), and a larger one if warden itself is compromised. That is why Docker
@@ -142,10 +150,43 @@ can reach. Limit Connect's egress as the deployment guide describes.
 You need systemd 249 or later with cgroup v2, a tagged host on the tailnet as in
 [the deployment guide](deployment.md#2-tailscale), and the `ca-certificates` package
 (warden verifies TLS with the system's roots). Check `systemctl --version` for
-`+BPF_FRAMEWORK`: without it, as on Debian 12, `SocketBindAllow` and `SocketBindDeny`
-have no effect. `IPAddressDeny` needs only cgroup v2.
+`+BPF_FRAMEWORK`: without it, as on Debian 12 and Ubuntu 24.04, `SocketBindAllow` and
+`SocketBindDeny` have no effect. They also need the `libbpf1` package, which a minimal Debian 13 container
+did not have, and they did nothing without it, with no error. Install it, then run
+`sudo systemctl daemon-reexec`.
+[Section 5](#5-limit-wardens-egress) shows how to check. `IPAddressDeny` needs only cgroup v2.
 
-### Build from source
+### Get the binary
+
+Use a release binary where there is one, which is every release after v0.9.0. It is
+static, so it does not depend on the host's libc. Verify it before installing, using
+the [full steps](verifying-releases.md#2-verify-an-archive), which also check the
+maintainer's signature:
+
+```sh
+version=x.y.z         # the release you picked
+platform=linux-amd64  # or linux-arm64
+file="warden-server-$version-$platform.tar.gz"
+curl -fLO "https://github.com/pecheriere/warden/releases/download/v$version/$file"
+gh attestation verify "$file" --repo pecheriere/warden \
+  --signer-workflow pecheriere/warden/.github/workflows/release.yml \
+  --source-ref "refs/tags/v$version"
+tar -xzf "$file"
+cp "warden-server-$version-$platform/warden-server" .
+```
+
+You also need the unit from the same tag:
+
+```sh
+curl -fLO "https://raw.githubusercontent.com/pecheriere/warden/v$version/deploy/systemd/warden.service"
+```
+
+The unit keeps the system's library directories executable, because a binary built
+from source loads glibc from them. A release binary loads nothing, so a drop-in can
+remove them with an empty `ExecPaths=` followed by `ExecPaths=/usr/local/lib/warden`.
+This has not been tested.
+
+### Or build from source
 
 Build at a release tag, on a machine with the same architecture and the same or an
 older glibc than the host, so that the host needs no compiler. The repository's
@@ -174,7 +215,7 @@ sudo useradd --system --user-group --home-dir /var/lib/warden --no-create-home \
 sudo install -d -m 0755 /usr/local/lib/warden
 sudo install -m 0755 warden-server /usr/local/lib/warden/warden-server-<version>
 sudo ln -sfn /usr/local/lib/warden/warden-server-<version> /usr/local/bin/warden-server
-sudo install -m 0644 deploy/systemd/warden.service /etc/systemd/system/warden.service
+sudo install -m 0644 warden.service /etc/systemd/system/warden.service   # deploy/systemd/ in a clone
 sudo install -d -m 0755 /etc/warden /etc/systemd/system/warden.service.d
 sudo install -d -m 0700 /etc/warden/credentials
 ```
@@ -322,7 +363,10 @@ until the drop-in allows what they need:**
 - Connect's address;
 - the DNS resolvers in `/etc/resolv.conf`, if they are not on loopback. A blocked
   resolver looks like every upstream failing, with `error sending request` in the
-  log. With MagicDNS, that resolver is `100.100.100.100`;
+  log. With MagicDNS, that resolver is `100.100.100.100`. The same message appears with
+  a release binary if a drop-in removes `SocketBindAllow=udp:0`, because musl's resolver
+  binds its UDP socket to port 0. That gives warden a port the kernel picks and no
+  other: `udp:53`, `udp:8080`, `tcp:0` and `tcp:9000` were all refused with it in place;
 - every address of each notifier and API origin. A name with several addresses needs
   them all.
 
@@ -342,8 +386,38 @@ This differs from the Docker rules in three ways:
     curl -sS -m 5 -o /dev/null https://www.example.org/
   ```
 
+The port rules can also fail silently, with no `+BPF_FRAMEWORK` or no `libbpf1`. This
+must fail with `Operation not permitted`:
+
+```sh
+sudo systemd-run --pipe --wait --collect -p SocketBindDeny=any \
+  python3 -c 'import socket; socket.socket().bind(("127.0.0.1", 9000))'
+```
+
 An address rule pins an IP, not a name, so the note about CDNs in
 [the deployment guide](deployment.md#lock-wardens-egress) applies here too.
+
+### Name resolution in a release binary
+
+A release binary uses [musl's resolver](https://wiki.musl-libc.org/functional-differences-from-glibc.html),
+which reads `/etc/hosts` and `/etc/resolv.conf` and nothing else: no NSS modules. Two
+more differences from a glibc build matter on a tailnet:
+
+- **It asks every `nameserver` at once, and the first answer wins, including "no such
+  name".** glibc tries them in order. So if `/etc/resolv.conf` lists both MagicDNS and a
+  public resolver, a public `NXDOMAIN` for `warden-connect.example.ts.net` can beat
+  MagicDNS's real answer, and the name fails some of the time. It is safe when every
+  listed resolver gives the same answers, and that includes a single one:
+  `100.100.100.100` when Tailscale manages the file, or `127.0.0.53` with
+  systemd-resolved, which does the split DNS itself. Check the file on your host.
+- **A name with a dot never falls back to the search list.** musl's default `ndots` is 1.
+  glibc would try `connect.internal` literally and then with each search domain; musl
+  tries it only literally. A name with no dot, such as `warden-connect`, still uses the
+  search list first. So write full names in warden's settings, such as
+  `warden-connect.example.ts.net`, as this guide does.
+
+Neither of these has been tested on a tailnet. They come from musl's documentation and
+source, and the binary has been run only with one `nameserver`.
 
 ## 6. Who can read the Connect token
 
@@ -450,8 +524,9 @@ warden cannot open a database that a newer one has migrated. So a rollback needs
 updater should replace the binary, as it would migrate without a backup.
 
 1. Read the [changelog](../CHANGELOG.md) for breaking changes and upgrade notes.
-2. Build the new tag ([above](#build-from-source)) and install it next to the old
-   binary. Do not delete the old one:
+2. Download and verify the new release's binary, or build the new tag
+   ([above](#get-the-binary)), and install it next to the old binary. Do not delete the
+   old one:
 
    ```sh
    sudo install -m 0755 warden-server /usr/local/lib/warden/warden-server-<new version>
@@ -469,7 +544,7 @@ updater should replace the binary, as it would migrate without a backup.
 
    ```sh
    sudo ln -sfn /usr/local/lib/warden/warden-server-<new version> /usr/local/bin/warden-server
-   sudo install -m 0644 deploy/systemd/warden.service /etc/systemd/system/warden.service
+   sudo install -m 0644 warden.service /etc/systemd/system/warden.service
    sudo systemctl daemon-reload
    sudo systemctl start warden.service
    ```
@@ -513,7 +588,16 @@ container on arm64, with a binary built by the repository's Dockerfile. There:
   `BPF_FRAMEWORK`. `NoExecPaths` stopped a shell from running.
 - A missing credential stopped the service from starting.
 
-**Not tested:** a clean host or amd64, a real Connect server (the sandboxed call went to
+A static arm64 archive from `scripts/package-binary.sh`, the way a release builds it, was
+also run under this unit on 257, in the same kind of container, with the local backend and
+`libbpf1` installed, so that the bind rules were enforced. warden started and answered
+`healthcheck`, with no shared library loaded, no capabilities and seccomp on. Under the
+whole unit, `warden-server doctor` resolved a name and made a TLS call, which failed
+without `SocketBindAllow=udp:0`. `scripts/test-systemd-unit-docker.sh` repeats this in CI,
+in a Debian 13 container on GitHub's amd64 and arm64 runners. No published binary has been
+run, because none exists yet.
+
+**Not tested:** a clean host, amd64 beyond that CI check, a real Connect server (the sandboxed call went to
 another HTTPS server), Tailscale Serve and Services, a passkey approval, a notification,
 an upgrade or rollback across a real migration, and an attempt to reach the listeners from
 another LAN machine. A container also differs from a host, so a failure on a real host

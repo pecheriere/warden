@@ -12,7 +12,7 @@ archives did not exist.
 
 ## What must match
 
-| Input | Archives (CLI, demo) | Image |
+| Input | Archives (CLI, server, demo) | Image |
 |---|---|---|
 | Source | The tag's commit | The tag's commit |
 | Rust | `rust-toolchain.toml`, an exact version | The Dockerfile's base image, by digest |
@@ -64,13 +64,13 @@ git clone --branch "v$version" --depth 1 https://github.com/pecheriere/warden
 cd warden
 rustup toolchain install
 rustup target add x86_64-unknown-linux-musl     # the platform's target
-scripts/package-binary.sh cli x86_64-unknown-linux-musl linux-amd64 dist   # or demo
+scripts/package-binary.sh cli x86_64-unknown-linux-musl linux-amd64 dist   # or server, demo
 shasum -a 256 dist/*.tar.gz
 ```
 
 Compare the result with the hash in the release's `warden-<version>-SHA256SUMS`,
 if it has one, or with the archive you downloaded. You need `python3`, and on Linux
-`musl-tools`. The demo also needs `perl` and `make`, for OpenSSL, which records its
+`musl-tools`. The server and the demo also need `perl` and `make`, for OpenSSL, which records its
 build directory in the binary. So the script always uses
 `/tmp/warden-package-build`, and that one path must match wherever you build.
 `.github/workflows/build-archives.yml` has the runner and targets of each

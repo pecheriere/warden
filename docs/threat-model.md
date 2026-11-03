@@ -1020,8 +1020,10 @@ warden's guarantees depend on its environment being set up as follows.
   - Egress is limited by address but not by port (`IPAddressAllow`), and only
     if the kernel supports the filter; the service starts without it otherwise.
     The filter also covers tailnet addresses.
-  - There is no build attestation to verify until binaries are published. The
-    operator builds from a release tag and trusts that build.
+  - Releases after v0.9.0 attach an attested, signed static binary for the operator
+    to verify, in place of the image's digest. It links musl where the image's links
+    glibc. An operator who builds from a release tag instead has no attestation, and
+    trusts that build.
   - 1Password publishes Connect only as a container, so it still runs in one, on
     this host or another. Either way it cannot reach this host's loopback.
     Connect on another host must be reached over the tailnet or TLS.
