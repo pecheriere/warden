@@ -176,7 +176,11 @@ async fn listing_notifies_nobody_records_nothing_and_uses_up_no_limit() {
     })
     .await;
     let key = broker.add_agent("bot").await;
-    broker.create_request("bot", pi_request()).await;
+    let mut changes = broker.state().requests.bus().subscribe();
+    let (created, _) = broker.create_request("bot", pi_request()).await;
+    // The request's own `notified` entry follows the doorbell, and the bus says when
+    // it is written: only then does the log stand still.
+    while changes.recv().await.unwrap() != created.id {}
     let rung = broker.capture.rung().len();
     let audit = std::fs::read_to_string(broker.audit_path()).unwrap();
 

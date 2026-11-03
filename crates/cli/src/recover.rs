@@ -49,7 +49,7 @@ fn access_summary(access: &Access) -> String {
     match access {
         Access::Ssh { target, user, .. } => format!("ssh {user}@{target}"),
         Access::Api {
-            secret,
+            secret: item,
             methods,
             path_prefix,
         } => {
@@ -57,8 +57,8 @@ fn access_summary(access: &Access) -> String {
                 .as_ref()
                 .map_or_else(|| "read-only".to_owned(), |m| sanitize(&m.join(",")));
             match path_prefix {
-                Some(path) => format!("api:{secret} {methods} under {}", sanitize(path)),
-                None => format!("api:{secret} {methods}"),
+                Some(path) => format!("api:{item} {methods} under {}", sanitize(path)),
+                None => format!("api:{item} {methods}"),
             }
         }
     }

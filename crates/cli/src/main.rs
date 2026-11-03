@@ -1162,7 +1162,7 @@ async fn status() -> Result<()> {
     for g in client.grants().await? {
         let subject = match &g.access {
             GrantAccess::Ssh(ssh) => format!("{}@{}:{}", ssh.user, ssh.host, ssh.port),
-            GrantAccess::Api(api) => format!("api:{}", api.secret),
+            GrantAccess::Api(ApiGrant { secret: item, .. }) => format!("api:{item}"),
             GrantAccess::Relay(relay) => format!("{}@{} via relay", relay.user, relay.target),
         };
         println!(
