@@ -142,7 +142,13 @@ could show one thing and have the passkey sign another, and needs no signature t
   (a hash of the agent name and the whole request: target, user, requested
   window, goal, public key, and any session label and link). It is 48 bits, for people to compare, so an agent
   could craft two requests that share one: it detects a mix-up, not an attacker
-  who controls both. If the owner is talking to the person or agent
+  who controls both. Both show it as five words from a fixed list, the EFF Short
+  Wordlist 2.0, a reversible way of writing the same 48 bits, with the hex beside
+  them. Any two words of that list differ by at least 3 edits, so one misread letter
+  does not make another word. The words make it easier to compare, not harder to
+  forge, and a person who compares only some of the words checks fewer bits. The API,
+  the database and the audit log hold the hex. If the
+  owner is talking to the person or agent
   that made the request, they can compare the two before approving. A mismatch
   means the owner is looking at a different request and should deny it.
 - The destination the page shows (host, port and the target's host keys; for
@@ -676,6 +682,15 @@ These were recorded during implementation and are accepted for this release.
   direction (reason `flow control: output to the agent not drained` or
   `flow control: input to the target not drained`), or 2 s when both
   directions are held up at once (`flow control: both directions held up`).
+  The stall clock only catches a reader that has stopped: each message
+  delivered restarts it, so an agent that keeps reading, however slowly, is
+  not stalled. Its session keeps its place in the session limits and its
+  queues until the idle timeout, its grant's end or a revocation. The idle
+  timeout counts bytes the relay reads from either side, not bytes it delivers:
+  a slow reader working through output already queued, with nothing new read
+  either way, is ended after 15 minutes though it is still reading, while one
+  whose target keeps producing makes room for more, so only the grant's end or
+  a revocation ends its session.
   A target that stops reading its input is a target
   failure, and the session ends. An agent that disconnects meanwhile is
   still seen, through a read-ahead on its connection, and its session ends

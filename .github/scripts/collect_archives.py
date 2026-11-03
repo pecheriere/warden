@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 PLATFORMS = ("linux-amd64", "linux-arm64", "macos-arm64")
-LICENSES = ("LICENSE-APACHE", "LICENSE-MIT")
+LICENSES = ("LICENSE-APACHE", "LICENSE-MIT", "NOTICE")
 
 
 @dataclass(frozen=True)

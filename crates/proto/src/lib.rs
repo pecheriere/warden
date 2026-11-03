@@ -61,6 +61,8 @@ pub mod commit_signing;
 pub mod doctor;
 mod session;
 pub mod signing;
+mod wordlist;
+mod words;
 
 pub use self::session::{SessionLabel, SessionLink};
 pub use commit_signing::CommitSigningGrant;
@@ -438,7 +440,9 @@ impl TryFrom<String> for Id {
 }
 string_newtype!(Id);
 
-/// Short request digest shown to the approver: `xxxx-xxxx-xxxx`.
+/// Short request digest, `xxxx-xxxx-xxxx`: the form on the wire, in the
+/// database and in the audit log. People read it as [`Fingerprint::words`],
+/// which is the same 48 bits.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct Fingerprint(String);

@@ -53,8 +53,6 @@ machine.
   task it was approved for
 - [#45](https://github.com/pecheriere/warden/issues/45) Live connections: idle
   time per relay session, and the last certificate issued
-- [#43](https://github.com/pecheriere/warden/issues/43) Fingerprint as short
-  English words instead of hex
 - [#39](https://github.com/pecheriere/warden/issues/39) Approval UI:
   screen-reader check
 

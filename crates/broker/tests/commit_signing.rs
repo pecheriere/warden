@@ -783,6 +783,52 @@ async fn the_pages_say_what_a_signature_means() {
     assert!(history.body.contains("30d"), "{}", history.body);
 }
 
+/// A signing grant's request says who asks like any other, as a claim, and the
+/// fingerprint is the words people compare.
+#[tokio::test]
+async fn the_pages_show_the_stated_session_link_and_fingerprint_words() {
+    let broker = TestBroker::with_link_hosts("git.example.com").await;
+    let key = broker.add_agent("bot").await;
+    let mut asked = TestBroker::commit_signing_request("sign my commits", Window::D30);
+    asked.session = Some("release-work".parse().unwrap());
+    asked.link = Some("https://git.example.com/pulls/1".parse().unwrap());
+    let created = broker
+        .api_post_json(&key, "/v1/requests", &serde_json::to_value(&asked).unwrap())
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    let printed: warden_broker_proto::Fingerprint =
+        serde_json::from_value(created.json()["fingerprint"].clone()).unwrap();
+    assert_eq!(
+        printed,
+        warden_broker_proto::fingerprint(&"bot".parse().unwrap(), &asked),
+        "the label and link are bound to what is approved"
+    );
+    let bell = broker.capture.next().await;
+    let token = warden_broker::testkit::CapturingNotifier::token(&bell);
+    let shown = |html: &str| {
+        for says in [
+            "release-work",
+            "git.example.com/pulls/1",
+            printed.words().as_str(),
+        ] {
+            assert!(html.contains(says), "{says}: {html}");
+        }
+    };
+    shown(&broker.get(&format!("/approve/{token}")).await.body);
+    shown(&broker.get("/pending").await.body);
+    let approved = broker.approve(&token, Window::D30).await;
+    assert_eq!(approved.status, StatusCode::OK, "{}", approved.body);
+    shown(&broker.get("/grants").await.body);
+    shown(&broker.get("/history").await.body);
+
+    // A link to a host off the list is refused, as for any other request.
+    asked.link = Some("https://other.example.org/x".parse().unwrap());
+    let refused = broker
+        .api_post_json(&key, "/v1/requests", &serde_json::to_value(&asked).unwrap())
+        .await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.body);
+}
+
 /// The approval token at the end of `link`.
 fn token_of(link: &str) -> String {
     link.rsplit('/').next().unwrap().to_owned()
