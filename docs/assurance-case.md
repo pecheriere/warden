@@ -422,7 +422,7 @@ It too applies to new logins only.
   ([`scorecard.yml`](../.github/workflows/scorecard.yml)).
 - **The `main` branch** takes pull requests only, with signed commits, linear
   history and required checks.
-- **Releases**: the image and CLI binaries have build-provenance attestations
+- **Releases**: the image, the CLI binaries and the demo binaries have build-provenance attestations
   ([`release.yml`](../.github/workflows/release.yml)).
 - **Fuzzing and coverage**: a scheduled job fuzzes part of the code that parses
   untrusted input ([#91](https://github.com/pecheriere/warden/issues/91)), and CI

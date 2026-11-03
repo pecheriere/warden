@@ -7,8 +7,9 @@ name: release
 # build-provenance attestation, verifiable with
 #   gh attestation verify oci://ghcr.io/pecheriere/warden:<version> --owner pecheriere
 #
-# It also builds the `warden` CLI on native runners, attests the archives, and
-# leaves them on a draft GitHub release. The workflow never publishes that draft:
+# It also builds the `warden` CLI and the local demo on native runners, attests
+# the archives, and leaves them on a draft GitHub release. The demo is never in the
+# image, and its archive is named as a demo. The workflow never publishes that draft:
 # the owner signs its manifest with scripts/sign-release.sh, using a key that is
 # not on GitHub, and then publishes it (see "Releases" in AGENTS.md). This
 # repository has immutable releases, so a published release cannot gain files,
@@ -126,28 +127,45 @@ jobs:
           path: digest-${{ matrix.slug }}
           retention-days: 1
 
-  cli:
+  binaries:
     needs: [on-main, crate-age, ci]
-    name: cli (${{ matrix.platform }})
+    name: ${{ matrix.product }} (${{ matrix.platform }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     # This job compiles dependencies and runs their build scripts, so it holds
     # neither the attestation identity nor write access to the release. Like the
     # image, it builds with no cache: pull request builds write to the cache, and
-    # an entry from one must not be able to reach a published binary.
+    # an entry from one must not be able to reach a published binary. Each binary
+    # builds on its own runner, so that the build scripts of one binary's
+    # dependencies cannot touch another binary.
     permissions:
       contents: read
     strategy:
       fail-fast: true
       matrix:
         include:
-          - platform: macos-arm64
+          - product: cli
+            platform: macos-arm64
             target: aarch64-apple-darwin
             runner: macos-15
-          - platform: linux-amd64
+          - product: cli
+            platform: linux-amd64
             target: x86_64-unknown-linux-musl
             runner: ubuntu-24.04
-          - platform: linux-arm64
+          - product: cli
+            platform: linux-arm64
+            target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+          - product: demo
+            platform: macos-arm64
+            target: aarch64-apple-darwin
+            runner: macos-15
+          - product: demo
+            platform: linux-amd64
+            target: x86_64-unknown-linux-musl
+            runner: ubuntu-24.04
+          - product: demo
+            platform: linux-arm64
             target: aarch64-unknown-linux-musl
             runner: ubuntu-24.04-arm
     steps:
@@ -170,20 +188,21 @@ jobs:
       - name: Install the musl C toolchain
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y musl-tools
-      - name: Build and pack the CLI
+      - name: Build and pack the binary
         env:
+          PRODUCT: ${{ matrix.product }}
           TARGET: ${{ matrix.target }}
           PLATFORM: ${{ matrix.platform }}
-        run: scripts/package-cli.sh "$TARGET" "$PLATFORM" dist
+        run: scripts/package-binary.sh "$PRODUCT" "$TARGET" "$PLATFORM" dist
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: cli-${{ matrix.platform }}
+          name: archive-${{ matrix.product }}-${{ matrix.platform }}
           path: dist/*.tar.gz
           if-no-files-found: error
           retention-days: 1
 
-  cli-attest:
-    needs: cli
+  attest-binaries:
+    needs: binaries
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -192,7 +211,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          pattern: cli-*
+          pattern: archive-*
           merge-multiple: true
           path: dist
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
@@ -200,9 +219,9 @@ jobs:
           subject-path: dist/*.tar.gz
 
   merge:
-    # Waits for the CLI too, so that no version gets its image tag unless its
-    # binaries built.
-    needs: [build, cli]
+    # Waits for the binaries too, so that no version gets its image tag unless
+    # they built.
+    needs: [build, binaries]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -252,7 +271,7 @@ jobs:
     # with write access to the repository: it runs no code from the build, only
     # gh, and it attaches files to a draft that nobody can download until the
     # owner publishes it.
-    needs: [merge, cli-attest]
+    needs: [merge, attest-binaries]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -262,7 +281,7 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          pattern: cli-*
+          pattern: archive-*
           merge-multiple: true
           path: dist
       - name: Take the release notes from the changelog
@@ -275,6 +294,8 @@ jobs:
           if [ ! -s "$RUNNER_TEMP/notes.md" ]; then
             echo "::warning::CHANGELOG.md has no section for $GITHUB_REF_NAME: write the notes on the draft"
           fi
+          printf '\n**The archives with `demo` in their name are a demo and are not secure for real use.** [What they are for](https://github.com/%s/blob/%s/docs/demo.md).\n' \
+            "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME" >> "$RUNNER_TEMP/notes.md"
       # A rerun finds the draft of the failed attempt and replaces its files. A
       # published release is immutable, so that case stops here.
       - name: Create the draft release, with the binaries

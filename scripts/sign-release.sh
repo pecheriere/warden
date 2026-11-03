@@ -25,6 +25,10 @@ workflow=pecheriere/warden/.github/workflows/release.yml
 signers=docs/release-signers
 identity=pecheriere@users.noreply.github.com
 namespace=warden-release
+# Every archive the release workflow attaches. warden-demo is the local demo: it is
+# signed like the rest, because the signature says who approved a file, not that it
+# is fit for real use.
+archive_names=(warden warden-demo)
 platforms=(linux-amd64 linux-arm64 macos-arm64)
 
 fail() {
@@ -84,7 +88,13 @@ is_draft=$(gh release view "$tag" --repo "$repo" --json isDraft --jq .isDraft) |
 
 # Only the archives are downloaded, so anything else on the draft must be refused
 # here: publishing the draft would ship it, outside the manifest.
-expected=$(for platform in "${platforms[@]}"; do echo "warden-$version-$platform.tar.gz"; done)
+expected=$(
+  for name in "${archive_names[@]}"; do
+    for platform in "${platforms[@]}"; do
+      echo "$name-$version-$platform.tar.gz"
+    done
+  done | LC_ALL=C sort
+)
 allowed=$expected$'\n'warden-$version-SHA256SUMS$'\n'warden-$version-SHA256SUMS.sig
 assets=$(gh release view "$tag" --repo "$repo" --json assets --jq '.assets[].name')
 while IFS= read -r asset; do
@@ -93,7 +103,7 @@ done <<< "$assets"
 
 mkdir "$work/assets"
 gh release download "$tag" --repo "$repo" --pattern 'warden-*.tar.gz' --dir "$work/assets"
-found=$(cd "$work/assets" && ls)
+found=$(cd "$work/assets" && LC_ALL=C ls)
 [ "$found" = "$expected" ] || fail "the draft holds unexpected archives:"$'\n'"$found"
 
 # The ref alone is not enough: an account able to bypass the tag ruleset could
@@ -102,12 +112,11 @@ attestation_args=(--repo "$repo" --signer-workflow "$workflow" --source-ref "ref
   --source-digest "$local_commit")
 manifest=$work/warden-$version-SHA256SUMS
 : > "$manifest"
-for platform in "${platforms[@]}"; do
-  file=warden-$version-$platform.tar.gz
+while IFS= read -r file; do
   gh attestation verify "$work/assets/$file" "${attestation_args[@]}" > /dev/null \
     || fail "no valid attestation for $file"
   (cd "$work/assets" && shasum -a 256 "$file") >> "$manifest"
-done
+done <<< "$expected"
 
 image_ref=$image:$version
 image_digest=$(gh attestation verify "oci://$image_ref" "${attestation_args[@]}" --format json \

@@ -24,9 +24,10 @@ secure for real use**: everyone on the machine counts as the owner, and all its
 data is throwaway. It shows the whole flow on one machine, with no Tailscale,
 1Password, Docker or phone.
 
-It currently needs [Rust](https://rustup.rs), because it is built from source:
-whether to publish a demo binary has not been decided. You also need a browser
-that can create a passkey. In a first terminal:
+Releases after v0.9.0 attach it as its own attested binary, labelled as a demo,
+so you do not need Rust: [download it](docs/demo.md#with-the-release-binaries).
+Otherwise build it from source, with [Rust](https://rustup.rs). You also need a
+browser that can create a passkey. In a first terminal:
 
 ```sh
 git clone https://github.com/pecheriere/warden && cd warden
@@ -36,7 +37,8 @@ target/debug/warden-demo
 
 It prints the exact next steps: enroll a passkey in your browser, request
 access from a second terminal, approve, call a local API through the broker and
-read the audit log. The demo is not in the image, and it covers API calls only.
+read the audit log. The demo is never in the server image, and it covers API
+calls only.
 [What it does and does not show](docs/demo.md).
 
 For a real setup, go on to the [recommended setup](#recommended-setup) and the

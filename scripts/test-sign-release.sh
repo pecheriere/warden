@@ -80,8 +80,10 @@ reset_stub() {
   : > "$STUB/also-listed"
   echo true > "$STUB/is-draft"
   echo "$image_digest" > "$STUB/image-digest"
-  for platform in linux-amd64 linux-arm64 macos-arm64; do
-    echo "$platform" > "$STUB/assets/warden-$version-$platform.tar.gz"
+  for name in warden warden-demo; do
+    for platform in linux-amd64 linux-arm64 macos-arm64; do
+      echo "$name $platform" > "$STUB/assets/$name-$version-$platform.tar.gz"
+    done
   done
 }
 
@@ -141,6 +143,14 @@ rm "$STUB/assets/warden-$version-linux-arm64.tar.gz"
 must_refuse 'missing archive' 'unexpected archives' "$tag"
 
 reset_stub
+rm "$STUB/assets/warden-demo-$version-macos-arm64.tar.gz"
+must_refuse 'missing demo archive' 'unexpected archives' "$tag"
+
+reset_stub
+echo extra > "$STUB/assets/warden-demo-$version-windows-amd64.tar.gz"
+must_refuse 'extra demo archive' 'unexpected asset' "$tag"
+
+reset_stub
 echo extra > "$STUB/assets/warden-$version-windows-amd64.tar.gz"
 must_refuse 'extra archive' 'unexpected asset' "$tag"
 
@@ -151,6 +161,10 @@ must_refuse 'file that is not an archive' 'unexpected asset' "$tag"
 reset_stub
 echo "warden-$version-macos-arm64.tar.gz" > "$STUB/unattested"
 must_refuse 'archive without an attestation' 'no valid attestation' "$tag"
+
+reset_stub
+echo "warden-demo-$version-linux-amd64.tar.gz" > "$STUB/unattested"
+must_refuse 'demo archive without an attestation' 'no valid attestation' "$tag"
 
 reset_stub
 echo "warden:$version" > "$STUB/unattested"
@@ -193,6 +207,16 @@ if ! grep -Fxq "$image_digest  ghcr.io/pecheriere/warden:$version" "$manifest"; 
   exit 1
 fi
 echo 'ok: the manifest names the image digest'
+
+for name in warden warden-demo; do
+  for platform in linux-amd64 linux-arm64 macos-arm64; do
+    if ! grep -Fq "  $name-$version-$platform.tar.gz" "$manifest"; then
+      echo "FAIL: the manifest does not list $name for $platform" >&2
+      exit 1
+    fi
+  done
+done
+echo 'ok: the manifest lists every archive'
 
 if ssh-keygen -Y verify -f "$repo/docs/release-signers" -I "$identity" -n git \
   -s "$manifest.sig" < "$manifest" > /dev/null 2>&1; then

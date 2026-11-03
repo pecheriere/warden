@@ -50,7 +50,9 @@ warden does **not** protect against:
 This page is about a real deployment. The [local demo](demo.md) is a separate
 binary that is not secure for real use: on it, everyone on the machine counts as
 the owner. It is not in `warden-server` or the image, and a CI guard keeps it
-out.
+out. A release attaches it as a separate archive named as a demo, so a person
+would have to choose to run it, and its attestation and signature say where it came
+from, not that it is safe for real use.
 
 ## Actors and trust
 

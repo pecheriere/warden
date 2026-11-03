@@ -6,8 +6,9 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-# Never published, never in the image: scripts/check-demo-not-shipped.sh
-# fails the build if that changes.
+# Never on a registry and never in the image: scripts/check-demo-not-shipped.sh
+# fails the build if that changes. A release attaches it as its own archive,
+# named as a demo.
 publish = false
 
 [[bin]]

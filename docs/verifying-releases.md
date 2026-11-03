@@ -56,12 +56,19 @@ so. Merges to `main` are squashed, so the commit carries GitHub's signature rath
 than the maintainer's, and it does not show who made the change. Treat an unexplained
 change as a reason to stop.
 
-## 2. Verify a CLI archive
+## 2. Verify an archive
+
+A release can hold these archives, and the manifest lists each one it holds:
+
+| File | What it is | Platforms | In releases |
+|---|---|---|---|
+| `warden-<version>-<platform>.tar.gz` | The `warden` CLI | `linux-amd64`, `linux-arm64`, `macos-arm64` | v0.9.0 onward |
+| `warden-demo-<version>-<platform>.tar.gz` | [The local demo](demo.md). **Not secure for real use**: verifying it shows where it came from, not that it is safe to rely on. | `linux-amd64`, `linux-arm64`, `macos-arm64` | After v0.9.0 |
 
 ```sh
 version=x.y.z         # the release you picked
 platform=linux-amd64  # or linux-arm64, macos-arm64
-file="warden-$version-$platform.tar.gz"
+file="warden-$version-$platform.tar.gz"   # or warden-demo-$version-$platform.tar.gz
 base="https://github.com/pecheriere/warden/releases/download/v$version"
 curl -fLO "$base/$file"
 curl -fLO "$base/warden-$version-SHA256SUMS"
@@ -116,9 +123,10 @@ grep -x "tag $tag" tag.payload   # the name it was signed under; expect one line
 
 ## What older releases have
 
-| Version | Tag | Image attestation | CLI archives | Signed manifest |
+| Version | Tag | Image attestation | Archives | Signed manifest |
 |---|---|---|---|---|
-| v0.9.0 onward | Signed | Yes | Yes, attested | Yes |
+| After v0.9.0 | Signed | Yes | CLI and demo, attested | Yes |
+| v0.9.0 | Signed | Yes | CLI, attested | Yes |
 | v0.8.1 | Signed | Yes | None | **No** |
 | v0.8.0 | Signed | Never released | Never released | No |
 | v0.1.0 to v0.7.0 | **Not signed** (lightweight tags) | Yes | None | **No** |

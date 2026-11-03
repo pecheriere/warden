@@ -13,7 +13,8 @@ on:
     paths:
       - .github/workflows/repeatable-build.yml
       - .github/workflows/release.yml
-      - scripts/package-cli.sh
+      - scripts/package-binary.sh
+      - crates/demo/NOT-FOR-REAL-USE.txt
       - Dockerfile
       - .dockerignore
       - Cargo.toml
@@ -29,13 +30,14 @@ permissions:
   contents: read
 
 jobs:
-  cli:
-    name: cli (${{ matrix.build.platform }}, ${{ matrix.attempt.name }})
+  binaries:
+    name: ${{ matrix.product }} (${{ matrix.build.platform }}, ${{ matrix.attempt.name }})
     runs-on: ${{ matrix.build.runner }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
+        product: [cli, demo]
         attempt:
           - name: first
             checkout: one
@@ -71,14 +73,15 @@ jobs:
       - name: Install the musl C toolchain
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y musl-tools
-      - name: Build and pack the CLI
+      - name: Build and pack the binary
         env:
+          PRODUCT: ${{ matrix.product }}
           TARGET: ${{ matrix.build.target }}
           PLATFORM: ${{ matrix.build.platform }}
-        run: scripts/package-cli.sh "$TARGET" "$PLATFORM" dist
+        run: scripts/package-binary.sh "$PRODUCT" "$TARGET" "$PLATFORM" dist
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: cli-${{ matrix.build.platform }}-${{ matrix.attempt.name }}
+          name: ${{ matrix.product }}-${{ matrix.build.platform }}-${{ matrix.attempt.name }}
           path: ${{ matrix.attempt.checkout }}/dist/*.tar.gz
           if-no-files-found: error
           retention-days: 3
@@ -142,7 +145,7 @@ jobs:
           retention-days: 3
 
   compare:
-    needs: [cli, image]
+    needs: [binaries, image]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -161,8 +164,10 @@ jobs:
               status=1
             fi
           }
-          for platform in macos-arm64 linux-amd64 linux-arm64; do
-            compare "cli $platform" "cli-$platform-first/"*.tar.gz "cli-$platform-second/"*.tar.gz
+          for product in cli demo; do
+            for platform in macos-arm64 linux-amd64 linux-arm64; do
+              compare "$product $platform" "$product-$platform-first/"*.tar.gz "$product-$platform-second/"*.tar.gz
+            done
           done
           for slug in amd64 arm64; do
             compare "image $slug" "digest-$slug-first/digest-$slug-first" "digest-$slug-second/digest-$slug-second"
