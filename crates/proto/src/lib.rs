@@ -58,7 +58,10 @@ macro_rules! string_newtype {
 }
 
 pub mod doctor;
+mod session;
 pub mod signing;
+
+pub use self::session::{SessionLabel, SessionLink};
 
 /// 16 bytes of OS randomness as 32 lowercase hex characters.
 ///
@@ -175,6 +178,24 @@ impl TryFrom<String> for UnixUser {
 }
 string_newtype!(UnixUser);
 
+/// Refuses control characters and invisible format characters (general category
+/// Cf) in text that an agent writes for the owner to read.
+fn check_free_text(what: &'static str, text: &str) -> Result<(), ParseError> {
+    if text.chars().any(char::is_control) {
+        return Err(ParseError::new(what, "must not contain control characters"));
+    }
+    if text
+        .chars()
+        .any(|c| c.general_category() == GeneralCategory::Format)
+    {
+        return Err(ParseError::new(
+            what,
+            "must not contain invisible format characters",
+        ));
+    }
+    Ok(())
+}
+
 /// Human-readable purpose of a request: 1 to 500 characters after trimming
 /// Unicode whitespace, single line (no control characters), and free of
 /// invisible format characters (general category Cf: bidi overrides and
@@ -194,21 +215,7 @@ impl TryFrom<String> for Goal {
         if chars == 0 || chars > 500 {
             return Err(ParseError::new("goal", "must be 1 to 500 characters"));
         }
-        if trimmed.chars().any(char::is_control) {
-            return Err(ParseError::new(
-                "goal",
-                "must not contain control characters",
-            ));
-        }
-        if trimmed
-            .chars()
-            .any(|c| c.general_category() == GeneralCategory::Format)
-        {
-            return Err(ParseError::new(
-                "goal",
-                "must not contain invisible format characters",
-            ));
-        }
+        check_free_text("goal", trimmed)?;
         Ok(Self(trimmed.to_owned()))
     }
 }
@@ -337,6 +344,14 @@ pub struct CreateRequest {
     pub access: Access,
     /// How long the access should last.
     pub window: Window,
+    /// The name the session making the request states for itself: the agent's
+    /// claim, not an identity. Part of the fingerprint when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<SessionLabel>,
+    /// A link to where the request came from, as the agent states it. Part of the
+    /// fingerprint when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<SessionLink>,
 }
 
 /// Request or grant identifier: 32 lowercase hex characters.
@@ -578,6 +593,8 @@ mod tests {
                 public_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample".to_owned(),
             },
             window: Window::M30,
+            session: None,
+            link: None,
         }
     }
 
@@ -708,6 +725,63 @@ mod tests {
         assert!(serde_json::from_str::<Fingerprint>("\"nope\"").is_err());
     }
 
+    /// A request without a label or link hashes as it did before they existed,
+    /// so a request stored or made by an older CLI keeps its fingerprint.
+    #[test]
+    fn absent_session_and_link_leave_the_wire_form_and_fingerprint_alone() {
+        let json = serde_json::to_string(&sample_request()).unwrap();
+        assert!(!json.contains("session"), "{json}");
+        assert!(!json.contains("link"), "{json}");
+        let read: CreateRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(read, sample_request());
+    }
+
+    #[test]
+    fn session_and_link_are_part_of_the_fingerprint_and_come_last() {
+        let agent = AgentName::try_from("bot".to_owned()).unwrap();
+        let plain = fingerprint(&agent, &sample_request());
+        let mut labelled = sample_request();
+        labelled.session = Some(SessionLabel::try_from("one".to_owned()).unwrap());
+        let one = fingerprint(&agent, &labelled);
+        assert_ne!(plain, one);
+        labelled.session = Some(SessionLabel::try_from("two".to_owned()).unwrap());
+        assert_ne!(one, fingerprint(&agent, &labelled));
+        let mut linked = sample_request();
+        linked.link = Some(SessionLink::try_from("https://git.example.com/a".to_owned()).unwrap());
+        let a = fingerprint(&agent, &linked);
+        assert_ne!(plain, a);
+        linked.link = Some(SessionLink::try_from("https://git.example.com/b".to_owned()).unwrap());
+        assert_ne!(a, fingerprint(&agent, &linked));
+        linked.session = labelled.session;
+        let json = serde_json::to_string(&linked).unwrap();
+        assert!(
+            json.ends_with(r#""window":"30m","session":"two","link":"https://git.example.com/b"}"#),
+            "{json}"
+        );
+        assert_eq!(
+            serde_json::from_str::<CreateRequest>(&json).unwrap(),
+            linked
+        );
+    }
+
+    #[test]
+    fn a_bad_session_or_link_refuses_the_whole_request() {
+        let json = serde_json::to_string(&sample_request()).unwrap();
+        for extra in [
+            r"'session':''",
+            r"'session':'a\nb'",
+            r"'link':'http://example.com/'",
+            r"'link':'https://user:pw@example.com/'",
+        ] {
+            let extra = extra.replace('\'', "\"");
+            let body = format!("{},{extra}}}", json.trim_end_matches('}'));
+            assert!(
+                serde_json::from_str::<CreateRequest>(&body).is_err(),
+                "{body}"
+            );
+        }
+    }
+
     #[test]
     fn status_serde_shape() {
         assert_eq!(
@@ -792,6 +866,8 @@ mod tests {
             goal: Goal::try_from("read the repos".to_owned()).unwrap(),
             access: serde_json::from_str(r#"{"kind":"api","secret":"github"}"#).unwrap(),
             window: Window::M15,
+            session: None,
+            link: None,
         };
         assert_eq!(
             serde_json::to_string(&req.access).unwrap(),

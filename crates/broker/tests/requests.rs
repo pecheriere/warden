@@ -66,6 +66,8 @@ fn ed25519_public() -> String {
 
 fn ssh_request(target: &str, user: &str, window: Window, public_key: &str) -> CreateRequest {
     CreateRequest {
+        session: None,
+        link: None,
         goal: Goal::try_from("restart the backup job".to_owned()).unwrap(),
         access: Access::Ssh {
             target: TargetName::try_from(target.to_owned()).unwrap(),
@@ -87,6 +89,8 @@ fn fill_host_key(template: &str) -> Value {
 
 fn api_request(secret: &str, window: Window) -> CreateRequest {
     CreateRequest {
+        session: None,
+        link: None,
         goal: Goal::try_from("list the open pull requests".to_owned()).unwrap(),
         access: Access::Api {
             secret: SecretName::try_from(secret.to_owned()).unwrap(),

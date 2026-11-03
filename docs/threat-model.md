@@ -61,7 +61,7 @@ out.
 | Agent (for example an AI coding agent on the owner's workstation) | Semi-trusted: well-intentioned but may be prompt-injected. Bounded by its stated goal, the approved window, and the targets and users the vault allows. It can request access and use what was granted, never approve it. |
 | warden server | Trusted. Holds a read-only 1Password Connect token in memory, and for short times what it reads with it: the SSH CA private key, from the read at an approval until the certificate is signed, API secrets during a call, and relay login credentials (see below). Compromise of the server is compromise of everything it brokers, so it is hardened accordingly. |
 | 1Password Connect | Trusted secret backend. Reachable only from warden, on its own network, and unable to reach warden's listeners. |
-| Notifiers (Home Assistant Companion, ntfy, push providers) | Untrusted doorbells. They receive the goal text, agent, target and a link, and nothing else. They cannot approve anything. Which channels are used is fixed at startup from a compile-time set (`WARDEN_NOTIFY`); agents cannot influence it. |
+| Notifiers (Home Assistant Companion, ntfy, push providers) | Untrusted doorbells. They receive the goal text, the session label the agent stated, agent, target and a link to the approval page, and nothing else. They cannot approve anything. Which channels are used is fixed at startup from a compile-time set (`WARDEN_NOTIFY`); agents cannot influence it. |
 | Tailscale | Transport and network-level identity. The tailnet policy is the outer access control. |
 
 ## Anti-goals
@@ -79,7 +79,9 @@ defends against it.
   (see "Targets trust the CA, per target" below). See "Approval binding"
   below.
 - **A notification channel sees secrets or can approve.** Notifications carry
-  the agent, target, user, a goal truncated to 200 characters, and a link.
+  the agent, target, user, the session label the agent stated, a goal truncated to
+  200 characters, and a link. A link stated in the request goes to no notifier: one
+  could preview it, which fetches a page the agent chose.
   The link opens a page that only the owner's phone can reach and that still
   requires a passkey.
 - **Private keys are written to disk on the workstation.** The CLI keeps the
@@ -130,7 +132,7 @@ what was approved, and a compromised broker could misapply it.
   for another request or another window, and a replay finds no state.
 - The approval page and the CLI both show a short fingerprint of the request
   (a hash of the agent name and the whole request: target, user, requested
-  window, goal and public key). It is 48 bits, for people to compare, so an agent
+  window, goal, public key, and any session label and link). It is 48 bits, for people to compare, so an agent
   could craft two requests that share one: it detects a mix-up, not an attacker
   who controls both. If the owner is talking to the person or agent
   that made the request, they can compare the two before approving. A mismatch
@@ -501,6 +503,35 @@ These were recorded during implementation and are accepted for this release.
   zero-width characters). The owner decides on the goal alone, and a
   prompt-injected agent can write a misleading goal. The fingerprint check,
   the narrow user and the short window limit the damage.
+
+- **A session label is a claim.** It has the rules of a goal, at most 64 characters
+  on one line, and the same limit: nothing checks it. Sessions of one agent run as
+  one OS user with one key, so any of them can state any label, and a prompt-injected
+  one can state another's. The pages say the agent stated it and that it is not
+  verified. It is free text in the notification and the audit log, like the goal, so
+  it can look like a link there. It does not stop one session from using another's
+  grant ([#49](https://github.com/pecheriere/warden/issues/49)).
+- **A link in a request is the agent's too.** It is off unless the owner lists hosts
+  (`WARDEN_REQUEST_LINK_HOSTS`), matched exactly, and a request linking anywhere else
+  is refused, with nothing stored or notified.
+  - **The host shown is the host it goes to.** A link is reduced to `https`, a plain
+    host name and a path, and anything that could read differently is refused rather
+    than cleaned up: other schemes, a user or password, a port, percent-encoding in
+    the name, non-ASCII (an international name is matched and shown as `xn--…`), IP
+    addresses in any spelling, backslashes, whitespace and control characters that a
+    URL parser would drop. A query and a fragment are refused too, as the usual places
+    for a token and for a redirect's destination. At most 256 bytes.
+  - **On the page.** A link is an escaped `https` address in a new tab with
+    `rel="noopener noreferrer"`, under the details, apart from Approve and Deny, with
+    the host as its text. It is a link only while its host is on the list at that
+    moment. Errors never quote it, and it is not in the audit log.
+  - **What is not stopped.** A listed host can still redirect, or let anyone publish on
+    it, so list hosts accordingly. A secret in a link's path cannot be told from any
+    other path: it would be stored, and shown to the owner. The page behind a link is
+    written or chosen by the agent, so a compromised agent controls that context as
+    well: it must not read as evidence, and the page says so. Opening a link tells
+    that host the owner's address, and acts as the owner if they are signed in there,
+    as any link does.
 
 ## Proxy mode residual risks
 

@@ -11,6 +11,7 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
+url.workspace = true
 getrandom.workspace = true
 hex.workspace = true
 serde.workspace = true

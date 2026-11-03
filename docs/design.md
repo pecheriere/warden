@@ -94,7 +94,7 @@ and secure by construction.
 | Agent (an automated agent on the workstation or an agent host) | Semi-trusted: well-intentioned but may be prompt-injected. Bounded by goal, window, targets and destination rules. |
 | warden server | Trusted; holds a **read-only** 1Password Connect token, and reads the SSH CA key at each approval. Compromise = compromise of everything it brokers; hardened accordingly. |
 | 1Password Connect | Trusted secret backend; reachable only from warden. |
-| Notifiers (Home Assistant Companion, ntfy) | Untrusted doorbells: receive goal text and a link only. |
+| Notifiers (Home Assistant Companion, ntfy) | Untrusted doorbells: receive goal text, a stated session label and a link to the approval page only. |
 | Tailscale | Transport and network-level identity; the tailnet policy is the outer access control. |
 | SSH targets, API origins | Reached only as approved. warden trusts a target only once it proves a pinned host key, and an origin only through verified TLS. Their answers are untrusted. |
 

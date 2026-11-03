@@ -42,12 +42,14 @@ pub(crate) use self::transition::{begin, note_if_not_applied, record};
 
 mod bus;
 mod limits;
+mod link_hosts;
 mod pending;
 
 pub use self::bus::StatusBus;
 use self::bus::next_change;
 use self::limits::Refusals;
 pub use self::limits::{LimitRefusal, RequestLimits};
+pub use self::link_hosts::LinkHosts;
 pub use self::pending::PendingEntry;
 
 /// How long a request waits for the owner, in seconds.
@@ -379,6 +381,8 @@ pub struct Requests {
     limits: RequestLimits,
     /// What has been recorded and told about refusals under `limits`.
     refusals: Arc<Refusals>,
+    /// Hosts a request may link to.
+    link_hosts: LinkHosts,
 }
 
 /// Which pending requests an expiry pass looks at.
@@ -420,7 +424,21 @@ impl Requests {
             recorded_change: Arc::default(),
             limits: RequestLimits::default(),
             refusals: Arc::default(),
+            link_hosts: LinkHosts::default(),
         }
+    }
+
+    /// Accept links to `hosts` in requests, instead of no links at all.
+    #[must_use]
+    pub fn with_link_hosts(mut self, hosts: LinkHosts) -> Self {
+        self.link_hosts = hosts;
+        self
+    }
+
+    /// The hosts requests may link to.
+    #[must_use]
+    pub const fn link_hosts(&self) -> &LinkHosts {
+        &self.link_hosts
     }
 
     /// The live relay sessions.
@@ -478,7 +496,8 @@ impl Requests {
     ///
     /// # Errors
     /// [`RequestError::Limited`] if the agent is over its [`RequestLimits`],
-    /// [`RequestError::Rejected`] for policy violations,
+    /// [`RequestError::Rejected`] for policy violations, or a link to a host
+    /// that is not in [`LinkHosts`],
     /// [`RequestError::KeyInUse`] if the SSH public key backs another live
     /// request or grant, the target or secret errors from the backend,
     /// [`RequestError::AgentRevoked`], or storage failures. No row is stored
@@ -488,6 +507,7 @@ impl Requests {
         agent: &AgentName,
         req: CreateRequest,
     ) -> Result<CreatedResponse, RequestError> {
+        self.link_hosts.check(req.link.as_ref())?;
         let (dedupe_key, subject) = match &req.access {
             Access::Ssh {
                 target,
@@ -621,6 +641,7 @@ impl Requests {
             agent: agent.clone(),
             fingerprint: fp.clone(),
             summary: format!("{subject} for {}: {}", window_label(req.window), req.goal),
+            session: req.session.as_ref().map(ToString::to_string),
         };
         let transition = format!("creation of request {id}");
         record(&self.audit, vec![created], &transition).await?;

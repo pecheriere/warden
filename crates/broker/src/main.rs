@@ -583,6 +583,7 @@ async fn build_app(config: &Arc<Config>) -> Result<App> {
         relay,
     )
     .with_limits(config.requests)
+    .with_link_hosts(config.link_hosts.clone())
     .with_call_limits(config.proxy.max_calls_per_agent, config.proxy.max_calls);
     let passkeys = Passkeys::new(
         pool.clone(),

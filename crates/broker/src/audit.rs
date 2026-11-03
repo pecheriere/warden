@@ -45,6 +45,11 @@ pub enum AuditEvent {
         fingerprint: Fingerprint,
         /// Free-text summary (never secrets).
         summary: String,
+        /// The session label the agent stated, if any: its claim, not an
+        /// identity. A string, not the validated type, so that a log stays
+        /// readable whatever later releases accept.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<String>,
     },
     /// The owner was notified.
     Notified {
