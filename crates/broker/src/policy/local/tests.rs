@@ -596,6 +596,16 @@ async fn the_probe_lists_every_problem_and_never_a_secret() {
 }
 
 #[tokio::test]
+async fn the_probe_lists_a_target_with_an_unusable_name() {
+    let setup = Setup::new("[targets.Bad_Name]\nmode = \"cert\"\n");
+    let probe = setup.backend.probe().await;
+    let problems = probe.problems();
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(problems[0].contains("Bad_Name"), "{problems:?}");
+    assert!(problems[0].contains("target name"), "{problems:?}");
+}
+
+#[tokio::test]
 async fn the_probe_tells_a_needed_ca_from_an_unneeded_one() {
     let needed = Setup::new(&cert_entry()).backend.probe().await;
     let LocalProbe::Read { ca, .. } = &needed else {
