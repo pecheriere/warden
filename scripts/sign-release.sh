@@ -27,9 +27,10 @@ identity=pecheriere@users.noreply.github.com
 namespace=warden-release
 # Every archive the release workflow attaches. warden-demo is the local demo: it is
 # signed like the rest, because the signature says who approved a file, not that it
-# is fit for real use.
+# is fit for real use. warden-server is released for Linux only.
 archive_names=(warden warden-demo)
 platforms=(linux-amd64 linux-arm64 macos-arm64)
+linux_platforms=(linux-amd64 linux-arm64)
 
 fail() {
   echo "error: $*" >&2
@@ -93,8 +94,12 @@ expected=$(
     for platform in "${platforms[@]}"; do
       echo "$name-$version-$platform.tar.gz"
     done
-  done | LC_ALL=C sort
+  done
+  for platform in "${linux_platforms[@]}"; do
+    echo "warden-server-$version-$platform.tar.gz"
+  done
 )
+expected=$(LC_ALL=C sort <<< "$expected")
 allowed=$expected$'\n'warden-$version-SHA256SUMS$'\n'warden-$version-SHA256SUMS.sig
 assets=$(gh release view "$tag" --repo "$repo" --json assets --jq '.assets[].name')
 while IFS= read -r asset; do

@@ -31,7 +31,11 @@ use warden_broker::{doctor, health};
 use warden_broker_proto::AgentName;
 
 #[derive(Parser)]
-#[command(version, about = "warden approval broker server")]
+#[command(
+    name = "warden-server",
+    version,
+    about = "warden approval broker server"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,

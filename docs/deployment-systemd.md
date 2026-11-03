@@ -19,9 +19,9 @@ Status:
 - **It does not support SSH relay targets.** They need
   [the sidecar layout](deployment.md#10-the-sidecar-layout-for-relay-targets),
   which is a Docker layout.
-- **Published server binaries are planned, not available.** For now you build
-  from source at a release tag. This also means there is no build attestation to
-  verify yet.
+- **Published server binaries start after v0.9.0.** For v0.9.0 you build from
+  source at the release tag, which has no build attestation to verify. The binaries
+  have not yet run under this unit on a clean host either.
 
 Everything about the tailnet and 1Password that is not repeated here applies
 unchanged: the tailnet policy and its tests, keeping Funnel off and the vault
@@ -63,8 +63,8 @@ Contents:
 | Own filesystem | **Lost.** See below. |
 | Own network namespace | **Lost.** See below. |
 | Only warden can use the listeners' address | **Lost.** See below. |
-| Image pinned by digest, with a verified build attestation | **Lost for now.** See below. |
-| Runtime libraries fixed by the image | **Lost.** See below. |
+| Image pinned by digest, with a verified build attestation | **Replaced** by a release binary whose attestation and signed manifest you verify, or **lost** if you build from source. See below. |
+| Runtime libraries fixed by the image | **Holds** with a release binary, which is static. **Lost** if you build from source. See below. |
 | Health status (`docker ps`) | **Lost.** `warden-server healthcheck` still works; run it from your monitoring. |
 | The sidecar layout, and with it relay targets | **Lost.** Use Docker for relay targets. |
 
@@ -89,13 +89,21 @@ What each loss means:
   page. Moving to low ports would stop this at the cost of a capability, which this
   unit does not give. So a dedicated host is a requirement here, as
   [below](#4-keep-the-listeners-private).
-- **There is no provenance to verify yet.** You trust the tag, your toolchain and
-  the machine that builds. Record the commit you built. Published binaries with
-  attestations are planned.
-- **The host supplies glibc.** The rest is linked statically: Rust crates and, with
-  the feature below, OpenSSL. Host updates patch glibc, so restart warden after them,
-  and only a new warden release patches the rest. The binary must not be built
-  against a newer glibc than the host's.
+- **Provenance depends on how you got the binary.** A release binary has a build
+  attestation and a signed manifest to [verify](verifying-releases.md). Its digest is
+  what you pin: keep the manifest and check the file again before moving the link. If
+  you build from source, you trust the tag, your toolchain and the machine that builds,
+  so record the commit you built.
+- **A release binary is not the image's binary.** It is built from the same source
+  and the same locked dependencies, but it links musl statically, while the image's
+  links glibc from a distroless base. Everything it needs is inside it, so host updates
+  change nothing in it, and only a new warden release patches it. It resolves names
+  from `/etc/hosts` and `/etc/resolv.conf` alone, with no NSS modules, and musl's
+  allocator is slower under load, which should not matter at warden's request rates.
+- **With a build from source, the host supplies glibc.** The rest is linked statically:
+  Rust crates and, with the feature below, OpenSSL. Host updates patch glibc, so
+  restart warden after them, and only a new warden release patches the rest. The binary
+  must not be built against a newer glibc than the host's.
 
 The result is a smaller attack surface on the host (no container runtime, if Connect
 runs elsewhere), and a larger one if warden itself is compromised. That is why Docker
@@ -145,7 +153,37 @@ You need systemd 249 or later with cgroup v2, a tagged host on the tailnet as in
 `+BPF_FRAMEWORK`: without it, as on Debian 12, `SocketBindAllow` and `SocketBindDeny`
 have no effect. `IPAddressDeny` needs only cgroup v2.
 
-### Build from source
+### Get the binary
+
+Use a release binary where there is one, which is every release after v0.9.0. It is
+static, so it does not depend on the host's libc. Verify it before installing, using
+the [full steps](verifying-releases.md#2-verify-an-archive), which also check the
+maintainer's signature:
+
+```sh
+version=x.y.z         # the release you picked
+platform=linux-amd64  # or linux-arm64
+file="warden-server-$version-$platform.tar.gz"
+curl -fLO "https://github.com/pecheriere/warden/releases/download/v$version/$file"
+gh attestation verify "$file" --repo pecheriere/warden \
+  --signer-workflow pecheriere/warden/.github/workflows/release.yml \
+  --source-ref "refs/tags/v$version"
+tar -xzf "$file"
+cp "warden-server-$version-$platform/warden-server" .
+```
+
+You also need the unit from the same tag:
+
+```sh
+curl -fLO "https://raw.githubusercontent.com/pecheriere/warden/v$version/deploy/systemd/warden.service"
+```
+
+The unit keeps the system's library directories executable, because a binary built
+from source loads glibc from them. A release binary loads nothing, so a drop-in can
+remove them with an empty `ExecPaths=` followed by `ExecPaths=/usr/local/lib/warden`.
+This has not been tested.
+
+### Or build from source
 
 Build at a release tag, on a machine with the same architecture and the same or an
 older glibc than the host, so that the host needs no compiler. The repository's
@@ -174,7 +212,7 @@ sudo useradd --system --user-group --home-dir /var/lib/warden --no-create-home \
 sudo install -d -m 0755 /usr/local/lib/warden
 sudo install -m 0755 warden-server /usr/local/lib/warden/warden-server-<version>
 sudo ln -sfn /usr/local/lib/warden/warden-server-<version> /usr/local/bin/warden-server
-sudo install -m 0644 deploy/systemd/warden.service /etc/systemd/system/warden.service
+sudo install -m 0644 warden.service /etc/systemd/system/warden.service   # deploy/systemd/ in a clone
 sudo install -d -m 0755 /etc/warden /etc/systemd/system/warden.service.d
 sudo install -d -m 0700 /etc/warden/credentials
 ```
@@ -450,8 +488,9 @@ warden cannot open a database that a newer one has migrated. So a rollback needs
 updater should replace the binary, as it would migrate without a backup.
 
 1. Read the [changelog](../CHANGELOG.md) for breaking changes and upgrade notes.
-2. Build the new tag ([above](#build-from-source)) and install it next to the old
-   binary. Do not delete the old one:
+2. Download and verify the new release's binary, or build the new tag
+   ([above](#get-the-binary)), and install it next to the old binary. Do not delete the
+   old one:
 
    ```sh
    sudo install -m 0755 warden-server /usr/local/lib/warden/warden-server-<new version>
@@ -469,7 +508,7 @@ updater should replace the binary, as it would migrate without a backup.
 
    ```sh
    sudo ln -sfn /usr/local/lib/warden/warden-server-<new version> /usr/local/bin/warden-server
-   sudo install -m 0644 deploy/systemd/warden.service /etc/systemd/system/warden.service
+   sudo install -m 0644 warden.service /etc/systemd/system/warden.service
    sudo systemctl daemon-reload
    sudo systemctl start warden.service
    ```
@@ -512,6 +551,12 @@ container on arm64, with a binary built by the repository's Dockerfile. There:
 - `SocketBindDeny` refused a bind on 257, and had no effect on 252, which lacks
   `BPF_FRAMEWORK`. `NoExecPaths` stopped a shell from running.
 - A missing credential stopped the service from starting.
+
+A static arm64 archive from `scripts/package-binary.sh`, the way a release builds it, was
+also run under this unit on 257, in the same kind of container, with the local backend.
+warden started and answered `healthcheck`, with no shared library loaded, no capabilities
+and seccomp on. `warden-server doctor`, under a subset of the unit's sandbox, resolved a
+name and made a TLS call. No published binary has been run, because none exists yet.
 
 **Not tested:** a clean host or amd64, a real Connect server (the sandboxed call went to
 another HTTPS server), Tailscale Serve and Services, a passkey approval, a notification,

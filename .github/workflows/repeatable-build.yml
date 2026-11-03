@@ -39,7 +39,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        product: [cli, demo]
+        product: [cli, demo, server]
+        # The server is released for Linux only.
+        exclude:
+          - product: server
+            build:
+              platform: macos-arm64
+              target: aarch64-apple-darwin
+              runner: macos-15
         attempt:
           - name: first
             checkout: one
@@ -187,8 +194,9 @@ jobs:
             fi
             compare "$1" "${first[0]}" "${second[0]}"
           }
-          for product in cli demo; do
+          for product in cli demo server; do
             for platform in macos-arm64 linux-amd64 linux-arm64; do
+              if [ "$product $platform" = 'server macos-arm64' ]; then continue; fi
               compare_archives "$product $platform" "$product-$platform-first" "$product-$platform-second"
             done
           done

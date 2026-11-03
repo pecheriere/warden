@@ -96,6 +96,9 @@ reset_stub() {
       echo "$name $platform" > "$STUB/assets/$name-$version-$platform.tar.gz"
     done
   done
+  for platform in linux-amd64 linux-arm64; do
+    echo "server $platform" > "$STUB/assets/warden-server-$version-$platform.tar.gz"
+  done
 }
 
 sign() {
@@ -156,6 +159,22 @@ must_refuse 'missing archive' 'unexpected archives' "$tag"
 reset_stub
 rm "$STUB/assets/warden-demo-$version-macos-arm64.tar.gz"
 must_refuse 'missing demo archive' 'unexpected archives' "$tag"
+
+reset_stub
+rm "$STUB/assets/warden-server-$version-linux-arm64.tar.gz"
+must_refuse 'missing server archive' 'unexpected archives' "$tag"
+
+reset_stub
+echo extra > "$STUB/assets/warden-server-$version-macos-arm64.tar.gz"
+must_refuse 'server archive for a platform it is not released for' 'unexpected asset' "$tag"
+
+reset_stub
+echo "warden-server-$version-linux-amd64.tar.gz" > "$STUB/unattested"
+must_refuse 'server archive without an attestation' 'no valid attestation' "$tag"
+
+reset_stub
+echo "warden-demo-$version-linux-amd64.tar.gz" > "$STUB/attested-as"
+must_refuse 'demo archive renamed as the server' 'not what was attested' "$tag"
 
 reset_stub
 echo extra > "$STUB/assets/warden-demo-$version-windows-amd64.tar.gz"
@@ -234,6 +253,12 @@ for name in warden warden-demo; do
       exit 1
     fi
   done
+done
+for platform in linux-amd64 linux-arm64; do
+  if ! grep -Fq "  warden-server-$version-$platform.tar.gz" "$manifest"; then
+    echo "FAIL: the manifest does not list warden-server for $platform" >&2
+    exit 1
+  fi
 done
 echo 'ok: the manifest lists every archive'
 
