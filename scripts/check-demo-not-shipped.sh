@@ -59,12 +59,15 @@ grep -q 'identity: Arc::new(TailscaleServeIdentity)' crates/broker/src/main.rs \
   || fail "warden-server does not use TailscaleServeIdentity"
 
 # 3. The Dockerfile builds only warden-server, and the image holds only that.
-builds="$(grep -E 'cargo +(build|install|test)' Dockerfile || true)"
+# Any cargo command at all, so that an alias such as `cargo b` cannot pass.
+cargo_word='(^|[^[:alnum:]_/.-])cargo([^[:alnum:]_.-]|$)'
+builds="$(grep -v '^ *#' Dockerfile | grep -E "$cargo_word" || true)"
 [ -n "$builds" ] || fail "no cargo build found in the Dockerfile"
 while IFS= read -r line; do
   case "$line" in
     *'cargo build --release --locked -p warden-broker --features vendored-openssl'*) ;;
-    *) fail "the Dockerfile builds something else: $line" ;;
+    'RUN cargo clean --release -p warden-broker -p warden-broker-proto '*) ;;
+    *) fail "the Dockerfile runs something else: $line" ;;
   esac
 done <<<"$builds"
 # Only the empty placeholder that lets Cargo load the workspace may name it.
@@ -102,7 +105,7 @@ for file in "$workflow" "$script"; do
     fail "$file could build the demo into something else: $offending"
   fi
 done
-if offending="$(grep -nE 'cargo +(build|install)|warden-demo|crates/demo' "$workflow")"; then
+if offending="$(grep -v '^ *#' "$workflow" | grep -nE "$cargo_word|warden-demo|crates/demo")"; then
   fail "$workflow must leave building the demo to $script: $offending"
 fi
 [ "$(grep -c "$script" "$workflow")" -eq 1 ] \
@@ -112,8 +115,17 @@ expected_builds='    build_args=(-p warden-broker-cli)
     build_args=(-p warden-demo --features warden-broker/vendored-openssl)'
 [ "$builds" = "$expected_builds" ] \
   || fail "$script builds something unexpected: $builds"
+commands="$(grep -v '^ *#' "$script" | grep -E "$cargo_word" || true)"
+[ "$commands" = "  cargo build --config \"build.build-dir='\$build_dir'\" \\" ] \
+  || fail "$script runs cargo in an unexpected way: $commands"
 grep -qx ' *prefix=warden-demo' "$script" || fail "the demo's archive is not named as a demo"
 [ -s crates/demo/NOT-FOR-REAL-USE.txt ] || fail "the demo's notice file is missing"
+grep -qx ' *extra_file=crates/demo/NOT-FOR-REAL-USE.txt' "$script" \
+  || fail "$script does not put the notice in the demo's archive"
+# CI runs this on each archive, and the release workflow before attesting anything,
+# so a notice dropped from the archive itself fails there.
+grep -Fq 'extra_files=("NOT-FOR-REAL-USE.txt",)' .github/scripts/collect_archives.py \
+  || fail "the release's archive check does not require the demo's notice"
 grep -q "'WARDEN DEMO'" "$script" || fail "$script does not check binaries for the demo"
 
 # 6. The demo cannot be published to a registry.

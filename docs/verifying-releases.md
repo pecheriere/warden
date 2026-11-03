@@ -58,7 +58,9 @@ change as a reason to stop.
 
 ## 2. Verify an archive
 
-A release can hold these archives, and the manifest lists each one it holds:
+A release can hold these archives, and the manifest lists each one it holds. Each
+is built by its own job, and the workflow stops before attesting anything unless each
+job's upload holds exactly its own file:
 
 | File | What it is | Platforms | In releases |
 |---|---|---|---|

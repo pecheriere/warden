@@ -49,7 +49,7 @@ Install the CLI on the agent's machine. It needs the OpenSSH client tools.
 
 Releases after v0.8.1 attach binaries for macOS arm64, Linux amd64 and Linux
 arm64 (fully static, with no dependency on the distribution's libc). Pick a
-release that lists `warden-*.tar.gz` files on the
+release that lists `warden-<version>-<platform>.tar.gz` files on the
 [releases page](https://github.com/pecheriere/warden/releases). Checking the
 attestation needs a logged-in [`gh`](https://cli.github.com/).
 [Verifying a release](verifying-releases.md) adds the check of the maintainer's
