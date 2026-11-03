@@ -673,6 +673,15 @@ These were recorded during implementation and are accepted for this release.
   direction (reason `flow control: output to the agent not drained` or
   `flow control: input to the target not drained`), or 2 s when both
   directions are held up at once (`flow control: both directions held up`).
+  The stall clock only catches a reader that has stopped: each message
+  delivered restarts it, so an agent that keeps reading, however slowly, is
+  not stalled. Its session keeps its place in the session limits and its
+  queues until the idle timeout, its grant's end or a revocation. The idle
+  timeout counts bytes the relay reads from either side, not bytes it delivers:
+  a slow reader working through output already queued, with nothing new read
+  either way, is ended after 15 minutes though it is still reading, while one
+  whose target keeps producing makes room for more, so only the grant's end or
+  a revocation ends its session.
   A target that stops reading its input is a target
   failure, and the session ends. An agent that disconnects meanwhile is
   still seen, through a read-ahead on its connection, and its session ends
