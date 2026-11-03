@@ -48,8 +48,8 @@ case "$target" in
       *) configure_target=linux-aarch64 ;;
     esac
     export CC=musl-gcc
-    # The engine code needs kernel headers that musl-gcc does not see, and musl lacks
-    # what the async code uses.
+    # The broker uses no engines, whose code wants more of the kernel's headers, and
+    # musl lacks what the async code uses.
     extra_options=(no-engine no-async)
     ;;
   aarch64-apple-darwin) configure_target=darwin64-arm64-cc ;;
@@ -93,6 +93,18 @@ if [ "$actual" != "$WARDEN_OPENSSL_SHA256" ]; then
 fi
 tar -xzf "$tarball" -C "$work_dir"
 source_dir="$work_dir/openssl-$version"
+
+# musl-gcc sees musl's headers and no kernel headers, which OpenSSL includes on Linux.
+# Only those directories are added, and last, so no glibc header can stand in for musl's.
+case "$target" in
+  *-musl)
+    kernel_headers="$work_dir/kernel-headers"
+    multiarch="$(gcc -dumpmachine)"
+    mkdir "$kernel_headers"
+    ln -s /usr/include/linux /usr/include/asm-generic "/usr/include/$multiarch/asm" "$kernel_headers/"
+    extra_options+=("-idirafter$kernel_headers")
+    ;;
+esac
 
 jobs=$(getconf _NPROCESSORS_ONLN)
 (
