@@ -524,6 +524,19 @@ fn bytes(n: u64) -> String {
     }
 }
 
+/// How long a session has been quiet, for people: `Active now` under 5 s (the
+/// page refreshes every 5 s), then `Idle 12 s`, `Idle 4 min`, `Idle 2 h 5 min`,
+/// rounded down. `idleLabel` in `warden.js` is the same function.
+fn idle_label(secs: u64) -> String {
+    match secs {
+        0..5 => "Active now".to_owned(),
+        5..60 => format!("Idle {secs} s"),
+        60..3_600 => format!("Idle {} min", secs / 60),
+        _ if secs % 3_600 < 60 => format!("Idle {} h", secs / 3_600),
+        _ => format!("Idle {} h {} min", secs / 3_600, secs % 3_600 / 60),
+    }
+}
+
 /// The live area of a grant card: what the grant is doing right now
 /// (`live`), refreshed by `warden.js` from `GET /grants/live`, which builds
 /// the same markup.
@@ -543,7 +556,12 @@ fn live_area(grant: &ActiveGrant, live: Option<&LiveGrant<'_>>) -> Markup {
     html! {
         div.live-area data-grant=(grant.grant_id) data-kind=(kind.name()) {
             @if kind == LiveKind::Cert {
-                p.detail { "Certificate logins are not visible to warden." }
+                // Issued, never "used": warden cannot know.
+                p.detail {
+                    "Certificate issued " (clock(grant.not_before))
+                    ", expires " (clock(grant.not_after)) "."
+                }
+                p.detail { "Certificate logins are not visible to warden, so this does not show whether it was used." }
             } @else if summary.is_empty() {
                 p.detail { (if kind == LiveKind::Relay { "No sessions open" } else { "No calls in flight" }) }
             } @else {
@@ -558,6 +576,7 @@ fn live_area(grant: &ActiveGrant, live: Option<&LiveGrant<'_>>) -> Markup {
                                 " · "
                                 span.nowrap { (bytes(session.bytes_from_target)) " from target" }
                             }
+                            span.nowrap.idle { (idle_label(session.idle_secs)) }
                         }
                     }
                     @for call in calls {
@@ -784,8 +803,8 @@ mod tests {
 
     use super::super::{LiveGrant, LiveProxyCall, LiveRelaySession, STYLESHEET};
     use super::{
-        approve, bytes, cancelled, clock, enroll, grants, history, internal_error, not_found,
-        not_pending, secs_label, unavailable, utc_parts,
+        approve, bytes, cancelled, clock, enroll, grants, history, idle_label, internal_error,
+        not_found, not_pending, secs_label, unavailable, utc_parts,
     };
     use crate::policy::{ApiSecretPolicy, SshMode, SshTarget, ValueFormat};
     use crate::requests::{ActiveGrant, Destination, HistoryEntry, PendingEntry, PendingView};
@@ -909,6 +928,7 @@ mod tests {
             fingerprint: fingerprint(n),
             request,
             access,
+            not_before: NOW - 300,
             not_after: NOW + 1800,
         }
     }
@@ -977,11 +997,13 @@ mod tests {
                         started_at: NOW - 1260,
                         bytes_to_target: 1_234,
                         bytes_from_target: 3_456_789,
+                        idle_secs: 750,
                     },
                     LiveRelaySession {
                         started_at: NOW - 95,
                         bytes_to_target: 512,
                         bytes_from_target: 48_200,
+                        idle_secs: 2,
                     },
                 ],
                 proxy_calls: Vec::new(),
@@ -1464,7 +1486,7 @@ mod tests {
         let (relay, api, cert) = (id(5), id(4), id(2));
         assert!(
             html.contains(&format!(
-                r#"<div class="live-area" data-grant="{relay}" data-kind="relay"><p class="live">2 sessions open</p><ul class="live-list" role="list"><li><span>Session since <time datetime="2027-01-15T07:39:00Z">07:39 UTC</time></span><span><span class="nowrap">1.2 KB to target</span> · <span class="nowrap">3.4 MB from target</span></span></li><li><span>Session since <time datetime="2027-01-15T07:58:25Z">07:58 UTC</time></span><span><span class="nowrap">512 B to target</span> · <span class="nowrap">48.2 KB from target</span></span></li></ul></div>"#
+                r#"<div class="live-area" data-grant="{relay}" data-kind="relay"><p class="live">2 sessions open</p><ul class="live-list" role="list"><li><span>Session since <time datetime="2027-01-15T07:39:00Z">07:39 UTC</time></span><span><span class="nowrap">1.2 KB to target</span> · <span class="nowrap">3.4 MB from target</span></span><span class="nowrap idle">Idle 12 min</span></li><li><span>Session since <time datetime="2027-01-15T07:58:25Z">07:58 UTC</time></span><span><span class="nowrap">512 B to target</span> · <span class="nowrap">48.2 KB from target</span></span><span class="nowrap idle">Active now</span></li></ul></div>"#
             )),
             "{html}"
         );
@@ -1476,7 +1498,7 @@ mod tests {
         );
         assert!(
             html.contains(&format!(
-                r#"<div class="live-area" data-grant="{cert}" data-kind="cert"><p class="detail">Certificate logins are not visible to warden.</p></div>"#
+                r#"<div class="live-area" data-grant="{cert}" data-kind="cert"><p class="detail">Certificate issued <time datetime="2027-01-15T07:55:00Z">07:55 UTC</time>, expires <time datetime="2027-01-15T08:30:00Z">08:30 UTC</time>.</p><p class="detail">Certificate logins are not visible to warden, so this does not show whether it was used.</p></div>"#
             )),
             "{html}"
         );
@@ -1487,6 +1509,24 @@ mod tests {
             ),
             "{html}"
         );
+    }
+
+    #[test]
+    fn idle_time_reads_in_the_largest_fitting_units() {
+        for (secs, shown) in [
+            (0, "Active now"),
+            (4, "Active now"),
+            (5, "Idle 5 s"),
+            (59, "Idle 59 s"),
+            (60, "Idle 1 min"),
+            (3_599, "Idle 59 min"),
+            (3_600, "Idle 1 h"),
+            (3_659, "Idle 1 h"),
+            (3_660, "Idle 1 h 1 min"),
+            (86_400, "Idle 24 h"),
+        ] {
+            assert_eq!(idle_label(secs), shown, "{secs}");
+        }
     }
 
     #[test]
@@ -1521,6 +1561,7 @@ mod tests {
                 started_at: NOW,
                 bytes_to_target: 0,
                 bytes_from_target: 0,
+                idle_secs: 0,
             }],
             proxy_calls: vec![
                 LiveProxyCall {

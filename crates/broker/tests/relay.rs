@@ -1132,6 +1132,38 @@ async fn snapshot_counts_bytes() {
     assert_eq!(s.broker.live_relay_bytes(), [] as [(u64, u64); 0]);
 }
 
+/// A session's last activity stays while nothing moves and follows the bytes
+/// that move, by the broker's clock.
+#[tokio::test(flavor = "multi_thread")]
+async fn snapshot_tracks_last_activity() {
+    let s = key_target().await;
+    let agent = approved_agent(&s.broker, "bot").await;
+    let c = login(&s.broker, s.relay, TARGET, &agent.key).await;
+    let mut channel = c.handle.channel_open_session().await.unwrap();
+    channel.exec(true, "cat").await.unwrap();
+    assert!(reply(&mut channel).await);
+    let started = s.broker.clock.now();
+    assert_eq!(s.broker.live_relay_last_activity(), vec![started]);
+
+    s.broker.clock.advance(100);
+    assert_eq!(s.broker.live_relay_last_activity(), vec![started]);
+
+    channel.data(&b"hello"[..]).await.unwrap();
+    // The watchdog notes it at its next check.
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while s.broker.live_relay_last_activity() != vec![started + 100] {
+        assert!(
+            Instant::now() < deadline,
+            "last activity never moved: {:?}",
+            s.broker.live_relay_last_activity()
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    channel.close().await.unwrap();
+    await_events(&s.broker, "relay_session_ended", 1).await;
+}
+
 fn too_many(out: &Output, what: &str) {
     assert_eq!(out.status.code(), Some(255), "{}", text(&out.stderr));
     assert!(text(&out.stderr).contains(what), "{}", text(&out.stderr));

@@ -12,7 +12,10 @@ Usage: scripts/check-grants-live.py <out-dir>
   - when two cards end in one poll, focus on the first one's Revoke button
     moves to the Revoke button of the card that stays;
   - a grant with no card makes the page reload exactly once, even when the
-    answer keeps listing it (no reload loop).
+    answer keeps listing it (no reload loop);
+  - a relay session's idle time follows the answer, and a certificate grant
+    keeps what it says about its certificate;
+  - a poll that changes only the idle time updates that text in place.
 
   And the "pending" and "pending-empty" fixtures, with a mocked GET /pending/live
   and GET /pending:
@@ -35,6 +38,7 @@ Chrome runs on virtual time, so 30 s of polling take about a second.
 Needs: cargo, Google Chrome (override with CHROME=...).
 """
 
+import itertools
 import os
 import re
 import shutil
@@ -199,13 +203,46 @@ frame.addEventListener('load', () => {{
 """
 
 
+IDLE_PAGE = "/idle.html"
+# Test harness only, never served by the broker: frames the fixture, takes the
+# first session's idle time after the first poll rendered it, and reports 12 s
+# later whether that same node is still in the page, and what it says.
+IDLE_HARNESS = f"""<!doctype html><meta charset="utf-8">
+<iframe id="page" src="{PAGE}" width="400" height="900"></iframe><pre id="out"></pre>
+<script>
+const frame = document.getElementById('page');
+frame.addEventListener('load', () => {{
+  setTimeout(() => {{
+    const node = frame.contentDocument
+      .querySelector('.live-area[data-grant="{RELAY}"] .idle');
+    const before = node.textContent;
+    setTimeout(() => {{
+      document.getElementById('out').textContent =
+        'kept:' + node.isConnected + ' before:' + before + ' after:' + node.textContent + ';';
+    }}, 12000);
+  }}, 6000);
+}}, {{ once: true }});
+</script>
+"""
+
+
 class CheckError(Exception):
     """A step of the check itself failed (not a behaviour under test)."""
 
 
-def live_body(*grant_ids):
+def live_body(*grant_ids, idle_secs=None):
+    """The answer listing `grant_ids`, with a session under RELAY if `idle_secs` is set."""
+    def sessions(grant):
+        if idle_secs is None or grant != RELAY:
+            return ""
+        return (
+            '{"started_at":1800000000,"bytes_to_target":1,"bytes_from_target":2,'
+            f'"idle_secs":{idle_secs}}}'
+        )
+
     grants = ",".join(
-        f'{{"grant_id":"{g}","relay_sessions":[],"proxy_calls":[]}}' for g in grant_ids
+        f'{{"grant_id":"{g}","relay_sessions":[{sessions(g)}],"proxy_calls":[]}}'
+        for g in grant_ids
     )
     return f'{{"grants":[{grants}]}}'.encode()
 
@@ -243,6 +280,9 @@ class Handler(SimpleHTTPRequestHandler):
         with self.mock.lock:
             self.mock.paths.append(self.path)
             status, body = self.mock.status, self.mock.body
+        # A callable answers differently on each request.
+        if callable(body):
+            body = body()
         if self.path == "/mock/page-ok":
             with self.mock.lock:
                 self.mock.page_status = 200
@@ -361,6 +401,7 @@ def run():
         raise CheckError(f"rendering the page fixtures failed (cargo exit {rendered.returncode})")
     shutil.copy(ROOT / "crates/broker/src/approval/warden.js", out / "static/warden.js")
     (out / FOCUS_PAGE.lstrip("/")).write_text(FOCUS_HARNESS)
+    (out / IDLE_PAGE.lstrip("/")).write_text(IDLE_HARNESS)
     (out / DENY_PAGE.lstrip("/")).write_text(DENY_HARNESS)
     (out / TAP_PAGE.lstrip("/")).write_text(TAP_HARNESS)
     (out / OVERLAY_PAGE.lstrip("/")).write_text(OVERLAY_HARNESS)
@@ -418,6 +459,22 @@ def run():
         load(url, 12_000)
         loads = mock.count(PAGE)
         check("matching grants do not reload", loads == 1, f"{loads} page loads")
+
+        mock.set(200, live_body(RELAY, API, CERT, idle_secs=3660))
+        dom = load(url, 12_000)
+        check("a session's idle time follows the answer", "Idle 1 h 1 min" in dom, "not shown")
+        check("a certificate grant keeps its issue time", "Certificate issued" in dom, "gone")
+        check("a certificate grant still says logins are not visible",
+              "not visible to warden" in dom, "gone")
+
+        minutes = itertools.count(1)
+        mock.set(200, lambda: live_body(RELAY, API, CERT, idle_secs=60 * next(minutes)))
+        dom = load(f"{origin}{IDLE_PAGE}", 22_000)
+        report = re.search(r"kept:(\w+) before:([^;]*) after:([^;]*);", dom)
+        check("an idle time updates without rebuilding the card",
+              bool(report) and report.group(1) == "true"
+              and report.group(2) != report.group(3) and "Idle" in report.group(3),
+              report.group(0) if report else "nothing reported")
 
         pending_url = f"{origin}{PENDING_PAGE}"
         for status in (401, 403):
