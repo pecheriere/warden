@@ -274,7 +274,7 @@ async fn no_passkey_is_removed_without_its_audit_entry() {
     passkeys::remove(&state.pool, &state.audit, &id)
         .await
         .unwrap();
-    assert!(passkeys::list(&state.pool).await.unwrap().is_empty());
+    assert_eq!(passkeys::list(&state.pool).await.unwrap().len(), 0);
     assert!(broker.audit_types().contains(&"passkey_removed".to_owned()));
 }
 
