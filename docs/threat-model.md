@@ -132,7 +132,11 @@ what was approved, and a compromised broker could misapply it.
   (a hash of the agent name and the whole request: target, user, requested
   window, goal and public key). It is 48 bits, for people to compare, so an agent
   could craft two requests that share one: it detects a mix-up, not an attacker
-  who controls both. If the owner is talking to the person or agent
+  who controls both. Both show it as five words from a fixed list, a reversible
+  way of writing the same 48 bits, with the hex beside them: the words make it easier
+  to compare, not harder to forge, and a person who compares only some of the words
+  checks fewer bits. The API, the database and the audit log hold the hex. If the
+  owner is talking to the person or agent
   that made the request, they can compare the two before approving. A mismatch
   means the owner is looking at a different request and should deny it.
 - The destination the page shows (host, port and the target's host keys; for

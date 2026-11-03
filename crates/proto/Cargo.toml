@@ -4,7 +4,8 @@ description = "Shared wire types for the warden approval broker"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-license.workspace = true
+# The code is MIT OR Apache-2.0. `src/wordlist.rs` is EFF's, under CC BY 4.0: see NOTICE.
+license = "(MIT OR Apache-2.0) AND CC-BY-4.0"
 repository.workspace = true
 
 [lints]

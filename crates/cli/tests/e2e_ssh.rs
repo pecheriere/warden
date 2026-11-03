@@ -168,6 +168,28 @@ async fn request_and_approve(s: &Setup) -> String {
     approved_grant(child).await.0
 }
 
+/// What the agent's terminal says and what the owner's page says are the same
+/// fingerprint, in both forms.
+#[tokio::test(flavor = "multi_thread")]
+async fn e2e_cli_and_approval_page_show_the_same_fingerprint() {
+    let s = setup().await;
+    let child = spawn_request(&s.cli, TARGET);
+    let token = CapturingNotifier::token(&s.broker.capture.next().await);
+    let page = s.broker.get(&format!("/approve/{token}")).await;
+    approve(&s.broker, &token).await;
+    let (_grant, stderr) = approved_grant(child).await;
+
+    let (_, rest) = stderr.split_once(", fingerprint ").unwrap();
+    let (shown, _) = rest.split_once(" — waiting").unwrap();
+    let (words, hex) = shown.split_once(" (").unwrap();
+    let hex = hex.strip_suffix(')').unwrap();
+    assert!(words.split('-').count() >= 5, "{stderr}");
+    let framed = format!(r#"<code class="fingerprint">{words}</code>"#);
+    assert!(page.body.contains(&framed), "{framed}: {}", page.body);
+    let small = format!("In hex <code>{hex}</code>");
+    assert!(page.body.contains(&small), "{small}: {}", page.body);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn e2e_request_approve_ssh_runs_command() {
     let s = setup().await;

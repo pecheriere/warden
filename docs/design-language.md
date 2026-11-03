@@ -72,8 +72,12 @@ WCAG AA contrast in both modes.
 - **Card**: `--surface`, label / value fields.
 - **Badges**: read-only (lock icon, `--soft` with a `--primary` border) and
   can modify (warning icon, `--warn-*`), always with text, never colour alone.
-- **Fingerprint box**: dashed 2 px `--primary` frame, monospace, bold, never
-  wraps (it scales down instead).
+- **Fingerprint box**: dashed 2 px `--primary` frame, with the fingerprint's
+  five words in monospace and bold, and under them its hex form in small `--muted`
+  text, for an agent or an older CLI that shows only hex. The words wrap only at
+  their hyphens, and take at most two lines.
+- **Fingerprint elsewhere** (pending cards, grants, history): the words, then the
+  hex. The words wrap only at their hyphens.
 - **Segmented control** for the grant window: real radio inputs in a
   `<fieldset>` with a legend.
 - **Buttons**: Approve filled `--primary`; Deny and Revoke with a 2 px

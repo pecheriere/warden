@@ -99,6 +99,7 @@ with tarfile.open(fileobj=buffer, mode="w", format=tarfile.PAX_FORMAT) as tar:
     add(tar, name, 0o755)
     add(tar, f"{name}/LICENSE-APACHE", 0o644, "LICENSE-APACHE")
     add(tar, f"{name}/LICENSE-MIT", 0o644, "LICENSE-MIT")
+    add(tar, f"{name}/NOTICE", 0o644, "NOTICE")
     add(tar, f"{name}/warden", 0o755, binary)
 with open(archive, "wb") as out:
     with gzip.GzipFile(filename="", mode="wb", fileobj=out, mtime=0) as packed:

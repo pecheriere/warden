@@ -5,8 +5,8 @@ use maud::{Markup, html};
 use warden_broker_proto::Access;
 
 use super::{
-    Chip, Nav, clock, destination_access, empty_icon, end_state_parts, icon, key_icon, layout,
-    window_words,
+    Chip, Nav, clock, destination_access, empty_icon, end_state_parts, fingerprint_forms, icon,
+    key_icon, layout, window_words,
 };
 use crate::requests::PendingEntry;
 
@@ -60,7 +60,7 @@ fn card(entry: &PendingEntry, now: i64) -> Markup {
                 span { bdi { (entry.request.goal) } }
             }
             div.meta {
-                span #(fingerprint) { "Fingerprint " code { (entry.fingerprint) } }
+                span #(fingerprint) { "Fingerprint " (fingerprint_forms(&entry.fingerprint)) }
                 span { "Asks for " (window_words(entry.request.window)) }
                 span {
                     "Expires " (clock(entry.expires_at)) " "
