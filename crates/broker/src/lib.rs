@@ -18,6 +18,7 @@ pub mod api;
 pub mod approval;
 pub mod audience;
 pub mod audit;
+pub mod commit_signing;
 pub mod config;
 pub mod doctor;
 pub mod enrollment;

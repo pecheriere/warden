@@ -13,6 +13,7 @@ use crate::requests::{
     ActiveGrant, Destination, HistoryEntry, LinkHosts, PendingView, window_label,
 };
 
+mod commit_signing;
 mod pending;
 mod stated;
 #[cfg(test)]
@@ -126,6 +127,7 @@ fn access_line(request: &CreateRequest, host: &str, port: u16) -> String {
         }
         Access::Ssh { target, user, .. } => format!("ssh {user}@{target} ({host}:{port})"),
         Access::Api { secret, .. } => format!("api {secret}"),
+        Access::CommitSigning {} => "commit signing".to_owned(),
     }
 }
 
@@ -214,6 +216,7 @@ fn destination_access(request: &CreateRequest, destination: &Destination) -> Mar
                 ", pinned CA: " (if policy.ca_pem.is_some() { "yes" } else { "no" })
             }
         },
+        Destination::CommitSigning(policy) => commit_signing::access(&policy.key_fingerprint),
     }
 }
 
@@ -238,6 +241,9 @@ fn grant_access(grant: &ActiveGrant) -> Markup {
                 " via the warden relay"
             }
         },
+        GrantAccess::CommitSigning(signing) => {
+            commit_signing::grant_access(&signing.key_fingerprint)
+        }
     }
 }
 
@@ -248,6 +254,18 @@ const fn window_words(window: Window) -> &'static str {
         Window::M30 => "30 min",
         Window::H1 => "1 h",
         Window::H4 => "4 h",
+        Window::D1 => "1 day",
+        Window::D7 => "7 days",
+        Window::D30 => "30 days",
+        Window::D90 => "90 days",
+    }
+}
+
+/// The windows a grant of `destination` can have, shortest first.
+const fn windows_for(destination: &Destination) -> [Window; 4] {
+    match destination {
+        Destination::CommitSigning(_) => Window::COMMIT_SIGNING,
+        Destination::Ssh(_) | Destination::Api(_) => WINDOWS,
     }
 }
 
@@ -313,11 +331,12 @@ pub fn approve(view: &PendingView, hosts: &LinkHosts, now: i64) -> Markup {
                                 (match view.destination {
                                     Destination::Ssh(_) => "target",
                                     Destination::Api(_) => "secret",
+                                    Destination::CommitSigning(_) => "signing key",
                                 }) "."
                             }
                         }
                         div.seg {
-                            @for window in WINDOWS.into_iter().filter(|w| *w <= max) {
+                            @for window in windows_for(&view.destination).into_iter().filter(|w| *w <= max) {
                                 @let id = format!("window-{}", window_label(window));
                                 input #(id) type="radio" name="window"
                                     value=(window_label(window)) checked[window == default];
@@ -487,6 +506,8 @@ enum LiveKind {
     Relay,
     /// API secret through the proxy: calls.
     Api,
+    /// Commit signing: each signature is one quick call, recorded in the log.
+    CommitSigning,
 }
 
 impl LiveKind {
@@ -495,6 +516,7 @@ impl LiveKind {
             GrantAccess::Ssh(_) => Self::Cert,
             GrantAccess::Relay(_) => Self::Relay,
             GrantAccess::Api(_) => Self::Api,
+            GrantAccess::CommitSigning(_) => Self::CommitSigning,
         }
     }
 
@@ -504,6 +526,7 @@ impl LiveKind {
             Self::Cert => "cert",
             Self::Relay => "relay",
             Self::Api => "api",
+            Self::CommitSigning => "commit-signing",
         }
     }
 }
@@ -578,6 +601,8 @@ fn live_area(grant: &ActiveGrant, live: Option<&LiveGrant<'_>>) -> Markup {
                     ", expires " (clock(grant.not_after)) "."
                 }
                 p.detail { "Certificate logins are not visible to warden, so this does not show whether it was used." }
+            } @else if kind == LiveKind::CommitSigning {
+                (commit_signing::live_note())
             } @else if summary.is_empty() {
                 p.detail { (if kind == LiveKind::Relay { "No sessions open" } else { "No calls in flight" }) }
             } @else {
@@ -660,9 +685,13 @@ pub fn grants(
                         (stated_lines(&grant.request, hosts))
                         div.meta {
                             span { "Fingerprint " (fingerprint_forms(&grant.fingerprint)) }
-                            span {
-                                "Ends " (clock(grant.not_after))
-                                " (in " (((grant.not_after - now).max(0) + 59) / 60) " min)"
+                            @if matches!(grant.access, GrantAccess::CommitSigning(_)) {
+                                (commit_signing::ends(grant.not_after, now))
+                            } @else {
+                                span {
+                                    "Ends " (clock(grant.not_after))
+                                    " (in " (((grant.not_after - now).max(0) + 59) / 60) " min)"
+                                }
                             }
                             span #(format!("grant-{}", grant.grant_id)) {
                                 "Grant " code { (grant.grant_id) }
@@ -671,8 +700,13 @@ pub fn grants(
                     }
                     // Every button reads "Revoke"; the description says whose
                     // grant and which one.
-                    button.revoke type="button" data-grant=(grant.grant_id)
-                        aria-describedby=(format!("agent-{0} grant-{0}", grant.grant_id)) { "Revoke" }
+                    div.grant-actions {
+                        @if matches!(grant.access, GrantAccess::CommitSigning(_)) {
+                            (commit_signing::renew_button(grant))
+                        }
+                        button.revoke type="button" data-grant=(grant.grant_id)
+                            aria-describedby=(format!("agent-{0} grant-{0}", grant.grant_id)) { "Revoke" }
+                    }
                     // Under the details and the button, across the card.
                     (live_area(grant, live.iter().find(|l| l.grant_id == grant.grant_id)))
                 }
@@ -714,6 +748,7 @@ pub fn history(entries: &[HistoryEntry], hosts: &LinkHosts) -> Markup {
                         @let subject = match &entry.request.access {
                             Access::Ssh { target, user, .. } => format!("{user}@{target}"),
                             Access::Api { secret, .. } => format!("api:{secret}"),
+                            Access::CommitSigning {} => "commit signing".to_owned(),
                         };
                         // On a phone each row is a card; `data-label` names
                         // the cell there, where the header row is hidden.
@@ -777,6 +812,7 @@ pub fn enroll() -> Markup {
 fn secs_label(secs: i64) -> String {
     WINDOWS
         .into_iter()
+        .chain(Window::COMMIT_SIGNING)
         .find(|w| u64::try_from(secs).is_ok_and(|s| s == w.secs()))
         .map_or_else(|| format!("{secs}s"), |w| window_label(w).to_owned())
 }
@@ -823,8 +859,8 @@ mod tests {
     use maud::Markup;
     use url::Url;
     use warden_broker_proto::{
-        Access, AgentName, ApiGrant, CreateRequest, Fingerprint, Goal, GrantAccess, Id, RelayGrant,
-        SecretName, SshGrant, TargetName, UnixUser, Window,
+        Access, AgentName, ApiGrant, CommitSigningGrant, CreateRequest, Fingerprint, Goal,
+        GrantAccess, Id, RelayGrant, SecretName, SshGrant, TargetName, UnixUser, Window,
     };
 
     use super::super::{LiveGrant, LiveProxyCall, LiveRelaySession, STYLESHEET};
@@ -832,7 +868,7 @@ mod tests {
         approve, bytes, cancelled, clock, enroll, grants, history, idle_label, internal_error,
         not_found, not_pending, secs_label, unavailable, utc_parts,
     };
-    use crate::policy::{ApiSecretPolicy, SshMode, SshTarget, ValueFormat};
+    use crate::policy::{ApiSecretPolicy, CommitSigningPolicy, SshMode, SshTarget, ValueFormat};
     use crate::requests::{
         ActiveGrant, Destination, HistoryEntry, LinkHosts, PendingEntry, PendingView,
     };
@@ -929,6 +965,37 @@ mod tests {
             ca_pem: None,
             max_window: Window::H1,
         })
+    }
+
+    fn signing_request() -> CreateRequest {
+        CreateRequest {
+            goal: goal("Sign my commits on the warden repository"),
+            access: Access::CommitSigning {},
+            window: Window::D30,
+            session: None,
+            link: None,
+        }
+    }
+
+    fn signing_destination() -> Destination {
+        Destination::CommitSigning(CommitSigningPolicy {
+            public_key: "ssh-ed25519 AAAA".to_owned(),
+            key_fingerprint: "SHA256:nThbg6kXUpJWGl7E1IGOCspRomTxdCARLviKw6E5SY8".to_owned(),
+            max_window: Window::D30,
+        })
+    }
+
+    fn signing_grants() -> Vec<ActiveGrant> {
+        let mut grant = active(
+            9,
+            signing_request(),
+            GrantAccess::CommitSigning(CommitSigningGrant {
+                key_fingerprint: "SHA256:nThbg6kXUpJWGl7E1IGOCspRomTxdCARLviKw6E5SY8".to_owned(),
+                digest: "0".repeat(64),
+            }),
+        );
+        grant.not_after = NOW + 26 * 86_400;
+        vec![grant]
     }
 
     fn pending(agent: AgentName, request: CreateRequest, destination: Destination) -> PendingView {
@@ -1194,6 +1261,49 @@ mod tests {
         ]
     }
 
+    /// The pages of a commit signing grant.
+    fn commit_signing_pages() -> Vec<(&'static str, Markup)> {
+        vec![
+            (
+                "approve-commit-signing",
+                approve(
+                    &pending(
+                        agent("build-agent"),
+                        signing_request(),
+                        signing_destination(),
+                    ),
+                    &LinkHosts::default(),
+                    NOW,
+                ),
+            ),
+            (
+                "grants-commit-signing",
+                grants(
+                    &signing_grants(),
+                    &idle(&signing_grants()),
+                    &LinkHosts::default(),
+                    NOW,
+                    0,
+                ),
+            ),
+            (
+                "history-commit-signing",
+                history(
+                    &[HistoryEntry {
+                        id: id(9),
+                        agent: agent("build-agent"),
+                        fingerprint: fingerprint(9),
+                        request: signing_request(),
+                        status: "approved".to_owned(),
+                        created_at: NOW - 600,
+                        granted_secs: Some(2_592_000),
+                    }],
+                    &LinkHosts::default(),
+                ),
+            ),
+        ]
+    }
+
     /// Pages showing the longest spelling, five of the longest words: what the
     /// layouts must hold without clipping.
     fn longest_fingerprint_pages() -> Vec<(&'static str, Markup)> {
@@ -1331,6 +1441,7 @@ mod tests {
         ]
         .into_iter()
         .chain(stated_pages())
+        .chain(commit_signing_pages())
         .chain(longest_fingerprint_pages())
         .collect()
     }

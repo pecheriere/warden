@@ -11,16 +11,20 @@
 
 use anyhow::Error;
 use url::Url;
-use warden_broker_proto::InfoResponse;
 use warden_broker_proto::doctor::{Check, Report};
 use warden_broker_proto::signing::PROTOCOL;
+use warden_broker_proto::{GrantAccess, InfoResponse};
 use zeroize::Zeroizing;
 
 use crate::client::{CallError, Client, fetch_info};
 use crate::config::{self, Config};
+use crate::setup_git::current_value;
 
 /// What replaces a bearer key the broker echoed back.
 const REDACTED: &str = "[REDACTED]";
+
+/// The name of the check of git's signing setup.
+const GIT_SIGNING: &str = "git.signing";
 
 /// What the owner does when a check needs an earlier one to be fixed first.
 const FIX_EARLIER: &str = "Fix the failure above, then run doctor again.";
@@ -37,6 +41,32 @@ pub trait Probes {
     async fn credential(&self, config: &Config) -> Result<(), String>;
     /// One authenticated call to the broker.
     async fn accepted(&self, config: &Config) -> Result<(), CallError>;
+    /// How git is set up to sign, as git itself reads it.
+    fn git_signing(&self) -> GitSigning;
+    /// What the broker says about signing for this agent.
+    async fn signing_state(&self, config: &Config) -> Result<SigningState, CallError>;
+}
+
+/// Git's settings for signing, each unset if `None`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GitSigning {
+    /// `gpg.ssh.program`.
+    pub program: Option<String>,
+    /// `gpg.format`.
+    pub format: Option<String>,
+    /// `user.signingkey`.
+    pub key: Option<String>,
+    /// `commit.gpgsign`.
+    pub sign_commits: Option<String>,
+}
+
+/// What the broker says about signing for this agent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SigningState {
+    /// Whether this agent has an active grant.
+    pub grant_active: bool,
+    /// The broker's public key. Only an agent with an active grant can ask.
+    pub public_key: Option<String>,
 }
 
 /// The real probes.
@@ -75,6 +105,35 @@ impl Probes for Live {
             .map(drop)
             .map_err(|e| without_key(e, key.as_ref()))
     }
+
+    fn git_signing(&self) -> GitSigning {
+        let value = |name: &str| current_value(name).ok().flatten();
+        GitSigning {
+            program: value("gpg.ssh.program"),
+            format: value("gpg.format"),
+            key: value("user.signingkey"),
+            sign_commits: value("commit.gpgsign"),
+        }
+    }
+
+    async fn signing_state(&self, config: &Config) -> Result<SigningState, CallError> {
+        let client =
+            Client::for_config(config).map_err(|e| CallError::Refused(format!("{e:#}")))?;
+        let grant_active = client
+            .grants()
+            .await?
+            .iter()
+            .any(|grant| matches!(grant.access, GrantAccess::CommitSigning(_)));
+        let public_key = if grant_active {
+            Some(client.commit_signing_key().await?.public_key)
+        } else {
+            None
+        };
+        Ok(SigningState {
+            grant_active,
+            public_key,
+        })
+    }
 }
 
 /// The text of a failure to load the configuration. A parse error's text quotes
@@ -109,8 +168,8 @@ pub async fn examine(probes: &impl Probes) -> Report {
         title: "warden doctor".to_owned(),
         checks: checks(probes).await,
         effects: "Read only: changed nothing on this machine. The broker saw an unauthenticated \
-                  GET /v1/info and, if the credential is available, one authenticated GET \
-                  /v1/grants."
+                  GET /v1/info and, if the credential is available, authenticated GET /v1/grants \
+                  calls and, if git signs through warden, GET /v1/commit-signing/key."
             .to_owned(),
     }
 }
@@ -129,6 +188,7 @@ async fn checks(probes: &impl Probes) -> Vec<Check> {
                 "audience",
                 "credential",
                 "broker.accepts-agent",
+                GIT_SIGNING,
             ] {
                 checks.push(Check::could_not_check(
                     name,
@@ -172,8 +232,85 @@ async fn checks(probes: &impl Probes) -> Vec<Check> {
             FIX_EARLIER,
         )
     });
+    let git = probes.git_signing();
+    let state = if through_warden(&git) && credential.is_ok() {
+        Some(probes.signing_state(&config).await)
+    } else {
+        None
+    };
+    checks.push(git_signing_check(&git, state));
     checks.push(version_check());
     checks
+}
+
+/// Whether git is set to sign through warden.
+fn through_warden(git: &GitSigning) -> bool {
+    git.program.as_deref().is_some_and(|program| {
+        std::path::Path::new(program)
+            .file_name()
+            .is_some_and(|name| name == "warden")
+    })
+}
+
+/// The check of git's signing setup: if it goes through warden, that all of it is
+/// right, and that commits will work now. `state` is `None` when the broker was not
+/// asked.
+fn git_signing_check(git: &GitSigning, state: Option<Result<SigningState, CallError>>) -> Check {
+    const SETUP: &str = "Run `warden setup git`.";
+    if !through_warden(git) {
+        return Check::pass(
+            GIT_SIGNING,
+            "Git does not sign through warden here; `warden setup git` would set that up.",
+        );
+    }
+    if git.format.as_deref() != Some("ssh") {
+        return Check::fail(GIT_SIGNING, "gpg.format is not ssh.", SETUP);
+    }
+    if git.sign_commits.as_deref() != Some("true") {
+        return Check::fail(GIT_SIGNING, "commit.gpgsign is not on.", SETUP);
+    }
+    let state = match state {
+        None => {
+            return Check::could_not_check(
+                GIT_SIGNING,
+                "Not checked: the credential is not available.",
+                FIX_EARLIER,
+            );
+        }
+        Some(Err(CallError::Unavailable(reason) | CallError::CallStopped(reason))) => {
+            return Check::could_not_check(
+                GIT_SIGNING,
+                reason,
+                "Get the broker answering, then run doctor again. Commits fail until it does.",
+            );
+        }
+        Some(Err(e)) => {
+            return Check::fail(
+                GIT_SIGNING,
+                e.to_string(),
+                "Ask the owner whether commit signing is configured on the broker.",
+            );
+        }
+        Some(Ok(state)) => state,
+    };
+    let Some(public_key) = state.public_key.filter(|_| state.grant_active) else {
+        return Check::fail(
+            GIT_SIGNING,
+            "This agent has no active commit signing grant, so `git commit` fails.",
+            "Ask the owner: warden request signing --goal \"<why this agent commits>\"",
+        );
+    };
+    if git.key.as_deref() != Some(format!("key::{public_key}").as_str()) {
+        return Check::fail(
+            GIT_SIGNING,
+            "user.signingkey is not the key the broker signs with, so commits fail.",
+            SETUP,
+        );
+    }
+    Check::pass(
+        GIT_SIGNING,
+        "Git signs through warden, and this agent has an active grant.",
+    )
 }
 
 fn audience_check(config: &Config, info: Option<&InfoResponse>) -> Check {
@@ -311,7 +448,10 @@ mod tests {
     use warden_broker_proto::signing::{Audience, PROTOCOL};
     use zeroize::Zeroizing;
 
-    use super::{Probes, describe_config_error, examine, without_key};
+    use super::{
+        GIT_SIGNING, GitSigning, Probes, SigningState, describe_config_error, examine,
+        git_signing_check, without_key,
+    };
     use crate::client::CallError;
     use crate::config::{Config, SshKeyConfig};
 
@@ -375,10 +515,100 @@ mod tests {
             ready(self.credential.clone())
         }
 
+        fn git_signing(&self) -> GitSigning {
+            GitSigning::default()
+        }
+
+        fn signing_state(
+            &self,
+            _config: &Config,
+        ) -> impl Future<Output = Result<SigningState, CallError>> {
+            ready(Err(CallError::Unavailable("not asked here".to_owned())))
+        }
+
         fn accepted(&self, _config: &Config) -> impl Future<Output = Result<(), CallError>> {
             self.called_accepted.set(true);
             ready(self.accepted.clone())
         }
+    }
+
+    fn set_up() -> GitSigning {
+        GitSigning {
+            program: Some("/opt/bin/warden".to_owned()),
+            format: Some("ssh".to_owned()),
+            key: Some("key::ssh-ed25519 AAAA".to_owned()),
+            sign_commits: Some("true".to_owned()),
+        }
+    }
+
+    fn healthy_state() -> SigningState {
+        SigningState {
+            grant_active: true,
+            public_key: Some("ssh-ed25519 AAAA".to_owned()),
+        }
+    }
+
+    #[test]
+    fn git_that_does_not_sign_through_warden_is_fine() {
+        let mut other = GitSigning::default();
+        assert_eq!(
+            git_signing_check(&other, None).status,
+            Status::Pass,
+            "not set up"
+        );
+        other.program = Some("/usr/bin/ssh-keygen".to_owned());
+        assert_eq!(git_signing_check(&other, None).status, Status::Pass);
+    }
+
+    #[test]
+    fn git_set_up_with_a_grant_passes() {
+        assert_eq!(
+            git_signing_check(&set_up(), Some(Ok(healthy_state()))).status,
+            Status::Pass
+        );
+        assert_eq!(
+            git_signing_check(&set_up(), Some(Ok(healthy_state()))).name,
+            GIT_SIGNING
+        );
+    }
+
+    #[test]
+    fn every_way_commits_would_fail_is_a_failure() {
+        let mut wrong_format = set_up();
+        wrong_format.format = None;
+        let mut not_on = set_up();
+        not_on.sign_commits = Some("false".to_owned());
+        let mut wrong_key = set_up();
+        wrong_key.key = Some("key::ssh-ed25519 BBBB".to_owned());
+        for git in [wrong_format, not_on, wrong_key] {
+            assert_eq!(
+                git_signing_check(&git, Some(Ok(healthy_state()))).status,
+                Status::Fail,
+                "{git:?}"
+            );
+        }
+        let no_grant = Some(Ok(SigningState {
+            grant_active: false,
+            public_key: None,
+        }));
+        let check = git_signing_check(&set_up(), no_grant);
+        assert_eq!(check.status, Status::Fail);
+        assert!(check.detail.contains("no active commit signing grant"));
+        let refused = Some(Err(CallError::Refused("not configured".to_owned())));
+        assert_eq!(git_signing_check(&set_up(), refused).status, Status::Fail);
+    }
+
+    #[test]
+    fn a_broker_that_gave_no_answer_is_not_a_verdict() {
+        let out = Some(Err(CallError::Unavailable("down".to_owned())));
+        assert_eq!(
+            git_signing_check(&set_up(), out).status,
+            Status::CouldNotCheck
+        );
+        assert_eq!(
+            git_signing_check(&set_up(), None).status,
+            Status::CouldNotCheck
+        );
     }
 
     fn check<'a>(report: &'a Report, name: &str) -> &'a Check {

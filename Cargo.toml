@@ -64,6 +64,9 @@ russh = { version = "=0.65.0", default-features = false, features = ["aws-lc-rs"
 # RUSTSEC-2026-0387 affects and no release fixes. russh already links 0.14.
 p256 = { version = "0.14.0", default-features = false, features = ["ecdsa"] }
 sha2 = "0.11.1"
+# Only to compute the id git gives a signed commit in a SHA-1 repository, for
+# the audit log: never to check or protect anything.
+sha1 = "0.11.0"
 zeroize = "1.9.1"
 subtle = "2.6.1"
 secrecy = "0.10.3"

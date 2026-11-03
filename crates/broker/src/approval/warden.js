@@ -170,6 +170,19 @@
         }
       });
     }
+    // Renewing asks for a new approval: on to its page, for the passkey.
+    for (const button of document.querySelectorAll('button.renew')) {
+      button.addEventListener('click', async () => {
+        button.disabled = true;
+        try {
+          const opened = await post(`/grants/${encodeURIComponent(button.dataset.grant)}/renew`, {});
+          window.location.assign(opened.link);
+        } catch (error) {
+          show(error.message, false);
+          button.disabled = false;
+        }
+      });
+    }
   };
 
   // --- polling ------------------------------------------------------------------
@@ -634,7 +647,8 @@
           ended.push(area.closest('section.grant'));
           continue;
         }
-        if (area.dataset.kind === 'cert') continue;
+        // Nothing live to show on these: the note the server wrote stays.
+        if (area.dataset.kind === 'cert' || area.dataset.kind === 'commit-signing') continue;
         const key = liveKey(live);
         if (shown.get(area.dataset.grant) === key) {
           updateIdle(area, live);

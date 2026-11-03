@@ -587,6 +587,8 @@ async fn build_app(config: &Arc<Config>) -> Result<App> {
         relay,
     )
     .with_limits(config.requests)
+    .with_commit_signing_max(config.commit_signing_max_window)
+    .with_commit_signing_per_day(config.commit_signing_max_per_day)
     .with_link_hosts(config.link_hosts.clone())
     .with_call_limits(config.proxy.max_calls_per_agent, config.proxy.max_calls);
     let passkeys = Passkeys::new(

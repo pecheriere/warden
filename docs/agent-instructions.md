@@ -106,6 +106,21 @@ warden http <secret> <METHOD> <url> --fail
 secret never reaches you, so do not try to read it. `warden status` lists
 your grants.
 
+### Commits, if this machine signs through warden
+
+If `warden setup git` was run here, git commits are signed by the broker with no prompt,
+and a commit fails without that. If it fails saying there is no active commit signing
+grant, ask once, not per commit, then commit again. Setting up a new machine takes a grant
+too, so ask first and then run `warden setup git`:
+
+```sh
+warden request signing --goal "<which agent, and what it commits to>"
+```
+
+If it fails because the broker cannot be reached, stop and tell the person. Do not turn
+signing off, and do not commit another way, to get past this. A signature says warden signed
+for you, not that anyone reviewed your change.
+
 ### When you are finished
 
 Revoke the grant as soon as the task is done, also when it failed. Do not let
