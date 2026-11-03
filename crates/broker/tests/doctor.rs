@@ -80,7 +80,9 @@ impl Deployment {
 
     fn command(&self) -> Command {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_warden-server"));
+        // Only `cargo llvm-cov` sets this: without it, this process reports no coverage.
         cmd.env_clear()
+            .envs(std::env::var_os("LLVM_PROFILE_FILE").map(|file| ("LLVM_PROFILE_FILE", file)))
             .env("WARDEN_DB_PATH", self.path("warden.db"))
             .env("WARDEN_AUDIT_PATH", self.path("audit.jsonl"))
             .env("WARDEN_AUDIENCE_PATH", self.path("audience"))

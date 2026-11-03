@@ -103,7 +103,7 @@ fn layout(title: &str, current: Option<Nav>, with_script: bool, content: &Markup
                         summary.menu aria-label="Menu" {
                             (icon(20, "2", &html! { path d="M4 7h16M4 12h16M4 17h16" {} }))
                         }
-                        nav aria-label="Main" { (nav_links(current)) }
+                        nav aria-label="Main menu" { (nav_links(current)) }
                     }
                 }
                 (content)
@@ -770,6 +770,8 @@ const fn civil_from_days(days: i64) -> (i64, i64, i64) {
 
 #[cfg(test)]
 mod tests {
+    mod accessibility;
+
     use std::path::PathBuf;
 
     use http::{HeaderName, Method};

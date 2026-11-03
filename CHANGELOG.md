@@ -6,6 +6,13 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Approval UI accessibility: the selected grant window now has a border with at
+  least 3:1 contrast against its track in light and dark, the two navigation
+  landmarks have different labels, each card on the pending screen is a heading a
+  screen reader can move to, and the text of an ended pending card keeps 4.5:1.
+
 ## [0.9.0] - 2026-11-02
 
 ### Upgrading

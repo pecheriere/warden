@@ -306,4 +306,28 @@ mod tests {
             Err(AudienceError::Invalid { .. })
         ));
     }
+
+    #[test]
+    fn a_file_that_is_not_text_is_refused_and_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audience");
+        let bytes = [0xff_u8; 32];
+        std::fs::write(&path, bytes).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(matches!(
+            load_or_create_blocking(&path),
+            Err(AudienceError::Invalid { .. })
+        ));
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn a_directory_in_its_place_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audience");
+        std::fs::create_dir(&path).unwrap();
+        let err = load_or_create_blocking(&path).unwrap_err();
+        assert!(err.to_string().contains("not a regular file"), "{err}");
+        assert!(path.is_dir());
+    }
 }
