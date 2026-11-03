@@ -11,7 +11,7 @@ use sqlx::sqlite::SqliteConnectOptions;
 use sqlx::{ConnectOptions as _, Row as _};
 use ssh_key::Certificate;
 use warden_broker::agents;
-use warden_broker::approval::passkeys::PasskeyError;
+use warden_broker::approval::passkeys::{self, PasskeyError};
 use warden_broker::requests::{AuditOutcome, Clock as _, RequestError, RequestLimits, sha256_hex};
 use warden_broker::testkit::{FakeBackend, SoftAuthenticator, TestBroker, TestResponse};
 use warden_broker_proto::{
@@ -256,6 +256,26 @@ async fn no_enrollment_code_exists_without_its_audit_entry() {
     repair_audit_log(&broker, &good);
     broker.enrollment_code().await;
     assert_eq!(row_count(&broker, "enrollment_codes").await, 1);
+}
+
+#[tokio::test]
+async fn no_passkey_is_removed_without_its_audit_entry() {
+    let broker = TestBroker::new().await;
+    broker.enroll_soft_passkey().await;
+    let state = broker.state();
+    let id = passkeys::list(&state.pool).await.unwrap()[0].id.clone();
+
+    let good = break_audit_log(&broker);
+    let got = passkeys::remove(&state.pool, &state.audit, &id).await;
+    assert!(matches!(got, Err(PasskeyError::Audit(_))), "{got:?}");
+    assert_eq!(passkeys::list(&state.pool).await.unwrap().len(), 1);
+
+    repair_audit_log(&broker, &good);
+    passkeys::remove(&state.pool, &state.audit, &id)
+        .await
+        .unwrap();
+    assert_eq!(passkeys::list(&state.pool).await.unwrap().len(), 0);
+    assert!(broker.audit_types().contains(&"passkey_removed".to_owned()));
 }
 
 // --- revocation works without the log ---------------------------------------
