@@ -52,8 +52,8 @@ use crate::config::Config;
 use crate::identity::TailscaleServeIdentity;
 use crate::notify::{Doorbell, Notifier, NotifyError};
 use crate::policy::{
-    ApiSecretPolicy, CaKey, PolicyError, RelayCredential, SecretBackend, SecretValue, SshMode,
-    SshTarget, ValueFormat, not_a_relay_target,
+    ApiSecretPolicy, CaKey, CommitSigningKey, PolicyError, RelayCredential, SecretBackend,
+    SecretValue, SshMode, SshTarget, ValueFormat, not_a_relay_target,
 };
 use crate::proxy::{CallInfo, ProxyLimits};
 use crate::relay::{RelayEndpoint, RelayLimits, RelayServer, host_key};
@@ -225,10 +225,25 @@ pub struct FakeBackend {
     api_secrets: Mutex<HashMap<String, (ApiSecretPolicy, Zeroizing<String>)>>,
     api_swap: Mutex<Option<(ApiSecretPolicy, Zeroizing<String>)>>,
     ca: PrivateKey,
+    commit_signing: Mutex<Option<PrivateKey>>,
+    commit_signing_outage: Mutex<Option<String>>,
+    commit_signing_reads: std::sync::atomic::AtomicUsize,
     target_outage: Mutex<Option<String>>,
     ca_outage: Mutex<Option<String>>,
+    ca_state: Mutex<CaState>,
     api_outage: Mutex<Option<String>>,
     relay_read_delay: Mutex<Option<Duration>>,
+}
+
+/// What [`FakeBackend`] has for an SSH CA.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaState {
+    /// A usable key.
+    Usable,
+    /// None configured.
+    Absent,
+    /// Configured but unusable, as with two items or a malformed key.
+    Unusable,
 }
 
 impl FakeBackend {
@@ -244,8 +259,14 @@ impl FakeBackend {
             api_secrets: Mutex::new(HashMap::new()),
             api_swap: Mutex::new(None),
             ca: PrivateKey::random(&mut OsRng, Algorithm::Ed25519).expect("CA key generation"),
+            commit_signing: Mutex::new(Some(
+                PrivateKey::random(&mut OsRng, Algorithm::Ed25519).expect("key generation"),
+            )),
+            commit_signing_outage: Mutex::new(None),
+            commit_signing_reads: std::sync::atomic::AtomicUsize::new(0),
             target_outage: Mutex::new(None),
             ca_outage: Mutex::new(None),
+            ca_state: Mutex::new(CaState::Usable),
             api_outage: Mutex::new(None),
             relay_read_delay: Mutex::new(None),
         }
@@ -447,6 +468,76 @@ impl FakeBackend {
         *self.ca_outage.lock().expect("outage lock poisoned") = detail.map(str::to_owned);
     }
 
+    /// Make commit signing key lookups fail with [`PolicyError::Unavailable`]
+    /// carrying `detail` (`None` restores them).
+    ///
+    /// # Panics
+    /// If the lock is poisoned.
+    pub fn set_commit_signing_outage(&self, detail: Option<&str>) {
+        *self
+            .commit_signing_outage
+            .lock()
+            .expect("outage lock poisoned") = detail.map(str::to_owned);
+    }
+
+    /// Replace the commit signing key (`None`: no key is configured).
+    ///
+    /// # Panics
+    /// If the lock is poisoned.
+    pub fn set_commit_signing_key(&self, key: Option<PrivateKey>) {
+        *self.commit_signing.lock().expect("key lock poisoned") = key;
+    }
+
+    /// How many times the commit signing private key has been read.
+    #[must_use]
+    pub fn commit_signing_reads(&self) -> usize {
+        self.commit_signing_reads
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// The SSH CA's private key, to configure the same key for something else.
+    #[must_use]
+    pub fn ca_private_key(&self) -> PrivateKey {
+        self.ca.clone()
+    }
+
+    /// The commit signing key's public half.
+    ///
+    /// # Panics
+    /// If the lock is poisoned or no key is configured.
+    #[must_use]
+    pub fn commit_signing_public_key(&self) -> PublicKey {
+        self.commit_signing
+            .lock()
+            .expect("key lock poisoned")
+            .as_ref()
+            .expect("a commit signing key")
+            .public_key()
+            .clone()
+    }
+
+    /// The commit signing key's private half, so that a test can look for it in
+    /// what the broker wrote.
+    ///
+    /// # Panics
+    /// If the lock is poisoned or no key is configured.
+    #[must_use]
+    pub fn commit_signing_private_key(&self) -> PrivateKey {
+        self.commit_signing
+            .lock()
+            .expect("key lock poisoned")
+            .clone()
+            .expect("a commit signing key")
+    }
+
+    /// Say whether the SSH CA is there, and usable.
+    ///
+    /// # Panics
+    /// If the lock is poisoned.
+    pub fn set_ca_state(&self, state: CaState) {
+        *self.ca_state.lock().expect("CA state lock poisoned") = state;
+    }
+
     /// Make every read of a relay target with its credential take `delay`
     /// before answering, as a slow secret backend would (`None` restores
     /// them).
@@ -527,7 +618,46 @@ impl SecretBackend for FakeBackend {
 
     async fn ssh_ca(&self) -> Result<CaKey, PolicyError> {
         Self::outage(&self.ca_outage)?;
-        CaKey::new(self.ca.clone())
+        let state = *self
+            .ca_state
+            .lock()
+            .map_err(|_| PolicyError::Unavailable("fake backend lock poisoned".to_owned()))?;
+        match state {
+            CaState::Usable => CaKey::new(self.ca.clone()),
+            CaState::Absent => Err(PolicyError::Ca("no item is tagged".to_owned())),
+            CaState::Unusable => Err(PolicyError::Ca("2 items are tagged".to_owned())),
+        }
+    }
+
+    async fn has_ssh_ca(&self) -> Result<bool, PolicyError> {
+        Self::outage(&self.ca_outage)?;
+        let state = *self
+            .ca_state
+            .lock()
+            .map_err(|_| PolicyError::Unavailable("fake backend lock poisoned".to_owned()))?;
+        Ok(state != CaState::Absent)
+    }
+
+    async fn has_commit_signing_key(&self) -> Result<bool, PolicyError> {
+        Self::outage(&self.commit_signing_outage)?;
+        Ok(self
+            .commit_signing
+            .lock()
+            .map_err(|_| PolicyError::Unavailable("fake backend lock poisoned".to_owned()))?
+            .is_some())
+    }
+
+    async fn commit_signing_key(&self) -> Result<CommitSigningKey, PolicyError> {
+        Self::outage(&self.commit_signing_outage)?;
+        self.commit_signing_reads
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let key = self
+            .commit_signing
+            .lock()
+            .map_err(|_| PolicyError::Unavailable("fake backend lock poisoned".to_owned()))?
+            .clone()
+            .ok_or(PolicyError::NoCommitSigningKey)?;
+        CommitSigningKey::new(key)
     }
 
     async fn api_secret(&self, name: &SecretName) -> Result<ApiSecretPolicy, PolicyError> {
@@ -593,12 +723,27 @@ pub struct BaseUrls {
 
 /// The limits a test may change from the broker's defaults; kept across
 /// [`TestBroker::restart`].
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 struct Limits {
     proxy: ProxyLimits,
     requests: RequestLimits,
     link_hosts: LinkHosts,
     body_read_timeout: BodyReadTimeout,
+    commit_signing_max: Window,
+    commit_signing_per_day: u32,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            proxy: ProxyLimits::default(),
+            requests: RequestLimits::default(),
+            body_read_timeout: BodyReadTimeout::default(),
+            commit_signing_max: Window::COMMIT_SIGNING_DEFAULT,
+            commit_signing_per_day: crate::requests::SIGNATURES_PER_DAY,
+            link_hosts: LinkHosts::default(),
+        }
+    }
 }
 
 /// A broker running in-process: real state, real routes driven with
@@ -736,6 +881,36 @@ impl TestBroker {
         Self::fresh(
             Limits {
                 proxy,
+                ..Limits::default()
+            },
+            Some(format!("{RELAY_PUBLIC_HOST}:{RELAY_PUBLIC_PORT}")),
+        )
+        .await
+    }
+
+    /// Like [`TestBroker::new`], with `WARDEN_COMMIT_SIGNING_MAX_WINDOW` at this.
+    ///
+    /// # Panics
+    /// If any part of the setup fails.
+    pub async fn with_commit_signing_max(commit_signing_max: Window) -> Self {
+        Self::fresh(
+            Limits {
+                commit_signing_max,
+                ..Limits::default()
+            },
+            Some(format!("{RELAY_PUBLIC_HOST}:{RELAY_PUBLIC_PORT}")),
+        )
+        .await
+    }
+
+    /// Like [`TestBroker::new`], with `WARDEN_COMMIT_SIGNING_MAX_PER_DAY` at this.
+    ///
+    /// # Panics
+    /// If any part of the setup fails.
+    pub async fn with_commit_signing_per_day(commit_signing_per_day: u32) -> Self {
+        Self::fresh(
+            Limits {
+                commit_signing_per_day,
                 ..Limits::default()
             },
             Some(format!("{RELAY_PUBLIC_HOST}:{RELAY_PUBLIC_PORT}")),
@@ -897,6 +1072,8 @@ impl TestBroker {
             relay_endpoint,
         )
         .with_limits(limits.requests)
+        .with_commit_signing_max(limits.commit_signing_max)
+        .with_commit_signing_per_day(limits.commit_signing_per_day)
         .with_link_hosts(limits.link_hosts.clone())
         .with_call_limits(config.proxy.max_calls_per_agent, config.proxy.max_calls);
         let passkeys = Passkeys::new(
@@ -1316,6 +1493,21 @@ impl TestBroker {
             *user = UnixUser::try_from("backup".to_owned()).expect("valid user");
         }
         request
+    }
+
+    /// A request for commit signing.
+    ///
+    /// # Panics
+    /// If `goal` is not a valid goal.
+    #[must_use]
+    pub fn commit_signing_request(goal: &str, window: Window) -> CreateRequest {
+        CreateRequest {
+            goal: Goal::try_from(goal.to_owned()).expect("valid goal"),
+            access: Access::CommitSigning {},
+            window,
+            session: None,
+            link: None,
+        }
     }
 
     /// A request to use API secret `secret`.

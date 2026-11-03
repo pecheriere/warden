@@ -11,6 +11,9 @@ nothing the build runs can change the answer.
 `check` looks inside one archive, without unpacking it, for the files it must hold.
 CI runs this on each build.
 
+`packages` prints the names of the CLI's .deb and .rpm files, which
+scripts/package-linux.sh makes and checks from the attested CLI archives.
+
 `collect` runs on the artifacts of one product's builds, in the job that attests
 them and not in a build, and copies the archives into one directory only when each
 is exactly what it should be. That directory is what gets attested.
@@ -28,8 +31,9 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
-PLATFORMS = ("linux-amd64", "linux-arm64", "macos-arm64")
-LICENSES = ("LICENSE-APACHE", "LICENSE-MIT")
+LINUX = ("linux-amd64", "linux-arm64")
+PLATFORMS = (*LINUX, "macos-arm64")
+LICENSES = ("LICENSE-APACHE", "LICENSE-MIT", "NOTICE")
 
 
 @dataclass(frozen=True)
@@ -39,6 +43,7 @@ class Product:
     prefix: str
     binary: str
     extra_files: tuple[str, ...] = ()
+    platforms: tuple[str, ...] = PLATFORMS
 
 
 PRODUCTS = {
@@ -48,6 +53,7 @@ PRODUCTS = {
         binary="warden-demo",
         extra_files=("NOT-FOR-REAL-USE.txt",),
     ),
+    "server": Product(prefix="warden-server", binary="warden-server", platforms=LINUX),
 }
 
 
@@ -57,7 +63,20 @@ class ArchiveError(Exception):
 
 def archive_name(product: str, version: str, platform: str) -> str:
     """Name the one file the job for this product and platform may produce."""
-    return f"{PRODUCTS[product].prefix}-{version}-{platform}.tar.gz"
+    spec = PRODUCTS[product]
+    if platform not in spec.platforms:
+        message = f"{product} is not released for {platform}"
+        raise ArchiveError(message)
+    return f"{spec.prefix}-{version}-{platform}.tar.gz"
+
+
+def package_names(version: str) -> list[str]:
+    """Name the CLI's Linux packages, the only ones a release holds."""
+    return [
+        name
+        for deb_arch, rpm_arch in (("amd64", "x86_64"), ("arm64", "aarch64"))
+        for name in (f"warden_{version}_{deb_arch}.deb", f"warden-{version}-1.{rpm_arch}.rpm")
+    ]
 
 
 def check_archive(path: Path, product: str, version: str, platform: str) -> None:
@@ -92,7 +111,7 @@ def check_archive(path: Path, product: str, version: str, platform: str) -> None
 
 def collect(product: str, artifacts: Path, out: Path, version: str) -> list[Path]:
     """Copy a product's archives into `out` if each artifact holds exactly its own file."""
-    wanted = {f"archive-{product}-{platform}": platform for platform in PLATFORMS}
+    wanted = {f"archive-{product}-{platform}": platform for platform in PRODUCTS[product].platforms}
     found = {entry.name for entry in artifacts.iterdir()}
     if found != set(wanted):
         message = (
@@ -133,6 +152,7 @@ def main(argv: list[str]) -> int:
         sub.add_argument("platform", choices=PLATFORMS)
         if command == "check":
             sub.add_argument("archive", type=Path)
+    commands.add_parser("packages")
     sub = commands.add_parser("collect")
     sub.add_argument("product", choices=sorted(PRODUCTS))
     sub.add_argument("artifacts", type=Path)
@@ -143,6 +163,8 @@ def main(argv: list[str]) -> int:
     try:
         if args.command == "name":
             print(archive_name(args.product, version, args.platform))
+        elif args.command == "packages":
+            print("\n".join(package_names(version)))
         elif args.command == "check":
             check_archive(args.archive, args.product, version, args.platform)
             print(f"ok: {args.archive.name}")

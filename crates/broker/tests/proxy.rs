@@ -526,9 +526,10 @@ async fn slow_upstream_times_out() {
         ..ProxyLimits::default()
     };
     let s = setup_with(limits, |_| {}).await;
-    let started = Instant::now();
-    let resp = get(&s, "/slow").await;
-    assert!(started.elapsed() < Duration::from_secs(10));
+    // Short of the minute `/slow` takes to end by itself.
+    let resp = tokio::time::timeout(Duration::from_secs(30), get(&s, "/slow"))
+        .await
+        .expect("the upstream timeout never fired");
     assert_eq!(resp.status, StatusCode::GATEWAY_TIMEOUT, "{}", resp.body);
     assert_eq!(resp.body, r#"{"error":"upstream timed out"}"#);
     assert!(
@@ -618,7 +619,7 @@ async fn upstream_connect_timeout_is_a_fixed_504() {
     });
     let limits = ProxyLimits {
         connect_timeout: Duration::from_millis(500),
-        timeout: Duration::from_secs(60),
+        timeout: Duration::from_secs(600),
         ..ProxyLimits::default()
     };
     let s = setup_with(limits, |p| {
@@ -628,9 +629,13 @@ async fn upstream_connect_timeout_is_a_fixed_504() {
     })
     .await;
     let url = format!("https://127.0.0.1:{port}/v1/hello");
-    let started = Instant::now();
-    let resp = call_as(&s.broker, &s.key, &s.grant, "GET", &url, None).await;
-    assert!(started.elapsed() < Duration::from_secs(10));
+    // Far short of the overall timeout, which would answer the same.
+    let resp = tokio::time::timeout(
+        Duration::from_secs(60),
+        call_as(&s.broker, &s.key, &s.grant, "GET", &url, None),
+    )
+    .await
+    .expect("the connect timeout never fired");
     held.abort();
     assert_eq!(resp.status, StatusCode::GATEWAY_TIMEOUT, "{}", resp.body);
     assert_eq!(resp.body, r#"{"error":"upstream timed out"}"#);

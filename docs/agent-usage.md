@@ -73,6 +73,25 @@ install -m 0755 "warden-$version-$platform/warden" ~/.local/bin/warden
 rather than a browser: the binary is not notarized, and macOS may block one
 that a browser downloaded.
 
+On Debian, Ubuntu, Fedora or RHEL, releases after v0.9.0 also attach `.deb` and `.rpm`
+packages of the same binary, which bring in what it needs. Download one, check it the
+same way, and install it. Nothing updates it for you, because there is no package
+repository, so install the next release's package yourself:
+
+```sh
+version=x.y.z
+file="warden_${version}_amd64.deb"      # or arm64
+# file="warden-$version-1.x86_64.rpm"   # or aarch64
+curl -fLO "https://github.com/pecheriere/warden/releases/download/v$version/$file"
+gh attestation verify "$file" --repo pecheriere/warden \
+  --signer-workflow pecheriere/warden/.github/workflows/release.yml \
+  --source-ref "refs/tags/v$version"
+sudo apt install "./$file"              # or: sudo dnf install "./$file"
+```
+
+The packages hold only the CLI. They are not signed with a package key, so
+`dnf install` of a local file relies on the check above.
+
 On another platform, build it instead, with Rust 1.99 or later. For an older
 release, which has no binaries, use its tag in the same command:
 
@@ -338,11 +357,16 @@ is pinned.
 `warden request` prints this to stderr:
 
 ```
-request 0b8f4c1e…, fingerprint b65b-9812-eb72 — waiting for approval…
+request 0b8f4c1e…, fingerprint dozed-crawfish-kayak-ascend-answer (b65b-9812-eb72) — waiting for approval…
 ```
 
 The approval page shows the same fingerprint. A mismatch means the request
 the owner sees is not yours, and they should deny it.
+
+The words and the hex in brackets are the same 48 bits written two ways, not two
+checks: the words are for people, to compare at a glance or read aloud, and the hex
+is what the API and the audit log carry. The page shows both, so an agent or an older
+`warden` that shows only hex can still be compared with it.
 
 Only one request per agent and target (or secret and scope) can be pending
 at a time. If one is pending, `warden request` waits on it only when the
@@ -357,7 +381,8 @@ fingerprints match:
 
 A [session label or link](#telling-sessions-apart) is part of the fingerprint too.
 
-When it stops, it prints the pending request's ID and fingerprint, says that it
+When it stops, it prints the pending request's ID and fingerprint in both forms,
+says that it
 expires within 10 minutes of being made, and gives the command to withdraw it:
 `warden request cancel <id>`.
 
@@ -406,6 +431,7 @@ What you can do next depends on the kind of request:
 | | While it is pending | After it is approved |
 |---|---|---|
 | `warden request api` | Run the same command again, with the same goal, window, methods, path, session label and link, to wait on the same request. The owner gets no second notification. | `warden status` lists the grant under `broker grants:` as not on this machine. Run `warden request collect <grant-id>`, and `warden http` can use it. |
+| `warden request signing` | Run the same command again, with the same goal, window, session label and link, to wait on the same request. | Nothing to do: the broker signs under the grant, which needs nothing on this machine, so `git commit` works once git is [set up](#signing-commits). `warden request collect` says so and exits 1. |
 | `warden request ssh` | **It cannot be completed, even if the owner approves it.** Withdraw it with `warden request cancel <id>`, then make a new request. | **The grant cannot be used.** Run `warden revoke <grant-id>`, then make a new request if the task still needs the access. |
 
 An SSH request cannot be recovered because `warden request ssh` makes a new key for
@@ -443,6 +469,16 @@ You can cancel only your own requests, and only while they are pending. The
 approval link of a cancelled request shows "Cancelled by the agent." and
 cannot be approved; the request appears as `cancelled` in the owner's
 history and the audit log.
+
+### Commit signing
+
+```sh
+warden request signing --goal "Sign build-agent's commits on the warden repo"
+```
+
+This is the one grant that lasts long: 30 days by default, with `--for 1d`, `7d`, `30d` or
+`90d` up to what the server allows, because a rebase can need many signatures and none of
+them should need a prompt. Ask once, not per commit. See [Signing commits](#signing-commits).
 
 ### Telling sessions apart
 
@@ -595,6 +631,31 @@ you request again.
 `warden status` lists the grants on this machine, and the broker's view of
 your live grants and pending requests.
 
+### Signing commits
+
+Once, on each machine, with a grant: `warden setup git`. It makes this program git's `gpg.ssh.program`,
+sets `user.signingkey` to the broker's public key and turns on `commit.gpgsign`, so that
+`git commit`, `git rebase` and the rest work as usual. The key stays on the broker, which
+returns only the signature. Verifying goes to the real `ssh-keygen`.
+
+A signature means warden signed the commit for this agent, not that anyone reviewed the
+change. A commit does not say which repository or branch it is for, so warden does not ask.
+
+With this set up, a commit needs a signature. It fails, with the reason on stderr, when:
+
+| What git shows | What to do |
+|---|---|
+| The agent has no active commit signing grant (it never had one, or it ended or was revoked). | `warden request signing --goal "..."`, then commit again. If the owner revoked it, ask them why before asking again. |
+| The grant has reached its limit of signatures for today, 5000 by default. | warden tries to notify the owner, so tell them too. It starts again at 00:00 UTC. If you did not mean to make this many, stop and find out why. |
+| The broker cannot be reached. | As in [When the broker is unreachable](#when-the-broker-is-unreachable): tell the owner and commit again once it answers. |
+| The broker signs with another key than `user.signingkey`, or says the key changed. | The owner replaced the key: run `warden setup git`, and ask for a new grant. |
+
+Do not turn signing off to get past this. If the task needs a commit and signing is not
+available, stop and tell the owner.
+
+Tags are not signed: a tag object is refused, whatever the grant. `warden doctor` checks all
+of this, and the owner sees every signature in the audit log.
+
 ## Ending a grant
 
 When the work is done, revoke the grant. Do not let it run out on its own:
@@ -630,7 +691,7 @@ is reported once on stderr and never stops the command.
 | 2 | The request was denied. Do not retry the same request. Ask the owner what to change. |
 | 3 | The request expired without a decision. The owner may be away. Retry later, not in a loop. |
 | 4 | The grant was revoked: reported by `warden request`, or by `warden http` when the broker says the grant it used was revoked. `warden http` then removes the stale local record; request access again. |
-| 5 | `warden ssh` or `warden http` found no active grant (for `warden http`, none that covers the method and path), or the broker said the grant `warden http` used has expired, whose local record is then removed. The message gives the `warden request …` command to run if the task needs it. `warden request collect` exits 5 too, when the grant is not live or is an SSH grant whose key is lost. |
+| 5 | Called by git to sign a commit, with no active commit signing grant. `warden ssh` or `warden http` found no active grant (for `warden http`, none that covers the method and path), or the broker said the grant `warden http` used has expired, whose local record is then removed. The message gives the `warden request …` command to run if the task needs it. `warden request collect` exits 5 too, when the grant is not live or is an SSH grant whose key is lost. |
 | 6 | The request was cancelled while `warden request` waited for it (`warden request cancel` from another terminal). |
 | 7 | `warden doctor --strict` found no failure, but could not check everything: see [Checking an agent machine](configuration.md#checking-an-agent-machine). Without `--strict` it exits 0 and lists those items. It exits 1 when a check failed. |
 | 8 | The broker stopped a `warden http` call that was out, because it could not read the grant's state. No response came back, and the API may have acted on the call: find out before repeating one that changes something. The grant stays; if this repeats, tell the owner. |
@@ -666,6 +727,7 @@ never try to get around warden by any other route.
   different OS users with different agent keys.
 - **Revoking a proxied call in flight cannot undo it.** The call stops, but the API
   may already have acted on it.
+- **Revoking commit signing does not undo a signature.** It stops new ones.
 - **Revoking does not invalidate an issued certificate** on the target
   ([issue #35][i35]).
 

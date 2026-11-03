@@ -46,19 +46,21 @@ warden request api <secret> --methods POST --path <prefix> --for 15m --goal "<wh
 so it can wait that long, in the background if your tools time out sooner, and
 do not start a second one meanwhile: it would not notify them again. If they
 missed the notification, the request is on the Pending page of their approval UI.
-It prints a fingerprint on stderr: tell the person, so they can compare it with the
-approval page. Do not pipe it through a command that holds output until the end,
-such as `tail`: you would not see the fingerprint or the request ID. If you no
-longer need the access, withdraw the request with Ctrl-C, or:
+It prints a fingerprint on stderr, as five words and as hex: tell the person the
+words, so they can compare them with the approval page. Do not pipe it through a
+command that holds output until the end, such as `tail`: you would not see the
+fingerprint or the request ID. If you no longer need the access, withdraw the
+request with Ctrl-C, or:
 
 ```sh
 warden request cancel <request-id>
 ```
 
 If the command was killed or you lost its output, `warden status` lists your pending
-requests and live grants, and asks the person nothing. For an API request still
-pending, run the same command again to wait on it. For an API grant that status
-says is not on this machine:
+requests and live grants, and asks the person nothing. For an API or commit signing
+request still pending, run the same command again to wait on it. A commit signing
+grant then needs nothing more. For an API grant that status says is not on this
+machine:
 
 ```sh
 warden request collect <grant-id>
@@ -119,6 +121,21 @@ warden http <secret> <METHOD> <url> --fail
 `warden http` exits 0 for any upstream status unless you pass `--fail`. The
 secret never reaches you, so do not try to read it. `warden status` lists
 your grants.
+
+### Commits, if this machine signs through warden
+
+If `warden setup git` was run here, git commits are signed by the broker with no prompt,
+and a commit fails without that. If it fails saying there is no active commit signing
+grant, ask once, not per commit, then commit again. Setting up a new machine takes a grant
+too, so ask first and then run `warden setup git`:
+
+```sh
+warden request signing --goal "<which agent, and what it commits to>"
+```
+
+If it fails because the broker cannot be reached, stop and tell the person. Do not turn
+signing off, and do not commit another way, to get past this. A signature says warden signed
+for you, not that anyone reviewed your change.
 
 ### When you are finished
 

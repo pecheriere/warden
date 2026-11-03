@@ -27,9 +27,10 @@ identity=pecheriere@users.noreply.github.com
 namespace=warden-release
 # Every archive the release workflow attaches. warden-demo is the local demo: it is
 # signed like the rest, because the signature says who approved a file, not that it
-# is fit for real use.
+# is fit for real use. warden-server is released for Linux only.
 archive_names=(warden warden-demo)
 platforms=(linux-amd64 linux-arm64 macos-arm64)
+linux_platforms=(linux-amd64 linux-arm64)
 
 fail() {
   echo "error: $*" >&2
@@ -93,8 +94,17 @@ expected=$(
     for platform in "${platforms[@]}"; do
       echo "$name-$version-$platform.tar.gz"
     done
-  done | LC_ALL=C sort
+  done
+  for platform in "${linux_platforms[@]}"; do
+    echo "warden-server-$version-$platform.tar.gz"
+  done
+  # The CLI's Linux packages.
+  echo "warden_${version}_amd64.deb"
+  echo "warden_${version}_arm64.deb"
+  echo "warden-$version-1.x86_64.rpm"
+  echo "warden-$version-1.aarch64.rpm"
 )
+expected=$(LC_ALL=C sort <<< "$expected")
 allowed=$expected$'\n'warden-$version-SHA256SUMS$'\n'warden-$version-SHA256SUMS.sig
 assets=$(gh release view "$tag" --repo "$repo" --json assets --jq '.assets[].name')
 while IFS= read -r asset; do
@@ -102,7 +112,8 @@ while IFS= read -r asset; do
 done <<< "$assets"
 
 mkdir "$work/assets"
-gh release download "$tag" --repo "$repo" --pattern 'warden-*.tar.gz' --dir "$work/assets"
+gh release download "$tag" --repo "$repo" --dir "$work/assets" \
+  --pattern 'warden-*.tar.gz' --pattern 'warden_*.deb' --pattern 'warden-*.rpm'
 found=$(cd "$work/assets" && LC_ALL=C ls)
 [ "$found" = "$expected" ] || fail "the draft holds unexpected archives:"$'\n'"$found"
 

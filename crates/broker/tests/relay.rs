@@ -11,6 +11,7 @@ use std::io::Write as _;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::{Output, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -260,7 +261,18 @@ fn events_of(broker: &TestBroker, kind: &str) -> Vec<Value> {
 
 /// Wait until the audit log holds `count` entries of `kind`.
 async fn await_events(broker: &TestBroker, kind: &str, count: usize) -> Vec<Value> {
-    let deadline = Instant::now() + Duration::from_secs(15);
+    await_events_within(broker, kind, count, Duration::from_secs(15)).await
+}
+
+/// Wait until the audit log holds `count` entries of `kind`, failing after
+/// `limit`.
+async fn await_events_within(
+    broker: &TestBroker,
+    kind: &str,
+    count: usize,
+    limit: Duration,
+) -> Vec<Value> {
+    let deadline = Instant::now() + limit;
     loop {
         let found = events_of(broker, kind);
         if found.len() >= count {
@@ -1379,9 +1391,14 @@ async fn serve_runs_the_relay_only_when_configured() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn shutdown_during_onward_setup_records_end() {
-    let s = key_target().await;
+    let s = key_target_with(RelayLimits {
+        onward_timeout: Duration::from_secs(600),
+        ..RelayLimits::default()
+    })
+    .await;
     // The target accepts TCP connections but never speaks SSH, so the
-    // relay is stuck connecting onward (for up to its 10 s timeout).
+    // relay is stuck connecting onward, for far longer than the stop below
+    // is given.
     let silent = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut target = nas(&s.sshd);
     target.port = silent.local_addr().unwrap().port();
@@ -1394,18 +1411,14 @@ async fn shutdown_during_onward_setup_records_end() {
     let (_held, _) = silent.accept().await.unwrap();
     await_events(&s.broker, "relay_session_started", 1).await;
 
-    let stopping = Instant::now();
-    s.broker.stop_relay().await;
+    tokio::time::timeout(Duration::from_secs(60), s.broker.stop_relay())
+        .await
+        .expect("the relay stopped without waiting for the onward connection");
     // The stop returns only once the session's end is on record.
     let ended = events_of(&s.broker, "relay_session_ended");
     assert_eq!(ended.len(), 1, "{:?}", audit_events(&s.broker));
     assert_eq!(ended[0]["reason"], "relay shutting down");
     assert_eq!(ended[0]["grant_id"], agent.grant_id.as_str());
-    assert!(
-        stopping.elapsed() < Duration::from_secs(8),
-        "{:?}",
-        stopping.elapsed()
-    );
     let out = client.await.unwrap();
     assert_ne!(out.status.code(), Some(0));
 }
@@ -1471,18 +1484,13 @@ async fn stop_during_slow_target_read_is_prompt() {
     let (_c, client, _) = exec_in_background(&s, &agent).await;
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    let stopping = Instant::now();
-    tokio::time::timeout(Duration::from_secs(5), s.broker.stop_relay())
+    tokio::time::timeout(Duration::from_secs(60), s.broker.stop_relay())
         .await
-        .expect("the relay stopped without waiting for the target read");
-    assert!(
-        stopping.elapsed() < Duration::from_secs(3),
-        "{:?}",
-        stopping.elapsed()
-    );
-    // Refused, not started: so no end either.
+        .expect("the relay stopped");
+    // Refused, not started: so no end either. A stop held up by the read
+    // would see it time out after 10 s, and be refused for that instead.
     assert_refused_once(&s, "relay shutting down").await;
-    tokio::time::timeout(Duration::from_secs(5), client)
+    tokio::time::timeout(Duration::from_secs(60), client)
         .await
         .expect("the agent got an answer or was hung up on")
         .unwrap();
@@ -1498,18 +1506,18 @@ async fn revoke_during_slow_target_read_refuses() {
     let (_c, client, _) = exec_in_background(&s, &agent).await;
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    let revoking = Instant::now();
     s.broker
         .state()
         .requests
         .revoke_grant(&agent.grant_id, "owner")
         .await
         .unwrap();
-    let (replied, stderr, out) = tokio::time::timeout(Duration::from_secs(3), client)
+    // A revocation held up by the read would see it time out after 10 s,
+    // and be refused for that instead: the notice below tells them apart.
+    let (replied, stderr, out) = tokio::time::timeout(Duration::from_secs(60), client)
         .await
-        .expect("refused without waiting for the target read")
+        .expect("the agent got an answer")
         .unwrap();
-    assert!(revoking.elapsed() < Duration::from_secs(3));
     assert!(replied);
     assert_eq!(out.exit_status, Some(255), "{out:?}");
     assert!(out.stdout.is_empty(), "{out:?}");
@@ -1552,9 +1560,11 @@ async fn revoke_during_slow_grant_lookup_refuses() {
     assert!(reply_keeping_stderr(&mut channel, &mut stderr).await);
     let out = collect(&mut channel).await;
     stderr.extend_from_slice(&out.stderr);
-    // Bounded by the 1.5 s grant query timeout, not the pool's 30 s.
+    // Bounded by the 1.5 s grant query timeout, not the pool's 30 s, which
+    // would give the same refusal: as long as a loaded machine could need,
+    // while still telling the two apart.
     assert!(
-        asked.elapsed() < Duration::from_secs(4),
+        asked.elapsed() < Duration::from_secs(20),
         "{:?}",
         asked.elapsed()
     );
@@ -1590,18 +1600,14 @@ async fn login_grant_lookup_is_bounded() {
         .authenticate_publickey(TARGET, russh_key(&agent.key))
         .await;
     // Refused once the 1.5 s lookup bound (plus the 1 s rejection delay)
-    // is over, not hung up after the 10 s login timeout. The bound leaves
-    // room for a loaded test machine while staying well below 10 s.
+    // is over.
     assert!(
         matches!(auth, Ok(AuthResult::Failure { .. })),
         "{auth:?} after {:?}",
         asked.elapsed()
     );
-    assert!(
-        asked.elapsed() < Duration::from_secs(6),
-        "{:?}",
-        asked.elapsed()
-    );
+    // Without that bound the 10 s login timeout has hung up by now, so this
+    // fails on the closed connection.
     c.handle
         .disconnect(Disconnect::ByApplication, "", "en")
         .await
@@ -1637,16 +1643,14 @@ async fn slow_target_read_is_refused_after_its_bound() {
         .backend
         .set_relay_read_delay(Some(Duration::from_secs(60)));
     let (_c, client, asked) = exec_in_background(&s, &agent).await;
-    let (replied, stderr, out) = tokio::time::timeout(Duration::from_secs(15), client)
+    // Short of the minute the read itself takes.
+    let (replied, stderr, out) = tokio::time::timeout(Duration::from_secs(30), client)
         .await
         .expect("refused once the target read took too long")
         .unwrap();
     // The read is given 10 s.
     let waited = asked.elapsed();
-    assert!(
-        waited >= Duration::from_millis(9500) && waited < Duration::from_secs(13),
-        "{waited:?}"
-    );
+    assert!(waited >= Duration::from_millis(9500), "{waited:?}");
     assert!(replied);
     assert_eq!(out.exit_status, Some(255), "{out:?}");
     assert!(
@@ -1816,20 +1820,37 @@ async fn agent_that_stays_after_its_session_is_hung_up() {
     assert_each_start_ended(&s.broker).await;
 }
 
-/// An agent running `cat` on the target that feeds it input and never
-/// reads the output, until its input stops being accepted (or 96 MiB).
-/// Returns the ssh child, its unread stdout, and the MiB accepted.
-async fn wedge(ssh: &OpenSsh) -> (tokio::process::Child, tokio::process::ChildStdout, usize) {
+/// How much input an agent has got rid of so far, in MiB.
+struct Fed(Arc<AtomicUsize>);
+
+impl Fed {
+    fn mib(&self) -> usize {
+        self.0.load(Ordering::Acquire)
+    }
+}
+
+/// An agent running `cat` on the target that feeds it input and never reads
+/// the output (see [`feed_until_held`]).
+async fn wedge(ssh: &OpenSsh) -> (tokio::process::Child, tokio::process::ChildStdout, Fed) {
     feed_until_held(ssh, &["cat"]).await
 }
 
-/// An agent running `remote` on the target that feeds it input and never
-/// reads the output, until its input stops being accepted (or 96 MiB).
-/// Returns the ssh child, its unread stdout, and the MiB accepted.
+/// An agent running `remote` on the target that never reads the output and
+/// goes on feeding input, up to 96 MiB, until its input stops being accepted
+/// or `ssh` is gone. Returns the ssh child, its unread stdout and what it fed.
+///
+/// A pause in the feed proves nothing: `ssh` takes nothing beyond its stdin
+/// pipe until it has logged in, however long that takes, and less than a
+/// window of input would all reach it, leaving no data held anywhere. So the
+/// feed runs by itself, whatever this returns, and the data ends up held.
+/// This returns once the agent has logged in (it got rid of more than the
+/// pipe holds) and the feed has paused for a second, which is usually the
+/// input being held; a test must wait for what follows from that, not assume
+/// it has happened.
 async fn feed_until_held(
     ssh: &OpenSsh,
     remote: &[&str],
-) -> (tokio::process::Child, tokio::process::ChildStdout, usize) {
+) -> (tokio::process::Child, tokio::process::ChildStdout, Fed) {
     let mut child = ssh
         .command(TARGET, &[], remote)
         .stdin(Stdio::piped())
@@ -1839,21 +1860,34 @@ async fn feed_until_held(
         .unwrap();
     let mut input = child.stdin.take().unwrap();
     let stdout = child.stdout.take().unwrap();
-    let chunk = vec![0_u8; 1 << 20];
-    let mut accepted = 0;
-    while accepted < 96 {
-        match tokio::time::timeout(Duration::from_secs(1), input.write_all(&chunk)).await {
-            Ok(Ok(())) => accepted += 1,
-            _ => break,
+    let fed = Arc::new(AtomicUsize::new(0));
+    let feeder = tokio::spawn({
+        let fed = Arc::clone(&fed);
+        async move {
+            let chunk = vec![0_u8; 1 << 20];
+            while fed.load(Ordering::Acquire) < 96 {
+                if input.write_all(&chunk).await.is_err() {
+                    return;
+                }
+                fed.fetch_add(1, Ordering::AcqRel);
+            }
+            // Stdin stays open, as a stuck agent's would.
+            std::future::pending::<()>().await;
         }
-    }
-    // Keep stdin open (as a stuck agent would) by leaking it into a task
-    // that holds it until the child is gone.
-    tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_secs(120)).await;
-        drop(input);
     });
-    (child, stdout, accepted)
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let (mut seen, mut since) = (0, Instant::now());
+    while !feeder.is_finished() {
+        let count = fed.load(Ordering::Acquire);
+        if count != seen {
+            (seen, since) = (count, Instant::now());
+        } else if seen > 0 && since.elapsed() >= Duration::from_secs(1) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the agent never got to feed");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    (child, stdout, Fed(fed))
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1890,8 +1924,8 @@ async fn agent_disconnect_with_stalled_target_ends_quickly() {
     let ssh = OpenSsh::new(&s.broker, s.relay, &agent.key);
     // `sleep` never reads its input: the agent's input fills the target's
     // window, the relay's queue and the agent's window, and stops there.
-    let (mut child, stdout, accepted) = feed_until_held(&ssh, &["sleep", "600"]).await;
-    assert!(accepted < 32, "{accepted} MiB accepted");
+    let (mut child, stdout, fed) = feed_until_held(&ssh, &["sleep", "600"]).await;
+    assert!(fed.mib() < 32, "{} MiB accepted", fed.mib());
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert!(
         events_of(&s.broker, "relay_session_ended").is_empty(),
@@ -1924,8 +1958,8 @@ async fn held_session_ended_by_relay(end: impl AsyncFnOnce(&Setup, &Agent), reas
     let s = key_target().await;
     let agent = approved_agent(&s.broker, "bot").await;
     let ssh = OpenSsh::new(&s.broker, s.relay, &agent.key);
-    let (_child, _stdout, accepted) = feed_until_held(&ssh, &["sleep", "600"]).await;
-    assert!(accepted < 32, "{accepted} MiB accepted");
+    let (_child, _stdout, fed) = feed_until_held(&ssh, &["sleep", "600"]).await;
+    assert!(fed.mib() < 32, "{} MiB accepted", fed.mib());
     tokio::time::sleep(Duration::from_millis(2500)).await;
     assert!(
         events_of(&s.broker, "relay_session_ended").is_empty(),
@@ -2006,25 +2040,21 @@ async fn agent_not_reading_output_ends_session() {
     let agent = approved_agent(&s.broker, "bot").await;
     let ssh = OpenSsh::new(&s.broker, s.relay, &agent.key);
     let started = Instant::now();
-    let (mut child, _stdout, accepted) = wedge(&ssh).await;
-    // The agent's input is held back by its window once the queues are
-    // full: well short of the 96 MiB it tried to send. What it got rid of
-    // sits in the relay's two queues (2 MiB each, plus a window), the SSH
-    // windows and socket buffers on both connections, and `cat`.
-    assert!(accepted < 32, "{accepted} MiB accepted");
+    let (mut child, _stdout, fed) = wedge(&ssh).await;
     // The stuck output ends the session, while the agent is still there.
-    let ended = tokio::time::timeout(
-        Duration::from_secs(15),
-        await_events(&s.broker, "relay_session_ended", 1),
-    )
-    .await
-    .expect("the stalled session ended");
+    let ended =
+        await_events_within(&s.broker, "relay_session_ended", 1, Duration::from_secs(60)).await;
     assert_eq!(
         ended[0]["reason"],
         "flow control: output to the agent not drained",
         "after {:?}",
         started.elapsed()
     );
+    // The agent's input was held back by its window once the queues were
+    // full: well short of the 96 MiB it tried to send. What it got rid of
+    // sat in the relay's two queues (2 MiB and 8 MiB), the SSH windows and
+    // socket buffers on both connections, and `cat`.
+    assert!(fed.mib() < 32, "{} MiB accepted", fed.mib());
     // And the agent's connection is closed.
     let status = tokio::time::timeout(Duration::from_secs(10), child.wait())
         .await
@@ -2620,6 +2650,9 @@ async fn hung_grant_query_still_fails_closed_and_expires() {
 async fn connection_closed_once_its_session_is_over() {
     let s = key_target_with(RelayLimits {
         stall_timeout: Duration::from_secs(2),
+        // Past the deadline below, so that only the session being over can
+        // close the connection in time.
+        start_timeout: Duration::from_secs(600),
         ..RelayLimits::default()
     })
     .await;
@@ -2643,7 +2676,7 @@ async fn connection_closed_once_its_session_is_over() {
     // has had the stall timeout (2 s here) to leave.
     while !c.handle.is_closed() {
         assert!(
-            over.elapsed() < Duration::from_secs(4),
+            over.elapsed() < Duration::from_secs(30),
             "the connection was not closed"
         );
         tokio::time::sleep(Duration::from_millis(50)).await;

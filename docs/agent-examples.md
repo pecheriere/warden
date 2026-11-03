@@ -57,7 +57,7 @@ While it waits, it prints this on stderr. The agent tells the owner the
 fingerprint, and the approval page shows the same one:
 
 ```
-request 0b8f4c1e…, fingerprint b65b-9812-eb72 — waiting for approval…
+request 0b8f4c1e…, fingerprint dozed-crawfish-kayak-ascend-answer (b65b-9812-eb72) — waiting for approval…
 ```
 
 The owner approves on their phone with a passkey, and the agent gets this on

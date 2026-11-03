@@ -1,0 +1,55 @@
+# The `warden` CLI's .deb and .rpm, built by scripts/package-linux.sh from the release's
+# CLI archive. The paths are relative to the directory it unpacks that archive into.
+# Only the CLI: an update through a package manager would migrate a server's database
+# with no backup (docs/deployment-systemd.md), and the demo is never packaged.
+name: warden
+arch: ${WARDEN_PACKAGE_ARCH}
+platform: linux
+version: ${WARDEN_PACKAGE_VERSION}
+release: 1
+section: admin
+priority: optional
+maintainer: pecheriere <pecheriere@users.noreply.github.com>
+description: |-
+  Client for warden, a self-hosted approval broker for AI agents and scripts.
+  An agent uses it to ask for temporary access to a server or an API, and to use
+  that access once its owner has approved it with a passkey.
+homepage: https://github.com/pecheriere/warden
+license: MIT OR Apache-2.0
+overrides:
+  deb:
+    depends:
+      - ca-certificates
+      - openssh-client
+  rpm:
+    depends:
+      - ca-certificates
+      - openssh-clients
+rpm:
+  # By default the machine's name, so a rebuild elsewhere would differ.
+  buildhost: warden-release
+contents:
+  - src: ./warden
+    dst: /usr/bin/warden
+    file_info:
+      mode: 0755
+      owner: root
+      group: root
+  - src: ./LICENSE-APACHE
+    dst: /usr/share/doc/warden/LICENSE-APACHE
+    file_info:
+      mode: 0644
+      owner: root
+      group: root
+  - src: ./LICENSE-MIT
+    dst: /usr/share/doc/warden/LICENSE-MIT
+    file_info:
+      mode: 0644
+      owner: root
+      group: root
+  - src: ./NOTICE
+    dst: /usr/share/doc/warden/NOTICE
+    file_info:
+      mode: 0644
+      owner: root
+      group: root

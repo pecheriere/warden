@@ -1,0 +1,14 @@
+warden is licensed under either of MIT or Apache-2.0, at your option. It also
+includes the following work, under its own licence.
+
+EFF Short Wordlist 2.0
+  By the Electronic Frontier Foundation.
+  Source: https://www.eff.org/dice
+  File: https://www.eff.org/files/2016/09/08/eff_short_wordlist_2_0.txt
+  Licence: Creative Commons Attribution 4.0 International (CC BY 4.0),
+  https://creativecommons.org/licenses/by/4.0/
+  Stated at https://www.eff.org/copyright, checked on 2026-11-02.
+  Change: the dice numbers are left out. The words and their order are unchanged.
+  Where: crates/proto/src/wordlist.rs, compiled into the warden and
+  warden-server binaries. warden uses it to write request fingerprints as words.
+  EFF does not endorse warden.

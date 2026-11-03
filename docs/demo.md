@@ -55,8 +55,9 @@ start without the system's CA certificates.
   and rustup installs that for you.
 - A C toolchain and the OpenSSL headers, because the broker links OpenSSL. On
   Debian or Ubuntu: `sudo apt install build-essential pkg-config libssl-dev`.
-  Without the headers, add `--features warden-broker/vendored-openssl` to the
-  build command, which also needs `perl` and `make`.
+  Without the headers, run `scripts/build-openssl.sh` as
+  [Building](building.md#build) shows and set the same variables for the
+  build command. That also needs `curl`, `perl` and `make`.
 - The first build takes a few minutes.
 
 In a first terminal:

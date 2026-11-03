@@ -29,12 +29,13 @@ use ssh_key::HashAlg;
 use warden_broker_proto::{SecretName, TargetName};
 use zeroize::Zeroizing;
 
+use super::commit_signing_key::compare_with_ca;
 use super::onepassword::{
     ApiItem, ItemUrl, SecretField, TargetItem, parse_api_secret, parse_private_key, parse_target,
 };
 use super::{
-    ApiSecretPolicy, CaKey, CaProbe, PolicyError, RelayCredential, SecretBackend, SecretValue,
-    SshMode, SshTarget, not_a_relay_target,
+    ApiSecretPolicy, CaKey, CaProbe, CommitSigningKey, CommitSigningProbe, PolicyError,
+    RelayCredential, SecretBackend, SecretValue, SshMode, SshTarget, not_a_relay_target,
 };
 use crate::audit::{AuditEvent, AuditLog};
 use crate::config::LocalSettings;
@@ -72,6 +73,7 @@ const AUDIT_CONTEXT: &str = "local secret backend";
 #[serde(deny_unknown_fields)]
 struct PolicyFile {
     ca: Option<CaEntry>,
+    commit_signing: Option<CaEntry>,
     #[serde(default)]
     targets: BTreeMap<String, TargetEntry>,
     #[serde(default)]
@@ -180,6 +182,8 @@ pub enum LocalProbe {
         problems: Vec<String>,
         /// Whether the CA key loads, or is needed.
         ca: CaProbe,
+        /// Whether the commit signing key loads, or is configured.
+        commit_signing: CommitSigningProbe,
     },
 }
 
@@ -189,7 +193,12 @@ impl LocalProbe {
     pub fn problems(&self) -> Vec<String> {
         match self {
             Self::Unreadable(reason) => vec![reason.clone()],
-            Self::Read { problems, ca, .. } => {
+            Self::Read {
+                problems,
+                ca,
+                commit_signing,
+                ..
+            } => {
                 let ca = match ca {
                     CaProbe::Loaded { .. } | CaProbe::NotNeeded => None,
                     CaProbe::Missing { cert_targets } => Some(format!(
@@ -199,7 +208,18 @@ impl LocalProbe {
                         Some(format!("SSH CA: {reason}"))
                     }
                 };
-                problems.iter().cloned().chain(ca).collect()
+                let commit_signing = match commit_signing {
+                    CommitSigningProbe::Loaded { .. } | CommitSigningProbe::NotConfigured => None,
+                    CommitSigningProbe::Invalid(reason) | CommitSigningProbe::Unknown(reason) => {
+                        Some(format!("commit signing key: {reason}"))
+                    }
+                };
+                problems
+                    .iter()
+                    .cloned()
+                    .chain(ca)
+                    .chain(commit_signing)
+                    .collect()
             }
         }
     }
@@ -405,6 +425,24 @@ impl Files {
         CaKey::new(key)
     }
 
+    /// The commit signing key the policy names.
+    fn commit_signing(&self, entry: &CaEntry) -> Result<CommitSigningKey, PolicyError> {
+        let key_error =
+            |reason: &str| PolicyError::CommitSigningKey(format!("private_key_file {reason}"));
+        let file = entry.private_key_file.as_str();
+        check_file_name(file).map_err(key_error)?;
+        let text =
+            read_secret(&self.secrets_dir, file, self.euid).map_err(|refusal| match refusal {
+                Refusal::Io(_) => {
+                    PolicyError::Unavailable(format!("commit signing key: {refusal}"))
+                }
+                Refusal::Rule(_) | Refusal::Missing => key_error(&refusal.to_string()),
+            })?;
+        let key = parse_private_key(&text)
+            .ok_or_else(|| key_error("is not a readable OpenSSH or PKCS#8 Ed25519 key"))?;
+        CommitSigningKey::new(key)
+    }
+
     /// Read everything: the policy, each entry with its secrets, and the CA.
     fn probe(&self) -> LocalProbe {
         let policy = match self.policy() {
@@ -456,6 +494,18 @@ impl Files {
             api_secrets: policy.api_secrets.len(),
             problems,
             ca,
+            commit_signing: match &policy.commit_signing {
+                None => CommitSigningProbe::NotConfigured,
+                Some(entry) => {
+                    CommitSigningProbe::of(self.commit_signing(entry).and_then(|key| {
+                        // The server does not start on this, as `problems` says.
+                        match &policy.ca {
+                            Some(ca) => compare_with_ca(&key, self.ca(ca)).map(|()| key),
+                            None => Ok(key),
+                        }
+                    }))
+                }
+            },
         }
     }
 }
@@ -588,6 +638,23 @@ impl SecretBackend for LocalBackend {
             None => Err(PolicyError::Ca(
                 "the policy file has no [ca] section".to_owned(),
             )),
+        })
+        .await
+    }
+
+    async fn has_ssh_ca(&self) -> Result<bool, PolicyError> {
+        self.read(|files| Ok(files.policy()?.ca.is_some())).await
+    }
+
+    async fn has_commit_signing_key(&self) -> Result<bool, PolicyError> {
+        self.read(|files| Ok(files.policy()?.commit_signing.is_some()))
+            .await
+    }
+
+    async fn commit_signing_key(&self) -> Result<CommitSigningKey, PolicyError> {
+        self.read(|files| match files.policy()?.commit_signing {
+            Some(entry) => files.commit_signing(&entry),
+            None => Err(PolicyError::NoCommitSigningKey),
         })
         .await
     }

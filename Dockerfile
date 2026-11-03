@@ -6,9 +6,12 @@ FROM rust:1.99-bookworm@sha256:9181b56c2a21ab1d5e73cffe04fc762426d30aa7fac3c9114
 WORKDIR /src
 # Dependencies build in their own layer, from the manifests and Cargo.lock
 # only, so the build cache reuses it until Cargo.lock changes. Each crate gets
-# empty sources for this step. The vendored-openssl feature compiles OpenSSL
-# from source and links it statically, so the runtime image needs no system
-# libssl.
+# empty sources for this step. OpenSSL is built from the release pinned in
+# scripts/openssl-pin.env and linked statically, so the runtime image needs no
+# system libssl.
+COPY scripts/build-openssl.sh scripts/openssl-pin.env scripts/
+RUN scripts/build-openssl.sh "$(rustc -vV | sed -n 's/^host: //p')" /opt/warden-openssl
+ENV OPENSSL_DIR=/opt/warden-openssl OPENSSL_STATIC=1 WARDEN_OPENSSL_PINNED=1
 COPY Cargo.toml Cargo.lock ./
 COPY crates/proto/Cargo.toml crates/proto/
 COPY crates/broker/Cargo.toml crates/broker/build.rs crates/broker/
@@ -23,12 +26,12 @@ RUN mkdir -p crates/proto/src crates/broker/src crates/cli/src crates/demo/src \
     && echo 'fn main() {}' > crates/broker/src/main.rs \
     && echo 'fn main() {}' > crates/cli/src/main.rs \
     && echo 'fn main() {}' > crates/demo/src/main.rs \
-    && cargo build --release --locked -p warden-broker --features vendored-openssl
+    && cargo build --release --locked -p warden-broker
 COPY crates ./crates
 # The placeholder build is removed first, so the real sources always compile,
 # whatever their timestamps.
 RUN cargo clean --release -p warden-broker -p warden-broker-proto \
-    && cargo build --release --locked -p warden-broker --features vendored-openssl \
+    && cargo build --release --locked -p warden-broker \
     && install -D target/release/warden-server /out/warden-server
 # Data directory for the database and audit log, owned by the runtime user.
 RUN install -d -o 65532 -g 65532 -m 0700 /out/data
@@ -36,6 +39,8 @@ RUN install -d -o 65532 -g 65532 -m 0700 /out/data
 # Runtime: distroless, no shell, non-root (uid 65532), pinned by digest.
 FROM gcr.io/distroless/cc-debian12:nonroot@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f
 COPY --from=builder /out/warden-server /warden-server
+# The attribution the wordlist's licence asks for travels with the binary.
+COPY NOTICE /NOTICE
 # COPY of a directory copies what is in it, and makes the destination with the
 # default mode 0755 whatever the source's: only --chmod sets /data's own mode.
 # A new named or anonymous volume takes this mode and owner from the image.

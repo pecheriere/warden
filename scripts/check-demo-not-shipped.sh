@@ -22,11 +22,8 @@ fail() {
 # 1. What gets linked: neither shipped binary may depend on the demo, or on the
 #    broker's testkit (soft passkey, fake backend). Dev dependencies are left
 #    out because they are not linked into the binaries.
-for spec in 'warden-broker --features vendored-openssl' 'warden-broker-cli'; do
-  package="${spec%% *}"
-  # Word splitting of $spec is the point: it holds the package and its flags.
-  # shellcheck disable=SC2086
-  tree="$(cargo tree -p $spec -e features,normal,build --target all --locked --prefix none)"
+for package in warden-broker warden-broker-cli; do
+  tree="$(cargo tree -p "$package" -e features,normal,build --target all --locked --prefix none)"
   grep -q "^$package v" <<<"$tree" || fail "$package not found in its own dependency graph"
   if grep -q '^warden-demo' <<<"$tree"; then
     fail "$package depends on warden-demo"
@@ -37,8 +34,7 @@ for spec in 'warden-broker --features vendored-openssl' 'warden-broker-cli'; do
 done
 
 # The demo itself keeps real passkey checks: it never enables the testkit.
-tree="$(cargo tree -p warden-demo --features warden-broker/vendored-openssl \
-  -e features,normal,build --target all --locked --prefix none)"
+tree="$(cargo tree -p warden-demo -e features,normal,build --target all --locked --prefix none)"
 grep -q '^warden-demo v' <<<"$tree" || fail "warden-demo not found in its own dependency graph"
 if grep -q '^warden-broker feature "testkit"' <<<"$tree"; then
   fail "warden-demo enables the broker's testkit feature"
@@ -65,7 +61,8 @@ builds="$(grep -v '^ *#' Dockerfile | grep -E "$cargo_word" || true)"
 [ -n "$builds" ] || fail "no cargo build found in the Dockerfile"
 while IFS= read -r line; do
   case "$line" in
-    *'cargo build --release --locked -p warden-broker --features vendored-openssl'*) ;;
+    # Anchored at the end, so that no feature, such as testkit, can follow.
+    *" cargo build --release --locked -p warden-broker" | *" cargo build --release --locked -p warden-broker \\") ;;
     'RUN cargo clean --release -p warden-broker -p warden-broker-proto '*) ;;
     *) fail "the Dockerfile runs something else: $line" ;;
   esac
@@ -82,6 +79,7 @@ fi
 final_stage="$(awk '/^FROM /{stage=""} {stage=stage $0 "\n"} END{printf "%s", stage}' Dockerfile)"
 copies="$(grep '^COPY' <<<"$final_stage")"
 expected_copies='COPY --from=builder /out/warden-server /warden-server
+COPY NOTICE /NOTICE
 COPY --from=builder --chown=65532:65532 --chmod=0700 /out/data /data'
 [ "$copies" = "$expected_copies" ] \
   || fail "the image's final stage copies something unexpected: $copies"
@@ -121,12 +119,20 @@ if grep -n "$script" "$workflow"; then
 fi
 builds="$(grep -E '^ *build_args=' "$script")"
 expected_builds='    build_args=(-p warden-broker-cli)
-    build_args=(-p warden-demo --features warden-broker/vendored-openssl)'
+    build_args=(-p warden-demo)
+    build_args=(-p warden-broker)'
 [ "$builds" = "$expected_builds" ] \
   || fail "$script builds something unexpected: $builds"
 commands="$(grep -v '^ *#' "$script" | grep -E "$cargo_word" || true)"
 [ "$commands" = "  cargo build --config \"build.build-dir='\$build_dir'\" \\" ] \
   || fail "$script runs cargo in an unexpected way: $commands"
+# The packages hold the CLI alone.
+if offending="$(grep -nE 'demo|warden-server' packaging/nfpm.yaml scripts/package-linux.sh | grep -v 'no demo\|the demo is never\|refuses a demo')"; then
+  fail "the packages could hold something other than the CLI: $offending"
+fi
+# shellcheck disable=SC2016 # The literal text of the script's line, not an expansion.
+grep -Fq 'check cli "$platform" "$archive"' scripts/package-linux.sh \
+  || fail "scripts/package-linux.sh does not check that it was given the CLI's archive"
 grep -qx ' *prefix=warden-demo' "$script" || fail "the demo's archive is not named as a demo"
 [ -s crates/demo/NOT-FOR-REAL-USE.txt ] || fail "the demo's notice file is missing"
 grep -qx ' *extra_file=crates/demo/NOT-FOR-REAL-USE.txt' "$script" \

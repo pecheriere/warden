@@ -8,6 +8,8 @@ All notable changes to this project are recorded here. The format follows
 
 ### Upgrading
 
+- New migration `0008_commit_signing_renewal`. An older `warden-server audit verify`
+  refuses a log with the new entries.
 - A `request_created` audit entry can have a new `session` field. An older
   `warden-server audit verify` refuses a log with such an entry, and an older
   `warden-server` does not start on one, because it verifies the log when it opens
@@ -15,6 +17,10 @@ All notable changes to this project are recorded here. The format follows
   audit log from the backup taken before the upgrade.
 - Upgrade the broker before relying on labels and links: an older broker ignores
   them, and `warden request` warns that the owner does not see them.
+- If you build the server from source: the `vendored-openssl` feature is gone. Run
+  `scripts/build-openssl.sh` and set `OPENSSL_DIR`, `OPENSSL_STATIC` and
+  `WARDEN_OPENSSL_PINNED`, as
+  [docs/building.md](docs/building.md) shows, or link a system OpenSSL.
 
 ### Added
 
@@ -25,7 +31,36 @@ All notable changes to this project are recorded here. The format follows
 - `warden request collect <grant>` starts using an `api` grant the owner approved after
   the `warden request` that asked for it was gone. `warden status` marks such grants. An
   SSH grant cannot be collected, as its key was lost with that run: the docs say what to
-  do instead.
+  do instead. A commit signing grant needs no collecting.
+- Releases attach the `warden` CLI as `.deb` and `.rpm` packages for amd64 and arm64,
+  built from the same binaries, attested and listed in the signed manifest. See
+  [docs/agent-usage.md](docs/agent-usage.md). There is no package repository, so nothing
+  updates them automatically.
+- Commit signing through the broker, so that the signing key is not on the agent's
+  machine, every signature is recorded and one agent can be cut off. The broker holds
+  an `ssh-ed25519` key (a 1Password item tagged `warden:commit-signing`, or
+  `[commit_signing]` in a local policy) and signs only the `git` namespace, only what
+  parses strictly as a commit, and only under the agent's own grant. `warden request
+  signing` asks for that grant, `warden setup git` makes `warden` git's signing program,
+  and `git commit` then works with no prompt. A signature means warden signed the commit
+  for that agent, not that anyone reviewed the change. Tag signing is not part of this:
+  a tag object is refused.
+- A commit signing grant lasts 30 days by default, up to
+  `WARDEN_COMMIT_SIGNING_MAX_WINDOW`. It is the only grant allowed past 4 hours, and
+  [the threat model](docs/threat-model.md#commit-signing) says why. warden tells the
+  owner a few days before one ends, and a new Renew button on the grants page takes one
+  passkey approval. Revoking stops new signatures at once. A grant can make 5000
+  signatures per UTC day by default (`WARDEN_COMMIT_SIGNING_MAX_PER_DAY`), so that a
+  looping agent cannot fill the audit log's disk, and warden tries to notify the owner if it gets there.
+- With a commit signing setup, a commit fails, saying why and how to ask for a grant,
+  when the agent has no active grant or the broker cannot be reached. Nothing makes the
+  commit unsigned instead.
+- `warden doctor` and `warden-server doctor` check the commit signing setup, and the SSH CA
+  key cannot also be the commit signing key.
+- Releases attach `warden-server-<version>-<platform>.tar.gz` for Linux amd64 and arm64:
+  a static, attested server binary for
+  [running without Docker](docs/deployment-systemd.md). The signed manifest lists it, and
+  `scripts/sign-release.sh` requires it on a draft. Docker stays the recommended setup.
 - `warden request --session <label>`, or `WARDEN_SESSION`, says which session of an
   agent is asking. The approval page, Pending, Active grants, History, the
   notification and the audit log show it as what the agent stated, not as verified.
@@ -47,6 +82,18 @@ All notable changes to this project are recorded here. The format follows
 
 ### Changed
 
+- The image, the server binaries and the demo binaries link OpenSSL 3.5.9, the current
+  release of the 3.5 long-term support line, in place of 3.6.3, as support for 3.6 has
+  ended. It is built from a release tarball pinned by hash, and stored passkeys are
+  unaffected. A check now fails CI when the pinned line's support ends. A nightly run,
+  which opens an issue, and the release workflow also fail 90 days before that or when a
+  newer release of the line is out.
+- Fingerprints are easier to compare: the approval pages and `warden request` now write
+  one as five English words, such as `oceanic-receipt-varied-amuser-aftershave`, with the hex
+  form beside them. They are the same 48 bits, so nothing about the API, the database or
+  the audit log changes, and the broker and the CLI can be upgraded in either order. A
+  script that reads the fingerprint from `warden request`'s stderr needs checking, as the
+  hex is now in brackets after the words.
 - `warden-demo` names the `warden` beside it in its printed steps, or the one on the
   `PATH`, rather than `target/debug/warden`.
 - `scripts/package-cli.sh` is now `scripts/package-binary.sh`, and takes the product
@@ -56,6 +103,7 @@ All notable changes to this project are recorded here. The format follows
 
 ### Fixed
 
+- `warden-server --version` names `warden-server`, not `warden-broker`.
 - Approval UI accessibility: the selected grant window now has a border with at
   least 3:1 contrast against its track in light and dark, the two navigation
   landmarks have different labels, each card on the pending screen is a heading a

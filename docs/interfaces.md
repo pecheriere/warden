@@ -13,6 +13,7 @@ specified. Interfaces with a reference of their own are linked, not repeated.
 | `warden-server` commands | The operator | [Server commands](configuration.md#server-commands) |
 | `warden` commands | Agents and people on the agent's machine | [CLI commands](configuration.md#cli-commands), [exit codes](agent-usage.md#exit-codes) |
 | Server settings | The operator | [Environment variables](configuration.md#server-environment-variables), [secrets in files](configuration.md#secrets-in-files) |
+| Git's signing program (`warden -Y sign -n git -f <key> [-U] <file>`, writing `<file>.sig`) | Git on the agent's machine | [Signing commits](agent-usage.md#signing-commits) |
 | CLI settings and files | The agent's machine | [CLI environment and files](configuration.md#cli-environment-and-files) |
 | 1Password items | The owner, in the vault | [1Password items](1password-items.md) |
 | Local policy and secret files, with `WARDEN_SECRET_BACKEND=local` | Whoever can write them on the host | [Local files](local-backend.md) |
@@ -21,12 +22,13 @@ specified. Interfaces with a reference of their own are linked, not repeated.
 
 | Interface | Why | What it sends | Reference |
 |---|---|---|---|
-| 1Password Connect API | Policy, secrets and the CA key | `GET` requests, with the token as a bearer | [Deployment](deployment.md#3-1password) |
+| 1Password Connect API | Policy, secrets, the CA key and the commit signing key | `GET` requests, with the token as a bearer | [Deployment](deployment.md#3-1password) |
 | Home Assistant webhook, ntfy | Notifications | The agent, the access, a stated session label, a shortened goal, a link | [Notifications](notifications.md) |
 | API origins | Proxied calls | The agent's call, with the secret in the policy's header | [HTTP proxy mode](design.md#83-http-proxy-mode-secret-injection) |
 | Relay targets | Relayed sessions | An SSH login with the item's credential | [SSH relay mode](design.md#82-ssh-relay-mode) |
 | Certificate targets | Nothing: the agent's `ssh` connects, and warden never does | A certificate, presented by the agent | [SSH targets](ssh-targets.md) |
 | OpenSSH tools on the agent's machine | The CLI runs `ssh` and `ssh-agent`, and talks to `ssh-agent` sockets | Keys, and data to sign | [One-time setup](agent-usage.md#one-time-setup) |
+| `git` and `ssh-keygen` on the agent's machine | `warden setup git` runs `git config`. Git runs `warden` as its signing program, which sends every `-Y` operation except signing on to `ssh-keygen` as it is. | Settings, and what git asked to verify | [Signing commits](agent-usage.md#signing-commits) |
 
 ## What warden writes
 

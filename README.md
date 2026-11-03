@@ -105,7 +105,8 @@ on the server alone), and the agent only gets access for a limited window.
 
 warden still needs a person. It frees you from the computer, not from
 deciding. If nobody answers, the request expires after 10 minutes and the
-agent has to ask again, and a grant lasts at most 4 hours. So an agent working
+agent has to ask again, and a grant lasts at most 4 hours ([signing commits](#signing-commits)
+is the one exception). So an agent working
 through the night has to stop and wait when its grant ends, or when it needs
 something you have not approved, until you wake up. That is the trade: you stay in
 the loop, and the agent holds no lasting credential for your servers or APIs.
@@ -174,7 +175,7 @@ row changes where the secrets are, under any of them.
 |-------|-------|--------|---------------------------|
 | **Tailscale Services** on the host | Recommended. The [guide](docs/deployment.md#1-the-recommended-layout) is the main path. | SSH certificates, API calls. No SSH relay. | [The whole host is trusted](docs/deployment.md#who-can-reach-the-listeners). Any local process can reach the listeners and forge your login. That cannot approve anything, but it can read the history, revoke grants and use a stolen bearer key, so the host must run nothing else untrusted. |
 | **Tailscale sidecar** container | [Documented](docs/deployment.md#10-the-sidecar-layout-for-relay-targets), but not yet tested end to end. | SSH certificates, API calls, SSH relay. | Other host processes cannot reach the listeners, but firewall rules can no longer tell warden's traffic from Tailscale's, and hardening the Tailscale container is untested. With relay targets, warden also [reads and uses their credentials](docs/threat-model.md#relay-mode-residual-risks), so a compromised warden can expose them. |
-| **systemd service**, warden outside a container | [Documented](docs/deployment-systemd.md), but not yet tested on a clean host. Needs 0.9.0 or later and a build from source. | SSH certificates, API calls. No SSH relay. | As for Tailscale Services, the whole host is trusted. warden also [loses the image's isolation](docs/deployment-systemd.md#1-what-holds-what-is-replaced-what-is-lost): it shares the host's filesystem (read-only) and network stack, and there is no build attestation yet. |
+| **systemd service**, warden outside a container | [Documented](docs/deployment-systemd.md), but not yet tested on a clean host. Needs 0.9.0 or later. Releases after v0.9.0 attach attested binaries for Linux amd64 and arm64; otherwise build from source. | SSH certificates, API calls. No SSH relay. | As for Tailscale Services, the whole host is trusted. warden also [loses the image's isolation](docs/deployment-systemd.md#1-what-holds-what-is-replaced-what-is-lost): it shares the host's filesystem (read-only) and network stack. |
 
 | **Local files** instead of 1Password | [Documented](docs/local-backend.md). The backend is tested; its Docker and systemd examples have not been run on a real host. Needs 0.9.0 or later. | As the layout it runs on. | **A compromised host gets every secret**: the vault's separation from the host is gone, and with it the [read-only token boundary](docs/threat-model.md#the-local-secret-backend). Backups and disks hold the secrets too. 1Password stays the recommendation. |
 
@@ -268,7 +269,7 @@ it; follow it for a real setup.
    docker compose exec warden /warden-server agent add build-agent \
      --public-key "ssh-ed25519 AAAA… build-agent"
    # on the agent machine (Rust 1.99 or later; releases after v0.8.1 also
-   # attach binaries, see Agent usage)
+   # attach binaries, and after v0.9.0 .deb and .rpm packages, see Agent usage)
    cargo install --locked --git https://github.com/pecheriere/warden --tag v0.9.0 warden-broker-cli
    warden login --server https://warden-api.example.ts.net --agent build-agent \
      --ssh-key ~/.ssh/build-agent.pub
@@ -287,6 +288,29 @@ it; follow it for a real setup.
    ```
 
 [svc]: https://tailscale.com/kb/1552/tailscale-services
+
+## Signing commits
+
+warden can hold the key that signs an agent's commits, so that a branch requiring
+signed commits does not need a signing key on the agent's machine:
+
+```sh
+warden request signing --goal "Sign build-agent's commits"   # 30 days, after your passkey
+warden setup git                                       # git signs through warden
+git commit -m "..."                                    # signed, with no prompt
+```
+
+The goal is modest and worth stating exactly. warden keeps the key from being copied,
+records every signature (grant, agent, commit, parents, tree, author), and lets you cut
+off one agent at once. **A signature means warden signed the commit for that agent, not
+that you reviewed the change.** During a grant, warden signs anything that agent commits.
+
+With this set up, signing is required: with no active grant, or with the broker out of
+reach, `git commit` fails and says why and how to ask. warden never makes the commit
+unsigned for you. It signs commits only, never tags. See
+[Agent usage](docs/agent-usage.md#signing-commits),
+[Deployment](docs/deployment.md#3-1password) and the
+[threat model](docs/threat-model.md#commit-signing).
 
 ## Documentation
 
@@ -322,7 +346,8 @@ it; follow it for a real setup.
 
 - **An agent can only ask.** Every grant needs a passkey approval from your
   enrolled device, on an approval page that only your phone can reach.
-- **Bounded grants.** At most four hours, one target or secret, the account
+- **Bounded grants.** At most four hours (a [commit signing](#signing-commits)
+  grant alone can last longer), one target or secret, the account
   or methods you approved. API requests are read-only unless the agent asks
   for more, and the page says so. On a certificate target the limit is on new
   logins: [one already open continues](docs/threat-model.md#accepted-residual-risks).
@@ -419,4 +444,5 @@ approval UI changes follow the [design language](docs/design-language.md).
 ## License
 
 Licensed under either of [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE),
-at your option.
+at your option. Fingerprints are written in the EFF Short Wordlist 2.0, by the
+Electronic Frontier Foundation, under CC BY 4.0: see [NOTICE](NOTICE).

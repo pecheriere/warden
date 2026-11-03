@@ -12,7 +12,7 @@ archives did not exist.
 
 ## What must match
 
-| Input | Archives (CLI, demo) | Image |
+| Input | Archives (CLI, server, demo) | Image |
 |---|---|---|
 | Source | The tag's commit | The tag's commit |
 | Rust | `rust-toolchain.toml`, an exact version | The Dockerfile's base image, by digest |
@@ -64,17 +64,35 @@ git clone --branch "v$version" --depth 1 https://github.com/pecheriere/warden
 cd warden
 rustup toolchain install
 rustup target add x86_64-unknown-linux-musl     # the platform's target
-scripts/package-binary.sh cli x86_64-unknown-linux-musl linux-amd64 dist   # or demo
+scripts/package-binary.sh cli x86_64-unknown-linux-musl linux-amd64 dist   # or server, demo
 shasum -a 256 dist/*.tar.gz
 ```
 
 Compare the result with the hash in the release's `warden-<version>-SHA256SUMS`,
 if it has one, or with the archive you downloaded. You need `python3`, and on Linux
-`musl-tools`. The demo also needs `perl` and `make`, for OpenSSL, which records its
-build directory in the binary. So the script always uses
-`/tmp/warden-package-build`, and that one path must match wherever you build.
+`musl-tools`. The server and the demo also need `curl`, `perl` and `make`, for
+OpenSSL: `scripts/build-openssl.sh` downloads the release pinned in
+`scripts/openssl-pin.env`, checks its hash and compiles it. OpenSSL records its build
+directory in the binary. So the script always uses `/tmp/warden-package-build`, and
+that one path must match wherever you build.
 `.github/workflows/build-archives.yml` has the runner and targets of each
 platform.
+
+## Reproduce a package
+
+The `.deb` and `.rpm` hold the CLI archive's binary, so verify or reproduce that first.
+The commit's time goes in the packages, and `scripts/package-linux.sh` downloads nfpm at
+a version and checksum it pins. It needs `dpkg-deb`, `rpm`, `rpm2cpio` and `cpio`.
+
+```sh
+SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) \
+  scripts/package-linux.sh linux-amd64 "warden-$version-linux-amd64.tar.gz" dist
+```
+
+The same archive gave identical packages on arm64 from two paths and under two host
+names, and the [repeatable build](../.github/workflows/repeatable-build.yml) compares them
+on GitHub's runners. `Installed-Size` and the file list come from the archive, and the RPM's
+build host is pinned in `packaging/nfpm.yaml`.
 
 ## Limits
 

@@ -10,6 +10,7 @@
 #   cli   warden-<version>-<platform>.tar.gz, the `warden` command
 #   demo  warden-demo-<version>-<platform>.tar.gz, the local demo, which is not
 #         secure for real use and says so in its name, its files and its output
+#   server  warden-server-<version>-<platform>.tar.gz, Linux only
 #
 # Run it on a machine of the target's architecture: it runs the binary it built.
 # A Linux binary must be fully static, so it does not depend on the
@@ -23,7 +24,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 if [ "$#" -ne 4 ]; then
-  echo "usage: $0 <cli|demo> <rust-target> <platform> <out-dir>" >&2
+  echo "usage: $0 <cli|demo|server> <rust-target> <platform> <out-dir>" >&2
   exit 2
 fi
 product=$1
@@ -31,9 +32,9 @@ target=$2
 platform=$3
 out_dir=$4
 
-# The demo links OpenSSL through the broker: vendored, so that it needs no system
-# libssl. Its archive's name and notice file label it for someone who only sees
-# the download.
+# The server and the demo link OpenSSL through the broker: statically, from the
+# pinned release, so that they need no system libssl. The demo's archive name and
+# notice file label it for someone who only sees the download.
 extra_file=
 case "$product" in
   cli)
@@ -42,10 +43,22 @@ case "$product" in
     prefix=warden
     ;;
   demo)
-    build_args=(-p warden-demo --features warden-broker/vendored-openssl)
+    build_args=(-p warden-demo)
     bin=warden-demo
     prefix=warden-demo
     extra_file=crates/demo/NOT-FOR-REAL-USE.txt
+    ;;
+  server)
+    case "$target" in
+      *-linux-*) ;;
+      *)
+        echo "error: the server is released for Linux only, not $target" >&2
+        exit 2
+        ;;
+    esac
+    build_args=(-p warden-broker)
+    bin=warden-server
+    prefix=warden-server
     ;;
   *)
     echo "error: unknown product: $product" >&2
@@ -77,6 +90,13 @@ if [ ! -O "$build_dir" ] || [ -L "$build_dir" ]; then
   echo "error: $build_dir is not this user's own directory" >&2
   exit 1
 fi
+case "$product" in
+  server | demo)
+    openssl_dir="$build_dir/openssl-$target"
+    scripts/build-openssl.sh "$target" "$openssl_dir"
+    export OPENSSL_DIR="$openssl_dir" OPENSSL_STATIC=1 WARDEN_OPENSSL_PINNED=1
+    ;;
+esac
 RUSTFLAGS="--remap-path-prefix=$source_dir=/warden --remap-path-prefix=$cargo_home=/cargo" \
   cargo build --config "build.build-dir='$build_dir'" \
   --release --locked "${build_args[@]}" --target "$target"
@@ -151,6 +171,7 @@ with tarfile.open(fileobj=buffer, mode="w", format=tarfile.PAX_FORMAT) as tar:
     add(tar, name, 0o755)
     add(tar, f"{name}/LICENSE-APACHE", 0o644, "LICENSE-APACHE")
     add(tar, f"{name}/LICENSE-MIT", 0o644, "LICENSE-MIT")
+    add(tar, f"{name}/NOTICE", 0o644, "NOTICE")
     add(tar, f"{name}/{os.path.basename(binary)}", 0o755, binary)
     if extra_file:
         add(tar, f"{name}/{os.path.basename(extra_file)}", 0o644, extra_file)

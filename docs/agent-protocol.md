@@ -517,6 +517,8 @@ that it is the expected key, as `-Y verify` with an allowed-signers file does
 | `GET /v1/grants` | The agent's live grants. |
 | `POST /v1/grants/{id}/revoke` | End a grant. |
 | `POST /v1/grants/{id}/http` | Make an HTTPS call with an `api` grant. |
+| `GET /v1/commit-signing/key` | The public half of the broker's commit signing key. |
+| `POST /v1/commit-signing/sign` | Have a commit signed, under the agent's active commit signing grant. |
 
 ### `GET /healthz`
 
@@ -541,7 +543,7 @@ Ask the owner for access. Signed; JSON body:
 |-------|------|---------|
 | `goal` | string | Why access is needed: what you will do and why, naming the change, issue or error. 1 to 500 characters after trimming whitespace, one line: no control characters and no invisible format characters (Unicode category Cf: bidi controls, zero-width characters, BOM, soft hyphen…). The owner decides on it alone; the notification shows the first 200 characters. |
 | `access` | object | What is asked for; see below. |
-| `window` | string | How long the access should last: `15m`, `30m`, `1h` or `4h`. The target's or secret's policy caps it. The owner chooses the window when approving, anything up to that cap, so it may be shorter or longer than the one asked for. |
+| `window` | string | How long the access should last: `15m`, `30m`, `1h` or `4h`, and for commit signing, and nothing else, `1d`, `7d`, `30d` or `90d`. The target's or secret's policy caps it, and for commit signing the server's `WARDEN_COMMIT_SIGNING_MAX_WINDOW`. The owner chooses the window when approving, anything up to that cap, so it may be shorter or longer than the one asked for. |
 | `session` | string, optional | The name the session states for itself, shown to the owner as the agent's claim, and written to the notification and the audit log. 1 to 64 characters after trimming whitespace, under the rules of `goal`, and no line or paragraph separators. |
 | `link` | string, optional | A page about this work, shown to the owner as the agent's claim, and in no notification and no audit entry. `https://<host>/<path>`, at most 256 bytes: lowercase `https://`, a host name of letters, digits, dots and hyphens (no user, password, port, IP address or percent-encoding; an international name as `xn--…`), and a path of printable ASCII without a backslash, a query or a fragment. A `400` otherwise, without quoting the value, and also if the host is not in the owner's [`WARDEN_REQUEST_LINK_HOSTS`](configuration.md#links-in-requests), which is empty by default. It is stored and hashed in its normal form: the host in lowercase, a path of at least `/`, dot segments resolved, and characters such as `<` percent-encoded. |
 
@@ -584,7 +586,8 @@ Responses:
 
 - `201`: `{"id":"0b8f4c1e9d2a47f3a5c6e7d8f9a0b1c2","fingerprint":"42d5-403c-c2f0"}`.
   The owner is notified. Show the id and fingerprint to whoever supervises
-  the agent: the approval page shows the same fingerprint.
+  the agent: the approval page shows the same fingerprint, as five words with
+  this hex form under them. This field is always hex.
 - `400`: the body is not valid JSON or a field is invalid (the message says
   which), or the policy refuses the request (the user, window, method or
   path is not allowed; the message names the rule). Not retried, not
@@ -619,6 +622,23 @@ printf '["build-bot",%s]' "$(cat body.json)" | openssl dgst -sha256 -r | cut -c1
 ```
 
 On a mismatch, do not wait on the other request: it is not yours to use.
+Compare the hex: the API never carries the words.
+
+To show your supervisor the words the page leads with, write the same 48 bits as
+one number in base 1296, least significant digit first, five digits, each digit
+an index from 0 into the
+[EFF Short Wordlist 2.0](https://www.eff.org/files/2016/09/08/eff_short_wordlist_2_0.txt)
+(CC BY 4.0, see [NOTICE](../NOTICE)), joined with `-`. The list's second column,
+in order, is the digit's word. Showing only the hex is also fine.
+
+```python
+n = 0x42d5403cc2f0
+words = []
+for _ in range(5):
+    n, digit = divmod(n, 1296)
+    words.append(wordlist[digit])
+"-".join(words)  # oceanic-receipt-varied-amuser-aftershave
+```
 
 A duplicate does not notify the owner again, and no call of this API can. An owner
 who missed the notification finds the request on the Pending page of the approval
@@ -668,7 +688,8 @@ not a client is still waiting. To take over from a client that died:
 
 What the grant needs depends on its kind:
 
-- `api`: nothing but the agent's own signature or key. The new client can use it.
+- `api` and `commit_signing`: nothing but the agent's own signature or key. The new
+  client can use it.
 - `ssh` and `relay`: the private half of the `public_key` in the request. The
   certificate is for that key, and the relay admits only that key. A client that
   keeps the key where it survives a crash can complete the request. A client that
@@ -758,6 +779,38 @@ after that. End your own sessions when you revoke.
 Have the broker make one HTTPS call with an `api` grant's secret; see
 [section 7](#api-grants-kindapi) for the body and the rules.
 
+### `GET /v1/commit-signing/key`
+
+The public half of the broker's commit signing key. Signed; no body. It needs an active
+commit signing grant, since answering means reading the private key from the backend.
+
+- `200`: `{"public_key":"ssh-ed25519 AAAA…","fingerprint":"SHA256:…"}`.
+- `403` `{"error":"no active commit signing grant for this agent"}`.
+- `400` `{"error":"commit signing is not configured on this broker"}`.
+- `503` `{"error":"secret backend unavailable"}`, and section 5.
+
+### `POST /v1/commit-signing/sign`
+
+Have a commit signed under the agent's active commit signing grant; see
+[section 7](#commit-signing-grants-kindcommit_signing) for the rules. Body up to 2 MiB:
+
+```json
+{"namespace":"git","payload_b64":"dHJlZSA0YjgyNWRjNi4uLg=="}
+```
+
+- `200`: `{"signature":"-----BEGIN SSH SIGNATURE-----\n…","grant_id":"5e1c…","commit":"…"}`.
+  `signature` is what `ssh-keygen -Y sign` would write, and `commit` is the id git gives
+  the commit with that signature in it.
+- `400`: not the `git` namespace, or not a commit, with the reason: a tag object and
+  anything else are refused.
+- `403` `{"error":"no active commit signing grant for this agent"}`: none was ever
+  granted, or it ended or was revoked.
+- `409` `{"error":"the commit signing key changed; request a new grant"}`.
+- `413` `{"error":"the commit is too large to sign"}`: over 1 MiB.
+- `429`: the grant has reached its limit of signatures for this UTC day, 5000 by default.
+- `500`, or `503` `{"error":"secret backend unavailable"}`: no signature, as with an
+  entry that cannot be written to the audit log.
+
 ## 7. Using a grant
 
 A grant is:
@@ -766,7 +819,7 @@ A grant is:
 |-------|------|---------|
 | `grant_id` | string | Grant id (32 hex). |
 | `not_before`, `not_after` | integer | Validity, Unix seconds. |
-| `access` | object | What the grant allows, tagged by `kind`: `ssh`, `relay` or `api`. |
+| `access` | object | What the grant allows, tagged by `kind`: `ssh`, `relay`, `api` or `commit_signing`. |
 
 Keep a record of each grant (id, kind, `not_after`) so you can use and
 revoke it. Drop it when it expires; `GET /v1/grants` is the broker's view.
@@ -905,6 +958,36 @@ Errors:
 
 Every call is recorded in the broker's audit log (method, origin and path,
 never the query; status, size, redactions).
+
+### Commit signing grants (`"kind":"commit_signing"`)
+
+Asked for with `{"kind":"commit_signing"}` as `access` and a `window` in days:
+
+```json
+{"grant_id":"5e1c…","not_before":1793091612,"not_after":1795683612,"access":{"kind":"commit_signing","key_fingerprint":"SHA256:…","digest":"…"}}
+```
+
+There is nothing to install and the grant id is not needed: `POST
+/v1/commit-signing/sign` uses the agent's own active grant, read anew for each signature.
+An agent has one at a time: approving a new one ends the one before it, whose `not_after`
+stops counting. Signing is refused once the broker's key is no longer the one with this
+`digest`.
+
+The broker signs in the `git` namespace only, with `ssh-ed25519`, and only a payload that
+is a commit exactly as git writes one:
+
+- `tree`, `parent`… (ids of 40 or 64 lowercase hex digits, all one length, at most 64
+  parents), `author`, `committer`, in that order, each once.
+- Then at most one `encoding`, then `mergetag` blocks, and no other header. A `gpgsig`
+  header is refused, since a verifier drops it before checking.
+- Headers are UTF-8, and a NUL byte is refused anywhere. The message may be any other
+  bytes.
+
+Every signature is recorded before it is returned, and every refusal is recorded, without
+the payload: its SHA-256 only. Beyond 30 refusals a minute per agent, they are counted.
+
+`warden` is a client of this: [Signing commits](agent-usage.md#signing-commits). Git runs it
+as `warden -Y sign -n git -f <public key> [-U] <file>` and reads `<file>.sig`.
 
 ## 8. A worked client in POSIX shell
 

@@ -20,13 +20,17 @@ use warden_broker_proto::{SecretName, TargetName, UnixUser, Window};
 use zeroize::Zeroizing;
 
 use super::{
-    ApiSecretPolicy, CaKey, PolicyError, RelayCredential, SecretBackend, SecretValue, SshMode,
-    SshTarget, ValueFormat, check_path_prefix, is_header_text, is_reserved_header,
-    not_a_relay_target, parse_method,
+    ApiSecretPolicy, CaKey, CommitSigningKey, PolicyError, RelayCredential, SecretBackend,
+    SecretValue, SshMode, SshTarget, ValueFormat, check_path_prefix, is_header_text,
+    is_reserved_header, not_a_relay_target, parse_method,
 };
 
 const TARGET_TAG: &str = "warden:ssh-target";
 const CA_TAG: &str = "warden:ssh-ca";
+
+/// Tag of the item holding the commit signing key. Its own item, because a tag
+/// signing key would be another one: see `crate::commit_signing`.
+const COMMIT_SIGNING_TAG: &str = "warden:commit-signing";
 const API_TAG: &str = "warden:api-secret";
 const MIN_CREDENTIAL_CHARS: usize = 12;
 const CA_FIELD_ID: &str = "private_key";
@@ -57,6 +61,16 @@ pub(super) struct TargetItem {
     pub(super) title: String,
     #[serde(default)]
     pub(super) fields: Vec<SecretField>,
+}
+
+/// Why [`OnePasswordConnect::tagged_key`] found no key.
+enum KeyItemError {
+    /// No item has the tag.
+    Absent,
+    /// The item cannot be used. Never quotes it.
+    Unusable(String),
+    /// Connect could not answer.
+    Backend(PolicyError),
 }
 
 /// The CA item, decoded so that no private-key text lives in a plain `String`.
@@ -304,6 +318,51 @@ impl OnePasswordConnect {
         serde_json::from_slice(&body).map_err(|e| unreadable(&e))
     }
 
+    /// The title and private key of the one item tagged `tag`; `what` names the
+    /// item in messages, none of which quote it.
+    async fn tagged_key(
+        &self,
+        tag: &str,
+        what: &str,
+    ) -> Result<(String, PrivateKey), KeyItemError> {
+        let mut items = self.tagged(tag).await.map_err(KeyItemError::Backend)?;
+        let summary = match items.len() {
+            0 => return Err(KeyItemError::Absent),
+            1 => items.remove(0),
+            n => {
+                return Err(KeyItemError::Unusable(format!(
+                    "{n} items are tagged \"{tag}\"; exactly one is required"
+                )));
+            }
+        };
+        let unusable =
+            |reason: &str| KeyItemError::Unusable(format!("item \"{}\": {reason}", summary.title));
+        check_id(&summary.id).map_err(KeyItemError::Backend)?;
+        let body = self
+            .vault_bytes(&["items", &summary.id])
+            .await
+            .map_err(KeyItemError::Backend)?;
+        // Never interpolate the serde error: it can quote a field value.
+        let item: CaItem = serde_json::from_slice(&body)
+            .map_err(|_| unusable(&format!("unreadable {what} item")))?;
+        drop(body);
+        let text = item
+            .fields
+            .iter()
+            .find(|f| f.id == CA_FIELD_ID)
+            .and_then(|f| f.value.as_deref().map(String::as_str))
+            .filter(|v| !v.trim().is_empty())
+            .ok_or_else(|| {
+                unusable(&format!(
+                    "field with id \"{CA_FIELD_ID}\" is missing or empty"
+                ))
+            })?;
+        let key = parse_private_key(text).ok_or_else(|| {
+            unusable("the private key is not a readable OpenSSH or PKCS#8 Ed25519 key")
+        })?;
+        Ok((summary.title.clone(), key))
+    }
+
     /// Summaries of all items in the vault carrying `tag`.
     async fn tagged(&self, tag: &str) -> Result<Vec<ItemSummary>, PolicyError> {
         let items: Vec<ItemSummary> = self.vault_get(&["items"]).await?;
@@ -425,40 +484,41 @@ impl SecretBackend for OnePasswordConnect {
     }
 
     async fn ssh_ca(&self) -> Result<CaKey, PolicyError> {
-        let mut items = self.tagged(CA_TAG).await?;
-        let summary = match items.len() {
-            0 => return Err(PolicyError::Ca(format!("no item is tagged \"{CA_TAG}\""))),
-            1 => items.remove(0),
-            n => {
-                return Err(PolicyError::Ca(format!(
-                    "{n} items are tagged \"{CA_TAG}\"; exactly one is required"
-                )));
+        let (title, key) = match self.tagged_key(CA_TAG, "CA").await {
+            Ok(found) => found,
+            Err(KeyItemError::Absent) => {
+                return Err(PolicyError::Ca(format!("no item is tagged \"{CA_TAG}\"")));
             }
+            Err(KeyItemError::Unusable(reason)) => return Err(PolicyError::Ca(reason)),
+            Err(KeyItemError::Backend(e)) => return Err(e),
         };
-        let ca_error =
-            |reason: &str| PolicyError::Ca(format!("item \"{}\": {reason}", summary.title));
-        check_id(&summary.id)?;
-        let body = self.vault_bytes(&["items", &summary.id]).await?;
-        // Never interpolate the serde error: it can quote a field value.
-        let item: CaItem =
-            serde_json::from_slice(&body).map_err(|_| ca_error("unreadable CA item"))?;
-        drop(body);
-        let text = item
-            .fields
-            .iter()
-            .find(|f| f.id == CA_FIELD_ID)
-            .and_then(|f| f.value.as_deref().map(String::as_str))
-            .filter(|v| !v.trim().is_empty())
-            .ok_or_else(|| {
-                ca_error(&format!(
-                    "field with id \"{CA_FIELD_ID}\" is missing or empty"
-                ))
-            })?;
-        let key = parse_private_key(text).ok_or_else(|| {
-            ca_error("the private key is not a readable OpenSSH or PKCS#8 Ed25519 key")
-        })?;
         CaKey::new(key).map_err(|e| match e {
-            PolicyError::Ca(reason) => ca_error(&reason),
+            PolicyError::Ca(reason) => PolicyError::Ca(format!("item \"{title}\": {reason}")),
+            other => other,
+        })
+    }
+
+    async fn has_ssh_ca(&self) -> Result<bool, PolicyError> {
+        Ok(!self.tagged(CA_TAG).await?.is_empty())
+    }
+
+    async fn has_commit_signing_key(&self) -> Result<bool, PolicyError> {
+        Ok(!self.tagged(COMMIT_SIGNING_TAG).await?.is_empty())
+    }
+
+    async fn commit_signing_key(&self) -> Result<CommitSigningKey, PolicyError> {
+        let (title, key) = match self.tagged_key(COMMIT_SIGNING_TAG, "commit signing").await {
+            Ok(found) => found,
+            Err(KeyItemError::Absent) => return Err(PolicyError::NoCommitSigningKey),
+            Err(KeyItemError::Unusable(reason)) => {
+                return Err(PolicyError::CommitSigningKey(reason));
+            }
+            Err(KeyItemError::Backend(e)) => return Err(e),
+        };
+        CommitSigningKey::new(key).map_err(|e| match e {
+            PolicyError::CommitSigningKey(reason) => {
+                PolicyError::CommitSigningKey(format!("item \"{title}\": {reason}"))
+            }
             other => other,
         })
     }

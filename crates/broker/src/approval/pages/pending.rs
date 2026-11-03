@@ -5,8 +5,8 @@ use maud::{Markup, html};
 use warden_broker_proto::Access;
 
 use super::{
-    Chip, Nav, clock, destination_access, empty_icon, end_state_parts, icon, key_icon, layout,
-    stated_fields, window_words,
+    Chip, Nav, clock, destination_access, empty_icon, end_state_parts, fingerprint_forms, icon,
+    key_icon, layout, stated_fields, window_words,
 };
 use crate::requests::{LinkHosts, PendingEntry};
 
@@ -17,6 +17,7 @@ fn stored_access(entry: &PendingEntry) -> Markup {
     let subject = match &entry.request.access {
         Access::Ssh { target, user, .. } => format!("ssh {user}@{target}"),
         Access::Api { secret, .. } => format!("api {secret}"),
+        Access::CommitSigning {} => "commit signing".to_owned(),
     };
     html! {
         code { bdi { (subject) } }
@@ -63,7 +64,7 @@ fn card(entry: &PendingEntry, hosts: &LinkHosts, now: i64) -> Markup {
             // Above the meta line, so that the link is not next to the buttons.
             (stated_fields(&entry.request, hosts))
             div.meta {
-                span #(fingerprint) { "Fingerprint " code { (entry.fingerprint) } }
+                span #(fingerprint) { "Fingerprint " (fingerprint_forms(&entry.fingerprint)) }
                 span { "Asks for " (window_words(entry.request.window)) }
                 span {
                     "Expires " (clock(entry.expires_at)) " "

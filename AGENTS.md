@@ -45,6 +45,7 @@ is not one: see [Sign-off](#sign-off-dco).
 | `docs/` | user and design documentation |
 | `site/` | the landing page on GitHub Pages: static HTML and CSS, no scripts, no external resources. It names no version and leaves setup commands to the README, so a release does not touch it |
 | `deploy/systemd` | the systemd unit that `docs/deployment-systemd.md` installs |
+| `packaging` | the nfpm configuration for the CLI's `.deb` and `.rpm` |
 | `fuzz` | `cargo-fuzz` targets for code that parses untrusted input; its own workspace, on its own nightly |
 | `scripts/` | CI guards, UI check tools and release signing (each script documents its usage) |
 
@@ -66,6 +67,7 @@ cargo deny check
 cargo deny --manifest-path fuzz/Cargo.toml check
 cargo metadata --locked --manifest-path fuzz/Cargo.toml --format-version 1 > /dev/null
 python3 -I .github/scripts/crate_age.py --base main
+python3 -I .github/scripts/openssl_support.py
 uvx zizmor@1.31.1 .   # when a workflow or the Dependabot config changes
 ```
 
@@ -90,6 +92,12 @@ uvx zizmor@1.31.1 .   # when a workflow or the Dependabot config changes
   have been published at least 7 days before it lands in `Cargo.lock`,
   except the oldest release that fixes a security advisory (RUSTSEC or GHSA), listed in
   `.github/crate-age-allow.toml` (see "Dependency age" in the README).
+- OpenSSL is pinned to a release tarball by hash in `scripts/openssl-pin.env`, built by
+  `scripts/build-openssl.sh`, because no `openssl-src` crate that `openssl-sys` accepts
+  carries a current release. A nightly run, which opens an issue, and the release
+  workflow fail when a newer release of the line is out, or 90 days before its support
+  ends. Builds that ship set `WARDEN_OPENSSL_PINNED`, so that any other OpenSSL fails
+  them.
 - GitHub Actions are pinned to the full commit SHA of a release at least
   7 days old.
 
@@ -170,6 +178,11 @@ it does not replace that rule: add no other trailer for the agent.
 
 Semantic versioning, one version for the whole workspace.
 
+Before a release, read
+[OpenSSL's vulnerabilities page](https://openssl-library.org/news/vulnerabilities/) for
+the line in `scripts/openssl-pin.env`, and any open "Nightly dependency check failed"
+issue: an advisory with no fixed release yet fails no check.
+
 1. A release pull request bumps `version` in `Cargo.toml` (the workspace
    package and the internal crates' dependency entries) and in the internal
    crates' entries in `fuzz/Cargo.toml`, updates `Cargo.lock` and
@@ -185,10 +198,10 @@ Semantic versioning, one version for the whole workspace.
    `warden-release`. A tag cannot be replaced afterwards, and step 3 refuses one
    from another key. `.github/workflows/release.yml` refuses a tag that
    does not match the version, reruns CI, builds the multi-arch image,
-   pushes it to `ghcr.io/pecheriere/warden`, builds and attests the CLI archives, then
-   the demo archives, and leaves a draft release for the tag, with the archives attached
-   and the changelog section as its notes. If the demo fails, the image and CLI
-   attestations exist but no draft does, and the run's summary says so: rerun the
+   pushes it to `ghcr.io/pecheriere/warden`, builds and attests the CLI archives and its
+   `.deb` and `.rpm`, then the server's archives, then the demo's, and leaves a draft release for the tag, with the archives attached
+   and the changelog section as its notes. If a later step fails, what came before it
+   exists but no draft does, and the run's summary says so: rerun the
    failed jobs. A refusal that the archives are not the ones attested is a possible
    compromise: investigate before rerunning.
 3. When the workflow has finished, the maintainer signs the manifest with

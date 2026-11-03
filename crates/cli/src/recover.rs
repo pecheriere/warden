@@ -11,7 +11,9 @@ use warden_broker_proto::doctor::sanitize;
 use warden_broker_proto::{Access, GrantAccess, GrantView, Id, PendingRequest};
 
 use crate::client::Client;
-use crate::{EXIT_NO_GRANT, Exit, agent, announce, api_scope, client, http, local_time};
+use crate::{
+    EXIT_ERROR, EXIT_NO_GRANT, Exit, agent, announce, api_scope, client, http, local_time,
+};
 
 /// The ids of the grants recorded on this machine. A record that cannot be read
 /// counts for nothing here; `warden status` shows it as unreadable.
@@ -40,6 +42,8 @@ pub fn elsewhere_note(grant: &GrantView, local: &[Id]) -> String {
             "  (not on this machine; if the `warden request` for it is gone, so is its key: \
              warden revoke {id})"
         ),
+        // The broker signs under the grant: there is nothing to have on a machine.
+        GrantAccess::CommitSigning(_) => String::new(),
     }
 }
 
@@ -61,6 +65,7 @@ fn access_summary(access: &Access) -> String {
                 None => format!("api:{secret} {methods}"),
             }
         }
+        Access::CommitSigning {} => "commit signing".to_owned(),
     }
 }
 
@@ -77,10 +82,11 @@ fn pending_line(request: &PendingRequest) -> String {
         .as_ref()
         .map_or_else(String::new, |link| format!("  link: {link}"));
     format!(
-        "  {} for {}  request {}  fingerprint {}  made {}  expires {}{session}{link}  goal: {}",
+        "  {} for {}  request {}  fingerprint {} ({})  made {}  expires {}{session}{link}  goal: {}",
         access_summary(&request.access),
         request.window.label(),
         request.id,
+        request.fingerprint.words(),
         request.fingerprint,
         local_time(request.created_at),
         local_time(request.expires_at),
@@ -110,6 +116,8 @@ pub async fn print_pending(client: &Client) -> Result<()> {
 enum Collected {
     AlreadyHere(GrantView),
     NewApiRecord(GrantView, http::ApiRecord),
+    /// A live grant that works with nothing on this machine, so nothing is written.
+    NothingToCollect(String),
 }
 
 fn plan(grant_id: &Id, live: Vec<GrantView>, local: &[Id]) -> Result<Collected, String> {
@@ -133,6 +141,11 @@ fn plan(grant_id: &Id, live: Vec<GrantView>, local: &[Id]) -> Result<Collected, 
              key, and nothing can use this grant. End it with `warden revoke {grant_id}`, then \
              make a new request if the task still needs the access"
         )),
+        GrantAccess::CommitSigning(_) => Ok(Collected::NothingToCollect(format!(
+            "grant {grant_id} has nothing to collect: it is live, and the broker signs under it, \
+             so it needs nothing on this machine. Once `warden setup git` has run here, `git \
+             commit` uses it"
+        ))),
     }
 }
 
@@ -141,8 +154,9 @@ fn plan(grant_id: &Id, live: Vec<GrantView>, local: &[Id]) -> Result<Collected, 
 /// have: the grant is already approved and answers to the agent's login anywhere.
 ///
 /// # Errors
-/// [`Exit`] with [`EXIT_NO_GRANT`] when there is nothing usable to collect; a
-/// failed call or write.
+/// [`Exit`] with [`EXIT_NO_GRANT`] when no usable grant can be collected, which
+/// calls for a new request, and with [`EXIT_ERROR`] for a commit signing grant,
+/// which does not; a failed call or write.
 pub async fn collect(grant_id: &Id) -> Result<()> {
     let (_, client) = client()?;
     let live = client.grants().await?;
@@ -151,6 +165,9 @@ pub async fn collect(grant_id: &Id) -> Result<()> {
         Ok(Collected::NewApiRecord(grant, record)) => {
             http::save(&record)?;
             grant
+        }
+        Ok(Collected::NothingToCollect(message)) => {
+            return Err(Exit::new(EXIT_ERROR, message).into());
         }
         Err(message) => return Err(Exit::new(EXIT_NO_GRANT, message).into()),
     };
@@ -163,7 +180,9 @@ pub async fn collect(grant_id: &Id) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use warden_broker_proto::{ApiGrant, GrantAccess, GrantView, Id, RelayGrant, Window};
+    use warden_broker_proto::{
+        ApiGrant, CommitSigningGrant, GrantAccess, GrantView, Id, RelayGrant, Window,
+    };
 
     use super::{Collected, access_summary, elsewhere_note, pending_line, plan};
     use warden_broker_proto::{Access, PendingRequest};
@@ -240,6 +259,31 @@ mod tests {
     }
 
     #[test]
+    fn a_signing_grant_has_nothing_to_collect_and_no_note() {
+        let grant = GrantView {
+            grant_id: Id::random(),
+            not_before: 100,
+            not_after: 200,
+            access: GrantAccess::CommitSigning(CommitSigningGrant {
+                key_fingerprint: "SHA256:abc".to_owned(),
+                digest: "d".repeat(64),
+            }),
+        };
+        assert_eq!(elsewhere_note(&grant, &[]), "");
+        let id = grant.grant_id.clone();
+        let Ok(Collected::NothingToCollect(message)) = plan(&id, vec![grant], &[]) else {
+            panic!("expected nothing to collect");
+        };
+        assert!(message.contains(&id.to_string()), "{message}");
+        assert!(message.contains("warden setup git"), "{message}");
+    }
+
+    #[test]
+    fn a_pending_signing_request_says_what_it_is_for() {
+        assert_eq!(access_summary(&Access::CommitSigning {}), "commit signing");
+    }
+
+    #[test]
     fn a_grant_that_is_not_live_is_refused() {
         let Err(message) = plan(&Id::random(), vec![api_grant()], &[]) else {
             panic!("expected a refusal");
@@ -305,7 +349,7 @@ mod tests {
         });
         for part in [
             "api:home-api read-only for 15m",
-            "fingerprint ab02-cd02-ef02",
+            "(ab02-cd02-ef02)",
             "session: build-work",
             "link: https://git.example.com/a",
             "goal: read the thermostat",

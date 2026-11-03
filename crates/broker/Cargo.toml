@@ -15,9 +15,6 @@ path = "src/main.rs"
 workspace = true
 
 [features]
-# Build OpenSSL from source and link it statically, so the container image
-# needs no system libssl (webauthn-rs links OpenSSL).
-vendored-openssl = ["dep:openssl", "openssl/vendored"]
 # Test helpers (fake clock and notifiers) for this crate's integration tests.
 testkit = [
     "dep:http-body-util",
@@ -52,6 +49,7 @@ rustls-webpki.workspace = true
 secrecy.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha1.workspace = true
 sha2.workspace = true
 sqlx.workspace = true
 # ECDSA P-256 signing keys (Secure Enclave, TPM, PIV) are parsed by `ssh-key`
@@ -68,9 +66,9 @@ tracing-subscriber.workspace = true
 url.workspace = true
 warden-broker-proto.workspace = true
 webauthn-rs.workspace = true
+openssl-sys.workspace = true
 maud.workspace = true
 zeroize.workspace = true
-openssl = { workspace = true, optional = true }
 # Optional: only for the testkit feature (in-process test broker, soft passkey).
 http-body-util = { workspace = true, optional = true }
 hyper = { workspace = true, optional = true }

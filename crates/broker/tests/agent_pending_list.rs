@@ -92,6 +92,38 @@ async fn a_session_label_comes_back_as_sent() {
     assert_eq!(list(&broker, &key).await[0]["session"], "build-work");
 }
 
+/// A commit signing request is listed like any other: it, too, is the agent's own,
+/// and the link in the answer is at most the page the agent named.
+#[tokio::test]
+async fn a_commit_signing_request_is_listed_with_no_approval_link() {
+    let broker = TestBroker::new().await;
+    let key = broker.add_agent("bot").await;
+    let other = broker.add_agent("other").await;
+    let request = CreateRequest {
+        goal: GOAL.to_owned().try_into().unwrap(),
+        access: Access::CommitSigning {},
+        window: Window::D30,
+        session: Some("build-work".to_owned().try_into().unwrap()),
+        link: None,
+    };
+    let (created, token) = broker.create_request("bot", request).await;
+
+    let resp = broker.api_get(&key, "/v1/requests").await;
+    assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
+    let listed = resp.json();
+    let entry = &listed[0];
+    assert_eq!(entry["id"], created.id.as_str());
+    assert_eq!(entry["fingerprint"], created.fingerprint.as_str());
+    assert_eq!(entry["access"]["kind"], "commit_signing");
+    assert_eq!(entry["window"], "30d");
+    assert_eq!(entry["session"], "build-work");
+    let hash = hex::encode(Sha256::digest(token.as_bytes()));
+    for hidden in [token.as_str(), hash.as_str(), "/approve"] {
+        assert!(!resp.body.contains(hidden), "{hidden} in {}", resp.body);
+    }
+    assert_eq!(list(&broker, &other).await, [] as [Value; 0]);
+}
+
 #[tokio::test]
 async fn another_agent_sees_nothing_of_it() {
     let broker = broker().await;

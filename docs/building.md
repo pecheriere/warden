@@ -10,7 +10,7 @@ and tracked. To run warden rather than work on it, see
 |---|---|
 | [rustup](https://rustup.rs/) | Installs the Rust toolchain pinned in [`rust-toolchain.toml`](../rust-toolchain.toml) when you first run `cargo` here |
 | A C toolchain, `pkg-config` and the OpenSSL headers | The broker and the demo link OpenSSL. On Debian or Ubuntu: `sudo apt install build-essential pkg-config libssl-dev`. The CLI needs only the C toolchain |
-| `make` and `perl`, instead of the OpenSSL headers | Building with the `vendored-openssl` feature, which compiles OpenSSL from source |
+| `curl`, `make` and `perl`, instead of the OpenSSL headers | Building against the OpenSSL release warden ships, with `scripts/build-openssl.sh` |
 | Docker with Buildx | Only to build the image |
 
 The checks in [`AGENTS.md`](../AGENTS.md#before-you-push) also need:
@@ -34,9 +34,11 @@ cargo build --workspace --locked
 # The CLI alone: target/release/warden
 cargo build --release --locked -p warden-broker-cli
 
-# The server, with OpenSSL linked statically, as in the image:
+# The server, with the pinned OpenSSL linked statically, as in the image:
 # target/release/warden-server
-cargo build --release --locked -p warden-broker --features vendored-openssl
+scripts/build-openssl.sh "$(rustc -vV | sed -n 's/^host: //p')" "$PWD/target/openssl"
+OPENSSL_DIR="$PWD/target/openssl" OPENSSL_STATIC=1 WARDEN_OPENSSL_PINNED=1 \
+  cargo build --release --locked -p warden-broker
 
 # The image
 docker buildx build -t warden:dev --load .

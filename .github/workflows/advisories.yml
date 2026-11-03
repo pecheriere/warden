@@ -4,7 +4,8 @@ name: advisories
 # published today fails the next pull request, whatever it changes. Running it
 # every night on main surfaces a new advisory here first, as a failed scheduled
 # run, before it blocks unrelated work. Pull requests still run the full
-# `cargo deny check` in ci.yml.
+# `cargo deny check` in ci.yml. No advisory is published for a C library's end of
+# support or for every release it makes, so the pinned OpenSSL gets its own check.
 
 on:
   schedule:
@@ -27,3 +28,40 @@ jobs:
           arguments: --all-features --locked
           command: check
           command-arguments: advisories
+
+  openssl:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Refuse an OpenSSL near the end of support or out of date
+        run: python3 -I .github/scripts/openssl_support.py --nightly
+
+  # A failed scheduled run only tells whoever reads the notification, so keep one
+  # issue open while these fail. It links the run, and the run holds the details.
+  report:
+    needs: [advisories, openssl]
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Open or update the issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Nightly dependency check failed"
+          number=$(gh issue list --state open --search "in:title \"$title\"" \
+            --json number,title --jq "map(select(.title == \"$title\")) | .[0].number // empty")
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --body "Still failing: $RUN_URL"
+          else
+            gh issue create --title "$title" --body "Failed: $RUN_URL"
+          fi

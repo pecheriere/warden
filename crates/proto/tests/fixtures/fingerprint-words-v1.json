@@ -1,0 +1,14 @@
+{
+  "note": "Shared by the proto, broker and CLI tests. Computed by a separate script from the list EFF publishes, not by the Rust code.",
+  "vectors": [
+    {"name": "the request in agent-protocol.md", "agent": "build-bot", "body": "{\"goal\":\"list open pull requests to triage issue 42\",\"access\":{\"kind\":\"api\",\"secret\":\"github\"},\"window\":\"15m\"}", "hex": "42d5-403c-c2f0", "words": "oceanic-receipt-varied-amuser-aftershave"},
+    {"name": "an API request as a 0.3 CLI made it", "agent": "bot", "body": "{\"goal\":\"read the repos\",\"access\":{\"kind\":\"api\",\"secret\":\"github\"},\"window\":\"15m\"}", "hex": "ae38-25c4-2428", "words": "geyser-saltshaker-poking-unopened-animal"},
+    {"name": "the example in agent-usage.md", "hex": "b65b-9812-eb72", "words": "dozed-crawfish-kayak-ascend-answer"},
+    {"name": "zero", "hex": "0000-0000-0000", "words": "aardvark-aardvark-aardvark-aardvark-aardvark"},
+    {"name": "one", "hex": "0000-0000-0001", "words": "abandoned-aardvark-aardvark-aardvark-aardvark"},
+    {"name": "first carry", "hex": "0000-0000-0510", "words": "aardvark-abandoned-aardvark-aardvark-aardvark"},
+    {"name": "largest", "hex": "ffff-ffff-ffff", "words": "spyglass-pantyhose-sniff-sauna-asocial"},
+    {"name": "the approval page tests", "hex": "ab01-cd01-ef01", "words": "exquisite-nautically-cakewalk-oscillator-angelfish"},
+    {"name": "the longest spelling", "hex": "0522-b233-6c22", "words": "abbreviate-abbreviate-abbreviate-abbreviate-abbreviate"}
+  ]
+}

@@ -36,8 +36,9 @@ font-size:14px;font-weight:700;border:1.5px solid}
 .modify{background:var(--warn-bg);color:var(--warn-ink);border-color:var(--warn-line)}
 .fp{border-radius:18px;padding:12px 16px;background:var(--fp-bg);border:2px dashed var(--primary);
 display:flex;flex-direction:column;gap:4px}
-.fp span:last-child{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:clamp(18px,6.2vw,25px);font-weight:700;letter-spacing:.06em;white-space:nowrap}
-@media (min-width:600px){.fp span:last-child{font-size:clamp(18px,3.1vw,25px)}}
+.fp span:nth-child(2){font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:clamp(17px,4.6vw,23px);overflow-wrap:normal;font-weight:700}
+.fp small{color:var(--muted);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+@media (min-width:600px){.fp span:nth-child(2){font-size:clamp(15px,2.2vw,21px)}}
 fieldset{border:0;margin:0;padding:0;min-width:0}
 fieldset legend{padding:0;margin-bottom:8px}
 .seg{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px;padding:4px;border-radius:14px;background:var(--soft)}
@@ -68,7 +69,7 @@ column-gap:64px;align-items:start;padding-top:28px}}
 @media (min-width:1000px){.btns{grid-template-columns:1fr 1fr}}
 /* Short screens (folded, landscape): tighter, so Approve and Deny stay on screen. */
 @media (max-height:700px){main{padding-top:10px;gap:10px}h1{font-size:23px}.col{gap:10px}.card{padding:12px;gap:10px}
-.fp span:last-child{font-size:21px}.btn{height:48px}.done{padding-top:12px}.halo{width:150px;height:150px}.halo .mascot{width:112px;height:112px}}
+.fp span:nth-child(2){font-size:16px}.btn{height:48px}.done{padding-top:12px}.halo{width:150px;height:150px}.halo .mascot{width:112px;height:112px}}
 @media (max-height:700px) and (min-width:600px){main.split{padding-top:12px}}
 /* Folded and short: the decision panel and the fingerprint both fit without scrolling. */
 @media (max-height:700px) and (max-width:599px){header{padding-top:6px;padding-bottom:6px}header .mascot{width:32px;height:32px}
@@ -116,7 +117,7 @@ background:var(--surface);border-top:1px solid var(--line)}}
 </section>
 </div>
 <div class="col">
-<section class="fp"><span class="label">Fingerprint · must match the agent</span><span>K7Q2-9XMF-4TRA</span></section>
+<section class="fp"><span class="label">Fingerprint · must match the agent</span><span>exquisite-nautically-cakewalk-oscillator-angelfish</span><small>In hex ab01-cd01-ef01</small></section>
 <div class="actions">
 <fieldset><legend class="label">Grant for</legend><div class="seg">
 <input type="radio" name="w" id="w1" checked><label for="w1">15 min</label>
