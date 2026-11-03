@@ -112,6 +112,8 @@ async fn approved_agent(broker: &TestBroker, name: &str) -> Agent {
     broker.add_agent(name).await;
     let key = random_key();
     let request = CreateRequest {
+        session: None,
+        link: None,
         goal: Goal::try_from("relay test".to_owned()).unwrap(),
         access: Access::Ssh {
             target: TargetName::try_from(TARGET.to_owned()).unwrap(),

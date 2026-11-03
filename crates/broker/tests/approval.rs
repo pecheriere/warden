@@ -1263,6 +1263,8 @@ async fn scoped_broker() -> TestBroker {
 
 fn scoped_request(methods: Option<&[&str]>, path_prefix: Option<&str>) -> CreateRequest {
     CreateRequest {
+        session: None,
+        link: None,
         goal: Goal::try_from("list the open pull requests".to_owned()).unwrap(),
         access: Access::Api {
             secret: SecretName::try_from("github".to_owned()).unwrap(),

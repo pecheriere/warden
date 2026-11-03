@@ -15,7 +15,7 @@ use zeroize::Zeroizing;
 use crate::notify::{ChannelKind, ChannelList, parse_channels};
 use crate::policy::onepassword::parse_host_port;
 use crate::proxy::ProxyLimits;
-use crate::requests::RequestLimits;
+use crate::requests::{LinkHosts, RequestLimits};
 use crate::signed::BodyReadTimeout;
 
 mod plain_http;
@@ -317,6 +317,9 @@ pub struct Config {
     /// `WARDEN_COMMIT_SIGNING_MAX_PER_DAY`, default 5000, 1 to 1000000: signatures per
     /// commit signing grant per UTC day.
     pub commit_signing_max_per_day: u32,
+    /// `WARDEN_REQUEST_LINK_HOSTS`: the hosts a request may link to. Unset, no
+    /// request may carry a link.
+    pub link_hosts: LinkHosts,
     /// The SSH relay.
     pub relay: RelayConfig,
     /// How long the body of a signed request may take to arrive. Not set
@@ -473,6 +476,29 @@ fn request_limits(
     Ok(limits)
 }
 
+/// The longest commit signing grant and its signatures per day, from the environment.
+fn commit_signing_limits(
+    get: &impl Fn(&'static str) -> Option<String>,
+) -> Result<(Window, u32), ConfigError> {
+    let window = get("WARDEN_COMMIT_SIGNING_MAX_WINDOW").map_or(
+        Ok(Window::COMMIT_SIGNING_DEFAULT),
+        |raw| {
+            Window::commit_signing(raw.trim()).map_err(|_| ConfigError::Invalid {
+                var: "WARDEN_COMMIT_SIGNING_MAX_WINDOW",
+                reason: "must be 1d, 7d, 30d or 90d",
+            })
+        },
+    )?;
+    let per_day = bounded_u32(
+        get,
+        "WARDEN_COMMIT_SIGNING_MAX_PER_DAY",
+        1..=1_000_000,
+        "must be a whole number from 1 to 1000000",
+        crate::requests::SIGNATURES_PER_DAY,
+    )?;
+    Ok((window, per_day))
+}
+
 /// The secret in the file at `path`, which `var` names: one line, without its
 /// line ending. It must be a regular file that other users cannot access.
 fn read_secret_file(var: &'static str, path: &Path) -> Result<Zeroizing<String>, ConfigError> {
@@ -598,15 +624,16 @@ impl Config {
 
         let proxy = proxy_limits(&get)?;
         let requests = request_limits(&get)?;
-        let commit_signing_max_window = get("WARDEN_COMMIT_SIGNING_MAX_WINDOW").map_or(
-            Ok(Window::COMMIT_SIGNING_DEFAULT),
-            |raw| {
-                Window::commit_signing(raw.trim()).map_err(|_| ConfigError::Invalid {
-                    var: "WARDEN_COMMIT_SIGNING_MAX_WINDOW",
-                    reason: "must be 1d, 7d, 30d or 90d",
-                })
-            },
-        )?;
+        let (commit_signing_max_window, commit_signing_max_per_day) = commit_signing_limits(&get)?;
+        let link_hosts = get("WARDEN_REQUEST_LINK_HOSTS")
+            .map_or_else(
+                || Ok(LinkHosts::default()),
+                |value| LinkHosts::parse(&value),
+            )
+            .map_err(|reason| ConfigError::Invalid {
+                var: "WARDEN_REQUEST_LINK_HOSTS",
+                reason,
+            })?;
 
         let relay = RelayConfig {
             listen: addr("WARDEN_RELAY_LISTEN", "127.0.0.1:2222")?,
@@ -645,13 +672,8 @@ impl Config {
             proxy,
             requests,
             commit_signing_max_window,
-            commit_signing_max_per_day: bounded_u32(
-                &get,
-                "WARDEN_COMMIT_SIGNING_MAX_PER_DAY",
-                1..=1_000_000,
-                "must be a whole number from 1 to 1000000",
-                crate::requests::SIGNATURES_PER_DAY,
-            )?,
+            commit_signing_max_per_day,
+            link_hosts,
             relay,
             body_read_timeout: BodyReadTimeout::default(),
         })

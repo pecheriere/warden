@@ -83,10 +83,15 @@ WCAG AA contrast in both modes.
   `--deny` outline and `--deny` text; secondary actions with a 2 px `--line`
   outline.
 - **Pending card**: a card per request with the agent (a heading, for moving between
-  cards with a screen reader), the access (and its badge), the goal, then fingerprint,
+  cards with a screen reader), the access (and its badge), the goal, any stated session
+  and link, then fingerprint,
   asked window and expiry in `--muted`. Approve… and Deny fill the bottom side by
   side, the same size at every width. A card that ends keeps its place and size,
   dimmed no further than its text keeps 4.5:1, with its buttons disabled.
+- **Stated session and link**: what the agent says about itself. Always worded as
+  stated by the agent, never as checked. A link is `--primary` text at least 44 px
+  high, showing its real host, in the details and never beside Approve. It is the one
+  way a page points away from warden, and opens in a new tab.
 - **Live indicator**: `--accent` dot with a 2 px `--accent-edge` ring, plus
   `--soft-ink` text ("1 session open"). Under it, the live area of a grant
   card lists what is open, across the card below a `--line` divider.
@@ -113,7 +118,7 @@ it is decoration, and never animates in a way that delays the decision
 | Up to 700 px tall | Compact spacing and type, so the fingerprint and the decision fit without scrolling. |
 
 The page uses `viewport-fit=cover` and pads with `env(safe-area-inset-*)`.
-Agent-controlled text (goals, agent names) wraps and stays in `<bdi>`; it
+Agent-controlled text (goals, agent names, session labels) wraps and stays in `<bdi>`; it
 never pushes the fingerprint or the buttons off screen. Lists such as
 Pending and Active grants are cards on a phone, not wide tables.
 

@@ -404,6 +404,8 @@ impl Requests {
                 .map_err(|_| RequestError::Internal("the renewal goal is not valid"))?,
             access: Access::CommitSigning {},
             window,
+            session: None,
+            link: None,
         };
         let this = self.clone();
         detached(async move { this.create_renewal(&agent, req).await }).await

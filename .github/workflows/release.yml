@@ -7,8 +7,12 @@ name: release
 # build-provenance attestation, verifiable with
 #   gh attestation verify oci://ghcr.io/pecheriere/warden:<version> --owner pecheriere
 #
-# It also builds the `warden` CLI on native runners, attests the archives, and
-# leaves them on a draft GitHub release. The workflow never publishes that draft:
+# It also builds the `warden` CLI and the local demo on native runners, attests
+# the archives, and leaves them on a draft GitHub release. The demo builds only after
+# the CLI archives and the image are attested, and is attested separately. It is
+# never in the image, and its archive is named as a demo. If it fails, the image and
+# the CLI's attestations exist but there is no draft: the last job says so. Rerun the
+# failed jobs. The workflow never publishes that draft:
 # the owner signs its manifest with scripts/sign-release.sh, using a key that is
 # not on GitHub, and then publishes it (see "Releases" in AGENTS.md). This
 # repository has immutable releases, so a published release cannot gain files,
@@ -128,81 +132,60 @@ jobs:
 
   cli:
     needs: [on-main, crate-age, ci]
-    name: cli (${{ matrix.platform }})
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
-    # This job compiles dependencies and runs their build scripts, so it holds
-    # neither the attestation identity nor write access to the release. Like the
-    # image, it builds with no cache: pull request builds write to the cache, and
-    # an entry from one must not be able to reach a published binary.
+    uses: $/.github/workflows/build-archives.yml
+    with:
+      product: cli
     permissions:
       contents: read
-    strategy:
-      fail-fast: true
-      matrix:
-        include:
-          - platform: macos-arm64
-            target: aarch64-apple-darwin
-            runner: macos-15
-          - platform: linux-amd64
-            target: x86_64-unknown-linux-musl
-            runner: ubuntu-24.04
-          - platform: linux-arm64
-            target: aarch64-unknown-linux-musl
-            runner: ubuntu-24.04-arm
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@d124f86f28ff42855784ff3319f48ac182c248f8 # 1.99.1
-        with:
-          toolchain: "1.99"
-      # In the checkout, so the target lands on the toolchain rust-toolchain.toml
-      # selects, which the action's `targets` input does not reach.
-      - name: Add the build target
-        env:
-          TARGET: ${{ matrix.target }}
-        run: |
-          rustup toolchain install
-          rustup target add "$TARGET"
-      # The musl targets link everything statically, aws-lc's C code included,
-      # which needs a C compiler for musl.
-      - name: Install the musl C toolchain
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
-      - name: Build and pack the CLI
-        env:
-          TARGET: ${{ matrix.target }}
-          PLATFORM: ${{ matrix.platform }}
-        run: scripts/package-cli.sh "$TARGET" "$PLATFORM" dist
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: cli-${{ matrix.platform }}
-          path: dist/*.tar.gz
-          if-no-files-found: error
-          retention-days: 1
 
-  cli-attest:
+  attest-cli:
+    # Attests the CLI archives before the demo's release build starts, so that a
+    # change made after this job is unattested. This does not cover anything earlier:
+    # the `ci` job already ran every workspace crate in this run, the demo's included
+    # (see "Not covered yet" in docs/verifying-releases.md). Reads the builds'
+    # artifacts unmerged, and attests in the same job as the check, with no download
+    # in between. It builds nothing. Its digests are the record of what was attested:
+    # a job output, which another job's artifact token cannot change.
     needs: cli
     runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
       attestations: write
+    outputs:
+      sums: ${{ steps.sums.outputs.sums }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          pattern: cli-*
-          merge-multiple: true
-          path: dist
+          pattern: archive-cli-*
+          path: "${{ runner.temp }}/artifacts"
+      - name: Check each artifact holds only its own archive
+        run: python3 -I .github/scripts/collect_archives.py collect cli "$RUNNER_TEMP/artifacts" dist
+      - id: sums
+        name: Record the digests
+        run: |
+          {
+            echo 'sums<<END_OF_SUMS'
+            (cd dist && sha256sum -- *.tar.gz)
+            echo END_OF_SUMS
+          } >> "$GITHUB_OUTPUT"
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: dist/*.tar.gz
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: attested-cli
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
 
   merge:
     # Waits for the CLI too, so that no version gets its image tag unless its
-    # binaries built.
-    needs: [build, cli]
+    # binaries built and were attested.
+    needs: [build, attest-cli]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -247,12 +230,66 @@ jobs:
           subject-digest: ${{ steps.manifest.outputs.digest }}
           push-to-registry: true
 
+  demo:
+    # Last of the builds. Any job that runs dependencies could replace another job's
+    # artifact with a stolen runner token. By now the CLI archives and the image are
+    # attested, so a file replaced from here on would be unattested, and the draft job
+    # and scripts/sign-release.sh refuse it. `ci` must stay before attestation, so that
+    # nothing is published or attested until the tests pass, which leaves the gap
+    # "Not covered yet" in docs/verifying-releases.md describes.
+    needs: [merge, attest-cli]
+    uses: $/.github/workflows/build-archives.yml
+    with:
+      product: demo
+    permissions:
+      contents: read
+
+  attest-demo:
+    # A separate attestation, of demo-named files only. So the demo's build can get
+    # its own archive attested but no file under another name, and
+    # scripts/sign-release.sh compares names as well as digests.
+    needs: demo
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    outputs:
+      sums: ${{ steps.sums.outputs.sums }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: archive-demo-*
+          path: "${{ runner.temp }}/artifacts"
+      - name: Check each artifact holds only its own archive
+        run: python3 -I .github/scripts/collect_archives.py collect demo "$RUNNER_TEMP/artifacts" dist
+      - id: sums
+        name: Record the digests
+        run: |
+          {
+            echo 'sums<<END_OF_SUMS'
+            (cd dist && sha256sum -- *.tar.gz)
+            echo END_OF_SUMS
+          } >> "$GITHUB_OUTPUT"
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/warden-demo-*.tar.gz
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: attested-demo
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
   draft-release:
     # Last, so a draft means that everything in this run succeeded. The only job
     # with write access to the repository: it runs no code from the build, only
     # gh, and it attaches files to a draft that nobody can download until the
     # owner publishes it.
-    needs: [merge, cli-attest]
+    needs: [merge, attest-cli, attest-demo]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -262,9 +299,23 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          pattern: cli-*
+          pattern: attested-*
           merge-multiple: true
           path: dist
+      # An artifact can be replaced after the job that uploaded it, so what counts
+      # is what the attesting jobs recorded: exactly these files with these digests.
+      - name: Refuse anything but the attested archives
+        env:
+          CLI_SUMS: ${{ needs.attest-cli.outputs.sums }}
+          DEMO_SUMS: ${{ needs.attest-demo.outputs.sums }}
+        run: |
+          expected=$(printf '%s\n%s\n' "$CLI_SUMS" "$DEMO_SUMS" | LC_ALL=C sort)
+          found=$(cd dist && sha256sum -- * | LC_ALL=C sort)
+          if [ -z "$CLI_SUMS" ] || [ -z "$DEMO_SUMS" ] || [ "$found" != "$expected" ]; then
+            echo "::error::the archives to release are not the ones that were attested"
+            diff <(echo "$expected") <(echo "$found") || true
+            exit 1
+          fi
       - name: Take the release notes from the changelog
         run: |
           awk -v heading="## [${GITHUB_REF_NAME#v}]" '
@@ -275,6 +326,8 @@ jobs:
           if [ ! -s "$RUNNER_TEMP/notes.md" ]; then
             echo "::warning::CHANGELOG.md has no section for $GITHUB_REF_NAME: write the notes on the draft"
           fi
+          printf '\n**The archives with `demo` in their name are a demo and are not secure for real use.** [What they are for](https://github.com/%s/blob/%s/docs/demo.md).\n' \
+            "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME" >> "$RUNNER_TEMP/notes.md"
       # A rerun finds the draft of the failed attempt and replaces its files. A
       # published release is immutable, so that case stops here.
       - name: Create the draft release, with the binaries
@@ -300,3 +353,32 @@ jobs:
             gh release create "$GITHUB_REF_NAME" dist/*.tar.gz --draft --verify-tag \
               --title "$GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/notes.md"
           fi
+
+  report-incomplete:
+    # The image and the attestations cannot be taken back, so a later failure leaves
+    # the release half done. Say exactly how far it got.
+    needs: [build, cli, attest-cli, merge, demo, attest-demo, draft-release]
+    if: ${{ failure() || cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Say what exists and what does not
+        env:
+          IMAGE_RESULT: ${{ needs.merge.result }}
+          CLI_RESULT: ${{ needs.attest-cli.result }}
+          DEMO_RESULT: ${{ needs.attest-demo.result }}
+          DRAFT_RESULT: ${{ needs.draft-release.result }}
+        run: |
+          {
+            echo '## This release did not finish'
+            echo
+            echo "- Image pushed and attested: $IMAGE_RESULT"
+            echo "- CLI archives attested: $CLI_RESULT"
+            echo "- Demo archives attested: $DEMO_RESULT"
+            echo "- Draft release: $DRAFT_RESULT"
+            echo
+            echo 'Do not publish anything from this run. Without a draft there is nothing to'
+            echo 'sign. Rerun the failed jobs. If it says the archives are not the ones that'
+            echo 'were attested, treat that as a possible compromise and investigate first.'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::error::the release did not finish: see this run's summary"
+          exit 1

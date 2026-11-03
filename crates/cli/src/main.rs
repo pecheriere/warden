@@ -7,6 +7,7 @@ mod doctor;
 mod git_signing;
 mod guidance;
 mod http;
+mod request_context;
 mod setup_git;
 mod sign;
 mod ssh;
@@ -26,13 +27,14 @@ use warden_broker_proto::doctor::EXIT_NOTHING_FAILED;
 use warden_broker_proto::signing::{Audience, PROTOCOL};
 use warden_broker_proto::{
     Access, AgentName, ApiGrant, CreateRequest, Goal, GrantAccess, GrantView, Id, RequestStatus,
-    SecretName, TargetName, UnixUser, Window, fingerprint, is_read_only, modifying_methods,
-    under_prefix,
+    SecretName, SessionLabel, SessionLink, TargetName, UnixUser, Window, is_read_only,
+    modifying_methods, under_prefix,
 };
 use zeroize::Zeroizing;
 
 use crate::client::{Auth, CallError, Client, MAX_WAIT_SECS};
 use crate::config::{Config, SshKeyConfig};
+use crate::request_context::{Answered, RequestContext, compare};
 use crate::sign::Signer;
 
 /// Exit code: any other failure.
@@ -203,6 +205,8 @@ enum RequestKind {
         /// What the access is for, shown to the owner.
         #[arg(long)]
         goal: Goal,
+        #[command(flatten)]
+        context: RequestContext,
     },
     /// Brokered HTTPS calls that use a stored API secret.
     Api {
@@ -221,6 +225,8 @@ enum RequestKind {
         /// What the access is for, shown to the owner.
         #[arg(long)]
         goal: Goal,
+        #[command(flatten)]
+        context: RequestContext,
     },
     /// Commit signing by the broker's key, for much longer than other access: no
     /// prompt per commit. A signature means warden signed the commit for this
@@ -232,6 +238,8 @@ enum RequestKind {
         /// What the access is for, shown to the owner.
         #[arg(long)]
         goal: Goal,
+        #[command(flatten)]
+        context: RequestContext,
     },
     /// Withdraw one of this agent's pending requests, so its approval link
     /// stops working.
@@ -353,8 +361,9 @@ async fn run(cmd: Cmd) -> Result<()> {
                     user,
                     window,
                     goal,
+                    context,
                 },
-        } => request_ssh(target, user, window, goal).await,
+        } => request_ssh(target, user, window, goal, context).await,
         Cmd::Request {
             kind:
                 RequestKind::Api {
@@ -363,22 +372,20 @@ async fn run(cmd: Cmd) -> Result<()> {
                     path,
                     window,
                     goal,
+                    context,
                 },
-        } => request_api(secret, methods, path, window, goal).await,
+        } => request_api(secret, methods, path, window, goal, context).await,
         Cmd::Request {
-            kind: RequestKind::Signing { window, goal },
-        } => request_signing(window, goal).await,
+            kind:
+                RequestKind::Signing {
+                    window,
+                    goal,
+                    context,
+                },
+        } => request_signing(window, goal, context).await,
         Cmd::Setup {
             what: SetupWhat::Git { local },
-        } => {
-            let (_, client) = client()?;
-            let scope = if local {
-                setup_git::Scope::Local
-            } else {
-                setup_git::Scope::Global
-            };
-            setup_git::run(&client, scope).await
-        }
+        } => setup_git(local).await,
         Cmd::Request {
             kind: RequestKind::Cancel { id },
         } => cancel(&id).await,
@@ -597,7 +604,22 @@ async fn cancel(id: &Id) -> Result<()> {
     Ok(())
 }
 
-async fn request_ssh(target: TargetName, user: UnixUser, window: Window, goal: Goal) -> Result<()> {
+/// The label and link to send; wrong ones are a usage error, before anything
+/// else happens.
+fn resolve_context(context: RequestContext) -> Result<(Option<SessionLabel>, Option<SessionLink>)> {
+    context
+        .resolve(std::env::var_os(request_context::SESSION_ENV))
+        .map_err(|message| Exit::new(EXIT_USAGE, message).into())
+}
+
+async fn request_ssh(
+    target: TargetName,
+    user: UnixUser,
+    window: Window,
+    goal: Goal,
+    context: RequestContext,
+) -> Result<()> {
+    let (session, link) = resolve_context(context)?;
     let (config, client) = client()?;
     let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519)
         .map_err(|e| anyhow!("cannot generate a key: {e}"))?;
@@ -613,6 +635,8 @@ async fn request_ssh(target: TargetName, user: UnixUser, window: Window, goal: G
             public_key,
         },
         window,
+        session,
+        link,
     };
     let grant = request_grant(&config, &client, &req, &format!("for {target}")).await?;
     install_grant(&target, &user, &key, &grant).await?;
@@ -626,7 +650,9 @@ async fn request_api(
     path: Option<String>,
     window: Window,
     goal: Goal,
+    context: RequestContext,
 ) -> Result<()> {
+    let (session, link) = resolve_context(context)?;
     let (config, client) = client()?;
     let methods: Option<Vec<String>> = methods.map(|m| {
         m.iter()
@@ -641,6 +667,8 @@ async fn request_api(
             path_prefix: path.clone(),
         },
         window,
+        session,
+        link,
     };
     let grant = request_grant(&config, &client, &req, &format!("for api secret {secret}")).await?;
     let GrantAccess::Api(api) = &grant.access else {
@@ -670,12 +698,25 @@ async fn request_api(
     Ok(())
 }
 
-async fn request_signing(window: Window, goal: Goal) -> Result<()> {
+async fn setup_git(local: bool) -> Result<()> {
+    let (_, client) = client()?;
+    let scope = if local {
+        setup_git::Scope::Local
+    } else {
+        setup_git::Scope::Global
+    };
+    setup_git::run(&client, scope).await
+}
+
+async fn request_signing(window: Window, goal: Goal, context: RequestContext) -> Result<()> {
+    let (session, link) = resolve_context(context)?;
     let (config, client) = client()?;
     let req = CreateRequest {
         goal,
         access: Access::CommitSigning {},
         window,
+        session,
+        link,
     };
     let grant = request_grant(&config, &client, &req, "for commit signing").await?;
     let GrantAccess::CommitSigning(signing) = &grant.access else {
@@ -788,10 +829,13 @@ async fn request_grant(
         };
         return Err(exit.into());
     };
-    if created.fingerprint != fingerprint(&config.agent, req) {
-        // The broker answered with a request whose fingerprint is not this
-        // one's: approving it might not grant what was asked here.
-        bail!(guidance::already_pending(subject, &created));
+    match compare(&created.fingerprint, &config.agent, req) {
+        Answered::Same => {}
+        // The access is the same and only what this CLI added is missing. The
+        // owner sees the request as its fingerprint says, so waiting on it is safe.
+        Answered::WithoutContext => eprintln!("warden: {}", guidance::CONTEXT_NOT_SHOWN),
+        // Approving it might not grant what was asked here.
+        Answered::Other => bail!(guidance::already_pending(subject, &created)),
     }
     eprintln!(
         "request {}, fingerprint {} — waiting for approval…",

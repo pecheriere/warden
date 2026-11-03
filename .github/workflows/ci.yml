@@ -87,7 +87,7 @@ jobs:
         with:
           toolchain: "1.99"
       # In the checkout, so the component lands on the toolchain
-      # rust-toolchain.toml selects, as the cli job does for its target.
+      # rust-toolchain.toml selects, as the binaries job does for its target.
       - name: Add llvm-tools
         run: |
           rustup toolchain install
@@ -192,24 +192,39 @@ jobs:
       - name: Refuse crate versions published less than 7 days ago
         run: python3 -I .github/scripts/crate_age.py --base HEAD^1
 
-  cli:
+  binaries:
     # The binaries a release attaches, built the same way, so that a build that
     # stops linking statically fails here rather than on a release tag. No
-    # cache, like the release build.
-    name: cli (${{ matrix.platform }})
+    # cache, like the release build. Each binary builds on its own runner.
+    name: ${{ matrix.product }} (${{ matrix.platform }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         include:
-          - platform: macos-arm64
+          - product: cli
+            platform: macos-arm64
             target: aarch64-apple-darwin
             runner: macos-15
-          - platform: linux-amd64
+          - product: cli
+            platform: linux-amd64
             target: x86_64-unknown-linux-musl
             runner: ubuntu-24.04
-          - platform: linux-arm64
+          - product: cli
+            platform: linux-arm64
+            target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+          - product: demo
+            platform: macos-arm64
+            target: aarch64-apple-darwin
+            runner: macos-15
+          - product: demo
+            platform: linux-amd64
+            target: x86_64-unknown-linux-musl
+            runner: ubuntu-24.04
+          - product: demo
+            platform: linux-arm64
             target: aarch64-unknown-linux-musl
             runner: ubuntu-24.04-arm
     steps:
@@ -232,11 +247,19 @@ jobs:
       - name: Install the musl C toolchain
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y musl-tools
-      - name: Build and pack the CLI
+      - name: Build and pack the binary
         env:
+          PRODUCT: ${{ matrix.product }}
           TARGET: ${{ matrix.target }}
           PLATFORM: ${{ matrix.platform }}
-        run: scripts/package-cli.sh "$TARGET" "$PLATFORM" dist
+        run: scripts/package-binary.sh "$PRODUCT" "$TARGET" "$PLATFORM" dist
+      - name: Check what the archive holds
+        env:
+          PRODUCT: ${{ matrix.product }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          file=$(python3 -I .github/scripts/collect_archives.py name "$PRODUCT" "$PLATFORM")
+          python3 -I .github/scripts/collect_archives.py check "$PRODUCT" "$PLATFORM" "dist/$file"
 
   image:
     name: image (${{ matrix.platform }})

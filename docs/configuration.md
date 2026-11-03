@@ -45,6 +45,7 @@ Values are never echoed in errors.
 | `WARDEN_REQUEST_LIMIT_WINDOW_SECS` | `600` (10 minutes) | Length of that sliding window, 60 to 3600 seconds. |
 | `WARDEN_COMMIT_SIGNING_MAX_WINDOW` | `30d` | The longest [commit signing](threat-model.md#commit-signing) grant: `1d`, `7d`, `30d` or `90d`. Lowering it does not shorten grants already made. It cannot apply to anything else: no other grant can pass 4 hours. |
 | `WARDEN_COMMIT_SIGNING_MAX_PER_DAY` | `5000` | Signatures per commit signing grant per UTC day, 1 to 1000000. At the limit commits fail until the next day, and warden tries once to notify the owner. See [the threat model](threat-model.md#commit-signing). |
+| `WARDEN_REQUEST_LINK_HOSTS` | unset (no links) | The hosts a request may link to, separated by commas. See [Links in requests](#links-in-requests). |
 | `WARDEN_RELAY_PUBLIC_ADDR` | unset | Where agents reach the SSH relay, `host:port`. Unset turns the relay off: requests for relay targets are refused. |
 | `WARDEN_RELAY_LISTEN` | `127.0.0.1:2222` | The SSH relay listener. Used only when `WARDEN_RELAY_PUBLIC_ADDR` is set. |
 | `WARDEN_RELAY_HOST_KEY_PATH` | `/data/relay_host_ed25519` | The relay's Ed25519 host key, created on first use (mode 0600) and never overwritten. An existing file must be a regular file owned by the broker's user, with no group or other permissions (0600). Keep it on the data volume. |
@@ -53,6 +54,35 @@ Values are never echoed in errors.
 
 Pass the secrets from a secret manager, an environment file readable only by
 root, or a file as below, never on a command line or in a repository.
+
+### Links in requests
+
+A request can carry a link to where it came from, such as a pull request, for you
+to open before deciding. By default none can. `WARDEN_REQUEST_LINK_HOSTS` lists the
+hosts that are allowed, separated by commas:
+
+```sh
+WARDEN_REQUEST_LINK_HOSTS=git.example.com,sessions.example.com
+```
+
+Each is a host name, matched exactly: no scheme, port, path or wildcard, a subdomain
+is another host, and an international name is written as `xn--…`. At most 64 hosts.
+warden refuses to start on anything else.
+
+**A request with a link to any other host is refused** with a 400, before anything
+is stored or anyone is notified, rather than shown as plain text. A long URL in
+text is still something to copy, and a request that cannot be shown as made should
+not be on the page where you approve. An agent can make the request again without
+the link.
+
+The list is read at each page, too. If you remove a host, a request that already
+has a link to it shows the host as text, saying that it is not a link.
+
+List only hosts you would open a link on anyway, and where opening a page changes
+nothing. Remember that **the page behind a link is the agent's too**: a compromised
+agent can write a pull request as easily as a goal, and a host you list may let
+anyone publish on it. A link helps you understand a request, and is not evidence for
+it. The [threat model](threat-model.md) says what is checked.
 
 ### Request limits
 
@@ -297,9 +327,9 @@ cargo install --locked --git https://github.com/pecheriere/warden --tag v0.9.0 w
 |---------|--------------|
 | `warden login --server <url> --agent <name> --ssh-key <path.pub> [--ssh-agent-socket <path>] [--audience <id>]` | Sets up a key-signed agent: pins the broker's audience, checks that the `ssh-agent` holds the key and that the broker accepts a signed call. Stores nothing secret. |
 | `warden login --server <url> --agent <name>` | Sets up a bearer-key agent: reads the key from stdin and stores it in the macOS Keychain. macOS only. |
-| `warden request ssh <target> --user <user> --for <window> --goal "<goal>"` | Asks for SSH access and waits for the decision. |
-| `warden request api <secret> [--methods <M,…>] [--path <prefix>] --for <window> --goal "<goal>"` | Asks for brokered API calls and waits. Read-only (`GET`, `HEAD`) without `--methods`. |
-| `warden request signing [--for <1d\|7d\|30d\|90d>] --goal "<goal>"` | Asks for commit signing, 30 days by default, and waits. See [Signing commits](agent-usage.md#signing-commits). |
+| `warden request ssh <target> --user <user> --for <window> --goal "<goal>" [--session <label>] [--link <url>]` | Asks for SSH access and waits for the decision. `--session` defaults to `WARDEN_SESSION`; see [Telling sessions apart](agent-usage.md#telling-sessions-apart). |
+| `warden request api <secret> [--methods <M,…>] [--path <prefix>] --for <window> --goal "<goal>" [--session <label>] [--link <url>]` | Asks for brokered API calls and waits. Read-only (`GET`, `HEAD`) without `--methods`. |
+| `warden request signing [--for <1d\|7d\|30d\|90d>] --goal "<goal>" [--session <label>] [--link <url>]` | Asks for commit signing, 30 days by default, and waits. See [Signing commits](agent-usage.md#signing-commits). |
 | `warden request cancel <id>` | Withdraws one of this agent's pending requests. |
 | `warden ssh <target> [-- <command>…]` | Runs `ssh` through the active grant for the target that stays valid longest. |
 | `warden http <secret> <METHOD> <url> [-H 'Name: value']… [-d <body> \| --data-file <path\|->] [-i] [--fail]` | Makes one HTTPS call through an `api` grant. |

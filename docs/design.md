@@ -94,7 +94,7 @@ and secure by construction.
 | Agent (an automated agent on the workstation or an agent host) | Semi-trusted: well-intentioned but may be prompt-injected. Bounded by goal, window, targets and destination rules. |
 | warden server | Trusted; holds a **read-only** 1Password Connect token, and reads the SSH CA key at each approval. Compromise = compromise of everything it brokers; hardened accordingly. |
 | 1Password Connect | Trusted secret backend; reachable only from warden. |
-| Notifiers (Home Assistant Companion, ntfy) | Untrusted doorbells: receive goal text and a link only. |
+| Notifiers (Home Assistant Companion, ntfy) | Untrusted doorbells: receive goal text, a stated session label and a link to the approval page only. |
 | Tailscale | Transport and network-level identity; the tailnet policy is the outer access control. |
 | SSH targets, API origins | Reached only as approved. warden trusts a target only once it proves a pinned host key, and an origin only through verified TLS. Their answers are untrusted. |
 
@@ -138,8 +138,9 @@ Components, all in one Rust workspace:
   `ssh` and proxied HTTP calls, and checks its own setup with `warden doctor`.
 - **`warden-demo`** ([local demo](demo.md)): the broker's code with the Tailscale
   identity, 1Password and notifiers replaced, for trying the flow on one machine.
-  Not secure for real use, never published and never in the image, which
-  `scripts/check-demo-not-shipped.sh` enforces in CI.
+  Not secure for real use, never on a registry and never in the image, which
+  `scripts/check-demo-not-shipped.sh` enforces in CI. A release attaches it only as
+  its own attested archive, named as a demo.
 - A shared crate for the protocol types and request signing.
 
 Backends/notifiers are traits (`SecretBackend`, `Notifier`) with the v1
