@@ -1194,6 +1194,43 @@ mod tests {
         ]
     }
 
+    /// Pages showing the longest spelling, five of the longest words: what the
+    /// layouts must hold without clipping.
+    fn longest_fingerprint_pages() -> Vec<(&'static str, Markup)> {
+        let longest = || Fingerprint::try_from("0522-b233-6c22".to_owned()).unwrap();
+        let hosts = LinkHosts::default();
+        let mut view = pending(
+            agent("build-agent"),
+            ssh_request(goal("Deploy the nightly build"), Window::M30),
+            ssh_destination(SshMode::Relay),
+        );
+        view.fingerprint = longest();
+        let mut active = active_grants();
+        for grant in &mut active {
+            grant.fingerprint = longest();
+        }
+        let mut past = history_entries();
+        for entry in &mut past {
+            entry.fingerprint = longest();
+        }
+        let mut waiting = pending_entries();
+        for entry in &mut waiting {
+            entry.fingerprint = longest();
+        }
+        vec![
+            ("approve-longest-fingerprint", approve(&view, &hosts, NOW)),
+            (
+                "grants-longest-fingerprint",
+                grants(&active, &idle(&active), &hosts, NOW, 0),
+            ),
+            ("history-longest-fingerprint", history(&past, &hosts)),
+            (
+                "pending-longest-fingerprint",
+                super::pending(&waiting, &hosts, NOW),
+            ),
+        ]
+    }
+
     /// Every page with fixture data, named for the screenshot script.
     fn pages() -> Vec<(&'static str, Markup)> {
         let long = long_goal();
@@ -1202,49 +1239,7 @@ mod tests {
         modify.window = Window::H4;
         let active = active_grants();
         let (live_grants, live) = live_grants_fixture();
-        // Five of the longest words: what the layouts must hold without clipping.
-        let longest = || Fingerprint::try_from("0522-b233-6c22".to_owned()).unwrap();
-        let mut longest_view = pending(
-            agent("build-agent"),
-            ssh_request(goal("Deploy the nightly build"), Window::M30),
-            ssh_destination(SshMode::Relay),
-        );
-        longest_view.fingerprint = longest();
-        let mut longest_grants = active_grants();
-        let mut longest_history = history_entries();
-        let mut longest_pending = pending_entries();
-        longest_grants
-            .iter_mut()
-            .for_each(|g| g.fingerprint = longest());
-        longest_history
-            .iter_mut()
-            .for_each(|e| e.fingerprint = longest());
-        longest_pending
-            .iter_mut()
-            .for_each(|e| e.fingerprint = longest());
         vec![
-            (
-                "approve-longest-fingerprint",
-                approve(&longest_view, &LinkHosts::default(), NOW),
-            ),
-            (
-                "grants-longest-fingerprint",
-                grants(
-                    &longest_grants,
-                    &idle(&longest_grants),
-                    &LinkHosts::default(),
-                    NOW,
-                    0,
-                ),
-            ),
-            (
-                "history-longest-fingerprint",
-                history(&longest_history, &LinkHosts::default()),
-            ),
-            (
-                "pending-longest-fingerprint",
-                super::pending(&longest_pending, &LinkHosts::default(), NOW),
-            ),
             (
                 "approve-ssh-cert",
                 approve(
@@ -1336,6 +1331,7 @@ mod tests {
         ]
         .into_iter()
         .chain(stated_pages())
+        .chain(longest_fingerprint_pages())
         .collect()
     }
 
