@@ -1,7 +1,5 @@
 # Keys that sign warden's release tags and release manifests, in the format of
 # ssh-keygen -Y verify -f (see "ALLOWED SIGNERS" in ssh-keygen(1)).
 # docs/verifying-releases.md says how to use this file. Keep a replaced key listed,
-# so that older releases still verify, unless it was compromised. The first key
-# below signed tags up to v0.8.1, and cannot sign a manifest.
-pecheriere@users.noreply.github.com namespaces="git" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIN5zA+J2lBK+qWdhVBz+3WiucLhgDfWn3Yw0JHZyIhBJ
-pecheriere@users.noreply.github.com namespaces="git,warden-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGtYDqYw/eR4tipamxDXS8yDpF/UqDdt2vPeAlVEA1X2
+# so that older releases still verify, unless it was compromised.
+pecheriere@users.noreply.github.com namespaces="git,warden-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIN5zA+J2lBK+qWdhVBz+3WiucLhgDfWn3Yw0JHZyIhBJ

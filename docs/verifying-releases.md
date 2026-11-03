@@ -39,15 +39,10 @@ Compare that fingerprint with the signing keys on the maintainer's GitHub accoun
 curl -fsSL https://api.github.com/users/pecheriere/ssh_signing_keys | jq -r '.[].key' | ssh-keygen -lf -
 ```
 
-The first command should print two fingerprints, and the second should list both:
-
-- `SHA256:ntKexh209NMYbpJ61FiTDYFpGUFZEr7v4BDlWEU1ATk` signs release tags and manifests from v0.9.0.
-- `SHA256:aF+0knqtnI3TWceyXtxVRGbcfH64yoZfRGJ3HnDbPT4` signed tags up to v0.8.1. It
-  is listed so that they still verify, and only for tags: a manifest signed with it
-  fails verification, because the list limits this key to the `git` namespace.
-
-The account can hold other signing keys; only the ones in `release-signers` sign
-releases.
+The first command should print
+`SHA256:aF+0knqtnI3TWceyXtxVRGbcfH64yoZfRGJ3HnDbPT4`, and the second should list
+it. The account can hold other signing keys; only the ones in `release-signers`
+sign releases.
 
 **There is no source for this key off GitHub yet.** The file, the account and this
 page are all on GitHub, so a compromise of GitHub could change them together, and
@@ -106,10 +101,8 @@ Verify the manifest's signature first, as in step 2. Then pin
 
 ## 4. Verify the source
 
-From v0.9.0, release tags are signed with the same key as the manifest, and the
-output below should name it (see step 1). The older key still passes this check, so
-a tag alone does not show which key was meant: the manifest does. This checks a tag
-in a clone, whatever your git configuration says:
+Release tags are signed with the same key. This checks a tag in a clone, whatever
+your git configuration says:
 
 ```sh
 tag=vx.y.z
@@ -141,9 +134,8 @@ signature covers that image.
 
 The private key is not on GitHub: the repository has no Actions secret holding it,
 no workflow uses it, and only its public half is listed on the account and in this
-repository. From v0.9.0 it is held in 1Password, not in a file on the maintainer's
-machine, and 1Password asks the maintainer to approve its use. 1Password can remember
-an approval for a while, so this is not a separate prompt for every signature. The release workflow
+repository. It is a file on the maintainer's machine, so it guards against a
+compromise of GitHub, and not against something running as the maintainer there. The release workflow
 cannot sign the manifest, which is why the maintainer signs it after the workflow
 has finished, with `scripts/sign-release.sh`, before publishing the draft.
 
