@@ -3996,7 +3996,7 @@ dependencies = [
  "sha1",
  "sha2 0.11.1",
  "sqlx",
- "ssh-encoding 0.2.0",
+ "ssh-encoding 0.3.0",
  "ssh-key 0.6.7",
  "thiserror 2.0.21",
  "tokio",
