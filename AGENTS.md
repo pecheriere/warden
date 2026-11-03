@@ -181,7 +181,10 @@ Semantic versioning, one version for the whole workspace.
    `docs/security-assessment.md` and updates its date.
 2. After it merges, the maintainer, or an agent the maintainer has
    confirmed, creates a signed annotated `vx.y.z` tag (`git tag -s`) on that
-   commit of `main`. `.github/workflows/release.yml` refuses a tag that
+   commit of `main`, with the key `docs/release-signers` allows for
+   `warden-release`, and not whatever key git uses by default. Check which key
+   signed it before pushing: a tag cannot be replaced afterwards, and step 3
+   refuses one from another key. `.github/workflows/release.yml` refuses a tag that
    does not match the version, reruns CI, builds the multi-arch image,
    pushes it to `ghcr.io/pecheriere/warden`, builds the CLI archives, attests
    both, and leaves a draft release for the tag, with the archives attached

@@ -56,7 +56,7 @@ esac
 [ -r "$key" ] || fail "cannot read the public key: $key"
 read -r key_type key_blob _ < "$key"
 grep -Fq "$key_type $key_blob" "$signers" || fail "the key is not listed in $signers"
-grep -F "$key_type $key_blob" "$signers" | grep -q 'namespaces="[^"]*warden-release' \
+grep -v '^#' "$signers" | grep -F "$key_type $key_blob" | grep -q 'namespaces="[^"]*warden-release' \
   || fail "the key may not sign manifests: $signers limits it to other namespaces"
 key_fingerprint=$(ssh-keygen -lf "$key" | awk '{ print $2 }')
 
