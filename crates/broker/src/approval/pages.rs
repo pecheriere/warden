@@ -1202,7 +1202,49 @@ mod tests {
         modify.window = Window::H4;
         let active = active_grants();
         let (live_grants, live) = live_grants_fixture();
+        // Five of the longest words: what the layouts must hold without clipping.
+        let longest = || Fingerprint::try_from("0522-b233-6c22".to_owned()).unwrap();
+        let mut longest_view = pending(
+            agent("build-agent"),
+            ssh_request(goal("Deploy the nightly build"), Window::M30),
+            ssh_destination(SshMode::Relay),
+        );
+        longest_view.fingerprint = longest();
+        let mut longest_grants = active_grants();
+        let mut longest_history = history_entries();
+        let mut longest_pending = pending_entries();
+        longest_grants
+            .iter_mut()
+            .for_each(|g| g.fingerprint = longest());
+        longest_history
+            .iter_mut()
+            .for_each(|e| e.fingerprint = longest());
+        longest_pending
+            .iter_mut()
+            .for_each(|e| e.fingerprint = longest());
         vec![
+            (
+                "approve-longest-fingerprint",
+                approve(&longest_view, &LinkHosts::default(), NOW),
+            ),
+            (
+                "grants-longest-fingerprint",
+                grants(
+                    &longest_grants,
+                    &idle(&longest_grants),
+                    &LinkHosts::default(),
+                    NOW,
+                    0,
+                ),
+            ),
+            (
+                "history-longest-fingerprint",
+                history(&longest_history, &LinkHosts::default()),
+            ),
+            (
+                "pending-longest-fingerprint",
+                super::pending(&longest_pending, &LinkHosts::default(), NOW),
+            ),
             (
                 "approve-ssh-cert",
                 approve(
@@ -1534,7 +1576,7 @@ mod tests {
                 ssh_destination(SshMode::Cert),
             );
             view.fingerprint = Fingerprint::try_from(hex.to_owned()).unwrap();
-            let html = approve(&view, NOW).into_string();
+            let html = approve(&view, &LinkHosts::default(), NOW).into_string();
             let words = format!(
                 r#"<code class="fingerprint">{}</code>"#,
                 vector["words"].as_str().unwrap()
@@ -1560,7 +1602,7 @@ mod tests {
         for hook in [
             r#"<main class="split" id="approval" data-target=""#,
             r#"<span>Pending · <span id="countdown" data-remaining="240">expires in 4 min</span></span>"#,
-            r#"<code class="fingerprint">fiber-plead-chomp-raft-baker</code>"#,
+            r#"<code class="fingerprint">exquisite-nautically-cakewalk-oscillator-angelfish</code>"#,
             r#"<span class="fp-hex">In hex <code>ab01-cd01-ef01</code></span>"#,
             r#"<button class="btn approve" id="approve" type="button">"#,
             r#"<button class="btn deny" id="deny" type="button">Deny</button>"#,

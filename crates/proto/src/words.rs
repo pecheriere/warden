@@ -57,10 +57,10 @@ mod tests {
     use super::{COUNT, Fingerprint, LENGTH, WORDS};
     use crate::{AgentName, CreateRequest, CreatedResponse, fingerprint};
 
-    /// The SHA-256 of `eff_short_wordlist_1.txt` as EFF publishes it, at
-    /// <https://www.eff.org/files/2016/09/08/eff_short_wordlist_1.txt>.
+    /// The SHA-256 of `eff_short_wordlist_2_0.txt` as EFF publishes it, at
+    /// <https://www.eff.org/files/2016/09/08/eff_short_wordlist_2_0.txt>.
     const PUBLISHED_SHA256: &str =
-        "8f5ca830b8bffb6fe39c9736c024a00a6a6411adb3f83a9be8bfeeb6e067ae69";
+        "22b45c52e0bd0bbf03aa522240b111eb4c7c0c1d86c4e518e1be2a7eb2a625e4";
 
     const LARGEST: u64 = (1 << 48) - 1;
 
@@ -120,8 +120,8 @@ mod tests {
         assert_eq!(u64::try_from(WORDS.len()).unwrap(), COUNT);
         assert_eq!(WORDS.iter().collect::<HashSet<_>>().len(), WORDS.len());
         for word in WORDS {
-            // Five words this short take at most two lines on the approval page.
-            assert!((3..=5).contains(&word.len()), "{word}");
+            // The approval page is sized for two of the longest on a line.
+            assert!((3..=10).contains(&word.len()), "{word}");
             assert!(
                 word.bytes().all(|b| b.is_ascii_lowercase() || b == b'-'),
                 "{word}"
@@ -132,6 +132,40 @@ mod tests {
         let hyphenated: Vec<_> = WORDS.iter().filter(|w| w.contains('-')).collect();
         assert_eq!(hyphenated, [&"yo-yo"]);
         assert!(!WORDS.contains(&"yo"));
+    }
+
+    fn edit_distance(a: &str, b: &str) -> usize {
+        let mut row: Vec<usize> = (0..=b.len()).collect();
+        for (i, x) in a.bytes().enumerate() {
+            let mut diagonal = row[0];
+            row[0] = i + 1;
+            for (j, y) in b.bytes().enumerate() {
+                let replace = diagonal + usize::from(x != y);
+                diagonal = row[j + 1];
+                row[j + 1] = replace.min(row[j] + 1).min(row[j + 1] + 1);
+            }
+        }
+        row[b.len()]
+    }
+
+    /// Why this list: one misread or misheard letter never makes another of its
+    /// words, as it would in EFF's list 1 (`bash`, `bath`). The measured minimum
+    /// over all pairs is 3 edits.
+    #[test]
+    fn any_two_words_are_at_least_three_edits_apart() {
+        let mut closest = usize::MAX;
+        for (i, a) in WORDS.iter().enumerate() {
+            for b in &WORDS[i + 1..] {
+                closest = closest.min(edit_distance(a, b));
+            }
+        }
+        assert_eq!(closest, 3);
+    }
+
+    #[test]
+    fn no_two_words_start_with_the_same_three_letters() {
+        let prefixes: HashSet<&str> = WORDS.iter().map(|word| &word[..3]).collect();
+        assert_eq!(prefixes.len(), WORDS.len());
     }
 
     #[test]

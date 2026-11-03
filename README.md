@@ -419,5 +419,5 @@ approval UI changes follow the [design language](docs/design-language.md).
 ## License
 
 Licensed under either of [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE),
-at your option. Fingerprints are written in the EFF Short Wordlist 1, by the
+at your option. Fingerprints are written in the EFF Short Wordlist 2.0, by the
 Electronic Frontier Foundation, under CC BY 4.0: see [NOTICE](NOTICE).

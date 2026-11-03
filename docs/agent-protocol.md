@@ -624,7 +624,7 @@ Compare the hex: the API never carries the words.
 To show your supervisor the words the page leads with, write the same 48 bits as
 one number in base 1296, least significant digit first, five digits, each digit
 an index from 0 into the
-[EFF Short Wordlist 1](https://www.eff.org/files/2016/09/08/eff_short_wordlist_1.txt)
+[EFF Short Wordlist 2.0](https://www.eff.org/files/2016/09/08/eff_short_wordlist_2_0.txt)
 (CC BY 4.0, see [NOTICE](../NOTICE)), joined with `-`. The list's second column,
 in order, is the digit's word. Showing only the hex is also fine.
 
@@ -634,7 +634,7 @@ words = []
 for _ in range(5):
     n, digit = divmod(n, 1296)
     words.append(wordlist[digit])
-"-".join(words)  # pulp-sepia-utter-bacon-amend
+"-".join(words)  # oceanic-receipt-varied-amuser-aftershave
 ```
 
 A duplicate does not notify the owner again, and no call of this API can. An owner

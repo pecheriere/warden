@@ -76,7 +76,7 @@ WCAG AA contrast in both modes.
 - **Fingerprint box**: dashed 2 px `--primary` frame, with the fingerprint's
   five words in monospace and bold, and under them its hex form in small `--muted`
   text, for an agent or an older CLI that shows only hex. The words wrap only at
-  their hyphens, and take at most two lines.
+  their hyphens, and take at most three lines.
 - **Fingerprint elsewhere** (pending cards, grants, history): the words, then the
   hex. The words wrap only at their hyphens.
 - **Segmented control** for the grant window: real radio inputs in a

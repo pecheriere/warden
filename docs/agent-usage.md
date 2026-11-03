@@ -338,7 +338,7 @@ is pinned.
 `warden request` prints this to stderr:
 
 ```
-request 0b8f4c1e…, fingerprint dig-coral-list-boast-bash (b65b-9812-eb72) — waiting for approval…
+request 0b8f4c1e…, fingerprint dozed-crawfish-kayak-ascend-answer (b65b-9812-eb72) — waiting for approval…
 ```
 
 The approval page shows the same fingerprint. A mismatch means the request

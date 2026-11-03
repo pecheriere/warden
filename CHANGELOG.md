@@ -40,7 +40,7 @@ All notable changes to this project are recorded here. The format follows
 ### Changed
 
 - Fingerprints are easier to compare: the approval pages and `warden request` now write
-  one as five short English words, such as `pulp-sepia-utter-bacon-amend`, with the hex
+  one as five English words, such as `oceanic-receipt-varied-amuser-aftershave`, with the hex
   form beside them. They are the same 48 bits, so nothing about the API, the database or
   the audit log changes, and the broker and the CLI can be upgraded in either order. A
   script that reads the fingerprint from `warden request`'s stderr needs checking, as the

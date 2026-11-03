@@ -48,9 +48,9 @@ font-size:14px;font-weight:700;border:1.5px solid}
 main.wide>.warning{margin:0 0 16px;width:auto;max-width:none}
 .fp{border-radius:18px;padding:12px 16px;background:var(--fp-bg);border:2px dashed var(--primary);
 display:flex;flex-direction:column;gap:4px}
-/* Words wrap only at their hyphens: a long fingerprint takes two lines rather than shrinking. */
+/* Words wrap only at their hyphens. Sized so two of the longest words fit a line: five take three lines at most. */
 .fp .fingerprint{font-size:clamp(17px,4.6vw,23px);font-weight:700;word-break:normal;overflow-wrap:normal}
-@media (min-width:600px){.fp .fingerprint{font-size:clamp(17px,2.2vw,23px)}}
+@media (min-width:600px){.fp .fingerprint{font-size:clamp(15px,2.2vw,21px)}}
 .fp .fp-hex{color:var(--muted);font-size:13px}
 .fp .fp-hex code{font-size:13px;word-break:normal;white-space:nowrap}
 .fp-words{word-break:normal;overflow-wrap:normal}
@@ -151,7 +151,7 @@ column-gap:64px;align-items:start;padding-top:28px}}
 @media (min-width:1000px){.btns{grid-template-columns:1fr 1fr}}
 /* Short screens (folded, landscape): tighter, so Approve and Deny stay on screen. */
 @media (max-height:700px){main{padding-top:10px;gap:10px}h1{font-size:23px}.col{gap:10px}.card{padding:12px;gap:10px}
-.fp .fingerprint{font-size:19px}.btn{height:48px}.done{padding-top:12px}.halo{width:150px;height:150px}.halo .mascot{width:112px;height:112px}}
+.fp .fingerprint{font-size:16px}.btn{height:48px}.done{padding-top:12px}.halo{width:150px;height:150px}.halo .mascot{width:112px;height:112px}}
 @media (max-height:700px) and (min-width:600px){main.split{padding-top:12px}}
 /* Folded and short: the decision panel and the fingerprint both fit without scrolling. */
 @media (max-height:700px) and (max-width:599px){header{padding-top:6px;padding-bottom:6px}header .mascot{width:32px;height:32px}
