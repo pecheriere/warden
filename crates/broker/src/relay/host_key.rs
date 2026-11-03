@@ -304,7 +304,9 @@ mod tests {
 
     use std::time::{Duration, SystemTime};
 
-    use super::{HostKeyError, load_or_create, load_or_create_blocking, load_owned_by};
+    use super::{
+        HostKeyError, MAX_FILE_BYTES, load_or_create, load_or_create_blocking, load_owned_by,
+    };
 
     fn mode(path: &std::path::Path) -> u32 {
         std::fs::metadata(path).unwrap().permissions().mode() & 0o777
@@ -454,5 +456,27 @@ mod tests {
         let body: String = private.lines().nth(1).unwrap().to_owned();
         assert!(!shown.contains(&body), "{shown}");
         assert!(!shown.contains("PRIVATE"), "{shown}");
+    }
+
+    #[test]
+    fn a_directory_in_its_place_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("relay_host_ed25519");
+        std::fs::create_dir(&path).unwrap();
+        let err = load_or_create_blocking(&path).unwrap_err();
+        assert!(err.to_string().contains("not a regular file"), "{err}");
+        assert!(path.is_dir());
+    }
+
+    #[test]
+    fn an_oversized_file_is_refused_and_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("relay_host_ed25519");
+        let bytes = vec![b'x'; usize::try_from(MAX_FILE_BYTES).unwrap() + 1];
+        std::fs::write(&path, &bytes).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let err = load_or_create_blocking(&path).unwrap_err();
+        assert!(err.to_string().contains("too large"), "{err}");
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
     }
 }

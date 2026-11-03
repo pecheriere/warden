@@ -71,8 +71,8 @@ jobs:
           RUSTDOCFLAGS: -D warnings
 
   coverage:
-    # Measures and reports; no threshold fails it yet, and it is not a required
-    # check (#97). On pull requests and main only: a release does not wait for it.
+    # Measures and reports, and fails below 80% of lines (#97). On pull requests
+    # and main only: a release does not wait for it.
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -145,6 +145,13 @@ jobs:
           path: ${{ runner.temp }}/coverage.lcov
           if-no-files-found: error
           retention-days: 14
+      # After the report and the artifact, so a failure can be read from them.
+      # Lines stand in for the statements of the OpenSSF criterion, which
+      # llvm-cov does not count.
+      - name: Fail below the coverage target
+        run: |
+          cargo llvm-cov report --ignore-filename-regex "$COVERAGE_IGNORE" \
+            --summary-only --fail-under-lines 80
 
   deny:
     runs-on: ubuntu-latest

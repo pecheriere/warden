@@ -481,3 +481,99 @@ async fn reordered_keys_fail_verify() {
         Err(AuditError::Malformed { line: 2, .. })
     ));
 }
+
+/// The newest line is what the next entry chains to, so opening a log whose last
+/// line was altered must not build on it, or add to the file. A writer that has it
+/// open already stops as well.
+#[tokio::test]
+async fn a_log_whose_last_line_was_altered_takes_no_more_entries() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("audit.jsonl");
+    let log = AuditLog::open(&path).await.unwrap();
+    log.append(AuditEvent::Error {
+        context: "ctx".to_owned(),
+        message: "original text".to_owned(),
+    })
+    .await
+    .unwrap();
+    let forged = fs::read_to_string(&path)
+        .unwrap()
+        .replace("original text", "forged text!");
+    fs::write(&path, &forged).unwrap();
+
+    assert!(matches!(
+        AuditLog::open(&path).await,
+        Err(AuditError::BrokenChain { seq: 1 })
+    ));
+    assert!(matches!(
+        log.append(denied()).await,
+        Err(AuditError::BrokenChain { seq: 1 })
+    ));
+    assert_eq!(fs::read_to_string(&path).unwrap(), forged);
+}
+
+/// A crash during the very first entry leaves no complete line to chain from: the
+/// log starts over, on record.
+#[tokio::test]
+async fn a_torn_first_entry_is_discarded_and_recorded() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("audit.jsonl");
+    fs::write(&path, "{\"seq\":1,\"ts\":1,\"pre").unwrap();
+
+    let log = AuditLog::open(&path).await.unwrap();
+    log.append(denied()).await.unwrap();
+
+    assert_eq!(verify(&path).unwrap(), 2);
+    let text = fs::read_to_string(&path).unwrap();
+    let repair = text.lines().next().unwrap();
+    assert!(
+        repair.contains("discarded torn tail of 20 bytes (sha256 "),
+        "{repair}"
+    );
+}
+
+/// The very first entry, complete but for its newline, is an entry: it is kept.
+#[tokio::test]
+async fn a_first_entry_missing_only_its_newline_is_kept() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("audit.jsonl");
+    let log = AuditLog::open(&path).await.unwrap();
+    log.append(denied()).await.unwrap();
+    drop(log);
+    let line = fs::read_to_string(&path).unwrap();
+    fs::write(&path, line.trim_end()).unwrap();
+
+    let log = AuditLog::open(&path).await.unwrap();
+    log.append(denied()).await.unwrap();
+
+    assert_eq!(verify(&path).unwrap(), 2);
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(text.starts_with(&line));
+    assert!(!text.contains("discarded torn tail"), "{text}");
+}
+
+/// A tail longer than what is read at a time is still found to be one, with or
+/// without complete lines before it.
+#[tokio::test]
+async fn a_torn_tail_longer_than_the_read_window_is_discarded() {
+    const TAIL: usize = 3 * 4096;
+    for entries in [0, 3] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        if entries > 0 {
+            three_lines(&path).await;
+        }
+        let intact = fs::read_to_string(&path).unwrap_or_default();
+        fs::write(&path, format!("{intact}{}", "x".repeat(TAIL))).unwrap();
+
+        let log = AuditLog::open(&path).await.unwrap();
+        log.append(denied()).await.unwrap();
+
+        // What was there, the repair record and the new entry.
+        assert_eq!(verify(&path).unwrap(), entries + 2);
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with(&intact));
+        assert!(text.contains(&format!("discarded torn tail of {TAIL} bytes")));
+        assert!(!text.contains("xxx"), "{entries} entries");
+    }
+}
