@@ -207,9 +207,10 @@ async fn removing_an_unknown_passkey_fails_and_records_nothing() {
     assert_eq!(server.audited("passkey_removed"), 0);
 }
 
-/// No passkey goes away unrecorded: with a log that cannot be written, it stays.
+/// The command opens the log before anything else, so it stops there. That a log
+/// failing after this point also keeps the passkey is in `audit_gaps.rs`.
 #[tokio::test]
-async fn a_passkey_stays_when_its_removal_cannot_be_recorded() {
+async fn a_passkey_stays_when_the_audit_log_cannot_be_opened() {
     let server = Server::new();
     server.add_passkey("passkey-1").await;
     std::fs::write(server.path("audit.log"), "not an audit line\n").unwrap();
