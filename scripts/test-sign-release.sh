@@ -61,7 +61,18 @@ case "$1 ${2:-}" in
       shift
     done
     if [ "$digest" != "$(cat "$STUB/attested-commit")" ]; then exit 1; fi
-    case "$subject" in oci://*) cat "$STUB/image-digest" ;; esac
+    case "$subject" in
+      oci://*) cat "$STUB/image-digest" ;;
+      # What the attestation records: the digest and name of each file it covers.
+      *)
+        name=$(basename "$subject")
+        if [ -e "$STUB/attested-as" ]; then name=$(cat "$STUB/attested-as"); fi
+        sum=$(shasum -a 256 "$subject" | cut -d' ' -f1)
+        if [ -e "$STUB/attested-digest" ]; then sum=$(cat "$STUB/attested-digest"); fi
+        printf '%s  %s\n' "$sum" "$name"
+        printf '%s  %s\n' 0000000000000000000000000000000000000000000000000000000000000000 other.tar.gz
+        ;;
+    esac
     ;;
   *)
     echo "stub gh: unexpected call: $*" >&2
@@ -73,7 +84,7 @@ chmod +x "$work/bin/gh"
 export PATH="$work/bin:$PATH"
 
 reset_stub() {
-  rm -rf "$STUB/uploaded" "$STUB/unattested" "$STUB/assets"
+  rm -rf "$STUB/uploaded" "$STUB/unattested" "$STUB/assets" "$STUB/attested-as" "$STUB/attested-digest"
   mkdir -p "$STUB/uploaded" "$STUB/assets"
   git -C "$repo" rev-parse "$tag^{commit}" > "$STUB/remote-commit"
   cp "$STUB/remote-commit" "$STUB/attested-commit"
@@ -169,6 +180,14 @@ must_refuse 'demo archive without an attestation' 'no valid attestation' "$tag"
 reset_stub
 echo "warden:$version" > "$STUB/unattested"
 must_refuse 'image without an attestation' 'no valid attestation' "$tag"
+
+reset_stub
+echo "warden-demo-$version-linux-amd64.tar.gz" > "$STUB/attested-as"
+must_refuse 'demo archive renamed as the CLI' 'not what was attested' "$tag"
+
+reset_stub
+printf 'a%.0s' {1..64} > "$STUB/attested-digest"
+must_refuse 'attestation of other bytes under the same name' 'not what was attested' "$tag"
 
 reset_stub
 echo 1111111111111111111111111111111111111111 > "$STUB/attested-commit"

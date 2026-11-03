@@ -11,9 +11,9 @@ nothing the build runs can change the answer.
 `check` looks inside one archive, without unpacking it, for the files it must hold.
 CI runs this on each build.
 
-`collect` runs in its own job, on the artifacts of every build, and copies the
-archives into one directory only when each is exactly what it should be. Everything
-later in the release uses that directory.
+`collect` runs on the artifacts of one product's builds, in the job that attests
+them and not in a build, and copies the archives into one directory only when each
+is exactly what it should be. That directory is what gets attested.
 
 The version comes from the workspace's Cargo.toml. The release workflow has already
 checked it against the tag.
@@ -90,13 +90,9 @@ def check_archive(path: Path, product: str, version: str, platform: str) -> None
             raise ArchiveError(message)
 
 
-def collect(artifacts: Path, out: Path, version: str) -> list[Path]:
-    """Copy every archive into `out` if each artifact holds exactly its own file."""
-    wanted = {
-        f"archive-{product}-{platform}": (product, platform)
-        for product in PRODUCTS
-        for platform in PLATFORMS
-    }
+def collect(product: str, artifacts: Path, out: Path, version: str) -> list[Path]:
+    """Copy a product's archives into `out` if each artifact holds exactly its own file."""
+    wanted = {f"archive-{product}-{platform}": platform for platform in PLATFORMS}
     found = {entry.name for entry in artifacts.iterdir()}
     if found != set(wanted):
         message = (
@@ -105,7 +101,7 @@ def collect(artifacts: Path, out: Path, version: str) -> list[Path]:
         )
         raise ArchiveError(message)
     checked = []
-    for artifact, (product, platform) in sorted(wanted.items()):
+    for artifact, platform in sorted(wanted.items()):
         name = archive_name(product, version, platform)
         entries = sorted(entry.name for entry in (artifacts / artifact).iterdir())
         if entries != [name]:
@@ -138,6 +134,7 @@ def main(argv: list[str]) -> int:
         if command == "check":
             sub.add_argument("archive", type=Path)
     sub = commands.add_parser("collect")
+    sub.add_argument("product", choices=sorted(PRODUCTS))
     sub.add_argument("artifacts", type=Path)
     sub.add_argument("out", type=Path)
     args = parser.parse_args(argv)
@@ -150,7 +147,7 @@ def main(argv: list[str]) -> int:
             check_archive(args.archive, args.product, version, args.platform)
             print(f"ok: {args.archive.name}")
         else:
-            for path in collect(args.artifacts, args.out, version):
+            for path in collect(args.product, args.artifacts, args.out, version):
                 print(f"ok: {path.name}")
     except (ArchiveError, OSError) as error:
         print(f"::error::{error}")

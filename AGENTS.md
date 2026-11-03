@@ -185,9 +185,12 @@ Semantic versioning, one version for the whole workspace.
    `warden-release`. A tag cannot be replaced afterwards, and step 3 refuses one
    from another key. `.github/workflows/release.yml` refuses a tag that
    does not match the version, reruns CI, builds the multi-arch image,
-   pushes it to `ghcr.io/pecheriere/warden`, builds the CLI and demo archives, attests
-   them, and leaves a draft release for the tag, with the archives attached
-   and the changelog section as its notes.
+   pushes it to `ghcr.io/pecheriere/warden`, builds and attests the CLI archives, then
+   the demo archives, and leaves a draft release for the tag, with the archives attached
+   and the changelog section as its notes. If the demo fails, the image and CLI
+   attestations exist but no draft does, and the run's summary says so: rerun the
+   failed jobs. A refusal that the archives are not the ones attested is a possible
+   compromise: investigate before rerunning.
 3. When the workflow has finished, the maintainer signs the manifest with
    `scripts/sign-release.sh vx.y.z`. It checks the tag's signature and the
    attestations of the draft's archives and of the image, then uploads

@@ -60,7 +60,9 @@ change as a reason to stop.
 
 A release can hold these archives, and the manifest lists each one it holds. Each
 is built by its own job, and the workflow stops before attesting anything unless each
-job's upload holds exactly its own file:
+job's upload holds exactly its own file. The demo builds only after the CLI archives
+and the image are attested, and is attested separately, so its many extra
+dependencies cannot get a changed CLI archive attested:
 
 | File | What it is | Platforms | In releases |
 |---|---|---|---|
@@ -90,6 +92,10 @@ gh attestation verify "$file" --repo pecheriere/warden \
 ```
 
 `gh` must be logged in. Any step that fails means you should not use the file.
+
+The attestation step finds an attestation by the file's digest, not its name. The
+signed manifest ties each name to a digest, and `scripts/sign-release.sh` refuses to
+sign a file attested under another name, so check the manifest as well.
 
 ## 3. Verify the image
 

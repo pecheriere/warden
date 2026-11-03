@@ -98,18 +98,27 @@ done
 #    other archive does. The script refuses a binary whose banner does not match
 #    its product. The image's jobs use the Dockerfile, checked above.
 workflow=.github/workflows/release.yml
+builder=.github/workflows/build-archives.yml
 script=scripts/package-binary.sh
-for file in "$workflow" "$script"; do
+for file in "$workflow" "$builder" "$script"; do
   [ -f "$file" ] || fail "$file not found"
   if offending="$(grep -nE -e '--workspace|--all-features|cargo install' "$file")"; then
     fail "$file could build the demo into something else: $offending"
   fi
 done
-if offending="$(grep -v '^ *#' "$workflow" | grep -nE "$cargo_word|warden-demo|crates/demo")"; then
-  fail "$workflow must leave building the demo to $script: $offending"
+# The one mention of the demo's name allowed is the line that limits its attestation.
+for file in "$workflow" "$builder"; do
+  if offending="$(grep -v '^ *#' "$file" \
+    | grep -vx ' *subject-path: dist/warden-demo-\*\.tar\.gz' \
+    | grep -nE "$cargo_word|warden-demo|crates/demo")"; then
+    fail "$file must leave building the demo to $script: $offending"
+  fi
+done
+[ "$(grep -c "$script" "$builder")" -eq 1 ] \
+  || fail "$builder must call $script once"
+if grep -n "$script" "$workflow"; then
+  fail "$workflow must build through $builder"
 fi
-[ "$(grep -c "$script" "$workflow")" -eq 1 ] \
-  || fail "$workflow must call $script from one job"
 builds="$(grep -E '^ *build_args=' "$script")"
 expected_builds='    build_args=(-p warden-broker-cli)
     build_args=(-p warden-demo --features warden-broker/vendored-openssl)'

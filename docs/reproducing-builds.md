@@ -73,7 +73,7 @@ if it has one, or with the archive you downloaded. You need `python3`, and on Li
 `musl-tools`. The demo also needs `perl` and `make`, for OpenSSL, which records its
 build directory in the binary. So the script always uses
 `/tmp/warden-package-build`, and that one path must match wherever you build.
-`.github/workflows/release.yml` has the runner and targets of each
+`.github/workflows/build-archives.yml` has the runner and targets of each
 platform.
 
 ## Limits

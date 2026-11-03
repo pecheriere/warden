@@ -10,8 +10,8 @@
 # docs/release-signers for the warden-release namespace. The script refuses to
 # sign unless the tag carries a good signature from that same key and was signed
 # under that name, the draft holds
-# exactly the expected files, and each archive and the image have a build
-# attestation from the release workflow at that tag and at the tag's commit. It
+# exactly the expected files, and each archive, under its own name, and the image
+# have a build attestation from the release workflow at that tag and commit. It
 # then uploads warden-<version>-SHA256SUMS and its .sig to the draft. It never
 # publishes. It needs gh, git, ssh-keygen and shasum, and is safe to rerun. A rerun
 # of the workflow replaces the archives and removes the manifest, so sign again.
@@ -112,10 +112,16 @@ attestation_args=(--repo "$repo" --signer-workflow "$workflow" --source-ref "ref
   --source-digest "$local_commit")
 manifest=$work/warden-$version-SHA256SUMS
 : > "$manifest"
+# gh finds an attestation by digest alone, so any file attested at this tag would
+# pass under any name, such as a demo archive renamed as the CLI's. The attestation
+# also records each file's name: the draft's file must match both.
 while IFS= read -r file; do
-  gh attestation verify "$work/assets/$file" "${attestation_args[@]}" > /dev/null \
+  subjects=$(gh attestation verify "$work/assets/$file" "${attestation_args[@]}" --format json \
+    --jq '.[].verificationResult.statement.subject[] | "\(.digest.sha256)  \(.name)"') \
     || fail "no valid attestation for $file"
-  (cd "$work/assets" && shasum -a 256 "$file") >> "$manifest"
+  sum=$(cd "$work/assets" && shasum -a 256 "$file")
+  grep -Fxq "$sum" <<< "$subjects" || fail "$file on the draft is not what was attested under that name"
+  printf '%s\n' "$sum" >> "$manifest"
 done <<< "$expected"
 
 image_ref=$image:$version
