@@ -695,4 +695,36 @@ mod tests {
             assert!(check_file_name(bad).is_err(), "{bad}");
         }
     }
+
+    /// The configuration refuses these paths first; here they must not resolve to
+    /// anything either.
+    #[test]
+    fn a_path_that_names_no_file_or_climbs_is_refused() {
+        assert_eq!(
+            rule(read_policy(Path::new("/"), euid())),
+            "must name a file"
+        );
+        assert_eq!(
+            rule(read_policy(Path::new("../policy.toml"), euid())),
+            "the path must be absolute, without .."
+        );
+        let (_guard, dir) = private_dir();
+        write(&dir, "token", SECRET, 0o600);
+        fs::create_dir(dir.join("sub")).unwrap();
+        chmod(&dir.join("sub"), 0o700);
+        assert_eq!(
+            rule(read_secret(&dir.join("sub/.."), "token", euid())),
+            "the path must be absolute, without .."
+        );
+    }
+
+    /// Asking on behalf of another uid, as in `refuses_files_of_another_user`.
+    #[test]
+    fn a_policy_file_of_another_user_is_refused() {
+        let (_guard, dir) = private_dir();
+        let path = write(&dir, "policy.toml", b"", 0o600);
+        let meta = fs::metadata(&path).unwrap();
+        let refusal = check_policy_file(&meta, euid() + 1).unwrap_err();
+        assert!(matches!(refusal, Refusal::Rule("belongs to another user")));
+    }
 }

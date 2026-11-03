@@ -411,7 +411,9 @@ impl Server {
     fn command(&self, args: &[&str]) -> Command {
         let path = |file: &str| self.files.root.join(file);
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_warden-server"));
+        // Only `cargo llvm-cov` sets this: without it, this process reports no coverage.
         cmd.env_clear()
+            .envs(std::env::var_os("LLVM_PROFILE_FILE").map(|file| ("LLVM_PROFILE_FILE", file)))
             .env("WARDEN_SECRET_BACKEND", "local")
             .env("WARDEN_LOCAL_POLICY_FILE", &self.files.settings.policy_file)
             .env("WARDEN_LOCAL_SECRETS_DIR", &self.files.settings.secrets_dir)
@@ -700,6 +702,7 @@ async fn a_hand_edit_is_refused_until_seal_policy_runs() {
     // Needs none of warden's settings, and shows the file before sealing it.
     let refused = Command::new(env!("CARGO_BIN_EXE_warden-server"))
         .env_clear()
+        .envs(std::env::var_os("LLVM_PROFILE_FILE").map(|file| ("LLVM_PROFILE_FILE", file)))
         .args(["seal-policy"])
         .arg(&policy_file)
         .output()
@@ -714,6 +717,7 @@ async fn a_hand_edit_is_refused_until_seal_policy_runs() {
 
     let seal = Command::new(env!("CARGO_BIN_EXE_warden-server"))
         .env_clear()
+        .envs(std::env::var_os("LLVM_PROFILE_FILE").map(|file| ("LLVM_PROFILE_FILE", file)))
         .args(["seal-policy", "--accept-unverified"])
         .arg(&policy_file)
         .output()
@@ -739,6 +743,7 @@ fn seal_policy_refuses_a_draft_cut_short() {
     fs::write(&draft, API_ONLY).unwrap();
     let seal = Command::new(env!("CARGO_BIN_EXE_warden-server"))
         .env_clear()
+        .envs(std::env::var_os("LLVM_PROFILE_FILE").map(|file| ("LLVM_PROFILE_FILE", file)))
         .args(["seal-policy", "--from"])
         .arg(&draft)
         .arg(&files.settings.policy_file)

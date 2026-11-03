@@ -1264,8 +1264,10 @@ async fn spawn_server(dir: &Path, relay_public: bool) -> (tokio::process::Child,
     let (api, approval, relay) = (free_port(), free_port(), free_port());
     let host_key = dir.join("relay_host_ed25519");
     let mut cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_warden-server"));
+    // Only `cargo llvm-cov` sets this: without it, this process reports no coverage.
     cmd.arg("serve")
         .env_clear()
+        .envs(std::env::var_os("LLVM_PROFILE_FILE").map(|file| ("LLVM_PROFILE_FILE", file)))
         .env("WARDEN_DB_PATH", dir.join("warden.db"))
         .env("WARDEN_AUDIT_PATH", dir.join("audit.jsonl"))
         .env("WARDEN_PUBLIC_URL", "https://warden.example.ts.net")
