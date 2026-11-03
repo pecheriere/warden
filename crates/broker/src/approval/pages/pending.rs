@@ -36,7 +36,8 @@ fn notices() -> Markup {
 }
 
 /// The card of one pending request. Both buttons are described by whose request
-/// it is and its fingerprint, since every card has the same two labels.
+/// it is and its fingerprint, since every card has the same two labels. The agent
+/// is a heading so that a screen reader can move from card to card.
 fn card(entry: &PendingEntry, now: i64) -> Markup {
     let who = format!("agent-{}", entry.id);
     let fingerprint = format!("fingerprint-{}", entry.id);
@@ -46,7 +47,7 @@ fn card(entry: &PendingEntry, now: i64) -> Markup {
         section.card.pending data-request=(entry.id) {
             div.field {
                 span.label { "Requested by" }
-                span.who #(who) { bdi { (entry.agent) } }
+                h2.who #(who) { bdi { (entry.agent) } }
             }
             div.field.tight {
                 span.label { "Access" }

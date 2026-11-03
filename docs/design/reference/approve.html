@@ -41,9 +41,9 @@ display:flex;flex-direction:column;gap:4px}
 fieldset{border:0;margin:0;padding:0;min-width:0}
 fieldset legend{padding:0;margin-bottom:8px}
 .seg{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px;padding:4px;border-radius:14px;background:var(--soft)}
-.seg label{height:44px;border-radius:11px;display:flex;align-items:center;justify-content:center;font-weight:700;color:var(--muted)}
+.seg label{height:44px;border:2px solid transparent;border-radius:11px;display:flex;align-items:center;justify-content:center;font-weight:700;color:var(--muted)}
 .seg input{position:absolute;opacity:0}
-.seg input:checked+label{background:var(--surface);color:var(--ink);box-shadow:0 1px 3px rgba(0,0,0,.18)}
+.seg input:checked+label{background:var(--surface);color:var(--ink);border-color:var(--primary);box-shadow:0 1px 3px rgba(0,0,0,.18)}
 .actions{display:grid;gap:14px}
 .btns{display:grid;gap:10px}
 .btn{height:54px;border-radius:14px;font-size:17px;font-weight:700;display:flex;align-items:center;justify-content:center;
