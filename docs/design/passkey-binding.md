@@ -136,7 +136,7 @@ the passkey signed, for warden's origin, a challenge the broker supplied.
 - **A broker that acts without logging.** A record is checked only if it exists.
   Catching a silent certificate takes the target's `sshd` logs.
 - **A patient attacker.** Wait for one real approval, swap the statement, and also
-  grant what the owner asked for, so nothing looks wrong. That is valid evidence for
+  grant what the owner asked for, so the owner sees nothing odd at the time. That is valid evidence for
   the attacker's request, at the cost of one tap.
 - **When it happened, and on which device.** The time in the entry is the broker's, and
   the broker picks the nonce, so freshness cannot be checked later. A synced passkey
