@@ -28,7 +28,7 @@ database without a backup.
 
 ## Private files
 
-From the next release, warden keeps its files private to its user, and corrects
+From 0.9.0, warden keeps its files private to its user, and corrects
 their permissions when it starts. Most setups need do nothing, but check these:
 
 - **A tool reading warden's data as another non-root user**, such as a backup job
@@ -49,7 +49,7 @@ and run `docker compose run --rm warden doctor`. It changes nothing.
 
 ## Plain http URLs
 
-From the next release, warden refuses to start when `WARDEN_OP_CONNECT_URL`,
+From 0.9.0, warden refuses to start when `WARDEN_OP_CONNECT_URL`,
 `WARDEN_NOTIFY_HOMEASSISTANT_WEBHOOK_URL` or `WARDEN_NOTIFY_NTFY_URL` is plain
 `http` to a host that is not clearly local or private. The error names the
 variable.

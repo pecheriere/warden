@@ -81,7 +81,7 @@ No warden install updates itself. To be told about a new release, watch the
 repository's releases on GitHub. Then upgrade every part that the release's
 changelog entry names:
 
-- **Docker image.** Each release has its own image tag, such as `0.8.1`, and
+- **Docker image.** Each release has its own image tag, such as `0.9.0`, and
   warden publishes no moving tag such as `latest`. A `compose.yaml` that pins a
   version and digest keeps running the old image until you **change that pin to
   the new version and digest**: pulling or restarting is not enough. Change it

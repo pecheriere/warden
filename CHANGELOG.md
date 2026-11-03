@@ -6,6 +6,27 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-02
+
+### Upgrading
+
+Read [docs/upgrading.md](docs/upgrading.md) and back up warden's data first. Run
+`warden-server doctor` on the new version before switching over: it reports what
+would stop the server.
+
+- warden refuses to start if others can write to its data directory and it cannot
+  correct that, if a file's permissions cannot be corrected, or if a symbolic link
+  stands in place of the database, the audit log or the audience.
+- warden refuses to start on plain `http` to a host that is not clearly local or
+  private, unless the variable is listed in `WARDEN_ALLOW_PLAIN_HTTP`. This includes
+  `.ts.net` names.
+- New migrations `0006_requests_agent_index` and `0007_unwritten_audit`. An older
+  `warden-server audit verify` refuses a log with the new entries.
+- `warden` exits 64 for wrong arguments, 5 from `warden http` for an expired grant
+  and 8 from it when a call's grant state cannot be read. Scripts that read these
+  need checking.
+- Opening a request from the new Pending page stops its notification link working.
+
 ### Security
 
 - warden keeps its files private to its user. The database and its `-wal` and
@@ -48,6 +69,27 @@ All notable changes to this project are recorded here. The format follows
   stopped call gains `aborted`, with the reason, and has the status and bytes received
   so far, and it waits in the database if the log cannot take it. As with any new audit
   field, a `warden-server` older than this release refuses a log that holds one.
+- A certificate is no longer given out if its `cert_issued` audit entry cannot
+  be written. The entry is now written with the approval, before anything is
+  committed: if it fails, nothing is approved, the owner is told so and can try
+  again, and the request stays pending.
+- Making a passkey enrollment code is audited as `enrollment_code_created`, and
+  no code is made if that entry cannot be written. The entry holds neither the
+  code nor its hash. Audit logs with these entries cannot be read by
+  `warden-server audit verify` from an older release.
+- A failed agent creation or key change that had already written an audit entry
+  now records that it did not take effect.
+- Ending access no longer depends on the audit log: stopping access matters more
+  than recording it. Revoking, denying, cancelling and expiring take effect first, and
+  their entries wait in the database until they reach the log. Until then the grants
+  page warns, `warden-server doctor` fails and `warden-server audit verify` warns; a
+  revocation also notifies the owner, and `warden-server agent revoke` prints the
+  entries and exits with an error after revoking. New migration
+  `0007_unwritten_audit`.
+- The log is no longer written during a database write, so writing it cannot hold up
+  a revocation or any other change.
+- A proxied call or a relay session that waited to record its start now checks its
+  grant again, and does not go out if the grant ended meanwhile.
 
 ### Added
 
@@ -90,7 +132,7 @@ All notable changes to this project are recorded here. The format follows
 - Releases get a manifest of the archives' and the image's hashes, signed by the
   maintainer off GitHub (`warden-<version>-SHA256SUMS` and its `.sig`), and
   [docs/verifying-releases.md](docs/verifying-releases.md) says how to verify
-  each kind of asset and the signer. It starts with the next release: v0.8.1 and
+  each kind of asset and the signer. It starts with this release: v0.8.1 and
   earlier have no manifest, and tags before v0.8.0 are not signed.
 - Each agent is limited in how many requests it can make, so that it cannot
   flood the owner: by default 5 pending at once and 10 new ones per 10 minutes,
@@ -101,7 +143,7 @@ All notable changes to this project are recorded here. The format follows
   `WARDEN_REQUEST_LIMIT_WINDOW_SECS`. New migration `0006_requests_agent_index`.
   Audit logs with these entries cannot be read by `warden-server audit verify`
   from an older release.
-- Release builds are meant to be repeatable from the next release:
+- Release builds are meant to be repeatable from this release:
   [docs/reproducing-builds.md](docs/reproducing-builds.md) says how to rebuild one
   and what must match, and a workflow builds each output twice and compares them.
   The CLI no longer holds the build machine's paths, the image's times come from
@@ -175,30 +217,6 @@ All notable changes to this project are recorded here. The format follows
 - When `warden request` stops on a pending request it is not waiting on, it prints
   that request's ID, how to withdraw it (`warden request cancel <id>`) and that it
   expires within 10 minutes of being made, not only its fingerprint.
-
-### Security
-
-- A certificate is no longer given out if its `cert_issued` audit entry cannot
-  be written. The entry is now written with the approval, before anything is
-  committed: if it fails, nothing is approved, the owner is told so and can try
-  again, and the request stays pending.
-- Making a passkey enrollment code is audited as `enrollment_code_created`, and
-  no code is made if that entry cannot be written. The entry holds neither the
-  code nor its hash. Audit logs with these entries cannot be read by
-  `warden-server audit verify` from an older release.
-- A failed agent creation or key change that had already written an audit entry
-  now records that it did not take effect.
-- Ending access no longer depends on the audit log: stopping access matters more
-  than recording it. Revoking, denying, cancelling and expiring take effect first, and
-  their entries wait in the database until they reach the log. Until then the grants
-  page warns, `warden-server doctor` fails and `warden-server audit verify` warns; a
-  revocation also notifies the owner, and `warden-server agent revoke` prints the
-  entries and exits with an error after revoking. New migration
-  `0007_unwritten_audit`.
-- The log is no longer written during a database write, so writing it cannot hold up
-  a revocation or any other change.
-- A proxied call or a relay session that waited to record its start now checks its
-  grant again, and does not go out if the grant ended meanwhile.
 
 ## [0.8.1] - 2026-11-01
 

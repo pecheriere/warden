@@ -508,8 +508,8 @@ The image is published for `linux/amd64` and `linux/arm64` as
 Verify it, and pin the digest you verified:
 
 ```sh
-gh attestation verify oci://ghcr.io/pecheriere/warden:0.8.1 --owner pecheriere
-docker buildx imagetools inspect ghcr.io/pecheriere/warden:0.8.1   # the digest
+gh attestation verify oci://ghcr.io/pecheriere/warden:0.9.0 --owner pecheriere
+docker buildx imagetools inspect ghcr.io/pecheriere/warden:0.9.0   # the digest
 ```
 
 Releases after v0.8.1 also list the digest in a manifest the maintainer signs:
@@ -561,7 +561,7 @@ name: warden
 
 services:
   warden:
-    image: ghcr.io/pecheriere/warden:0.8.1@sha256:<digest>
+    image: ghcr.io/pecheriere/warden:0.9.0@sha256:<digest>
     restart: unless-stopped
     read_only: true
     cap_drop: [ALL]
@@ -1026,7 +1026,7 @@ services:
         ipv4_address: 172.31.251.10
 
   warden:
-    image: ghcr.io/pecheriere/warden:0.8.1@sha256:<digest>
+    image: ghcr.io/pecheriere/warden:0.9.0@sha256:<digest>
     restart: unless-stopped
     # warden's network is the sidecar's: no networks of its own, and the
     # listeners stay on their loopback defaults (127.0.0.1:8080, :8081,

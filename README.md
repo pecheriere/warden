@@ -53,7 +53,7 @@ tailnet.
 Each warden server has one owner, who approves every request. One owner can
 have many agents, but there are no teams, roles or shared approvals.
 
-**Status: early.** The current release is **0.8.1**. warden has a single
+**Status: early.** The current release is **0.9.0**. warden has a single
 maintainer and has not had an independent security review. Before 1.0,
 expect this to change:
 
@@ -172,9 +172,9 @@ row changes where the secrets are, under any of them.
 |-------|-------|--------|---------------------------|
 | **Tailscale Services** on the host | Recommended. The [guide](docs/deployment.md#1-the-recommended-layout) is the main path. | SSH certificates, API calls. No SSH relay. | [The whole host is trusted](docs/deployment.md#who-can-reach-the-listeners). Any local process can reach the listeners and forge your login. That cannot approve anything, but it can read the history, revoke grants and use a stolen bearer key, so the host must run nothing else untrusted. |
 | **Tailscale sidecar** container | [Documented](docs/deployment.md#10-the-sidecar-layout-for-relay-targets), but not yet tested end to end. | SSH certificates, API calls, SSH relay. | Other host processes cannot reach the listeners, but firewall rules can no longer tell warden's traffic from Tailscale's, and hardening the Tailscale container is untested. With relay targets, warden also [reads and uses their credentials](docs/threat-model.md#relay-mode-residual-risks), so a compromised warden can expose them. |
-| **systemd service**, warden outside a container | [Documented](docs/deployment-systemd.md), but not yet tested on a clean host. Needs a release later than 0.8.1 and a build from source. | SSH certificates, API calls. No SSH relay. | As for Tailscale Services, the whole host is trusted. warden also [loses the image's isolation](docs/deployment-systemd.md#1-what-holds-what-is-replaced-what-is-lost): it shares the host's filesystem (read-only) and network stack, and there is no build attestation yet. |
+| **systemd service**, warden outside a container | [Documented](docs/deployment-systemd.md), but not yet tested on a clean host. Needs 0.9.0 or later and a build from source. | SSH certificates, API calls. No SSH relay. | As for Tailscale Services, the whole host is trusted. warden also [loses the image's isolation](docs/deployment-systemd.md#1-what-holds-what-is-replaced-what-is-lost): it shares the host's filesystem (read-only) and network stack, and there is no build attestation yet. |
 
-| **Local files** instead of 1Password | [Documented](docs/local-backend.md). The backend is tested; its Docker and systemd examples have not been run on a real host. Needs a release later than 0.8.1. | As the layout it runs on. | **A compromised host gets every secret**: the vault's separation from the host is gone, and with it the [read-only token boundary](docs/threat-model.md#the-local-secret-backend). Backups and disks hold the secrets too. 1Password stays the recommendation. |
+| **Local files** instead of 1Password | [Documented](docs/local-backend.md). The backend is tested; its Docker and systemd examples have not been run on a real host. Needs 0.9.0 or later. | As the layout it runs on. | **A compromised host gets every secret**: the vault's separation from the host is gone, and with it the [read-only token boundary](docs/threat-model.md#the-local-secret-backend). Backups and disks hold the secrets too. 1Password stays the recommendation. |
 
 The [local demo](docs/demo.md) is for trying warden, not one of these setups:
 it is not secure for real use.
@@ -233,7 +233,7 @@ it; follow it for a real setup.
    published ports, Connect on its own network. Verify the image first:
 
    ```sh
-   gh attestation verify oci://ghcr.io/pecheriere/warden:0.8.1 --owner pecheriere
+   gh attestation verify oci://ghcr.io/pecheriere/warden:0.9.0 --owner pecheriere
    ```
 
    [The Compose file](docs/deployment.md#5-run-warden),
@@ -267,7 +267,7 @@ it; follow it for a real setup.
      --public-key "ssh-ed25519 AAAA… build-agent"
    # on the agent machine (Rust 1.99 or later; releases after v0.8.1 also
    # attach binaries, see Agent usage)
-   cargo install --locked --git https://github.com/pecheriere/warden --tag v0.8.1 warden-broker-cli
+   cargo install --locked --git https://github.com/pecheriere/warden --tag v0.9.0 warden-broker-cli
    warden login --server https://warden-api.example.ts.net --agent build-agent \
      --ssh-key ~/.ssh/build-agent.pub
    ```

@@ -77,7 +77,7 @@ For v0.8.1 and earlier, or on another platform, build it instead, with Rust
 1.99 or later:
 
 ```sh
-cargo install --locked --git https://github.com/pecheriere/warden --tag v0.8.1 warden-broker-cli
+cargo install --locked --git https://github.com/pecheriere/warden --tag v0.9.0 warden-broker-cli
 ```
 
 The machine must be on the tailnet, and the tailnet policy must let it reach

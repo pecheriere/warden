@@ -13,7 +13,7 @@ Status:
   ([`deploy/systemd/warden.service`](../deploy/systemd/warden.service)) has only
   been started in a privileged container on arm64: see
   [What has been tested](#10-what-has-been-tested).
-- **It needs a release later than 0.8.1.** The unit passes secrets through the
+- **It needs 0.9.0 or later.** The unit passes secrets through the
   `*_FILE` variables, which 0.8.1 does not have. On 0.8.1 the service refuses to
   start, because the Connect token is missing.
 - **It does not support SSH relay targets.** They need
