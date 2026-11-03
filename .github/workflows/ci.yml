@@ -71,6 +71,7 @@ jobs:
           scripts/build-openssl.sh "$(rustc -vV | sed -n 's/^host: //p')" "$RUNNER_TEMP/openssl"
           echo "OPENSSL_DIR=$RUNNER_TEMP/openssl" >> "$GITHUB_ENV"
           echo "OPENSSL_STATIC=1" >> "$GITHUB_ENV"
+          echo "WARDEN_OPENSSL_PINNED=1" >> "$GITHUB_ENV"
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - run: cargo test --workspace --all-features --locked
       - name: Build the documentation

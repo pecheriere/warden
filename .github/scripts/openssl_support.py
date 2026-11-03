@@ -4,8 +4,9 @@ Advisory scanners report published advisories only: they do not notice a line th
 stopped getting fixes, and neither they nor Dependabot read scripts/openssl-pin.env.
 
 By default, with no network: fails on or after the pinned line's end-of-support date,
-warns in the UPCOMING days before it, and fails if `openssl-src` is back in Cargo.lock,
-which would mean a build no longer uses the pin.
+warns in the UPCOMING days before it, and fails if `openssl-src` is back in Cargo.lock
+or a build that ships no longer sets PINNED_FLAG, either of which would mean that it may
+not use the pin.
 
 With --nightly, for the scheduled run: also fails in the UPCOMING days before the end,
 and if OpenSSL has published a newer release of the line.
@@ -23,6 +24,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent.parent
 PIN_FILE = ROOT / "scripts" / "openssl-pin.env"
 LOCKFILE = ROOT / "Cargo.lock"
+PINNED_FLAG = "WARDEN_OPENSSL_PINNED=1"
+SHIPPING_BUILDS = (ROOT / "Dockerfile", ROOT / "scripts" / "package-binary.sh")
 UPCOMING = timedelta(days=90)
 REPOSITORY = "https://github.com/openssl/openssl"
 VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)")
@@ -122,6 +125,10 @@ def check(*, nightly: bool) -> bool:
     if has_openssl_src(LOCKFILE.read_text(encoding="utf-8")):
         print("::error::openssl-src is in Cargo.lock: builds must use scripts/build-openssl.sh")
         passed = False
+    for build in SHIPPING_BUILDS:
+        if PINNED_FLAG not in build.read_text(encoding="utf-8"):
+            print(f"::error::{build.name} does not set {PINNED_FLAG}")
+            passed = False
     if nightly:
         newer = newer_release(version)
         if newer:

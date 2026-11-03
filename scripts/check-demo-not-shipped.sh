@@ -61,7 +61,8 @@ builds="$(grep -v '^ *#' Dockerfile | grep -E "$cargo_word" || true)"
 [ -n "$builds" ] || fail "no cargo build found in the Dockerfile"
 while IFS= read -r line; do
   case "$line" in
-    *'cargo build --release --locked -p warden-broker'*) ;;
+    # Anchored at the end, so that no feature, such as testkit, can follow.
+    *" cargo build --release --locked -p warden-broker" | *" cargo build --release --locked -p warden-broker \\") ;;
     'RUN cargo clean --release -p warden-broker -p warden-broker-proto '*) ;;
     *) fail "the Dockerfile runs something else: $line" ;;
   esac

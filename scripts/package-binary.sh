@@ -94,7 +94,7 @@ case "$product" in
   server | demo)
     openssl_dir="$build_dir/openssl-$target"
     scripts/build-openssl.sh "$target" "$openssl_dir"
-    export OPENSSL_DIR="$openssl_dir" OPENSSL_STATIC=1
+    export OPENSSL_DIR="$openssl_dir" OPENSSL_STATIC=1 WARDEN_OPENSSL_PINNED=1
     ;;
 esac
 RUSTFLAGS="--remap-path-prefix=$source_dir=/warden --remap-path-prefix=$cargo_home=/cargo" \

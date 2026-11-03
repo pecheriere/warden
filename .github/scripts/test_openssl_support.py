@@ -5,6 +5,8 @@ from datetime import date
 
 from openssl_support import (
     PIN_FILE,
+    PINNED_FLAG,
+    SHIPPING_BUILDS,
     CheckError,
     has_openssl_src,
     newest_of_line,
@@ -77,6 +79,16 @@ class NewestOfLine(unittest.TestCase):
     def test_no_release_gives_nothing(self) -> None:
         """No matching tag gives no version."""
         self.assertIsNone(newest_of_line("", (3, 5)))
+
+
+class ShippingBuilds(unittest.TestCase):
+    """Tests for the builds that must ask for the pinned OpenSSL."""
+
+    def test_each_sets_the_flag(self) -> None:
+        """The Dockerfile and the packaging script both refuse another OpenSSL."""
+        for build in SHIPPING_BUILDS:
+            with self.subTest(build=build.name):
+                self.assertIn(PINNED_FLAG, build.read_text(encoding="utf-8"))
 
 
 class OpensslSrc(unittest.TestCase):

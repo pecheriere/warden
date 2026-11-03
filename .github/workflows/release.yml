@@ -66,6 +66,8 @@ jobs:
             previous=$(git describe --tags --abbrev=0 --match 'v[0-9]*' HEAD^)
             python3 -I .github/scripts/crate_age.py --base "$previous"
           fi
+      - name: Refuse an OpenSSL near the end of support or out of date
+        run: python3 -I .github/scripts/openssl_support.py --nightly
 
   ci:
     needs: on-main

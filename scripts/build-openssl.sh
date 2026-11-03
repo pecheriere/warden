@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Builds the OpenSSL release pinned in scripts/openssl-pin.env as static libraries,
 # for the broker to link. Afterwards, point the build at it:
-#   OPENSSL_DIR=<prefix> OPENSSL_STATIC=1 cargo build ...
+#   OPENSSL_DIR=<prefix> OPENSSL_STATIC=1 WARDEN_OPENSSL_PINNED=1 cargo build ...
+# With WARDEN_OPENSSL_PINNED set, crates/broker/build.rs fails the build on any other
+# OpenSSL.
 #
 # From a release tarball because no `openssl-src` crate carries a current release of
 # a line that `openssl-sys` accepts. The tarball's hash is pinned, so a changed
@@ -48,11 +50,17 @@ case "$target" in
       *) configure_target=linux-aarch64 ;;
     esac
     export CC=musl-gcc
-    # The broker uses no engines, whose code wants more of the kernel's headers, and
-    # musl lacks what the async code uses.
-    extra_options=(no-engine no-async)
+    # The broker uses none of these, and musl-gcc sees no kernel headers, which the
+    # engine and secure heap code include. musl lacks what the async code uses.
+    extra_options=(no-engine no-async -DOPENSSL_NO_SECURE_MEMORY)
     ;;
-  aarch64-apple-darwin) configure_target=darwin64-arm64-cc ;;
+  aarch64-apple-darwin)
+    configure_target=darwin64-arm64-cc
+    # The oldest macOS Rust builds for, or the compiler assumes the machine's own, and
+    # the library would claim to need that.
+    deployment_target="$(rustc --print deployment-target --target "$target")"
+    export "${deployment_target?}"
+    ;;
   *)
     echo "error: no OpenSSL build is set up for $target" >&2
     exit 2
@@ -93,18 +101,6 @@ if [ "$actual" != "$WARDEN_OPENSSL_SHA256" ]; then
 fi
 tar -xzf "$tarball" -C "$work_dir"
 source_dir="$work_dir/openssl-$version"
-
-# musl-gcc sees musl's headers and no kernel headers, which OpenSSL includes on Linux.
-# Only those directories are added, and last, so no glibc header can stand in for musl's.
-case "$target" in
-  *-musl)
-    kernel_headers="$work_dir/kernel-headers"
-    multiarch="$(gcc -dumpmachine)"
-    mkdir "$kernel_headers"
-    ln -s /usr/include/linux /usr/include/asm-generic "/usr/include/$multiarch/asm" "$kernel_headers/"
-    extra_options+=("-idirafter$kernel_headers")
-    ;;
-esac
 
 jobs=$(getconf _NPROCESSORS_ONLN)
 (

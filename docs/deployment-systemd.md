@@ -200,7 +200,7 @@ git clone --depth 1 --branch <version tag> https://github.com/pecheriere/warden
 cd warden
 git rev-parse HEAD   # record the commit you built
 scripts/build-openssl.sh "$(rustc -vV | sed -n 's/^host: //p')" "$PWD/target/openssl"
-OPENSSL_DIR="$PWD/target/openssl" OPENSSL_STATIC=1 \
+OPENSSL_DIR="$PWD/target/openssl" OPENSSL_STATIC=1 WARDEN_OPENSSL_PINNED=1 \
   cargo build --release --locked -p warden-broker
 ```
 

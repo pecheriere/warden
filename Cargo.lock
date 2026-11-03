@@ -4540,6 +4540,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "maud",
+ "openssl-sys",
  "p256",
  "percent-encoding",
  "proptest",

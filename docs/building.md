@@ -37,7 +37,7 @@ cargo build --release --locked -p warden-broker-cli
 # The server, with the pinned OpenSSL linked statically, as in the image:
 # target/release/warden-server
 scripts/build-openssl.sh "$(rustc -vV | sed -n 's/^host: //p')" "$PWD/target/openssl"
-OPENSSL_DIR="$PWD/target/openssl" OPENSSL_STATIC=1 \
+OPENSSL_DIR="$PWD/target/openssl" OPENSSL_STATIC=1 WARDEN_OPENSSL_PINNED=1 \
   cargo build --release --locked -p warden-broker
 
 # The image

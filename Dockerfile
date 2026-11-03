@@ -11,7 +11,7 @@ WORKDIR /src
 # system libssl.
 COPY scripts/build-openssl.sh scripts/openssl-pin.env scripts/
 RUN scripts/build-openssl.sh "$(rustc -vV | sed -n 's/^host: //p')" /opt/warden-openssl
-ENV OPENSSL_DIR=/opt/warden-openssl OPENSSL_STATIC=1
+ENV OPENSSL_DIR=/opt/warden-openssl OPENSSL_STATIC=1 WARDEN_OPENSSL_PINNED=1
 COPY Cargo.toml Cargo.lock ./
 COPY crates/proto/Cargo.toml crates/proto/
 COPY crates/broker/Cargo.toml crates/broker/build.rs crates/broker/
