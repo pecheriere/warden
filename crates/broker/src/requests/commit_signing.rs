@@ -18,7 +18,7 @@ use super::transition::detached;
 use super::{Destination, RequestError, Requests, Scope, approval_token, begin, parse};
 use crate::audit::AuditEvent;
 use crate::notify::Doorbell;
-use crate::policy::{CommitSigningKey, CommitSigningPolicy, PolicyError};
+use crate::policy::{CommitSigningKey, CommitSigningPolicy, PolicyError, check_separate_from_ca};
 
 /// Recorded as `by` for a grant ended by approving its replacement.
 const RENEWED: &str = "renewed";
@@ -29,6 +29,11 @@ const NOTICE_SECS: i64 = 3 * 86_400;
 
 /// Least time between tries to tell the owner about one grant, in seconds.
 const NOTICE_RETRY_SECS: i64 = 3600;
+
+/// Signatures per grant per UTC day, unless the server says otherwise. Far more than
+/// rebases need, and small enough that a looping agent cannot fill the audit log's
+/// disk in the life of a grant.
+pub const SIGNATURES_PER_DAY: u32 = 5000;
 
 /// Refusals recorded one by one per agent per minute; the rest are counted.
 const REFUSALS_PER_MINUTE: u32 = 30;
@@ -118,6 +123,14 @@ impl SigningRefusals {
     }
 }
 
+/// Whether a commit signing grant may have `window`, under the server's `max`.
+pub(super) fn check_window(window: Window, max: Window) -> Result<(), String> {
+    if !window.is_commit_signing() {
+        return Err("a commit signing grant lasts 1d, 7d, 30d or 90d".to_owned());
+    }
+    super::check_window(window, max, "commit signing")
+}
+
 /// End the other active commit signing grants of `agent` at `now`, in `tx`, which
 /// also stores `kept`, the grant replacing them. Returns their requests.
 pub(super) async fn end_renewed(
@@ -157,6 +170,103 @@ impl Requests {
         self
     }
 
+    /// Allow each commit signing grant `limit` signatures per UTC day, instead of
+    /// [`SIGNATURES_PER_DAY`].
+    #[must_use]
+    pub const fn with_commit_signing_per_day(mut self, limit: u32) -> Self {
+        self.commit_signing_per_day = limit;
+        self
+    }
+
+    /// Take one of `grant`'s signatures for today, or say there are none left. In one
+    /// statement, so that concurrent calls cannot pass the limit, and in the database,
+    /// so that a restart does not reset it.
+    ///
+    /// # Errors
+    /// Storage failures: the caller refuses.
+    pub(crate) async fn take_signature(&self, grant: &Id) -> Result<bool, RequestError> {
+        let taken = sqlx::query(
+            "UPDATE grants SET signing_day = ?1, signing_count = \
+             CASE WHEN signing_day = ?1 THEN signing_count + 1 ELSE 1 END \
+             WHERE id = ?2 AND (signing_day IS NOT ?1 OR signing_count < ?3)",
+        )
+        .bind(self.clock.now().div_euclid(86_400))
+        .bind(grant.as_str())
+        .bind(self.commit_signing_per_day)
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+        Ok(taken > 0)
+    }
+
+    /// Record that `grant` of `agent` reached its limit and tell the owner, once a day
+    /// per grant, without holding up the refusal. One try: a failure is logged and
+    /// recorded, and the refusals keep being recorded either way.
+    pub(crate) async fn signature_limit_reached(&self, agent: &AgentName, grant: &Id) {
+        let claimed = sqlx::query(
+            "UPDATE grants SET signing_limit_noticed_day = ?1 \
+             WHERE id = ?2 AND signing_limit_noticed_day IS NOT ?1",
+        )
+        .bind(self.clock.now().div_euclid(86_400))
+        .bind(grant.as_str())
+        .execute(&self.pool)
+        .await;
+        match claimed {
+            Ok(done) if done.rows_affected() == 0 => return,
+            Ok(_) => {}
+            Err(e) => {
+                tracing::error!(grant = %grant, error = %e, "could not record a signing limit");
+                return;
+            }
+        }
+        let reached = AuditEvent::CommitSigningLimitReached {
+            grant_id: grant.clone(),
+            agent: agent.clone(),
+            limit: self.commit_signing_per_day,
+        };
+        if let Err(e) = self.audit.append(reached).await {
+            tracing::error!(grant = %grant, error = %e, "could not audit a signing limit");
+        }
+        let this = self.clone();
+        let (agent, grant) = (agent.clone(), grant.clone());
+        tokio::spawn(async move { this.notify_signature_limit(&agent, &grant).await });
+    }
+
+    async fn notify_signature_limit(&self, agent: &AgentName, grant: &Id) {
+        let mut url = self.public_url.clone();
+        let Ok(mut path) = url.path_segments_mut() else {
+            tracing::error!("public URL cannot be a base; not sending a signing limit notice");
+            return;
+        };
+        path.pop_if_empty().push("grants");
+        drop(path);
+        let bell = Doorbell {
+            title: format!("warden: {agent} reached its commit signing limit"),
+            message: format!(
+                "It made {} signatures today, so its commits fail until 00:00 UTC. If you do not \
+                 expect this many, revoke its grant.",
+                self.commit_signing_per_day
+            ),
+            url,
+        };
+        let event = match self.notifier.ring(&bell).await {
+            Ok(channel) => AuditEvent::CommitSigningLimitNotified {
+                grant_id: grant.clone(),
+                channel: channel.to_owned(),
+            },
+            Err(e) => {
+                tracing::warn!(grant = %grant, error = %e, "signing limit notice failed");
+                AuditEvent::Error {
+                    context: "commit signing limit notice".to_owned(),
+                    message: format!("grant {grant}: {e}"),
+                }
+            }
+        };
+        if let Err(e) = self.audit.append(event).await {
+            tracing::error!(grant = %grant, error = %e, "could not audit a signing limit notice");
+        }
+    }
+
     /// The commit signing policy `key` makes on this server.
     ///
     /// # Errors
@@ -176,6 +286,24 @@ impl Requests {
     pub async fn commit_signing_policy(&self) -> Result<CommitSigningPolicy, RequestError> {
         let key = self.backend.commit_signing_key().await?;
         Ok(key.policy(self.commit_signing_max)?)
+    }
+
+    /// The commit signing policy, if a grant may be approved under it: not if the key
+    /// is also the SSH CA key. A grant is bound to the key it was approved for, so
+    /// this is checked for as long as any grant can come to use a key.
+    ///
+    /// # Errors
+    /// [`RequestError::Rejected`] if there is no key or it is the CA key, and
+    /// [`RequestError::Unavailable`] if either key cannot be read.
+    pub(super) async fn approvable_commit_signing_policy(
+        &self,
+    ) -> Result<CommitSigningPolicy, RequestError> {
+        let key = self.backend.commit_signing_key().await?;
+        match check_separate_from_ca(self.backend.as_ref(), &key).await {
+            Err(PolicyError::CommitSigningKey(reason)) => Err(RequestError::Rejected(reason)),
+            Err(e) => Err(e.into()),
+            Ok(()) => Ok(key.policy(self.commit_signing_max)?),
+        }
     }
 
     /// The longest commit signing grant the server allows.
@@ -235,11 +363,14 @@ impl Requests {
             .collect()
     }
 
-    /// Start renewing commit signing grant `grant_id`, for the owner: its agent's
-    /// request for the same length, or as long as the server now allows, with an
-    /// approval link the owner goes on to approve with a passkey. Rings nobody, as
-    /// the owner is the one asking. Returns the request and its link. Nothing is
-    /// granted by this, and the grant keeps working until the approval.
+    /// Start renewing commit signing grant `grant_id`, for the owner: a request of its
+    /// agent for the same length, or as long as the server now allows, with an approval
+    /// link the owner goes on to approve with a passkey. If that agent already has a
+    /// commit signing request waiting, there can be only one, so this opens it instead,
+    /// with the goal and window its agent gave: the approval page shows them, and the
+    /// owner chooses the window there either way. Rings nobody, as the owner is the one
+    /// asking. Returns the request and its link. Nothing is granted by this, and the
+    /// grant keeps working until the approval.
     ///
     /// # Errors
     /// [`RequestError::NotFound`] if no such commit signing grant is active, what
@@ -264,7 +395,7 @@ impl Requests {
             .min(self.commit_signing_max);
         // The key is read so that a broker that lost it says so here, on the screen
         // the owner is looking at, rather than on the approval page.
-        let policy = Destination::CommitSigning(self.commit_signing_policy().await?);
+        let policy = Destination::CommitSigning(self.approvable_commit_signing_policy().await?);
         policy
             .check_window(window)
             .map_err(RequestError::Rejected)?;

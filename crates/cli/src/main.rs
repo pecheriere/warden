@@ -684,7 +684,7 @@ async fn request_signing(window: Window, goal: Goal) -> Result<()> {
     announce(&grant);
     println!(
         "commits are signed with key {} until then. Set git up with `warden setup git` if it \
-         is not yet.",
+         is not yet set up.",
         signing.key_fingerprint
     );
     Ok(())

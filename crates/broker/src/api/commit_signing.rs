@@ -16,7 +16,8 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use sha2::{Digest as _, Sha256};
 use warden_broker_proto::commit_signing::{
-    CommitSigningKeyView, NAMESPACE, NO_ACTIVE_GRANT, SignCommitRequest, SignCommitResponse,
+    CommitSigningKeyView, DAILY_LIMIT, NAMESPACE, NO_ACTIVE_GRANT, SignCommitRequest,
+    SignCommitResponse,
 };
 use warden_broker_proto::{AgentName, Id};
 
@@ -32,12 +33,20 @@ use crate::requests::{ActiveCommitSigning, RequestError};
 const KEY_CHANGED: &str = "the commit signing key changed; request a new grant";
 
 /// `GET /v1/commit-signing/key`: the public half of the broker's key, which
-/// `warden setup git` writes to the configuration. Reads the backend, as a signature
-/// does, so that a broker that cannot sign says so.
+/// `warden setup git` writes to the configuration. Getting at it means reading the
+/// private key from the backend, so only an agent with an active grant can cause that.
 pub(super) async fn public_key(
     State(state): State<AppState>,
-    AuthedAgent(_): AuthedAgent,
+    AuthedAgent(agent): AuthedAgent,
 ) -> Result<Json<CommitSigningKeyView>, Failure> {
+    if state
+        .requests
+        .active_commit_signing(&agent)
+        .await?
+        .is_none()
+    {
+        return Err(refused(StatusCode::FORBIDDEN, NO_ACTIVE_GRANT));
+    }
     let policy = state.requests.commit_signing_policy().await?;
     Ok(Json(CommitSigningKeyView {
         public_key: policy.public_key,
@@ -112,7 +121,8 @@ async fn attempt(
     let bytes = STANDARD
         .decode(&body.payload_b64)
         .map_err(|_| refused(StatusCode::BAD_REQUEST, "the payload is not base64"))?;
-    seen.payload_sha256 = Some(hex::encode(Sha256::digest(&bytes)));
+    let payload_sha256 = hex::encode(Sha256::digest(&bytes));
+    seen.payload_sha256 = Some(payload_sha256.clone());
     let parsed = payload::parse(&bytes).map_err(|why| {
         let status = match why {
             payload::PayloadRefusal::TooLarge => StatusCode::PAYLOAD_TOO_LARGE,
@@ -122,6 +132,13 @@ async fn attempt(
     })?;
     let ActiveCommitSigning { grant_id, grant } =
         grant.ok_or_else(|| refused(StatusCode::FORBIDDEN, NO_ACTIVE_GRANT))?;
+    if !state.requests.take_signature(&grant_id).await? {
+        state
+            .requests
+            .signature_limit_reached(agent, &grant_id)
+            .await;
+        return Err(refused(StatusCode::TOO_MANY_REQUESTS, DAILY_LIMIT));
+    }
 
     let key = state
         .backend
@@ -149,6 +166,7 @@ async fn attempt(
         grant_id: grant_id.clone(),
         agent: agent.clone(),
         commit: signed.commit.clone(),
+        payload_sha256,
         parents: parsed.parents,
         tree: parsed.tree,
         author: parsed.author,

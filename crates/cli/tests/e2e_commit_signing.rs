@@ -9,6 +9,7 @@ use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 
+use sha2::{Digest as _, Sha256};
 use ssh_key::rand_core::OsRng;
 use tempfile::TempDir;
 use warden_broker::testkit::{CapturingNotifier, TestBroker};
@@ -181,15 +182,27 @@ fn allowed_signers(s: &Setup) -> PathBuf {
     path
 }
 
+/// A commit object without its signature header, which is what was signed.
+fn without_signature(object: &[u8]) -> Vec<u8> {
+    let mut kept = Vec::new();
+    let mut in_signature = false;
+    for line in object.split_inclusive(|b| *b == b'\n') {
+        in_signature = line.starts_with(b"gpgsig ") || (in_signature && line.starts_with(b" "));
+        if !in_signature {
+            kept.extend_from_slice(line);
+        }
+    }
+    kept
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_real_git_commit_is_signed_through_the_broker_and_verifies() {
     let s = setup().await;
+    get_grant(&s).await;
     let set_up = s.machine.setup();
     assert_eq!(set_up.status.code(), Some(0), "{}", text(&set_up.stderr));
     let said = text(&set_up.stdout);
     assert!(said.contains("not that anyone reviewed"), "{said}");
-    assert!(said.contains("no active commit signing grant"), "{said}");
-    get_grant(&s).await;
 
     let out = s.machine.commit("signed by warden");
     assert!(out.status.success(), "{}", text(&out.stderr));
@@ -230,6 +243,12 @@ async fn a_real_git_commit_is_signed_through_the_broker_and_verifies() {
     let signed = audit_entries(&s, "commit_signed");
     assert_eq!(signed.len(), 1);
     assert_eq!(signed[0]["commit"], head.as_str());
+    // What was signed can be told from the commit itself, whatever its id.
+    let object = s.machine.git(&["cat-file", "commit", "HEAD"]).stdout;
+    assert_eq!(
+        signed[0]["payload_sha256"],
+        hex::encode(Sha256::digest(without_signature(&object)))
+    );
     assert_eq!(signed[0]["agent"], AGENT);
     assert_eq!(
         signed[0]["tree"],
@@ -260,8 +279,8 @@ async fn a_real_git_commit_is_signed_through_the_broker_and_verifies() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_sha256_repository_gets_the_right_header_and_id() {
     let s = setup().await;
-    assert_eq!(s.machine.setup().status.code(), Some(0));
     get_grant(&s).await;
+    assert_eq!(s.machine.setup().status.code(), Some(0));
     fs::remove_dir_all(s.machine.repo().join(".git")).unwrap();
     s.machine.git_ok(&["init", "-q", "--object-format=sha256"]);
     let out = s.machine.commit("sha-256");
@@ -294,7 +313,9 @@ fn assert_commit_failed(s: &Setup, out: &Output, says: &str) {
 #[tokio::test(flavor = "multi_thread")]
 async fn no_grant_fails_the_commit_and_says_how_to_ask() {
     let s = setup().await;
+    get_grant(&s).await;
     assert_eq!(s.machine.setup().status.code(), Some(0));
+    s.broker.clock.advance(30 * 86_400);
     let out = s.machine.commit("not signed");
     assert_commit_failed(&s, &out, "warden request signing");
     assert_eq!(audit_entries(&s, "commit_signing_refused").len(), 1);
@@ -303,8 +324,8 @@ async fn no_grant_fails_the_commit_and_says_how_to_ask() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_revoked_grant_fails_the_next_commit() {
     let s = setup().await;
-    assert_eq!(s.machine.setup().status.code(), Some(0));
     let granted = text(&get_grant(&s).await.stdout);
+    assert_eq!(s.machine.setup().status.code(), Some(0));
     let grant = granted
         .strip_prefix("approved: grant ")
         .and_then(|r| r.split_once(" until "))
@@ -328,8 +349,8 @@ async fn a_revoked_grant_fails_the_next_commit() {
 #[tokio::test(flavor = "multi_thread")]
 async fn an_unreachable_broker_fails_the_commit_and_says_so() {
     let s = setup().await;
-    assert_eq!(s.machine.setup().status.code(), Some(0));
     get_grant(&s).await;
+    assert_eq!(s.machine.setup().status.code(), Some(0));
     // Port 9 on loopback: nothing listens, and the connection is refused at once.
     fs::write(
         s.machine.root.path().join("config/warden/config.toml"),
@@ -343,8 +364,8 @@ async fn an_unreachable_broker_fails_the_commit_and_says_so() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_rotated_key_fails_the_commit_until_setup_runs_again() {
     let s = setup().await;
-    assert_eq!(s.machine.setup().status.code(), Some(0));
     get_grant(&s).await;
+    assert_eq!(s.machine.setup().status.code(), Some(0));
     s.broker.backend.set_commit_signing_key(Some(
         ssh_key::PrivateKey::random(&mut OsRng, ssh_key::Algorithm::Ed25519).unwrap(),
     ));
@@ -355,8 +376,8 @@ async fn a_rotated_key_fails_the_commit_until_setup_runs_again() {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_signing_program_refuses_a_tag_object_and_another_namespace() {
     let s = setup().await;
-    assert_eq!(s.machine.setup().status.code(), Some(0));
     get_grant(&s).await;
+    assert_eq!(s.machine.setup().status.code(), Some(0));
     let key_file = s.machine.root.path().join("signing.pub");
     let public = s.broker.backend.commit_signing_public_key();
     fs::write(&key_file, public.to_openssh().unwrap()).unwrap();
@@ -411,6 +432,7 @@ async fn setup_changes_only_the_throwaway_config_and_doctor_reads_it() {
         "{before}"
     );
 
+    get_grant(&s).await;
     assert_eq!(s.machine.setup().status.code(), Some(0));
     let config = fs::read_to_string(s.machine.root.path().join("home/gitconfig")).unwrap();
     let public = s.broker.backend.commit_signing_public_key();
@@ -428,13 +450,6 @@ async fn setup_changes_only_the_throwaway_config_and_doctor_reads_it() {
     let program = s.machine.git_ok(&["config", "gpg.ssh.program"]);
     assert!(Path::new(&program).is_absolute(), "{program}");
 
-    let (code, no_grant) = doctor(&s.machine);
-    assert_eq!(code, Some(1), "{no_grant}");
-    assert!(
-        no_grant.contains("no active commit signing grant"),
-        "{no_grant}"
-    );
-    get_grant(&s).await;
     let (_, granted) = doctor(&s.machine);
     assert!(granted.contains("Git signs through warden"), "{granted}");
 
@@ -452,11 +467,33 @@ async fn setup_changes_only_the_throwaway_config_and_doctor_reads_it() {
         s.machine.git_ok(&["config", "--local", "gpg.format"]),
         "ssh"
     );
+
+    s.broker.clock.advance(30 * 86_400);
+    let (code, no_grant) = doctor(&s.machine);
+    assert_eq!(code, Some(1), "{no_grant}");
+    assert!(
+        no_grant.contains("no active commit signing grant"),
+        "{no_grant}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn setup_leaves_git_alone_without_a_grant() {
+    let s = setup().await;
+    let out = s.machine.setup();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        text(&out.stderr).contains("warden request signing"),
+        "{}",
+        text(&out.stderr)
+    );
+    assert!(!s.machine.root.path().join("home/gitconfig").exists());
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn setup_leaves_git_alone_when_the_broker_has_no_key() {
     let s = setup().await;
+    get_grant(&s).await;
     s.broker.backend.set_commit_signing_key(None);
     let out = s.machine.setup();
     assert_eq!(out.status.code(), Some(1));

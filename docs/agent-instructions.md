@@ -91,7 +91,8 @@ your grants.
 
 If `warden setup git` was run here, git commits are signed by the broker with no prompt,
 and a commit fails without that. If it fails saying there is no active commit signing
-grant, ask once, not per commit, then commit again:
+grant, ask once, not per commit, then commit again. Setting up a new machine takes a grant
+too, so ask first and then run `warden setup git`:
 
 ```sh
 warden request signing --goal "<which agent, and what it commits to>"

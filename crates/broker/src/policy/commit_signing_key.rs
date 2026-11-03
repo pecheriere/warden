@@ -3,10 +3,14 @@
 use std::fmt;
 
 use sha2::{Digest as _, Sha256};
-use ssh_key::{Algorithm, HashAlg, PrivateKey};
+use ssh_key::{Algorithm, HashAlg, PrivateKey, PublicKey};
 use warden_broker_proto::{CommitSigningGrant, Window};
 
-use super::PolicyError;
+use super::{PolicyError, SecretBackend};
+
+/// Why a key that is also the SSH CA key is refused.
+pub const SAME_AS_CA: &str = "the commit signing key is also the SSH CA key; it must be a key of \
+                              its own";
 
 /// The commit signing private key: `ssh-ed25519` only, never printed.
 ///
@@ -37,6 +41,12 @@ impl CommitSigningKey {
         Ok(Self(key))
     }
 
+    /// Whether `other` is this key's public half. Comments do not count.
+    #[must_use]
+    pub fn is_same_key_as(&self, other: &PublicKey) -> bool {
+        self.0.public_key().key_data() == other.key_data()
+    }
+
     /// The private key, for signing.
     #[must_use]
     pub(crate) const fn private_key(&self) -> &PrivateKey {
@@ -65,6 +75,24 @@ impl CommitSigningKey {
 impl fmt::Debug for CommitSigningKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("CommitSigningKey(<redacted>)")
+    }
+}
+
+/// Refuse `key` if it is also `backend`'s SSH CA key. A broker with no usable CA has
+/// nothing to compare with, and a backend that cannot answer refuses.
+///
+/// # Errors
+/// [`PolicyError::CommitSigningKey`] with [`SAME_AS_CA`], or what reading the CA gave.
+pub async fn check_separate_from_ca<B: SecretBackend + ?Sized>(
+    backend: &B,
+    key: &CommitSigningKey,
+) -> Result<(), PolicyError> {
+    match backend.ssh_ca().await {
+        Ok(ca) if key.is_same_key_as(ca.public_key()) => {
+            Err(PolicyError::CommitSigningKey(SAME_AS_CA.to_owned()))
+        }
+        Ok(_) | Err(PolicyError::Ca(_)) => Ok(()),
+        Err(e) => Err(e),
     }
 }
 

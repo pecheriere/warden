@@ -227,6 +227,7 @@ pub struct FakeBackend {
     ca: PrivateKey,
     commit_signing: Mutex<Option<PrivateKey>>,
     commit_signing_outage: Mutex<Option<String>>,
+    commit_signing_reads: std::sync::atomic::AtomicUsize,
     target_outage: Mutex<Option<String>>,
     ca_outage: Mutex<Option<String>>,
     api_outage: Mutex<Option<String>>,
@@ -250,6 +251,7 @@ impl FakeBackend {
                 PrivateKey::random(&mut OsRng, Algorithm::Ed25519).expect("key generation"),
             )),
             commit_signing_outage: Mutex::new(None),
+            commit_signing_reads: std::sync::atomic::AtomicUsize::new(0),
             target_outage: Mutex::new(None),
             ca_outage: Mutex::new(None),
             api_outage: Mutex::new(None),
@@ -473,6 +475,19 @@ impl FakeBackend {
         *self.commit_signing.lock().expect("key lock poisoned") = key;
     }
 
+    /// How many times the commit signing private key has been read.
+    #[must_use]
+    pub fn commit_signing_reads(&self) -> usize {
+        self.commit_signing_reads
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// The SSH CA's private key, to configure the same key for something else.
+    #[must_use]
+    pub fn ca_private_key(&self) -> PrivateKey {
+        self.ca.clone()
+    }
+
     /// The commit signing key's public half.
     ///
     /// # Panics
@@ -585,8 +600,19 @@ impl SecretBackend for FakeBackend {
         CaKey::new(self.ca.clone())
     }
 
+    async fn has_commit_signing_key(&self) -> Result<bool, PolicyError> {
+        Self::outage(&self.commit_signing_outage)?;
+        Ok(self
+            .commit_signing
+            .lock()
+            .map_err(|_| PolicyError::Unavailable("fake backend lock poisoned".to_owned()))?
+            .is_some())
+    }
+
     async fn commit_signing_key(&self) -> Result<CommitSigningKey, PolicyError> {
         Self::outage(&self.commit_signing_outage)?;
+        self.commit_signing_reads
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let key = self
             .commit_signing
             .lock()
@@ -665,6 +691,7 @@ struct Limits {
     requests: RequestLimits,
     body_read_timeout: BodyReadTimeout,
     commit_signing_max: Window,
+    commit_signing_per_day: u32,
 }
 
 impl Default for Limits {
@@ -674,6 +701,7 @@ impl Default for Limits {
             requests: RequestLimits::default(),
             body_read_timeout: BodyReadTimeout::default(),
             commit_signing_max: Window::COMMIT_SIGNING_DEFAULT,
+            commit_signing_per_day: crate::requests::SIGNATURES_PER_DAY,
         }
     }
 }
@@ -835,6 +863,21 @@ impl TestBroker {
         .await
     }
 
+    /// Like [`TestBroker::new`], with `WARDEN_COMMIT_SIGNING_MAX_PER_DAY` at this.
+    ///
+    /// # Panics
+    /// If any part of the setup fails.
+    pub async fn with_commit_signing_per_day(commit_signing_per_day: u32) -> Self {
+        Self::fresh(
+            Limits {
+                commit_signing_per_day,
+                ..Limits::default()
+            },
+            Some(format!("{RELAY_PUBLIC_HOST}:{RELAY_PUBLIC_PORT}")),
+        )
+        .await
+    }
+
     /// Like [`TestBroker::new`], with agents held to `requests`.
     ///
     /// # Panics
@@ -975,6 +1018,7 @@ impl TestBroker {
         )
         .with_limits(limits.requests)
         .with_commit_signing_max(limits.commit_signing_max)
+        .with_commit_signing_per_day(limits.commit_signing_per_day)
         .with_call_limits(config.proxy.max_calls_per_agent, config.proxy.max_calls);
         let passkeys = Passkeys::new(
             pool.clone(),

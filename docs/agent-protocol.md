@@ -706,10 +706,11 @@ Have the broker make one HTTPS call with an `api` grant's secret; see
 
 ### `GET /v1/commit-signing/key`
 
-The public half of the broker's commit signing key. Signed; no body. It needs no grant,
-so that a machine can be set up first.
+The public half of the broker's commit signing key. Signed; no body. It needs an active
+commit signing grant, since answering means reading the private key from the backend.
 
 - `200`: `{"public_key":"ssh-ed25519 AAAA…","fingerprint":"SHA256:…"}`.
+- `403` `{"error":"no active commit signing grant for this agent"}`.
 - `400` `{"error":"commit signing is not configured on this broker"}`.
 - `503` `{"error":"secret backend unavailable"}`, and section 5.
 
@@ -731,6 +732,7 @@ Have a commit signed under the agent's active commit signing grant; see
   granted, or it ended or was revoked.
 - `409` `{"error":"the commit signing key changed; request a new grant"}`.
 - `413` `{"error":"the commit is too large to sign"}`: over 1 MiB.
+- `429`: the grant has reached its limit of signatures for this UTC day, 5000 by default.
 - `500`, or `503` `{"error":"secret backend unavailable"}`: no signature, as with an
   entry that cannot be written to the audit log.
 

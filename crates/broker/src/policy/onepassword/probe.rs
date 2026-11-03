@@ -9,7 +9,9 @@ use warden_broker_proto::TargetName;
 use zeroize::Zeroizing;
 
 use super::{CA_TAG, OnePasswordConnect, TARGET_TAG, Vault};
-use crate::policy::{CommitSigningProbe, PolicyError, SecretBackend, SshMode};
+use crate::policy::{
+    CommitSigningProbe, PolicyError, SecretBackend, SshMode, check_separate_from_ca,
+};
 
 /// What Connect says about the configured token and vault.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -126,9 +128,13 @@ impl OnePasswordConnect {
         }
     }
 
-    /// Load the commit signing key and drop it.
+    /// Load the commit signing key, check that it is not the CA key, and drop both.
     pub async fn probe_commit_signing(&self) -> CommitSigningProbe {
-        CommitSigningProbe::of(self.commit_signing_key().await)
+        let read = match self.commit_signing_key().await {
+            Ok(key) => check_separate_from_ca(self, &key).await.map(|()| key),
+            Err(e) => Err(e),
+        };
+        CommitSigningProbe::of(read)
     }
 
     /// How many target items in the vault are in certificate mode. A title
@@ -361,6 +367,32 @@ mod tests {
             panic!("expected Invalid");
         };
         assert!(!reason.contains("secret-not-a-key"), "{reason}");
+    }
+
+    #[tokio::test]
+    async fn the_ca_key_cannot_also_be_the_commit_signing_key() {
+        let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+        let pem = key.to_openssh(LineEnding::LF).unwrap().to_string();
+        // One item tagged for both.
+        let both = json!([{
+            "id": "ca1",
+            "title": "shared",
+            "tags": ["warden:ssh-ca", "warden:commit-signing"],
+        }]);
+        let server = with_vault().await;
+        answer(&server, ITEMS, 200, both).await;
+        answer(
+            &server,
+            &format!("{ITEMS}/ca1"),
+            200,
+            json!({"fields": [{"id": "private_key", "value": pem}]}),
+        )
+        .await;
+        let CommitSigningProbe::Invalid(reason) = connect(&server).probe_commit_signing().await
+        else {
+            panic!("expected Invalid");
+        };
+        assert!(reason.contains("also the SSH CA key"), "{reason}");
     }
 
     #[tokio::test]

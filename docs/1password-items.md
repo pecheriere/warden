@@ -145,8 +145,8 @@ whether each request can modify.
 
 Tag: `warden:commit-signing`. Optional: with no such item, commit signing is off. More
 than one is an error. An SSH Key item holding an unencrypted `ssh-ed25519` key in the
-field with id `private_key`, used for nothing else. warden reads it for each signature
-and for each approval page, and never gives it out. Replacing it ends every grant made
+field with id `private_key`, used for nothing else: warden refuses the SSH CA key here.
+warden reads it for each signature and approval page, and never gives it out. Replacing it ends every grant made
 for the old key: see [rotating the key](threat-model.md#rotating-the-commit-signing-key).
 
 ## SSH CA

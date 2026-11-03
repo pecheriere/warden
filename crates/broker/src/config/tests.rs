@@ -63,6 +63,21 @@ fn the_commit_signing_maximum_defaults_to_30_days_and_takes_only_its_windows() {
 }
 
 #[test]
+fn the_daily_signature_limit_has_a_default_and_a_range() {
+    const VAR: &str = "WARDEN_COMMIT_SIGNING_MAX_PER_DAY";
+    let with = |extra: &[(&str, &str)]| {
+        let mut vars = vec![("WARDEN_OP_CONNECT_TOKEN", SECRET)];
+        vars.extend_from_slice(extra);
+        Config::from_lookup(lookup(&vars))
+    };
+    assert_eq!(with(&[]).unwrap().commit_signing_max_per_day, 5000);
+    assert_eq!(with(&[(VAR, "1")]).unwrap().commit_signing_max_per_day, 1);
+    for bad in ["0", "1000001", "many"] {
+        assert!(with(&[(VAR, bad)]).is_err(), "{bad}");
+    }
+}
+
+#[test]
 fn request_limits_default_and_can_be_set() {
     assert_eq!(request_limits(&[]).unwrap(), RequestLimits::default());
     assert_eq!(

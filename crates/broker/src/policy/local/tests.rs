@@ -580,6 +580,24 @@ async fn loads_the_commit_signing_key_and_none_is_no_key() {
 }
 
 #[tokio::test]
+async fn the_ca_key_cannot_also_be_the_commit_signing_key() {
+    let policy = format!(
+        "[ca]\nprivate_key_file = \"ssh-ca\"\n{}",
+        commit_signing_policy()
+    );
+    let setup = Setup::new(&policy);
+    let pem = ed25519_pem();
+    setup.secret("ssh-ca", &pem);
+    setup.secret("commit-signing", &pem);
+    let problems = setup.backend.probe().await.problems();
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(problems[0].contains("also the SSH CA key"), "{problems:?}");
+    // Two keys are fine.
+    setup.secret("commit-signing", &ed25519_pem());
+    assert_eq!(setup.backend.probe().await.problems(), Vec::<String>::new());
+}
+
+#[tokio::test]
 async fn refuses_an_unusable_commit_signing_key_without_echoing_it() {
     let setup = Setup::new(&commit_signing_policy());
     for bad in [

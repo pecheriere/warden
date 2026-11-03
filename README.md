@@ -293,8 +293,8 @@ warden can hold the key that signs an agent's commits, so that a branch requirin
 signed commits does not need a signing key on the agent's machine:
 
 ```sh
-warden setup git                                       # git signs through warden
 warden request signing --goal "Sign build-agent's commits"   # 30 days, after your passkey
+warden setup git                                       # git signs through warden
 git commit -m "..."                                    # signed, with no prompt
 ```
 

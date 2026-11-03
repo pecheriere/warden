@@ -699,8 +699,9 @@ What an attacker gets, and what stops it:
   verified under the account the key is registered on, so a signature is not a reason to
   skip review. Keep code review as the check on what lands.
 - **The fields in the audit log are the commit's own.** Author, parents and tree are what
-  the agent's commit says, recorded as such. The commit id is what git gives that commit;
-  an agent that never stores the commit leaves an entry with no commit behind it.
+  the agent's commit says, recorded as such. An agent that never stores the commit leaves an
+  entry with no commit behind it, and one that lays the signature out differently gets another
+  commit id: see [what the log can and cannot show](#rotating-the-commit-signing-key).
 - **A signature can be moved to another repository**, since a commit names no repository.
   warden cannot limit signing to a repository, branch or pull request, and does not ask, as
   anything an agent said about that could not be checked. Repository limits belong to
@@ -730,8 +731,24 @@ What holds:
   notification names only the agent.
 - **The key is handled like the CA key**: `ssh-ed25519` only, read for each use, in types
   that wipe it and print nothing, with the same residual copies in HTTP client buffers
-  ([accepted residual risks](#accepted-residual-risks)). It is read for each approval page
-  and each signature, so it spends little time in memory but more often than the CA key.
+  ([accepted residual risks](#accepted-residual-risks)). It is read for each approval page,
+  each signature and each request for its public half, so it spends little time in memory
+  but more often than the CA key. The owner causes the first; an agent causes the others only
+  with an active grant, and a signature only within its daily limit. An agent with no grant
+  cannot make the broker read it: asking for a grant only checks that a key is configured.
+- **It must not be the SSH CA key.** warden compares the public keys and refuses to approve a
+  grant while they are the same, or while the CA cannot be read to tell. Doctor fails on it, and
+  with the local backend so does the server's start. With 1Password nothing is read at
+  start, so this is caught at approval and by doctor. A grant is bound to the key it was
+  approved for, so it cannot come to use the CA key later.
+- **A grant has a daily limit of signatures**, 5000 per UTC day by default
+  (`WARDEN_COMMIT_SIGNING_MAX_PER_DAY`), far more than rebases need. Without it an agent with a
+  grant could loop for the life of the grant, writing an entry of a few KB for each signature
+  until the disk holding the audit log filled. It is counted in the database, so a restart does
+  not reset it. At the limit, signing is refused and so the commit fails, the refusal is
+  recorded, and the owner is notified once that day per grant, with one try. Other agents and
+  their grants are not affected. It bounds the log, and does not limit what a grant can sign:
+  the limit is high enough that a compromised agent can sign all it wants within it.
 
 **When signing is not available, the commit fails.** With no grant, or with the broker out
 of reach, git's signing program fails, so `git commit` fails, saying why and how to ask.
@@ -762,8 +779,17 @@ keys on the account at that time.
 **If the key leaks**, remove it from the account on GitHub at once (revoke it, if the account
 offers that) and replace it as above. By the same documentation, commits already verified
 stay verified, including any an attacker pushed before the removal, so check those by hand.
-The audit log says which commits warden signed, so a commit signed by that key and missing
-from the log was not warden's.
+Check them against the audit log as below.
+
+**What the log can and cannot show.** Each `commit_signed` entry holds the SHA-256 of what was
+signed: the commit object without its signature header. Its commit id is only the id git gives
+that signature as git lays it out: the signature's lines can be wrapped differently, which
+makes another commit id that still verifies, with the same content. So look a commit up by
+that digest, not by its id. A commit whose digest is in the log was signed through warden. One
+whose digest is not there, but which verifies with this key, was signed some other way, or
+under an entry the log no longer has: someone with control of the warden host can rewrite the
+log. The log does not show whether a commit was stored or pushed, where it went, or whether its
+author line is true.
 
 ## The local secret backend
 

@@ -9,6 +9,7 @@ use axum::http::StatusCode;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use serde_json::{Value, json};
+use sha2::Digest as _;
 use ssh_key::LineEnding;
 use ssh_key::rand_core::OsRng;
 use warden_broker::testkit::{FakeBackend, TestBroker, TestResponse};
@@ -144,6 +145,10 @@ async fn a_signature_verifies_with_ssh_keygen_and_is_recorded() {
     assert_eq!(entry["grant_id"], grant);
     assert_eq!(entry["agent"], "bot");
     assert_eq!(entry["commit"], signed["commit"]);
+    assert_eq!(
+        entry["payload_sha256"],
+        hex::encode(sha2::Sha256::digest(commit().as_bytes()))
+    );
     assert_eq!(entry["tree"], TREE);
     assert_eq!(entry["parents"], json!([PARENT]));
     assert_eq!(entry["author"], AUTHOR);
@@ -429,8 +434,140 @@ async fn a_broker_without_a_key_says_so_and_signs_nothing() {
         .await;
     assert_eq!(resp.status, StatusCode::BAD_REQUEST, "{}", resp.body);
     assert!(resp.body.contains(NOT_CONFIGURED), "{}", resp.body);
+    // With a grant, as the key can then go missing, it says that too.
+    let (broker, key, _) = granted().await;
+    broker.backend.set_commit_signing_key(None);
     let public = broker.api_get(&key, "/v1/commit-signing/key").await;
     assert!(public.body.contains(NOT_CONFIGURED), "{}", public.body);
+}
+
+#[tokio::test]
+async fn an_agent_with_no_grant_cannot_make_the_broker_read_the_key() {
+    let broker = TestBroker::new().await;
+    let key = broker.add_agent("bot").await;
+    let public = broker.api_get(&key, "/v1/commit-signing/key").await;
+    assert_eq!(public.status, StatusCode::FORBIDDEN, "{}", public.body);
+    assert!(public.body.contains(NO_ACTIVE_GRANT), "{}", public.body);
+    assert_eq!(sign(&broker, &key).await.status, StatusCode::FORBIDDEN);
+    let asked =
+        serde_json::to_value(TestBroker::commit_signing_request("goal", Window::D30)).unwrap();
+    let created = broker.api_post_json(&key, "/v1/requests", &asked).await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    assert_eq!(broker.backend.commit_signing_reads(), 0);
+    // Nor once a grant has ended.
+    let (broker, key, _) = granted().await;
+    broker.clock.advance(30 * 86_400);
+    let reads = broker.backend.commit_signing_reads();
+    let public = broker.api_get(&key, "/v1/commit-signing/key").await;
+    assert_eq!(public.status, StatusCode::FORBIDDEN, "{}", public.body);
+    assert_eq!(sign(&broker, &key).await.status, StatusCode::FORBIDDEN);
+    assert_eq!(broker.backend.commit_signing_reads(), reads);
+}
+
+#[tokio::test]
+async fn a_grant_stops_at_its_daily_limit_and_the_owner_hears_once() {
+    let broker = TestBroker::with_commit_signing_per_day(2).await;
+    let key = broker.add_agent("bot").await;
+    let grant = approve(&broker, "bot").await;
+    let other = broker.add_agent("other").await;
+    approve(&broker, "other").await;
+    assert_eq!(sign(&broker, &key).await.status, StatusCode::OK);
+    assert_eq!(sign(&broker, &key).await.status, StatusCode::OK);
+
+    let reads = broker.backend.commit_signing_reads();
+    let resp = sign(&broker, &key).await;
+    assert_refused(
+        &broker,
+        &resp,
+        StatusCode::TOO_MANY_REQUESTS,
+        "limit of signatures",
+    );
+    assert_eq!(broker.backend.commit_signing_reads(), reads, "no key read");
+    let bell = broker.capture.next().await;
+    assert_eq!(bell.title, "warden: bot reached its commit signing limit");
+    assert!(bell.url.path().ends_with("/grants"));
+    assert_eq!(entries(&broker, "commit_signed").len(), 2);
+    assert_eq!(
+        sign(&broker, &key).await.status,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    let reached = entries(&broker, "commit_signing_limit_reached");
+    assert_eq!(reached.len(), 1, "once a day");
+    assert_eq!(reached[0]["grant_id"], grant);
+    assert_eq!(reached[0]["limit"], 2);
+
+    // Per grant: another agent's goes on.
+    assert_eq!(sign(&broker, &other).await.status, StatusCode::OK);
+
+    // The next UTC day starts again, and can be told about again.
+    broker.clock.advance(86_400);
+    assert_eq!(sign(&broker, &key).await.status, StatusCode::OK);
+    assert_eq!(sign(&broker, &key).await.status, StatusCode::OK);
+    assert_eq!(
+        sign(&broker, &key).await.status,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    assert_eq!(entries(&broker, "commit_signing_limit_reached").len(), 2);
+}
+
+#[tokio::test]
+async fn the_daily_limit_holds_for_concurrent_calls() {
+    let broker = TestBroker::with_commit_signing_per_day(3).await;
+    let key = broker.add_agent("bot").await;
+    approve(&broker, "bot").await;
+    let (first, second, third, fourth, fifth) = tokio::join!(
+        sign(&broker, &key),
+        sign(&broker, &key),
+        sign(&broker, &key),
+        sign(&broker, &key),
+        sign(&broker, &key),
+    );
+    let ok = [first, second, third, fourth, fifth]
+        .iter()
+        .filter(|r| r.status == StatusCode::OK)
+        .count();
+    assert_eq!(ok, 3);
+}
+
+#[tokio::test]
+async fn the_ca_key_cannot_be_approved_for_signing() {
+    let broker = TestBroker::new().await;
+    broker.add_agent("bot").await;
+    let good = broker.backend.commit_signing_private_key();
+    let (_, token) = broker
+        .create_request(
+            "bot",
+            TestBroker::commit_signing_request("goal", Window::D30),
+        )
+        .await;
+    broker.enroll_soft_passkey().await;
+    broker
+        .backend
+        .set_commit_signing_key(Some(broker.backend.ca_private_key()));
+    let page = broker.get(&format!("/approve/{token}")).await;
+    assert_eq!(
+        page.status,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "{}",
+        page.body
+    );
+    assert!(page.body.contains("also the SSH CA key"), "{}", page.body);
+    let begin = broker.begin_approval(&token, Window::D30).await;
+    assert_eq!(begin.status, StatusCode::BAD_REQUEST, "{}", begin.body);
+    assert!(begin.body.contains("also the SSH CA key"), "{}", begin.body);
+    // A CA that cannot be read refuses too: nothing says the keys differ.
+    broker.backend.set_commit_signing_key(Some(good));
+    broker.backend.set_ca_outage(Some("out"));
+    let begin = broker.begin_approval(&token, Window::D30).await;
+    assert_eq!(
+        begin.status,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "{}",
+        begin.body
+    );
+    broker.backend.set_ca_outage(None);
+    let approved = broker.approve(&token, Window::D30).await;
+    assert_eq!(approved.status, StatusCode::OK, "{}", approved.body);
 }
 
 #[tokio::test]
@@ -628,6 +765,14 @@ async fn renewing_takes_one_passkey_approval_and_replaces_the_grant() {
         .await;
     assert_eq!(renewed.status, StatusCode::OK, "{}", renewed.body);
     let link = renewed.json()["link"].as_str().unwrap().to_owned();
+    // The same length as the grant it renews.
+    let page = broker.get(&format!("/approve/{}", token_of(&link))).await;
+    assert!(
+        page.body.contains(r#"value="30d" checked"#),
+        "{}",
+        page.body
+    );
+    assert!(page.body.contains("Renew commit signing"), "{}", page.body);
     // Starting it rings nobody, grants nothing and leaves the old grant working.
     assert_eq!(broker.capture.rung().len(), rung_before);
     assert_eq!(sign(&broker, &key).await.status, StatusCode::OK);
@@ -702,7 +847,7 @@ async fn a_request_already_waiting_is_what_renewing_opens() {
     let (created, stale) = broker
         .create_request(
             "bot",
-            TestBroker::commit_signing_request("again", Window::D30),
+            TestBroker::commit_signing_request("again", Window::D7),
         )
         .await;
     let renewed = broker
@@ -715,6 +860,10 @@ async fn a_request_already_waiting_is_what_renewing_opens() {
     let pending = broker.state().requests.pending_expiries().await.unwrap();
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].0, created.id);
+    // With the goal and window its agent gave, not the grant's, and the page says so.
+    let page = broker.get(&format!("/approve/{}", token_of(&link))).await;
+    assert!(page.body.contains("again"), "{}", page.body);
+    assert!(page.body.contains(r#"value="7d" checked"#), "{}", page.body);
 }
 
 fn renewal_notices(broker: &TestBroker) -> Vec<warden_broker::notify::Doorbell> {

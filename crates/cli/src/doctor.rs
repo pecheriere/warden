@@ -63,10 +63,10 @@ pub struct GitSigning {
 /// What the broker says about signing for this agent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SigningState {
-    /// The broker's public key.
-    pub public_key: String,
     /// Whether this agent has an active grant.
     pub grant_active: bool,
+    /// The broker's public key. Only an agent with an active grant can ask.
+    pub public_key: Option<String>,
 }
 
 /// The real probes.
@@ -119,13 +119,19 @@ impl Probes for Live {
     async fn signing_state(&self, config: &Config) -> Result<SigningState, CallError> {
         let client =
             Client::for_config(config).map_err(|e| CallError::Refused(format!("{e:#}")))?;
-        let key = client.commit_signing_key().await?;
-        let grants = client.grants().await?;
+        let grant_active = client
+            .grants()
+            .await?
+            .iter()
+            .any(|grant| matches!(grant.access, GrantAccess::CommitSigning(_)));
+        let public_key = if grant_active {
+            Some(client.commit_signing_key().await?.public_key)
+        } else {
+            None
+        };
         Ok(SigningState {
-            public_key: key.public_key,
-            grant_active: grants
-                .iter()
-                .any(|grant| matches!(grant.access, GrantAccess::CommitSigning(_))),
+            grant_active,
+            public_key,
         })
     }
 }
@@ -287,18 +293,18 @@ fn git_signing_check(git: &GitSigning, state: Option<Result<SigningState, CallEr
         }
         Some(Ok(state)) => state,
     };
-    if git.key.as_deref() != Some(format!("key::{}", state.public_key).as_str()) {
-        return Check::fail(
-            GIT_SIGNING,
-            "user.signingkey is not the key the broker signs with, so commits fail.",
-            SETUP,
-        );
-    }
-    if !state.grant_active {
+    let Some(public_key) = state.public_key.filter(|_| state.grant_active) else {
         return Check::fail(
             GIT_SIGNING,
             "This agent has no active commit signing grant, so `git commit` fails.",
             "Ask the owner: warden request signing --goal \"<why this agent commits>\"",
+        );
+    };
+    if git.key.as_deref() != Some(format!("key::{public_key}").as_str()) {
+        return Check::fail(
+            GIT_SIGNING,
+            "user.signingkey is not the key the broker signs with, so commits fail.",
+            SETUP,
         );
     }
     Check::pass(
@@ -537,8 +543,8 @@ mod tests {
 
     fn healthy_state() -> SigningState {
         SigningState {
-            public_key: "ssh-ed25519 AAAA".to_owned(),
             grant_active: true,
+            public_key: Some("ssh-ed25519 AAAA".to_owned()),
         }
     }
 
@@ -582,8 +588,8 @@ mod tests {
             );
         }
         let no_grant = Some(Ok(SigningState {
-            public_key: "ssh-ed25519 AAAA".to_owned(),
             grant_active: false,
+            public_key: None,
         }));
         let check = git_signing_check(&set_up(), no_grant);
         assert_eq!(check.status, Status::Fail);

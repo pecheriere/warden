@@ -314,6 +314,9 @@ pub struct Config {
     /// `WARDEN_COMMIT_SIGNING_MAX_WINDOW`, default `30d`: the longest commit
     /// signing grant the server allows, `1d`, `7d`, `30d` or `90d`.
     pub commit_signing_max_window: Window,
+    /// `WARDEN_COMMIT_SIGNING_MAX_PER_DAY`, default 5000, 1 to 1000000: signatures per
+    /// commit signing grant per UTC day.
+    pub commit_signing_max_per_day: u32,
     /// The SSH relay.
     pub relay: RelayConfig,
     /// How long the body of a signed request may take to arrive. Not set
@@ -642,6 +645,13 @@ impl Config {
             proxy,
             requests,
             commit_signing_max_window,
+            commit_signing_max_per_day: bounded_u32(
+                &get,
+                "WARDEN_COMMIT_SIGNING_MAX_PER_DAY",
+                1..=1_000_000,
+                "must be a whole number from 1 to 1000000",
+                crate::requests::SIGNATURES_PER_DAY,
+            )?,
             relay,
             body_read_timeout: BodyReadTimeout::default(),
         })

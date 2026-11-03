@@ -201,8 +201,8 @@ that file can stay or go.
 ### `[commit_signing]`
 
 Optional: leave it out and commit signing is off. `private_key_file` names an unencrypted
-`ssh-ed25519` key, used for nothing else, under the same rules as `[ca]`, and a key that
-cannot be used stops the server from starting like any other entry:
+`ssh-ed25519` key, used for nothing else, under the same rules as `[ca]`. A key that cannot
+be used, or that is also the `[ca]` key, stops the server from starting like any other entry:
 
 ```toml
 [commit_signing]

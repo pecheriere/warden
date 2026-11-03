@@ -19,13 +19,13 @@ impl Backend {
         match self {
             Self::OnePassword => {
                 "To sign commits through warden, tag one item warden:commit-signing, holding an \
-                 unencrypted ssh-ed25519 key in the field with id private_key: see \
-                 docs/deployment.md."
+                 unencrypted ssh-ed25519 key of its own, not the CA key, in the field with id \
+                 private_key: see docs/deployment.md."
             }
             Self::Local => {
                 "To sign commits through warden, add a [commit_signing] section naming a file in \
-                 WARDEN_LOCAL_SECRETS_DIR that holds an unencrypted ssh-ed25519 key: see \
-                 docs/local-backend.md."
+                 WARDEN_LOCAL_SECRETS_DIR that holds an unencrypted ssh-ed25519 key of its own, \
+                 not the CA key: see docs/local-backend.md."
             }
         }
     }

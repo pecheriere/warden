@@ -49,8 +49,8 @@ mod pending;
 
 pub use self::bus::StatusBus;
 use self::bus::next_change;
-pub use self::commit_signing::ActiveCommitSigning;
 use self::commit_signing::SigningRefusals;
+pub use self::commit_signing::{ActiveCommitSigning, SIGNATURES_PER_DAY};
 use self::limits::Refusals;
 pub use self::limits::{LimitRefusal, RequestLimits};
 pub use self::pending::PendingEntry;
@@ -263,11 +263,8 @@ impl Destination {
         let subject = match self {
             Self::Ssh(target) => format!("target {}", target.name),
             Self::Api(policy) => format!("secret {}", policy.name),
-            Self::CommitSigning(_) => {
-                if !window.is_commit_signing() {
-                    return Err("a commit signing grant lasts 1d, 7d, 30d or 90d".to_owned());
-                }
-                "commit signing".to_owned()
+            Self::CommitSigning(policy) => {
+                return commit_signing::check_window(window, policy.max_window);
             }
         };
         check_window(window, self.max_window(), &subject)
@@ -403,6 +400,8 @@ pub struct Requests {
     /// Longest commit signing grant the server allows. The only grant allowed to
     /// outlast 4 hours: see `docs/threat-model.md`.
     commit_signing_max: Window,
+    /// Signatures per commit signing grant per UTC day.
+    commit_signing_per_day: u32,
     /// What has been recorded of refusals to sign.
     signing_refusals: Arc<SigningRefusals>,
 }
@@ -447,6 +446,7 @@ impl Requests {
             limits: RequestLimits::default(),
             refusals: Arc::default(),
             commit_signing_max: Window::COMMIT_SIGNING_DEFAULT,
+            commit_signing_per_day: SIGNATURES_PER_DAY,
             signing_refusals: Arc::default(),
         }
     }
@@ -629,8 +629,13 @@ impl Requests {
                 )
             }
             Access::CommitSigning {} => {
-                Destination::CommitSigning(self.commit_signing_policy().await?)
-                    .check_window(req.window)
+                // Does not read the key: any enrolled agent can get this far.
+                if !self.backend.has_commit_signing_key().await? {
+                    return Err(RequestError::Rejected(
+                        warden_broker_proto::commit_signing::NOT_CONFIGURED.to_owned(),
+                    ));
+                }
+                commit_signing::check_window(req.window, self.commit_signing_max)
                     .map_err(RequestError::Rejected)?;
                 (
                     format!("{agent}|commit_signing"),

@@ -224,8 +224,13 @@ pub enum AuditEvent {
         grant_id: Id,
         /// The agent.
         agent: AgentName,
-        /// The id git gives the commit with this signature.
+        /// The id git gives the commit with this signature, as git lays it out. The
+        /// signature stays valid under another layout, which makes another id: use
+        /// `payload_sha256` to tell whether a commit is this one.
         commit: String,
+        /// Lowercase hex SHA-256 of what was signed: the commit object without its
+        /// signature header.
+        payload_sha256: String,
         /// Parent ids, as the commit says.
         parents: Vec<String>,
         /// Tree id, as the commit says.
@@ -258,6 +263,23 @@ pub enum AuditEvent {
     },
     /// The owner was told that a commit signing grant is about to end.
     CommitSigningRenewalNotified {
+        /// The grant.
+        grant_id: Id,
+        /// Name of the channel that delivered the notification.
+        channel: String,
+    },
+    /// A commit signing grant reached its limit of signatures for the day. Written
+    /// once a day per grant; the refusals themselves are recorded as usual.
+    CommitSigningLimitReached {
+        /// The grant.
+        grant_id: Id,
+        /// The agent.
+        agent: AgentName,
+        /// The limit.
+        limit: u32,
+    },
+    /// The owner was told that a commit signing grant reached its daily limit.
+    CommitSigningLimitNotified {
         /// The grant.
         grant_id: Id,
         /// Name of the channel that delivered the notification.

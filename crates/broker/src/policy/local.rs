@@ -34,7 +34,8 @@ use super::onepassword::{
 };
 use super::{
     ApiSecretPolicy, CaKey, CaProbe, CommitSigningKey, CommitSigningProbe, PolicyError,
-    RelayCredential, SecretBackend, SecretValue, SshMode, SshTarget, not_a_relay_target,
+    RelayCredential, SAME_AS_CA, SecretBackend, SecretValue, SshMode, SshTarget,
+    not_a_relay_target,
 };
 use crate::audit::{AuditEvent, AuditLog};
 use crate::config::LocalSettings;
@@ -495,7 +496,17 @@ impl Files {
             ca,
             commit_signing: match &policy.commit_signing {
                 None => CommitSigningProbe::NotConfigured,
-                Some(entry) => CommitSigningProbe::of(self.commit_signing(entry)),
+                Some(entry) => {
+                    CommitSigningProbe::of(self.commit_signing(entry).and_then(|key| {
+                        // The server does not start on this, as `problems` says.
+                        match policy.ca.as_ref().map(|ca| self.ca(ca)) {
+                            Some(Ok(ca)) if key.is_same_key_as(ca.public_key()) => {
+                                Err(PolicyError::CommitSigningKey(SAME_AS_CA.to_owned()))
+                            }
+                            _ => Ok(key),
+                        }
+                    }))
+                }
             },
         }
     }
@@ -631,6 +642,11 @@ impl SecretBackend for LocalBackend {
             )),
         })
         .await
+    }
+
+    async fn has_commit_signing_key(&self) -> Result<bool, PolicyError> {
+        self.read(|files| Ok(files.policy()?.commit_signing.is_some()))
+            .await
     }
 
     async fn commit_signing_key(&self) -> Result<CommitSigningKey, PolicyError> {

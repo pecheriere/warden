@@ -18,7 +18,9 @@ mod commit_signing_key;
 pub mod local;
 pub mod onepassword;
 
-pub use commit_signing_key::{CommitSigningKey, CommitSigningPolicy, CommitSigningProbe};
+pub use commit_signing_key::{
+    CommitSigningKey, CommitSigningPolicy, CommitSigningProbe, SAME_AS_CA, check_separate_from_ca,
+};
 pub use local::{LocalBackend, LocalProbe};
 pub use onepassword::{CaProbe, OnePasswordConnect, VaultProbe};
 
@@ -689,6 +691,13 @@ pub trait SecretBackend: Send + Sync + 'static {
     /// [`PolicyError::NoCommitSigningKey`] if none is configured,
     /// [`PolicyError::CommitSigningKey`] or [`PolicyError::Unavailable`].
     async fn commit_signing_key(&self) -> Result<CommitSigningKey, PolicyError>;
+
+    /// Whether a commit signing key is configured, without reading it: what an agent
+    /// with no grant can cause.
+    ///
+    /// # Errors
+    /// [`PolicyError::Unavailable`].
+    async fn has_commit_signing_key(&self) -> Result<bool, PolicyError>;
 
     /// Look up an API secret's policy by name. The whole item is validated,
     /// the credential included, but its value is not returned.

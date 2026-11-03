@@ -6,7 +6,7 @@
 use std::process::{Command, Output};
 
 use anyhow::{Context as _, Result, anyhow, bail};
-use warden_broker_proto::GrantAccess;
+use warden_broker_proto::commit_signing::NO_ACTIVE_GRANT;
 
 use crate::client::Client;
 
@@ -59,13 +59,22 @@ pub fn current_value(name: &str) -> Result<Option<String>> {
 /// Configure git for `client`'s broker, in `scope`.
 ///
 /// # Errors
-/// If the broker has no key to offer, nothing is changed. If git refuses a value,
+/// If the agent has no active grant or the broker no key, nothing is changed. If git
+/// refuses a value,
 /// the message names it; what was set before it stays set.
 pub async fn run(client: &Client, scope: Scope) -> Result<()> {
-    let key = client
-        .commit_signing_key()
-        .await
-        .context("cannot read the broker's commit signing key, so git was left as it was")?;
+    let key = match client.commit_signing_key().await {
+        Ok(key) => key,
+        Err(e) if e.to_string().contains(NO_ACTIVE_GRANT) => bail!(
+            "this agent has no active commit signing grant, which this needs to read the \
+             broker's key, so git was left as it was. Ask the owner for one first with: warden \
+             request signing --goal \"<why this agent commits>\""
+        ),
+        Err(e) => {
+            return Err(e)
+                .context("cannot read the broker's commit signing key, so git was left as it was");
+        }
+    };
     let program = std::env::current_exe()
         .and_then(std::fs::canonicalize)
         .context("cannot tell where this program is")?;
@@ -100,18 +109,6 @@ pub async fn run(client: &Client, scope: Scope) -> Result<()> {
         println!(
             "tag.gpgsign is on, but warden signs commits only, so creating a tag will fail until \
              it is off."
-        );
-    }
-    let active = client
-        .grants()
-        .await
-        .context("cannot list this agent's grants")?
-        .into_iter()
-        .any(|grant| matches!(grant.access, GrantAccess::CommitSigning(_)));
-    if !active {
-        println!(
-            "This agent has no active commit signing grant, so `git commit` fails until it does. \
-             Ask the owner with: warden request signing --goal \"<why this agent commits>\""
         );
     }
     Ok(())

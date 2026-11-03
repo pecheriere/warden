@@ -14,6 +14,10 @@ pub const MAX_PAYLOAD_BYTES: usize = 1024 * 1024;
 /// had one, or it ended or was revoked. The CLI recognises it to say how to ask.
 pub const NO_ACTIVE_GRANT: &str = "no active commit signing grant for this agent";
 
+/// What the broker says when a grant has used up its signatures for the day.
+pub const DAILY_LIMIT: &str = "this grant has reached its limit of signatures for today; it \
+                               starts again at 00:00 UTC, and the owner has been told";
+
 /// What the broker says when it holds no commit signing key.
 pub const NOT_CONFIGURED: &str = "commit signing is not configured on this broker";
 

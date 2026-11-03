@@ -318,7 +318,6 @@ impl OnePasswordConnect {
         serde_json::from_slice(&body).map_err(|e| unreadable(&e))
     }
 
-    /// Summaries of all items in the vault carrying `tag`.
     /// The title and private key of the one item tagged `tag`; `what` names the
     /// item in messages, none of which quote it.
     async fn tagged_key(
@@ -364,6 +363,7 @@ impl OnePasswordConnect {
         Ok((summary.title.clone(), key))
     }
 
+    /// Summaries of all items in the vault carrying `tag`.
     async fn tagged(&self, tag: &str) -> Result<Vec<ItemSummary>, PolicyError> {
         let items: Vec<ItemSummary> = self.vault_get(&["items"]).await?;
         Ok(items
@@ -496,6 +496,10 @@ impl SecretBackend for OnePasswordConnect {
             PolicyError::Ca(reason) => PolicyError::Ca(format!("item \"{title}\": {reason}")),
             other => other,
         })
+    }
+
+    async fn has_commit_signing_key(&self) -> Result<bool, PolicyError> {
+        Ok(!self.tagged(COMMIT_SIGNING_TAG).await?.is_empty())
     }
 
     async fn commit_signing_key(&self) -> Result<CommitSigningKey, PolicyError> {

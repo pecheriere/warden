@@ -399,7 +399,7 @@ cached: an edit in 1Password takes effect on the next request.
 
 6. **Optional: create a commit signing key**, for
    [signing commits](threat-model.md#commit-signing). Its own key, used for nothing
-   else, in an SSH Key item tagged `warden:commit-signing` (exactly one such item):
+   else (warden refuses the SSH CA key here), in an SSH Key item tagged `warden:commit-signing` (exactly one such item):
 
    ```sh
    op item create --vault Warden --category "SSH Key" \
@@ -412,8 +412,8 @@ cached: an edit in 1Password takes effect on the next request.
    accurate only as far as it goes: warden signed them for an agent, and nobody reviewed
    them by that. Moving off a signing key on an agent's machine:
 
-   1. Do the above, run `warden setup git` on each agent machine, and check that a
-      commit verifies.
+   1. Do the above, get a grant with `warden request signing` and run `warden setup git`
+      on each agent machine, and check that a commit verifies.
    2. Delete the on-disk key and its copies on other devices, after checking that nothing
       else uses it.
    3. A key that also signs releases needs a replacement listed in `docs/release-signers`

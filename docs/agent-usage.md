@@ -483,7 +483,7 @@ your live grants.
 
 ### Signing commits
 
-Once, on each machine: `warden setup git`. It makes this program git's `gpg.ssh.program`,
+Once, on each machine, with a grant: `warden setup git`. It makes this program git's `gpg.ssh.program`,
 sets `user.signingkey` to the broker's public key and turns on `commit.gpgsign`, so that
 `git commit`, `git rebase` and the rest work as usual. The key stays on the broker, which
 returns only the signature. Verifying goes to the real `ssh-keygen`.
@@ -496,6 +496,7 @@ With this set up, a commit needs a signature. It fails, with the reason on stder
 | What git shows | What to do |
 |---|---|
 | The agent has no active commit signing grant (it never had one, or it ended or was revoked). | `warden request signing --goal "..."`, then commit again. If the owner revoked it, ask them why before asking again. |
+| The grant has reached its limit of signatures for today, 5000 by default. | The owner has been told. It starts again at 00:00 UTC. If you did not mean to make this many, stop and find out why. |
 | The broker cannot be reached. | As in [When the broker is unreachable](#when-the-broker-is-unreachable): tell the owner and commit again once it answers. |
 | The broker signs with another key than `user.signingkey`, or says the key changed. | The owner replaced the key: run `warden setup git`, and ask for a new grant. |
 
