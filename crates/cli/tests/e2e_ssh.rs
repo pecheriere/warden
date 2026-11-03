@@ -303,3 +303,45 @@ async fn poll_survives_server_restart_mid_wait() {
     );
     drop(sshd);
 }
+
+/// `warden request ssh` keeps its key only in memory, so a run that is killed
+/// takes it along. The grant is real and nothing can use it: the CLI says so,
+/// stores nothing, and the grant can be ended.
+#[tokio::test(flavor = "multi_thread")]
+async fn killed_runs_ssh_grant_cannot_be_collected_and_can_be_revoked() {
+    let s = setup().await;
+    let mut child = spawn_request(&s.cli, TARGET);
+    let token = CapturingNotifier::token(&s.broker.capture.next().await);
+    child.kill().unwrap();
+    child.wait().unwrap();
+
+    let status = |cli: &Cli| String::from_utf8(cli.run(&["status"]).stdout).unwrap();
+    let listed = status(&s.cli);
+    assert!(
+        listed.contains(&format!("@{TARGET} for 15m  request ")),
+        "{listed}"
+    );
+
+    approve(&s.broker, &token).await;
+    let listed = status(&s.cli);
+    let (_, line) = listed.split_once("broker grants:\n").unwrap();
+    assert!(line.contains("so is its key"), "{listed}");
+    let (_, rest) = line.split_once("grant ").unwrap();
+    let grant = rest.split_whitespace().next().unwrap();
+
+    let collected = s.cli.run(&["request", "collect", grant]);
+    let stderr = String::from_utf8(collected.stderr).unwrap();
+    assert_eq!(collected.status.code(), Some(5), "{stderr}");
+    assert!(
+        stderr.contains("kept only in that run's memory"),
+        "{stderr}"
+    );
+    assert_eq!(collected.stdout, [] as [u8; 0]);
+    assert_eq!(s.cli.files_containing(grant), [] as [PathBuf; 0]);
+    let ssh = s.cli.run(&["ssh", TARGET, "--", "echo", "ok"]);
+    assert_eq!(ssh.status.code(), Some(5));
+
+    let revoked = s.cli.run(&["revoke", grant]);
+    assert_eq!(revoked.status.code(), Some(0));
+    assert!(!status(&s.cli).contains(grant));
+}

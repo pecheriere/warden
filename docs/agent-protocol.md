@@ -511,6 +511,7 @@ that it is the expected key, as `-Y verify` with an allowed-signers file does
 | `GET /healthz` | Liveness, unauthenticated. |
 | `GET /v1/info` | Protocols and audience, unauthenticated. |
 | `POST /v1/requests` | Ask for access. |
+| `GET /v1/requests` | The agent's own pending requests. |
 | `GET /v1/requests/{id}[?wait=N]` | A request's state; long poll. |
 | `POST /v1/requests/{id}/cancel` | Withdraw a pending request. |
 | `GET /v1/grants` | The agent's live grants. |
@@ -620,6 +621,56 @@ A duplicate does not notify the owner again, and no call of this API can. An own
 who missed the notification finds the request on the Pending page of the approval
 UI until it expires, and nothing about the request changes for you if they open it
 there: same id, same fingerprint, same expiry.
+
+### `GET /v1/requests`
+
+The agent's own requests still waiting for a decision, soonest expiry first, so a
+client that lost an ID can find it again. Signed; no body. `200` with a JSON array,
+empty if there are none:
+
+```json
+[{"id":"0b8f…","fingerprint":"b65b-9812-eb72","goal":"restart the web container","access":{"kind":"ssh","target":"web-01","user":"deploy","public_key":"ssh-ed25519 AAAA…"},"window":"15m","created_at":1793091000,"expires_at":1793091600}]
+```
+
+`goal`, `access` and `window` are as sent to `POST /v1/requests`. `created_at` and
+`expires_at` are Unix seconds.
+
+- Only `pending` requests that have not reached their expiry are listed. A decided,
+  cancelled or expired request is not; read one whose ID you have with
+  `GET /v1/requests/{id}`.
+- Another agent's requests are never listed, as they are `404` by ID.
+- The approval link is never included: it goes to the owner, and the broker keeps
+  only a hash of its token.
+- Listing only reads. It does not notify the owner, is not written to the audit log
+  and does not count against the [request limits](configuration.md#request-limits).
+- A broker older than this route answers `405`.
+
+Errors: section 5.
+
+### What happens when a client dies
+
+A request does not depend on the client that made it. The broker does not know
+whether anyone is polling, and does not need to: a request stays `pending` and
+approvable until the owner decides, the agent cancels it, or it expires, whether or
+not a client is still waiting. To take over from a client that died:
+
+1. `GET /v1/requests` finds the requests still pending.
+2. `GET /v1/requests/{id}?wait=30` waits for the decision as usual. Withdraw a request
+   nobody wants with `POST /v1/requests/{id}/cancel`.
+3. If the owner already approved it, it is no longer listed. `GET /v1/grants` has the
+   grant, in full, for as long as it is live. With the ID, so does
+   `GET /v1/requests/{id}`.
+
+What the grant needs depends on its kind:
+
+- `api`: nothing but the agent's own signature or key. The new client can use it.
+- `ssh` and `relay`: the private half of the `public_key` in the request. The
+  certificate is for that key, and the relay admits only that key. A client that
+  keeps the key where it survives a crash can complete the request. A client that
+  loses the key cannot, and nobody can get a new certificate for the same request:
+  revoke the grant and make a new request with a new key. The `warden` CLI is in that
+  position, as it keeps its per-run key only in memory
+  ([Agent usage](agent-usage.md#if-the-warden-request-is-gone)).
 
 ### `GET /v1/requests/{id}` (long poll)
 

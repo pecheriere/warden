@@ -698,3 +698,113 @@ async fn e2e_second_ctrl_c_exits_at_once() {
     stderr.read_to_string(&mut rest).unwrap();
     assert!(rest.contains("interrupted again"), "{rest}");
 }
+
+/// Kill a waiting `warden request` the hard way: it gets to withdraw nothing.
+async fn kill(mut child: Child) {
+    tokio::task::spawn_blocking(move || {
+        child.kill().unwrap();
+        child.wait().unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+/// The lines of a `warden status` section, up to the next heading.
+fn section<'a>(status: &'a str, heading: &str) -> Vec<&'a str> {
+    status
+        .lines()
+        .skip_while(|line| *line != heading)
+        .skip(1)
+        .take_while(|line| line.starts_with(' '))
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn e2e_killed_requests_api_grant_can_be_found_and_collected() {
+    let s = setup().await;
+    let child = spawn_request(&s.cli, &[]);
+    let token = CapturingNotifier::token(&s.broker.capture.next().await);
+    kill(child).await;
+
+    // It stays pending, and status says what it is, without the link.
+    let status = s.cli.run(&["status"]);
+    assert_eq!(status.status.code(), Some(0), "{}", text(&status.stderr));
+    let listed = text(&status.stdout);
+    let pending = section(&listed, "pending requests:");
+    assert_eq!(pending.len(), 1, "{listed}");
+    for part in [
+        "api:svc read-only for 15m",
+        "goal: call the e2e api",
+        "fingerprint ",
+    ] {
+        assert!(pending[0].contains(part), "{listed}");
+    }
+    assert!(
+        !listed.contains(&token) && !listed.contains("/approve"),
+        "{listed}"
+    );
+    assert_eq!(s.broker.capture.rung().len(), 1, "status rang the owner");
+
+    // The owner approves with nobody waiting: only the broker knows the grant.
+    let approved = s.broker.approve(&token, Window::M15).await;
+    assert!(approved.status.is_success(), "{}", approved.body);
+    let listed = text(&s.cli.run(&["status"]).stdout);
+    assert_eq!(section(&listed, "pending requests:"), [] as [&str; 0]);
+    let grants = section(&listed, "broker grants:");
+    assert_eq!(grants.len(), 1, "{listed}");
+    assert!(grants[0].contains("warden request collect"), "{listed}");
+    let (_, rest) = grants[0].split_once("grant ").unwrap();
+    let grant = rest.split_whitespace().next().unwrap();
+    let url = s.upstream.url("/hello");
+    let without = s.cli.run(&["http", SECRET_NAME, "GET", &url]);
+    assert_eq!(without.status.code(), Some(5), "{}", text(&without.stderr));
+
+    let collected = s.cli.run(&["request", "collect", grant]);
+    assert_eq!(
+        collected.status.code(),
+        Some(0),
+        "{}",
+        text(&collected.stderr)
+    );
+    let told = text(&collected.stdout);
+    assert!(
+        told.starts_with(&format!("approved: grant {grant} until ")),
+        "{told}"
+    );
+    assert!(told.contains("scope: read-only"), "{told}");
+    let with = s.cli.run(&["http", SECRET_NAME, "GET", &url]);
+    assert_eq!(with.status.code(), Some(0), "{}", text(&with.stderr));
+    assert_eq!(s.upstream.received().len(), 1);
+
+    // Collecting again changes nothing, and status no longer calls it missing.
+    let again = s.cli.run(&["request", "collect", grant]);
+    assert_eq!(again.status.code(), Some(0), "{}", text(&again.stderr));
+    let listed = text(&s.cli.run(&["status"]).stdout);
+    assert!(!listed.contains("not on this machine"), "{listed}");
+    assert_eq!(s.cli.files_containing(SECRET), [] as [PathBuf; 0]);
+}
+
+/// The same command again waits on the same request and the owner hears nothing
+/// new, which is what the docs say to do while a lost run's request is pending.
+#[tokio::test(flavor = "multi_thread")]
+async fn e2e_same_api_request_again_picks_up_a_killed_runs_request() {
+    let s = setup().await;
+    let child = spawn_request(&s.cli, &[]);
+    let token = CapturingNotifier::token(&s.broker.capture.next().await);
+    kill(child).await;
+
+    let mut child = spawn_request(&s.cli, &[]);
+    let _stderr = wait_for_waiting_line(&mut child).await;
+    let approved = s.broker.approve(&token, Window::M15).await;
+    assert!(approved.status.is_success(), "{}", approved.body);
+    let out = tokio::task::spawn_blocking(move || child.wait_with_output())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    assert!(text(&out.stdout).starts_with("approved: grant "));
+    assert_eq!(s.broker.capture.rung().len(), 1, "the owner was rung again");
+    let url = s.upstream.url("/hello");
+    let call = s.cli.run(&["http", SECRET_NAME, "GET", &url]);
+    assert_eq!(call.status.code(), Some(0), "{}", text(&call.stderr));
+}

@@ -46,12 +46,26 @@ so it can wait that long, in the background if your tools time out sooner, and
 do not start a second one meanwhile: it would not notify them again. If they
 missed the notification, the request is on the Pending page of their approval UI.
 It prints a fingerprint on stderr: tell the person, so they can compare it with the
-approval page. If you no longer need
-the access, withdraw the request with Ctrl-C, or:
+approval page. Do not pipe it through a command that holds output until the end,
+such as `tail`: you would not see the fingerprint or the request ID. If you no
+longer need the access, withdraw the request with Ctrl-C, or:
 
 ```sh
 warden request cancel <request-id>
 ```
+
+If the command was killed or you lost its output, `warden status` lists your pending
+requests and live grants, and asks the person nothing. For an API request still
+pending, run the same command again to wait on it. For an API grant that status
+says is not on this machine:
+
+```sh
+warden request collect <grant-id>
+```
+
+An SSH request cannot be picked up: its key was lost with the command. Cancel it if
+it is pending, or revoke its grant if it was approved, then make a new request if
+the task still needs the access.
 
 ### Writing the goal
 

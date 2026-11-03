@@ -91,7 +91,10 @@ defends against it.
   stores only its configuration (server URL, agent name, the signing key's
   public half, the `ssh-agent` socket and the pinned audience), grant
   records, sockets and `known_hosts` files, in 0700 directories with 0600
-  files.
+  files. The cost is that an SSH request cannot outlive the `warden request ssh`
+  that made it: if that run dies, the owner can still approve the request, and the
+  resulting grant is unusable, as nothing holds its key. See "A client dies with a
+  request pending" below.
 - **warden becomes the easiest way into the network.** It runs as a non-root
   user in a distroless image with no shell, listens only where Tailscale
   Serve can reach it (on a network of its own behind a host whose Serve
@@ -434,6 +437,32 @@ These were recorded during implementation and are accepted for this release.
   mitigations today: one request per task, revoking each grant when its task
   ends, and separate agents (separate OS users and keys) for work that must
   not share grants.
+- **An agent can list its own pending requests, and learns nothing else from it.**
+  `GET /v1/requests` is signed like every agent route and filters on the
+  authenticated agent, so another agent's request is absent, as it is `404` by ID. It
+  returns what the agent sent, with the ID, the fingerprint and the times. It reads
+  neither the approval link, which only the owner is sent, nor its token's hash. It
+  only reads: no notification, no audit entry and no use of the request limits, so
+  polling it cannot pester the owner or fill the log.
+- **A client dies with a request pending.** The request stays approvable until it
+  expires, 10 minutes after it was made. The broker has no way to tell a dead client
+  from a slow one, and ending requests when polling stops would make a network blip
+  cost the owner's decision. An owner can therefore approve a request nobody is waiting
+  on. The harm is limited: the grant goes only to the same agent, within the window the
+  owner chose, and shows on the owner's Grants page like any other, where it can be
+  revoked.
+  - **An api grant can be collected later**, with `warden request collect`. This gives
+    the agent nothing new, as the grant answers to its login from any machine anyway,
+    and the broker checks every call. The CLI only records it, and has no scope it
+    asked for to compare with, so it prints the scope it found.
+  - **An SSH or relay grant of a dead `warden request ssh` is unusable.** The private key
+    was only in that run's memory, so the certificate, which the agent can still read,
+    gives no login, and the relay admits no one. Writing the key to disk so that a later
+    run could finish the request would give up "Private keys are written to disk on the
+    workstation" above, for little: a new request costs the owner one more tap. The
+    certificate still cannot be revoked before it expires, but with no key that does not
+    matter. A client of the API that keeps its own key takes on protecting it, and it can
+    complete the request.
 - **An agent can still send the owner some notifications.** A flood of requests
   makes a careless approval more likely and can hide one that matters, so each
   agent may have 5 requests pending and make 10 new ones per 10 minutes by

@@ -18,7 +18,7 @@ use serde::de::DeserializeOwned;
 use url::Url;
 use warden_broker_proto::{
     AgentName, ApiError, ApiGrant, CreateRequest, CreatedResponse, GrantAccess, GrantView, Id,
-    InfoResponse, ProxyRequest, ProxyResponse, RequestStatus, signing,
+    InfoResponse, PendingRequest, ProxyRequest, ProxyResponse, RequestStatus, signing,
 };
 
 use crate::AppState;
@@ -64,7 +64,10 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
         .route("/v1/info", get(info))
-        .route("/v1/requests", agent(post(create_request), BODY_LIMIT))
+        .route(
+            "/v1/requests",
+            agent(post(create_request).get(list_requests), BODY_LIMIT),
+        )
         .route("/v1/requests/{id}", agent(get(request_status), BODY_LIMIT))
         .route(
             "/v1/requests/{id}/cancel",
@@ -251,6 +254,15 @@ async fn create_request(
     let created = state.requests.create(&agent, req).await?;
     tracing::info!(agent = %agent, id = %created.id, "request created");
     Ok((StatusCode::CREATED, Json(created)))
+}
+
+/// `GET /v1/requests`: the agent's own pending requests. It only reads, so it
+/// notifies nobody and counts against no limit.
+async fn list_requests(
+    State(state): State<AppState>,
+    AuthedAgent(agent): AuthedAgent,
+) -> Result<Json<Vec<PendingRequest>>, Failure> {
+    Ok(Json(state.requests.pending_for_agent(&agent).await?))
 }
 
 #[derive(Deserialize)]

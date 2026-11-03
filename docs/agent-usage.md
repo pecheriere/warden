@@ -377,6 +377,47 @@ When the owner approves, it prints this to stdout:
 approved: grant 0f3a…e1 until 2026-10-25 21:15:00 CET
 ```
 
+`warden request` blocks, and its progress, including the request ID and the
+fingerprint to tell the owner, goes to stderr. Do not run it through a command
+that holds its output until the end, such as `warden request … 2>&1 | tail -20`:
+you see nothing while the owner decides, and if the command is killed you never
+see the ID. Run it in the background with its output in a file if your tools
+cannot wait 11 minutes. If you have lost the output, `warden status` lists what
+is pending.
+
+### If the `warden request` is gone
+
+A request does not depend on the command that made it. If that command is killed
+or its output is lost, the request stays pending on the broker, the owner can still
+approve or deny it, and it expires 10 minutes after it was made like any other. The
+broker cannot tell that the command is gone, and an API client is free to poll now
+and then, so nothing ends a request early except the owner, a cancel or the expiry.
+
+`warden status` shows your pending requests, under `pending requests:`, with the ID,
+the access, the window, the fingerprint, the goal, and when each was made and
+expires. Looking is safe: it does not notify the owner, is not written to the audit log, and
+does not count against your request limits. It never shows the approval link, which goes
+only to the owner.
+
+What you can do next depends on the kind of request:
+
+| | While it is pending | After it is approved |
+|---|---|---|
+| `warden request api` | Run the same command again, with the same goal, window, methods and path, to wait on the same request. The owner gets no second notification. | `warden status` lists the grant under `broker grants:` as not on this machine. Run `warden request collect <grant-id>`, and `warden http` can use it. |
+| `warden request ssh` | **It cannot be completed, even if the owner approves it.** Withdraw it with `warden request cancel <id>`, then make a new request. | **The grant cannot be used.** Run `warden revoke <grant-id>`, then make a new request if the task still needs the access. |
+
+An SSH request cannot be recovered because `warden request ssh` makes a new key for
+each run and keeps it only in memory, so that no private key is written to disk. The
+broker certifies the public key the request named, or binds a relay grant to it, and
+with the run gone nothing holds the private half. The grant gives nobody access, but
+it stays on the owner's lists until you revoke it or it expires, so end it. `warden
+request collect` refuses it and says so (exit 5). A client that uses the
+[API](agent-protocol.md#what-happens-when-a-client-dies) and keeps its own key can
+complete such a request.
+
+If the command is still running, leave its request alone: `warden status` cannot
+tell whether it is. Do not cancel a request another terminal is waiting on.
+
 ### Cancelling a request
 
 If you no longer need access, withdraw the request so the owner's
@@ -468,8 +509,8 @@ broker answers 409 (also while a call is out: the call stops, and nothing of the
 response comes back) and
 you request again.
 
-`warden status` lists the grants on this machine and the broker's view of
-your live grants.
+`warden status` lists the grants on this machine, and the broker's view of
+your live grants and pending requests.
 
 ## Ending a grant
 
@@ -506,7 +547,7 @@ is reported once on stderr and never stops the command.
 | 2 | The request was denied. Do not retry the same request. Ask the owner what to change. |
 | 3 | The request expired without a decision. The owner may be away. Retry later, not in a loop. |
 | 4 | The grant was revoked: reported by `warden request`, or by `warden http` when the broker says the grant it used was revoked. `warden http` then removes the stale local record; request access again. |
-| 5 | `warden ssh` or `warden http` found no active grant (for `warden http`, none that covers the method and path), or the broker said the grant `warden http` used has expired, whose local record is then removed. The message gives the `warden request …` command to run if the task needs it. |
+| 5 | `warden ssh` or `warden http` found no active grant (for `warden http`, none that covers the method and path), or the broker said the grant `warden http` used has expired, whose local record is then removed. The message gives the `warden request …` command to run if the task needs it. `warden request collect` exits 5 too, when the grant is not live or is an SSH grant whose key is lost. |
 | 6 | The request was cancelled while `warden request` waited for it (`warden request cancel` from another terminal). |
 | 7 | `warden doctor --strict` found no failure, but could not check everything: see [Checking an agent machine](configuration.md#checking-an-agent-machine). Without `--strict` it exits 0 and lists those items. It exits 1 when a check failed. |
 | 8 | The broker stopped a `warden http` call that was out, because it could not read the grant's state. No response came back, and the API may have acted on the call: find out before repeating one that changes something. The grant stays; if this repeats, tell the owner. |

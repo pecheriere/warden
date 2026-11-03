@@ -6,6 +6,7 @@ mod config;
 mod doctor;
 mod guidance;
 mod http;
+mod recover;
 mod sign;
 mod ssh;
 mod ssh_agent;
@@ -159,7 +160,8 @@ enum Cmd {
         #[arg(long)]
         strict: bool,
     },
-    /// Show local grants and the broker's view of this agent's grants.
+    /// Show local grants, and the broker's view of this agent's grants and
+    /// pending requests.
     Status,
     /// Revoke a grant on the broker and stop its local agent.
     Revoke {
@@ -206,8 +208,16 @@ enum RequestKind {
     /// Withdraw one of this agent's pending requests, so its approval link
     /// stops working.
     Cancel {
-        /// Request identifier, as printed while `warden request` waits.
+        /// Request identifier, as printed while `warden request` waits or
+        /// listed by `warden status`.
         id: Id,
+    },
+    /// Start using an api grant the owner approved after the `warden request`
+    /// that asked for it was gone. An SSH grant cannot be collected, as its key
+    /// was lost with that run.
+    Collect {
+        /// Grant identifier, as listed by `warden status`.
+        grant: Id,
     },
 }
 
@@ -333,6 +343,9 @@ async fn run(cmd: Cmd) -> Result<()> {
         Cmd::Request {
             kind: RequestKind::Cancel { id },
         } => cancel(&id).await,
+        Cmd::Request {
+            kind: RequestKind::Collect { grant },
+        } => recover::collect(&grant).await,
         Cmd::Http {
             secret,
             method,
@@ -1143,6 +1156,7 @@ async fn status() -> Result<()> {
             Err(e) => println!("  {}: {e:#}", path.display()),
         }
     }
+    let local = recover::local_grant_ids()?;
     let (_, client) = client()?;
     println!("broker grants:");
     for g in client.grants().await? {
@@ -1152,12 +1166,13 @@ async fn status() -> Result<()> {
             GrantAccess::Relay(relay) => format!("{}@{} via relay", relay.user, relay.target),
         };
         println!(
-            "  {subject}  grant {}  until {}",
+            "  {subject}  grant {}  until {}{}",
             g.grant_id,
-            local_time(g.not_after)
+            local_time(g.not_after),
+            recover::elsewhere_note(&g, &local)
         );
     }
-    Ok(())
+    recover::print_pending(&client).await
 }
 
 /// How `status` shows where a local grant connects.

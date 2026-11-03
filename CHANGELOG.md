@@ -6,6 +6,17 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `GET /v1/requests` lists an agent's own pending requests, and `warden status` shows
+  them, so an agent that lost the output of `warden request` can find them again.
+  Listing notifies nobody and counts against no limit, and the approval link is never
+  included.
+- `warden request collect <grant>` starts using an `api` grant the owner approved after
+  the `warden request` that asked for it was gone. `warden status` marks such grants. An
+  SSH grant cannot be collected, as its key was lost with that run: the docs say what to
+  do instead.
+
 ## [0.9.0] - 2026-11-02
 
 ### Upgrading

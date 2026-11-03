@@ -297,10 +297,11 @@ cargo install --locked --git https://github.com/pecheriere/warden --tag v0.9.0 w
 | `warden request ssh <target> --user <user> --for <window> --goal "<goal>"` | Asks for SSH access and waits for the decision. |
 | `warden request api <secret> [--methods <M,…>] [--path <prefix>] --for <window> --goal "<goal>"` | Asks for brokered API calls and waits. Read-only (`GET`, `HEAD`) without `--methods`. |
 | `warden request cancel <id>` | Withdraws one of this agent's pending requests. |
+| `warden request collect <grant>` | Starts using an `api` grant approved after the `warden request` that asked for it was gone. Refuses an SSH grant, whose key was lost with that run. See [Agent usage](agent-usage.md#if-the-warden-request-is-gone). |
 | `warden ssh <target> [-- <command>…]` | Runs `ssh` through the active grant for the target that stays valid longest. |
 | `warden http <secret> <METHOD> <url> [-H 'Name: value']… [-d <body> \| --data-file <path\|->] [-i] [--fail]` | Makes one HTTPS call through an `api` grant. |
 | `warden doctor [--strict]` | Checks this machine's setup and says what to fix. See [Checking an agent machine](#checking-an-agent-machine). |
-| `warden status` | Lists the grants on this machine and the broker's view of this agent's grants. |
+| `warden status` | Lists the grants on this machine, and the broker's view of this agent's grants and pending requests. |
 | `warden revoke <grant>` | Revokes a grant on the broker and stops its local `ssh-agent`. |
 
 A window is `15m`, `30m`, `1h` or `4h`. Exit codes are in

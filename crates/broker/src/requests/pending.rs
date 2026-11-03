@@ -3,7 +3,7 @@
 
 use sqlx::Row as _;
 use url::Url;
-use warden_broker_proto::{Access, AgentName, CreateRequest, Fingerprint, Id};
+use warden_broker_proto::{Access, AgentName, CreateRequest, Fingerprint, Id, PendingRequest};
 
 use super::transition::detached;
 use super::{
@@ -93,6 +93,47 @@ impl Requests {
         .await?;
         rows.iter()
             .map(|row| Ok((parse(row, "id")?, row.try_get("expires_at")?)))
+            .collect()
+    }
+
+    /// `agent`'s own requests still waiting for a decision, soonest expiry first.
+    /// Their number is bounded by its pending limit. This only reads: it asks
+    /// nobody, records nothing and uses up no limit. The approval token's hash is
+    /// not among the columns read, so it cannot reach the agent from here.
+    ///
+    /// # Errors
+    /// Storage failures or unreadable stored rows.
+    pub async fn pending_for_agent(
+        &self,
+        agent: &AgentName,
+    ) -> Result<Vec<PendingRequest>, RequestError> {
+        let rows = sqlx::query(
+            "SELECT id, fingerprint, body, created_at, expires_at FROM requests \
+             WHERE agent = ? AND status = 'pending' AND expires_at > ? \
+             ORDER BY expires_at, rowid",
+        )
+        .bind(agent.as_str())
+        .bind(self.clock.now())
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter()
+            .map(|row| {
+                let body: String = row.try_get("body")?;
+                let CreateRequest {
+                    goal,
+                    access,
+                    window,
+                } = serde_json::from_str(&body)?;
+                Ok(PendingRequest {
+                    id: parse(row, "id")?,
+                    fingerprint: parse(row, "fingerprint")?,
+                    goal,
+                    access,
+                    window,
+                    created_at: row.try_get("created_at")?,
+                    expires_at: row.try_get("expires_at")?,
+                })
+            })
             .collect()
     }
 

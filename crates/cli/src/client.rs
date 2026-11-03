@@ -19,8 +19,8 @@ use serde::de::DeserializeOwned;
 use url::{Position, Url};
 use warden_broker_proto::doctor::sanitize;
 use warden_broker_proto::{
-    ApiError, CreateRequest, CreatedResponse, GrantView, Id, InfoResponse, ProxyRequest,
-    ProxyResponse, RequestStatus,
+    ApiError, CreateRequest, CreatedResponse, GrantView, Id, InfoResponse, PendingRequest,
+    ProxyRequest, ProxyResponse, RequestStatus,
 };
 use zeroize::Zeroizing;
 
@@ -267,6 +267,21 @@ impl Client {
         json(resp, StatusCode::OK).await
     }
 
+    /// The agent's pending requests, or `None` from a broker too old to list
+    /// them, which answers 405 on that route.
+    ///
+    /// # Errors
+    /// If the server is unreachable or refuses.
+    pub async fn pending(&self) -> Result<Option<Vec<PendingRequest>>, CallError> {
+        let resp = self
+            .call(Method::GET, self.url("v1/requests")?, None)
+            .await?;
+        if resp.status() == StatusCode::METHOD_NOT_ALLOWED {
+            return Ok(None);
+        }
+        json(resp, StatusCode::OK).await.map(Some)
+    }
+
     /// Have the broker make `call` through api grant `id`.
     ///
     /// # Errors
@@ -437,6 +452,19 @@ mod tests {
 
     fn client(url: &url::Url) -> Client {
         Client::new(url, bearer(&format!("wdn_{}", "S".repeat(43)))).unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_broker_too_old_to_list_requests_is_told_apart_from_a_refusal() {
+        let old = client(&answering(405, "").await);
+        assert_eq!(old.pending().await, Ok(None));
+        let current = client(&answering(200, "[]").await);
+        assert_eq!(current.pending().await, Ok(Some(Vec::new())));
+        let refused = client(&answering(401, r#"{"error":"agent revoked"}"#).await);
+        assert!(matches!(
+            refused.pending().await,
+            Err(CallError::Refused(_))
+        ));
     }
 
     #[tokio::test]
