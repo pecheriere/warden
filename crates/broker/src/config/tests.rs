@@ -42,6 +42,27 @@ fn request_limits(extra: &[(&str, &str)]) -> Result<RequestLimits, ConfigError> 
 }
 
 #[test]
+fn the_commit_signing_maximum_defaults_to_30_days_and_takes_only_its_windows() {
+    const VAR: &str = "WARDEN_COMMIT_SIGNING_MAX_WINDOW";
+    let with = |extra: &[(&str, &str)]| {
+        let mut vars = vec![("WARDEN_OP_CONNECT_TOKEN", SECRET)];
+        vars.extend_from_slice(extra);
+        Config::from_lookup(lookup(&vars))
+    };
+    assert_eq!(
+        with(&[]).unwrap().commit_signing_max_window,
+        warden_broker_proto::Window::D30
+    );
+    assert_eq!(
+        with(&[(VAR, "90d")]).unwrap().commit_signing_max_window,
+        warden_broker_proto::Window::D90
+    );
+    for bad in ["4h", "60d", "forever"] {
+        assert!(with(&[(VAR, bad)]).is_err(), "{bad}");
+    }
+}
+
+#[test]
 fn request_limits_default_and_can_be_set() {
     assert_eq!(request_limits(&[]).unwrap(), RequestLimits::default());
     assert_eq!(

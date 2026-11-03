@@ -101,7 +101,7 @@ async fn attempt(
     // Fixed text, as it goes in the audit log: a parser's message can quote the body.
     let body = body.map_err(|failure| match failure {
         Failure::Client(status, _) => refused(status, "the request body is not valid"),
-        other => other,
+        other @ Failure::Request(_) => other,
     })?;
     if body.namespace != NAMESPACE {
         return Err(refused(

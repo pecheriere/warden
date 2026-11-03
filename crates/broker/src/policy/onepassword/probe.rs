@@ -158,7 +158,7 @@ mod tests {
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    use super::{CaProbe, OnePasswordConnect, VaultProbe};
+    use super::{CaProbe, CommitSigningProbe, OnePasswordConnect, VaultProbe};
 
     const TOKEN: &str = "test-connect-token-do-not-leak";
     const VAULT_ID: &str = "vault0000000000000000000a1";
@@ -321,6 +321,66 @@ mod tests {
             panic!("expected Invalid");
         };
         assert!(!reason.contains("secret-not-a-key"), "{reason}");
+    }
+
+    #[tokio::test]
+    async fn the_commit_signing_key_loads_and_is_never_quoted() {
+        let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+        let pem = key.to_openssh(LineEnding::LF).unwrap().to_string();
+        let summary = json!([{"id": "cs1", "title": "warden-commit-signing", "tags": ["warden:commit-signing"]}]);
+        let server = with_vault().await;
+        answer(&server, ITEMS, 200, summary.clone()).await;
+        answer(
+            &server,
+            &format!("{ITEMS}/cs1"),
+            200,
+            json!({"fields": [{"id": "private_key", "value": pem}]}),
+        )
+        .await;
+        assert_eq!(
+            connect(&server).probe_commit_signing().await,
+            CommitSigningProbe::Loaded {
+                fingerprint: key
+                    .public_key()
+                    .fingerprint(ssh_key::HashAlg::Sha256)
+                    .to_string()
+            }
+        );
+
+        let server = with_vault().await;
+        answer(&server, ITEMS, 200, summary).await;
+        answer(
+            &server,
+            &format!("{ITEMS}/cs1"),
+            200,
+            json!({"fields": [{"id": "private_key", "value": "secret-not-a-key"}]}),
+        )
+        .await;
+        let CommitSigningProbe::Invalid(reason) = connect(&server).probe_commit_signing().await
+        else {
+            panic!("expected Invalid");
+        };
+        assert!(!reason.contains("secret-not-a-key"), "{reason}");
+    }
+
+    #[tokio::test]
+    async fn no_commit_signing_item_leaves_signing_off_and_two_are_an_error() {
+        let server = with_vault().await;
+        answer(&server, ITEMS, 200, json!([])).await;
+        assert_eq!(
+            connect(&server).probe_commit_signing().await,
+            CommitSigningProbe::NotConfigured
+        );
+        let server = with_vault().await;
+        let two = json!([
+            {"id": "cs1", "title": "one", "tags": ["warden:commit-signing"]},
+            {"id": "cs2", "title": "two", "tags": ["warden:commit-signing"]},
+        ]);
+        answer(&server, ITEMS, 200, two).await;
+        assert!(matches!(
+            connect(&server).probe_commit_signing().await,
+            CommitSigningProbe::Invalid(_)
+        ));
     }
 
     #[tokio::test]
