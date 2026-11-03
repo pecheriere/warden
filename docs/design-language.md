@@ -39,7 +39,7 @@ target for the approval UI (#33), not code the broker serves.
 | `--on-primary` | `#FFFFFF` | `#0B1530` | Text on `--primary` |
 | `--soft` | `#E3EBFC` | `#1B2D5C` | Chips, segmented control track, read-only badge |
 | `--soft-ink` | `#1D45AB` | `#C9D7FF` | Text on `--soft` |
-| `--raised` | `#FFFFFF` | `#2B4180` | Selected segment, lifted above its `--soft` track |
+| `--raised` | `#FFFFFF` | `#2B4180` | Selected segment's fill, lifted above its `--soft` track; its `--primary` border carries the 3:1 |
 | `--accent` | `#F5B800` | `#F5B800` | Mascot plume and keyhole, live dot; never text |
 | `--accent-edge` | `#9A6B00` | `#F5B800` | Edge of the live dot, so it keeps 3:1 against a light card |
 | `--warn-bg` / `--warn-ink` / `--warn-line` | `#FFF1D6` / `#7A3300` / `#C25100` | `#3A2306` / `#FFD08A` / `#E08A2C` | "Can modify" badge; the grants page's warning that audit log entries are waiting |
@@ -66,7 +66,8 @@ WCAG AA contrast in both modes.
 
 - **Header**: mascot (38 px) and the `warden` wordmark; navigation (Pending,
   Active grants, History, Enroll a passkey) inline from 720 px, behind a menu
-  button below.
+  button below. Its two `<nav>` landmarks have different labels, "Main" and
+  "Main menu".
 - **Status chip**: pill on `--soft`, an icon and short text ("Pending ·
   expires in 9 min", "Approved").
 - **Card**: `--surface`, label / value fields.
@@ -75,14 +76,17 @@ WCAG AA contrast in both modes.
 - **Fingerprint box**: dashed 2 px `--primary` frame, monospace, bold, never
   wraps (it scales down instead).
 - **Segmented control** for the grant window: real radio inputs in a
-  `<fieldset>` with a legend.
+  `<fieldset>` with a legend. The selected segment has a 2 px `--primary`
+  border, which keeps 3:1 against the track and the fill (WCAG 1.4.11) in both
+  modes.
 - **Buttons**: Approve filled `--primary`; Deny and Revoke with a 2 px
   `--deny` outline and `--deny` text; secondary actions with a 2 px `--line`
   outline.
-- **Pending card**: a card per request with the agent, the access (and its badge),
-  the goal, then fingerprint, asked window and expiry in `--muted`. Approve… and
-  Deny fill the bottom side by side, the same size at every width. A card that ends
-  keeps its place and size, dimmed, with its buttons disabled.
+- **Pending card**: a card per request with the agent (a heading, for moving between
+  cards with a screen reader), the access (and its badge), the goal, then fingerprint,
+  asked window and expiry in `--muted`. Approve… and Deny fill the bottom side by
+  side, the same size at every width. A card that ends keeps its place and size,
+  dimmed no further than its text keeps 4.5:1, with its buttons disabled.
 - **Live indicator**: `--accent` dot with a 2 px `--accent-edge` ring, plus
   `--soft-ink` text ("1 session open"). Under it, the live area of a grant
   card lists what is open, across the card below a `--line` divider.
