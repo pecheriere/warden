@@ -19,7 +19,8 @@ pub mod local;
 pub mod onepassword;
 
 pub use commit_signing_key::{
-    CommitSigningKey, CommitSigningPolicy, CommitSigningProbe, SAME_AS_CA, check_separate_from_ca,
+    CA_UNREADABLE, CommitSigningKey, CommitSigningPolicy, CommitSigningProbe, SAME_AS_CA,
+    check_separate_from_ca,
 };
 pub use local::{LocalBackend, LocalProbe};
 pub use onepassword::{CaProbe, OnePasswordConnect, VaultProbe};
@@ -684,6 +685,12 @@ pub trait SecretBackend: Send + Sync + 'static {
     /// # Errors
     /// [`PolicyError::Ca`] or [`PolicyError::Unavailable`].
     async fn ssh_ca(&self) -> Result<CaKey, PolicyError>;
+
+    /// Whether an SSH CA is configured at all, usable or not, without reading its key.
+    ///
+    /// # Errors
+    /// [`PolicyError::Unavailable`].
+    async fn has_ssh_ca(&self) -> Result<bool, PolicyError>;
 
     /// Load the commit signing key.
     ///

@@ -29,13 +29,13 @@ use ssh_key::HashAlg;
 use warden_broker_proto::{SecretName, TargetName};
 use zeroize::Zeroizing;
 
+use super::commit_signing_key::compare_with_ca;
 use super::onepassword::{
     ApiItem, ItemUrl, SecretField, TargetItem, parse_api_secret, parse_private_key, parse_target,
 };
 use super::{
     ApiSecretPolicy, CaKey, CaProbe, CommitSigningKey, CommitSigningProbe, PolicyError,
-    RelayCredential, SAME_AS_CA, SecretBackend, SecretValue, SshMode, SshTarget,
-    not_a_relay_target,
+    RelayCredential, SecretBackend, SecretValue, SshMode, SshTarget, not_a_relay_target,
 };
 use crate::audit::{AuditEvent, AuditLog};
 use crate::config::LocalSettings;
@@ -499,11 +499,9 @@ impl Files {
                 Some(entry) => {
                     CommitSigningProbe::of(self.commit_signing(entry).and_then(|key| {
                         // The server does not start on this, as `problems` says.
-                        match policy.ca.as_ref().map(|ca| self.ca(ca)) {
-                            Some(Ok(ca)) if key.is_same_key_as(ca.public_key()) => {
-                                Err(PolicyError::CommitSigningKey(SAME_AS_CA.to_owned()))
-                            }
-                            _ => Ok(key),
+                        match &policy.ca {
+                            Some(ca) => compare_with_ca(&key, self.ca(ca)).map(|()| key),
+                            None => Ok(key),
                         }
                     }))
                 }
@@ -642,6 +640,10 @@ impl SecretBackend for LocalBackend {
             )),
         })
         .await
+    }
+
+    async fn has_ssh_ca(&self) -> Result<bool, PolicyError> {
+        self.read(|files| Ok(files.policy()?.ca.is_some())).await
     }
 
     async fn has_commit_signing_key(&self) -> Result<bool, PolicyError> {

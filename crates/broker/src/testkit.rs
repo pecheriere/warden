@@ -230,8 +230,20 @@ pub struct FakeBackend {
     commit_signing_reads: std::sync::atomic::AtomicUsize,
     target_outage: Mutex<Option<String>>,
     ca_outage: Mutex<Option<String>>,
+    ca_state: Mutex<CaState>,
     api_outage: Mutex<Option<String>>,
     relay_read_delay: Mutex<Option<Duration>>,
+}
+
+/// What [`FakeBackend`] has for an SSH CA.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaState {
+    /// A usable key.
+    Usable,
+    /// None configured.
+    Absent,
+    /// Configured but unusable, as with two items or a malformed key.
+    Unusable,
 }
 
 impl FakeBackend {
@@ -254,6 +266,7 @@ impl FakeBackend {
             commit_signing_reads: std::sync::atomic::AtomicUsize::new(0),
             target_outage: Mutex::new(None),
             ca_outage: Mutex::new(None),
+            ca_state: Mutex::new(CaState::Usable),
             api_outage: Mutex::new(None),
             relay_read_delay: Mutex::new(None),
         }
@@ -517,6 +530,14 @@ impl FakeBackend {
             .expect("a commit signing key")
     }
 
+    /// Say whether the SSH CA is there, and usable.
+    ///
+    /// # Panics
+    /// If the lock is poisoned.
+    pub fn set_ca_state(&self, state: CaState) {
+        *self.ca_state.lock().expect("CA state lock poisoned") = state;
+    }
+
     /// Make every read of a relay target with its credential take `delay`
     /// before answering, as a slow secret backend would (`None` restores
     /// them).
@@ -597,7 +618,24 @@ impl SecretBackend for FakeBackend {
 
     async fn ssh_ca(&self) -> Result<CaKey, PolicyError> {
         Self::outage(&self.ca_outage)?;
-        CaKey::new(self.ca.clone())
+        let state = *self
+            .ca_state
+            .lock()
+            .map_err(|_| PolicyError::Unavailable("fake backend lock poisoned".to_owned()))?;
+        match state {
+            CaState::Usable => CaKey::new(self.ca.clone()),
+            CaState::Absent => Err(PolicyError::Ca("no item is tagged".to_owned())),
+            CaState::Unusable => Err(PolicyError::Ca("2 items are tagged".to_owned())),
+        }
+    }
+
+    async fn has_ssh_ca(&self) -> Result<bool, PolicyError> {
+        Self::outage(&self.ca_outage)?;
+        let state = *self
+            .ca_state
+            .lock()
+            .map_err(|_| PolicyError::Unavailable("fake backend lock poisoned".to_owned()))?;
+        Ok(state != CaState::Absent)
     }
 
     async fn has_commit_signing_key(&self) -> Result<bool, PolicyError> {

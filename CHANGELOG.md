@@ -28,7 +28,7 @@ All notable changes to this project are recorded here. The format follows
   owner a few days before one ends, and a new Renew button on the grants page takes one
   passkey approval. Revoking stops new signatures at once. A grant can make 5000
   signatures per UTC day by default (`WARDEN_COMMIT_SIGNING_MAX_PER_DAY`), so that a
-  looping agent cannot fill the audit log's disk, and the owner is told if it gets there.
+  looping agent cannot fill the audit log's disk, and warden tries to notify the owner if it gets there.
 - With a commit signing setup, a commit fails, saying why and how to ask for a grant,
   when the agent has no active grant or the broker cannot be reached. Nothing makes the
   commit unsigned instead.

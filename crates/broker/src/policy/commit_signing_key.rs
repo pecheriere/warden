@@ -6,7 +6,12 @@ use sha2::{Digest as _, Sha256};
 use ssh_key::{Algorithm, HashAlg, PrivateKey, PublicKey};
 use warden_broker_proto::{CommitSigningGrant, Window};
 
-use super::{PolicyError, SecretBackend};
+use super::{CaKey, PolicyError, SecretBackend};
+
+/// Why a commit signing key is refused while the SSH CA cannot be used. The CA's own
+/// problem is in doctor's report, and is not repeated here.
+pub const CA_UNREADABLE: &str = "the SSH CA cannot be read, so nothing says the commit signing \
+                                 key is a different key; fix the CA first";
 
 /// Why a key that is also the SSH CA key is refused.
 pub const SAME_AS_CA: &str = "the commit signing key is also the SSH CA key; it must be a key of \
@@ -78,20 +83,37 @@ impl fmt::Debug for CommitSigningKey {
     }
 }
 
-/// Refuse `key` if it is also `backend`'s SSH CA key. A broker with no usable CA has
-/// nothing to compare with, and a backend that cannot answer refuses.
+/// Refuse `key` if it is also `backend`'s SSH CA key. Only a broker with no CA at all
+/// has nothing to compare with. A CA that is there but cannot be used (several items,
+/// a malformed or encrypted key) could be this key, so it refuses too.
 ///
 /// # Errors
-/// [`PolicyError::CommitSigningKey`] with [`SAME_AS_CA`], or what reading the CA gave.
+/// [`PolicyError::CommitSigningKey`] with [`SAME_AS_CA`] or [`CA_UNREADABLE`], or
+/// [`PolicyError::Unavailable`] if the backend cannot answer.
 pub async fn check_separate_from_ca<B: SecretBackend + ?Sized>(
     backend: &B,
     key: &CommitSigningKey,
 ) -> Result<(), PolicyError> {
-    match backend.ssh_ca().await {
+    if !backend.has_ssh_ca().await? {
+        return Ok(());
+    }
+    compare_with_ca(key, backend.ssh_ca().await)
+}
+
+/// Whether `key` may be used given what reading the CA gave.
+///
+/// # Errors
+/// As [`check_separate_from_ca`].
+pub(super) fn compare_with_ca(
+    key: &CommitSigningKey,
+    ca: Result<CaKey, PolicyError>,
+) -> Result<(), PolicyError> {
+    match ca {
         Ok(ca) if key.is_same_key_as(ca.public_key()) => {
             Err(PolicyError::CommitSigningKey(SAME_AS_CA.to_owned()))
         }
-        Ok(_) | Err(PolicyError::Ca(_)) => Ok(()),
+        Ok(_) => Ok(()),
+        Err(PolicyError::Ca(_)) => Err(PolicyError::CommitSigningKey(CA_UNREADABLE.to_owned())),
         Err(e) => Err(e),
     }
 }

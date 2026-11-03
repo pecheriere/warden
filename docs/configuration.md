@@ -44,7 +44,7 @@ Values are never echoed in errors.
 | `WARDEN_REQUEST_MAX_NEW_PER_AGENT` | `10` | New requests one agent may make per window, 1 to 1024. See [Request limits](#request-limits). |
 | `WARDEN_REQUEST_LIMIT_WINDOW_SECS` | `600` (10 minutes) | Length of that sliding window, 60 to 3600 seconds. |
 | `WARDEN_COMMIT_SIGNING_MAX_WINDOW` | `30d` | The longest [commit signing](threat-model.md#commit-signing) grant: `1d`, `7d`, `30d` or `90d`. Lowering it does not shorten grants already made. It cannot apply to anything else: no other grant can pass 4 hours. |
-| `WARDEN_COMMIT_SIGNING_MAX_PER_DAY` | `5000` | Signatures per commit signing grant per UTC day, 1 to 1000000. At the limit commits fail until the next day, and the owner is notified once. See [the threat model](threat-model.md#commit-signing). |
+| `WARDEN_COMMIT_SIGNING_MAX_PER_DAY` | `5000` | Signatures per commit signing grant per UTC day, 1 to 1000000. At the limit commits fail until the next day, and warden tries once to notify the owner. See [the threat model](threat-model.md#commit-signing). |
 | `WARDEN_RELAY_PUBLIC_ADDR` | unset | Where agents reach the SSH relay, `host:port`. Unset turns the relay off: requests for relay targets are refused. |
 | `WARDEN_RELAY_LISTEN` | `127.0.0.1:2222` | The SSH relay listener. Used only when `WARDEN_RELAY_PUBLIC_ADDR` is set. |
 | `WARDEN_RELAY_HOST_KEY_PATH` | `/data/relay_host_ed25519` | The relay's Ed25519 host key, created on first use (mode 0600) and never overwritten. An existing file must be a regular file owned by the broker's user, with no group or other permissions (0600). Keep it on the data volume. |

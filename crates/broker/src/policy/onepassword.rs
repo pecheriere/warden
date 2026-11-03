@@ -498,6 +498,10 @@ impl SecretBackend for OnePasswordConnect {
         })
     }
 
+    async fn has_ssh_ca(&self) -> Result<bool, PolicyError> {
+        Ok(!self.tagged(CA_TAG).await?.is_empty())
+    }
+
     async fn has_commit_signing_key(&self) -> Result<bool, PolicyError> {
         Ok(!self.tagged(COMMIT_SIGNING_TAG).await?.is_empty())
     }

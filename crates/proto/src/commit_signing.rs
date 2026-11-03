@@ -16,7 +16,8 @@ pub const NO_ACTIVE_GRANT: &str = "no active commit signing grant for this agent
 
 /// What the broker says when a grant has used up its signatures for the day.
 pub const DAILY_LIMIT: &str = "this grant has reached its limit of signatures for today; it \
-                               starts again at 00:00 UTC, and the owner has been told";
+                               starts again at 00:00 UTC, and warden tries once a day to notify \
+                               the owner";
 
 /// What the broker says when it holds no commit signing key.
 pub const NOT_CONFIGURED: &str = "commit signing is not configured on this broker";

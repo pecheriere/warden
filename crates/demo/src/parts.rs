@@ -83,6 +83,10 @@ impl SecretBackend for DemoBackend {
         Err(PolicyError::NotFound(name.as_str().to_owned()))
     }
 
+    async fn has_ssh_ca(&self) -> Result<bool, PolicyError> {
+        Ok(false)
+    }
+
     async fn has_commit_signing_key(&self) -> Result<bool, PolicyError> {
         Ok(false)
     }

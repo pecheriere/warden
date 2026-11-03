@@ -396,6 +396,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_ca_that_cannot_be_used_refuses_the_commit_signing_key() {
+        let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+        let pem = key.to_openssh(LineEnding::LF).unwrap().to_string();
+        let signing = json!({"id": "cs1", "title": "s", "tags": ["warden:commit-signing"]});
+        let ca = |id: &str| json!({"id": id, "title": id, "tags": ["warden:ssh-ca"]});
+        for items in [
+            // Two CA items.
+            json!([signing, ca("ca1"), ca("ca2")]),
+            // One whose key does not parse.
+            json!([signing, ca("ca1")]),
+        ] {
+            let server = with_vault().await;
+            answer(&server, ITEMS, 200, items).await;
+            answer(
+                &server,
+                &format!("{ITEMS}/cs1"),
+                200,
+                json!({"fields": [{"id": "private_key", "value": pem}]}),
+            )
+            .await;
+            answer(
+                &server,
+                &format!("{ITEMS}/ca1"),
+                200,
+                json!({"fields": [{"id": "private_key", "value": "not-a-key"}]}),
+            )
+            .await;
+            let CommitSigningProbe::Invalid(reason) = connect(&server).probe_commit_signing().await
+            else {
+                panic!("expected Invalid");
+            };
+            assert!(reason.contains("SSH CA cannot be read"), "{reason}");
+        }
+    }
+
+    #[tokio::test]
     async fn no_commit_signing_item_leaves_signing_off_and_two_are_an_error() {
         let server = with_vault().await;
         answer(&server, ITEMS, 200, json!([])).await;

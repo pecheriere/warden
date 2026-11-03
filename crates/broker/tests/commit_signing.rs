@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use sha2::Digest as _;
 use ssh_key::LineEnding;
 use ssh_key::rand_core::OsRng;
-use warden_broker::testkit::{FakeBackend, TestBroker, TestResponse};
+use warden_broker::testkit::{CaState, FakeBackend, TestBroker, TestResponse};
 use warden_broker_proto::Window;
 use warden_broker_proto::commit_signing::{NO_ACTIVE_GRANT, NOT_CONFIGURED};
 
@@ -527,6 +527,39 @@ async fn the_daily_limit_holds_for_concurrent_calls() {
         .filter(|r| r.status == StatusCode::OK)
         .count();
     assert_eq!(ok, 3);
+}
+
+#[tokio::test]
+async fn a_ca_that_cannot_be_used_blocks_approval_and_having_none_does_not() {
+    let broker = TestBroker::new().await;
+    broker.add_agent("bot").await;
+    let (_, token) = broker
+        .create_request(
+            "bot",
+            TestBroker::commit_signing_request("goal", Window::D30),
+        )
+        .await;
+    broker.enroll_soft_passkey().await;
+    broker.backend.set_ca_state(CaState::Unusable);
+    let page = broker.get(&format!("/approve/{token}")).await;
+    assert_eq!(
+        page.status,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "{}",
+        page.body
+    );
+    assert!(page.body.contains("SSH CA cannot be read"), "{}", page.body);
+    let begin = broker.begin_approval(&token, Window::D30).await;
+    assert_eq!(begin.status, StatusCode::BAD_REQUEST, "{}", begin.body);
+    assert!(
+        begin.body.contains("SSH CA cannot be read"),
+        "{}",
+        begin.body
+    );
+    // With no CA at all, there is nothing it could be the same as.
+    broker.backend.set_ca_state(CaState::Absent);
+    let approved = broker.approve(&token, Window::D30).await;
+    assert_eq!(approved.status, StatusCode::OK, "{}", approved.body);
 }
 
 #[tokio::test]

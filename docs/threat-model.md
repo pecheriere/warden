@@ -739,7 +739,8 @@ What holds:
   with an active grant, and a signature only within its daily limit. An agent with no grant
   cannot make the broker read it: asking for a grant only checks that a key is configured.
 - **It must not be the SSH CA key.** warden compares the public keys and refuses to approve a
-  grant while they are the same, or while the CA cannot be read to tell. Doctor fails on it, and
+  grant while they are the same, or while a configured CA cannot be read to tell: several
+  items, a malformed key or an outage. Only a broker with no CA at all has nothing to compare. Doctor fails on it, and
   with the local backend so does the server's start. With 1Password nothing is read at
   start, so this is caught at approval and by doctor. A grant is bound to the key it was
   approved for, so it cannot come to use the CA key later.
@@ -748,7 +749,7 @@ What holds:
   grant could loop for the life of the grant, writing an entry of a few KB for each signature
   until the disk holding the audit log filled. It is counted in the database, so a restart does
   not reset it. At the limit, signing is refused and so the commit fails, the refusal is
-  recorded, and the owner is notified once that day per grant, with one try. Other agents and
+  recorded, and warden tries once that day per grant to notify the owner. Other agents and
   their grants are not affected. It bounds the log, and does not limit what a grant can sign:
   the limit is high enough that a compromised agent can sign all it wants within it.
 

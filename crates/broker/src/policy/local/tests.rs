@@ -598,6 +598,22 @@ async fn the_ca_key_cannot_also_be_the_commit_signing_key() {
 }
 
 #[tokio::test]
+async fn a_ca_that_cannot_be_used_refuses_the_commit_signing_key() {
+    let policy = format!(
+        "[ca]\nprivate_key_file = \"ssh-ca\"\n{}",
+        commit_signing_policy()
+    );
+    let setup = Setup::new(&policy);
+    setup.secret("ssh-ca", "not a key at all");
+    setup.secret("commit-signing", &ed25519_pem());
+    let problems = setup.backend.probe().await.problems();
+    assert!(
+        problems.iter().any(|p| p.contains("SSH CA cannot be read")),
+        "{problems:?}"
+    );
+}
+
+#[tokio::test]
 async fn refuses_an_unusable_commit_signing_key_without_echoing_it() {
     let setup = Setup::new(&commit_signing_policy());
     for bad in [
