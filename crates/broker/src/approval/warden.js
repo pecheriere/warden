@@ -495,6 +495,16 @@
 
   const count = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 
+  /** `idle_label` in pages.rs: how long a session has been quiet, rounded down. */
+  const idleLabel = (secs) => {
+    if (secs < 5) return 'Active now';
+    if (secs < 60) return `Idle ${secs} s`;
+    if (secs < 3600) return `Idle ${Math.floor(secs / 60)} min`;
+    const hours = `Idle ${Math.floor(secs / 3600)} h`;
+    const minutes = Math.floor((secs % 3600) / 60);
+    return minutes ? `${hours} ${minutes} min` : hours;
+  };
+
   const el = (tag, className, ...children) => {
     const node = document.createElement(tag);
     if (className) node.className = className;
@@ -538,7 +548,8 @@
         el('span', '',
           el('span', 'nowrap', `${bytes(session.bytes_to_target)} to target`),
           ' · ',
-          el('span', 'nowrap', `${bytes(session.bytes_from_target)} from target`))));
+          el('span', 'nowrap', `${bytes(session.bytes_from_target)} from target`)),
+        el('span', 'nowrap', idleLabel(session.idle_secs))));
     }
     for (const call of calls) {
       list.append(el('li', '',

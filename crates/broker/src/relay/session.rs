@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::net::IpAddr;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -16,7 +16,7 @@ use tokio::net::TcpStream;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, watch};
 use warden_broker_proto::{AgentName, Id};
 
-use crate::requests::RelayGrantRecord;
+use crate::requests::{Clock, RelayGrantRecord};
 
 use super::read_ahead::AgentGone;
 
@@ -105,6 +105,9 @@ struct LiveSession {
     /// with the relay loop that counts them.
     bytes_to_target: Arc<AtomicU64>,
     bytes_from_target: Arc<AtomicU64>,
+    /// Unix seconds when bytes last moved either way (when the session was
+    /// listed, until they do), shared with the session's watchdog.
+    last_activity: Arc<AtomicI64>,
     /// Why the relay must end the session, once it must.
     end: watch::Sender<Option<&'static str>>,
 }
@@ -130,6 +133,9 @@ pub(crate) struct LiveSessionInfo {
     pub started_at: i64,
     pub bytes_to_target: u64,
     pub bytes_from_target: u64,
+    /// Unix seconds when bytes last moved either way, as seen by the
+    /// session's watchdog; when the session started, until they do.
+    pub last_activity: i64,
 }
 
 impl LiveSessions {
@@ -143,6 +149,7 @@ impl LiveSessions {
         let (end, ended) = watch::channel(None);
         let (bytes_to_target, bytes_from_target) =
             (Arc::new(AtomicU64::new(0)), Arc::new(AtomicU64::new(0)));
+        let last_activity = Arc::new(AtomicI64::new(now));
         let key = self.next.fetch_add(1, Ordering::Relaxed);
         self.lock().insert(
             key,
@@ -153,6 +160,7 @@ impl LiveSessions {
                 started_at: now,
                 bytes_to_target: Arc::clone(&bytes_to_target),
                 bytes_from_target: Arc::clone(&bytes_from_target),
+                last_activity: Arc::clone(&last_activity),
                 end,
             },
         );
@@ -162,6 +170,7 @@ impl LiveSessions {
             ended,
             bytes_to_target,
             bytes_from_target,
+            last_activity,
         }
     }
 
@@ -212,6 +221,7 @@ impl LiveSessions {
                 started_at: s.started_at,
                 bytes_to_target: s.bytes_to_target.load(Ordering::Relaxed),
                 bytes_from_target: s.bytes_from_target.load(Ordering::Relaxed),
+                last_activity: s.last_activity.load(Ordering::Relaxed),
             })
             .collect();
         sessions.sort_by(|a, b| {
@@ -241,6 +251,7 @@ pub(crate) struct Registration {
     ended: watch::Receiver<Option<&'static str>>,
     bytes_to_target: Arc<AtomicU64>,
     bytes_from_target: Arc<AtomicU64>,
+    last_activity: Arc<AtomicI64>,
 }
 
 impl Registration {
@@ -731,6 +742,7 @@ pub(crate) async fn relay(
     live: &mut Registration,
     mut stop: watch::Receiver<bool>,
     limits: Watch,
+    clock: &dyn Clock,
 ) -> Outcome {
     let Ends {
         agent,
@@ -750,12 +762,16 @@ pub(crate) async fn relay(
     let (to_target_bytes, from_target_bytes) = live.counters();
     let mut up = Delivered::new(to_target_bytes);
     let mut down = Delivered::new(from_target_bytes);
+    let moved = {
+        let last_activity = Arc::clone(&live.last_activity);
+        move || last_activity.store(clock.now(), Ordering::Relaxed)
+    };
     let (ended, left) = {
         let own = async {
             tokio::select! {
                 ended = upstream(&mut from_agent, &to_target, Arc::clone(&up_progress), &mut up) => (ended, false),
                 ended = downstream(&mut from_target, early, &to_agent, &agent_handle, agent_id, Arc::clone(&down_progress), &mut down) => (ended, false),
-                ended = watchdog(&up_progress, &down_progress, limits) => (ended, false),
+                ended = watchdog(&up_progress, &down_progress, limits, moved) => (ended, false),
                 () = agent_left(agent_gone, &up_progress) => (reason::CLIENT_CLOSED, true),
             }
         };
@@ -888,8 +904,11 @@ async fn agent_left(mut gone: AgentGone, up: &Progress) {
 }
 
 /// Resolves, with the reason, once the session stops making progress or
-/// sits idle.
-async fn watchdog(up: &Progress, down: &Progress, limits: Watch) -> &'static str {
+/// sits idle. Calls `moved` at a check that finds bytes were read either way
+/// since the last one: what the owner's view shows as idle time is the time
+/// this limit counts, and taking it here costs the path that carries the
+/// bytes nothing.
+async fn watchdog(up: &Progress, down: &Progress, limits: Watch, moved: impl Fn()) -> &'static str {
     // Per direction (upstream, downstream): messages delivered at the last
     // check, and since when the direction has held data without delivering
     // any (`None` while it holds nothing). Quiet time with nothing queued
@@ -909,6 +928,7 @@ async fn watchdog(up: &Progress, down: &Progress, limits: Watch) -> &'static str
         if read != received {
             received = read;
             quiet_since = now;
+            moved();
         } else if now.duration_since(quiet_since) >= limits.idle {
             return reason::IDLE;
         }
@@ -1152,7 +1172,7 @@ mod tests {
     use warden_broker_proto::Id;
 
     use std::sync::Arc;
-    use std::sync::atomic::Ordering;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     use std::time::Duration;
 
@@ -1247,7 +1267,7 @@ mod tests {
             idle: Duration::from_secs(10),
             ..limits(60)
         };
-        let watching = watchdog(&up, &down, limits);
+        let watching = watchdog(&up, &down, limits, || ());
         tokio::pin!(watching);
         // Bytes one way, then the other, every 8 s: never idle for 10 s.
         for (i, progress) in [&up, &down, &up, &down].into_iter().enumerate() {
@@ -1393,12 +1413,14 @@ mod tests {
                     started_at: 10,
                     bytes_to_target: 0,
                     bytes_from_target: 0,
+                    last_activity: 10,
                 },
                 LiveSessionInfo {
                     grant_id: late.grant_id.clone(),
                     started_at: 20,
                     bytes_to_target: 3,
                     bytes_from_target: 5,
+                    last_activity: 20,
                 },
             ],
             "oldest first, with the shared counters"
@@ -1517,6 +1539,47 @@ mod tests {
         assert_eq!(reason::notice(reason::DOWNSTREAM_STALLED), None);
     }
 
+    /// Bytes read either way are noted once, at the next check; quiet time and
+    /// messages that are not bytes are not.
+    #[tokio::test(start_paused = true)]
+    async fn watchdog_notes_when_bytes_were_read_either_way() {
+        let (up, down) = (Progress::default(), Progress::default());
+        let noted = AtomicU64::new(0);
+        let moved = || {
+            noted.fetch_add(1, Ordering::Relaxed);
+        };
+        let watching = watchdog(&up, &down, limits(600), moved);
+        tokio::pin!(watching);
+        let still_watching = Duration::from_secs(5);
+        tokio::time::timeout(still_watching, &mut watching)
+            .await
+            .unwrap_err();
+        assert_eq!(noted.load(Ordering::Relaxed), 0, "nothing moved");
+
+        up.read(&russh::ChannelMsg::Data {
+            data: vec![0_u8; 2].into(),
+        });
+        tokio::time::timeout(still_watching, &mut watching)
+            .await
+            .unwrap_err();
+        assert_eq!(noted.load(Ordering::Relaxed), 1, "read from the agent");
+
+        down.read(&russh::ChannelMsg::ExtendedData {
+            data: vec![0_u8; 3].into(),
+            ext: 1,
+        });
+        tokio::time::timeout(still_watching, &mut watching)
+            .await
+            .unwrap_err();
+        assert_eq!(noted.load(Ordering::Relaxed), 2, "read from the target");
+
+        up.read(&russh::ChannelMsg::Eof);
+        tokio::time::timeout(still_watching, &mut watching)
+            .await
+            .unwrap_err();
+        assert_eq!(noted.load(Ordering::Relaxed), 2, "not bytes");
+    }
+
     #[tokio::test(start_paused = true)]
     async fn watchdog_ends_wedged_and_stalled_sessions_only() {
         // Both directions held up (a waiting reader means a full queue),
@@ -1527,7 +1590,7 @@ mod tests {
             progress.queued.store(10, Ordering::Release);
         }
         let started = tokio::time::Instant::now();
-        let why = watchdog(&up, &down, limits(60)).await;
+        let why = watchdog(&up, &down, limits(60), || ()).await;
         assert_eq!(why, reason::WEDGED);
         assert!(reason::forced(why));
         assert_eq!(reason::notice(why), None);
@@ -1539,7 +1602,7 @@ mod tests {
         up.queued.store(10, Ordering::Release);
         up.waiting.store(true, Ordering::Release);
         let started = tokio::time::Instant::now();
-        let why = watchdog(&up, &down, limits(60)).await;
+        let why = watchdog(&up, &down, limits(60), || ()).await;
         assert_eq!(why, reason::UPSTREAM_STALLED);
         assert!(started.elapsed() >= Duration::from_secs(60));
 
@@ -1557,7 +1620,7 @@ mod tests {
             }
         };
         tokio::select! {
-            why = watchdog(&up, &down, limits(60)) => panic!("ended: {why}"),
+            why = watchdog(&up, &down, limits(60), || ()) => panic!("ended: {why}"),
             () = moving => {}
         }
     }
@@ -1566,7 +1629,7 @@ mod tests {
     async fn idle_then_prompt_delivery_is_not_stalled() {
         // An idle shell: nothing queued or delivered for over a minute.
         let (up, down) = (Progress::default(), Progress::default());
-        let watching = watchdog(&up, &down, limits(60));
+        let watching = watchdog(&up, &down, limits(60), || ());
         tokio::pin!(watching);
         tokio::select! {
             why = &mut watching => panic!("idle session ended: {why}"),
@@ -1591,7 +1654,7 @@ mod tests {
         // After a long idle spell, data that is then held for the stall
         // timeout without any delivery ends the session, and not before.
         let (up, down) = (Progress::default(), Progress::default());
-        let watching = watchdog(&up, &down, limits(60));
+        let watching = watchdog(&up, &down, limits(60), || ());
         tokio::pin!(watching);
         tokio::select! {
             why = &mut watching => panic!("idle session ended: {why}"),

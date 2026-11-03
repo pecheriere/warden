@@ -956,7 +956,14 @@ impl RelayHandler {
                     wedge: shared.limits.wedge_timeout,
                     idle: shared.limits.idle_timeout,
                 };
-                let outcome = session::relay(ends, &mut live, stop, watch).await;
+                let outcome = session::relay(
+                    ends,
+                    &mut live,
+                    stop,
+                    watch,
+                    shared.requests.clock().as_ref(),
+                )
+                .await;
                 if session::reason::forced(outcome.reason) {
                     // Given its chance to close already.
                     hang_up.cut();

@@ -12,7 +12,9 @@ Usage: scripts/check-grants-live.py <out-dir>
   - when two cards end in one poll, focus on the first one's Revoke button
     moves to the Revoke button of the card that stays;
   - a grant with no card makes the page reload exactly once, even when the
-    answer keeps listing it (no reload loop).
+    answer keeps listing it (no reload loop);
+  - a relay session's idle time follows the answer, and a certificate grant
+    keeps what it says about its certificate.
 
   And the "pending" and "pending-empty" fixtures, with a mocked GET /pending/live
   and GET /pending:
@@ -203,9 +205,19 @@ class CheckError(Exception):
     """A step of the check itself failed (not a behaviour under test)."""
 
 
-def live_body(*grant_ids):
+def live_body(*grant_ids, idle_secs=None):
+    """The answer listing `grant_ids`, with a session under RELAY if `idle_secs` is set."""
+    def sessions(grant):
+        if idle_secs is None or grant != RELAY:
+            return ""
+        return (
+            '{"started_at":1800000000,"bytes_to_target":1,"bytes_from_target":2,'
+            f'"idle_secs":{idle_secs}}}'
+        )
+
     grants = ",".join(
-        f'{{"grant_id":"{g}","relay_sessions":[],"proxy_calls":[]}}' for g in grant_ids
+        f'{{"grant_id":"{g}","relay_sessions":[{sessions(g)}],"proxy_calls":[]}}'
+        for g in grant_ids
     )
     return f'{{"grants":[{grants}]}}'.encode()
 
@@ -418,6 +430,13 @@ def run():
         load(url, 12_000)
         loads = mock.count(PAGE)
         check("matching grants do not reload", loads == 1, f"{loads} page loads")
+
+        mock.set(200, live_body(RELAY, API, CERT, idle_secs=3660))
+        dom = load(url, 12_000)
+        check("a session's idle time follows the answer", "Idle 1 h 1 min" in dom, "not shown")
+        check("a certificate grant keeps its issue time", "Certificate issued" in dom, "gone")
+        check("a certificate grant still says logins are not visible",
+              "not visible to warden" in dom, "gone")
 
         pending_url = f"{origin}{PENDING_PAGE}"
         for status in (401, 403):

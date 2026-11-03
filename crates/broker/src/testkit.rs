@@ -1070,6 +1070,19 @@ impl TestBroker {
             .collect()
     }
 
+    /// When bytes last moved (Unix seconds) in each live relay session,
+    /// oldest first.
+    #[must_use]
+    pub fn live_relay_last_activity(&self) -> Vec<i64> {
+        self.state
+            .requests
+            .live_sessions()
+            .snapshot()
+            .into_iter()
+            .map(|s| s.last_activity)
+            .collect()
+    }
+
     /// List a relay session of `grant_id` (held by `agent`) as live, from
     /// now, until the returned hold is dropped.
     ///
