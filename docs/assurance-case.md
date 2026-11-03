@@ -426,7 +426,7 @@ It too applies to new logins only.
   ([`release.yml`](../.github/workflows/release.yml)).
 - **Fuzzing and coverage**: a scheduled job fuzzes part of the code that parses
   untrusted input ([#91](https://github.com/pecheriere/warden/issues/91)), and CI
-  measures coverage, with no threshold yet
+  measures coverage and fails below 80% of lines
   ([#97](https://github.com/pecheriere/warden/issues/97)).
 - **Not yet in place**: an independent review.
 
