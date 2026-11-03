@@ -97,9 +97,9 @@ What each loss means:
 - **A release binary is not the image's binary.** It is built from the same source
   and the same locked dependencies, but it links musl statically, while the image's
   links glibc from a distroless base. Everything it needs is inside it, so host updates
-  change nothing in it, and only a new warden release patches it. It resolves names
-  from `/etc/hosts` and `/etc/resolv.conf` alone, with no NSS modules, and musl's
-  allocator is slower under load, which should not matter at warden's request rates.
+  change nothing in it, and only a new warden release patches it. Its allocator is
+  slower under load, which should not matter at warden's request rates. It also
+  [resolves names differently](#name-resolution-in-a-release-binary).
 - **With a build from source, the host supplies glibc.** The rest is linked statically:
   Rust crates and, with the feature below, OpenSSL. Host updates patch glibc, so
   restart warden after them, and only a new warden release patches the rest. The binary
@@ -151,7 +151,10 @@ You need systemd 249 or later with cgroup v2, a tagged host on the tailnet as in
 [the deployment guide](deployment.md#2-tailscale), and the `ca-certificates` package
 (warden verifies TLS with the system's roots). Check `systemctl --version` for
 `+BPF_FRAMEWORK`: without it, as on Debian 12, `SocketBindAllow` and `SocketBindDeny`
-have no effect. `IPAddressDeny` needs only cgroup v2.
+have no effect. They also need the `libbpf1` package, which a minimal Debian 13 container
+did not have, and they did nothing without it, with no error. Install it, then run
+`sudo systemctl daemon-reexec`.
+[Section 5](#5-limit-wardens-egress) shows how to check. `IPAddressDeny` needs only cgroup v2.
 
 ### Get the binary
 
@@ -360,7 +363,10 @@ until the drop-in allows what they need:**
 - Connect's address;
 - the DNS resolvers in `/etc/resolv.conf`, if they are not on loopback. A blocked
   resolver looks like every upstream failing, with `error sending request` in the
-  log. With MagicDNS, that resolver is `100.100.100.100`;
+  log. With MagicDNS, that resolver is `100.100.100.100`. The same message appears with
+  a release binary if a drop-in removes `SocketBindAllow=udp:0`, because musl's resolver
+  binds its UDP socket to port 0. That gives warden a port the kernel picks and no
+  other: `udp:53`, `udp:8080`, `tcp:0` and `tcp:9000` were all refused with it in place;
 - every address of each notifier and API origin. A name with several addresses needs
   them all.
 
@@ -380,8 +386,38 @@ This differs from the Docker rules in three ways:
     curl -sS -m 5 -o /dev/null https://www.example.org/
   ```
 
+The port rules can also fail silently, with no `+BPF_FRAMEWORK` or no `libbpf1`. This
+must fail with `Operation not permitted`:
+
+```sh
+sudo systemd-run --pipe --wait --collect -p SocketBindDeny=any \
+  python3 -c 'import socket; socket.socket().bind(("127.0.0.1", 9000))'
+```
+
 An address rule pins an IP, not a name, so the note about CDNs in
 [the deployment guide](deployment.md#lock-wardens-egress) applies here too.
+
+### Name resolution in a release binary
+
+A release binary uses [musl's resolver](https://wiki.musl-libc.org/functional-differences-from-glibc.html),
+which reads `/etc/hosts` and `/etc/resolv.conf` and nothing else: no NSS modules. Two
+more differences from a glibc build matter on a tailnet:
+
+- **It asks every `nameserver` at once, and the first answer wins, including "no such
+  name".** glibc tries them in order. So if `/etc/resolv.conf` lists both MagicDNS and a
+  public resolver, a public `NXDOMAIN` for `warden-connect.example.ts.net` can beat
+  MagicDNS's real answer, and the name fails some of the time. It is safe when every
+  listed resolver gives the same answers, and that includes a single one:
+  `100.100.100.100` when Tailscale manages the file, or `127.0.0.53` with
+  systemd-resolved, which does the split DNS itself. Check the file on your host.
+- **A name with a dot never falls back to the search list.** musl's default `ndots` is 1.
+  glibc would try `connect.internal` literally and then with each search domain; musl
+  tries it only literally. A name with no dot, such as `warden-connect`, still uses the
+  search list first. So write full names in warden's settings, such as
+  `warden-connect.example.ts.net`, as this guide does.
+
+Neither of these has been tested on a tailnet. They come from musl's documentation and
+source, and the binary has been run only with one `nameserver`.
 
 ## 6. Who can read the Connect token
 
@@ -553,10 +589,12 @@ container on arm64, with a binary built by the repository's Dockerfile. There:
 - A missing credential stopped the service from starting.
 
 A static arm64 archive from `scripts/package-binary.sh`, the way a release builds it, was
-also run under this unit on 257, in the same kind of container, with the local backend.
-warden started and answered `healthcheck`, with no shared library loaded, no capabilities
-and seccomp on. `warden-server doctor`, under a subset of the unit's sandbox, resolved a
-name and made a TLS call. No published binary has been run, because none exists yet.
+also run under this unit on 257, in the same kind of container, with the local backend and
+`libbpf1` installed, so that the bind rules were enforced. warden started and answered
+`healthcheck`, with no shared library loaded, no capabilities and seccomp on. Under the
+whole unit, `warden-server doctor` resolved a name and made a TLS call, which failed
+without `SocketBindAllow=udp:0`. `scripts/test-systemd-unit.sh` repeats this in CI, on
+GitHub's amd64 and arm64 runners. No published binary has been run, because none exists yet.
 
 **Not tested:** a clean host or amd64, a real Connect server (the sandboxed call went to
 another HTTPS server), Tailscale Serve and Services, a passkey approval, a notification,

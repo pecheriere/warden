@@ -376,6 +376,10 @@ class Workflows(unittest.TestCase):
         """A dropped notice fails on the pull request, not on a release tag."""
         self.assertIn("collect_archives.py check", job_text("ci.yml", "binaries"))
 
+    def test_ci_runs_the_server_under_the_unit(self) -> None:
+        """A unit can stop a static binary resolving names, which only running it shows."""
+        self.assertIn("scripts/test-systemd-unit.sh", job_text("ci.yml", "binaries"))
+
 
 if __name__ == "__main__":
     unittest.main()

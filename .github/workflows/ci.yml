@@ -268,6 +268,17 @@ jobs:
         run: |
           file=$(python3 -I .github/scripts/collect_archives.py name "$PRODUCT" "$PLATFORM")
           python3 -I .github/scripts/collect_archives.py check "$PRODUCT" "$PLATFORM" "dist/$file"
+      # A runner is a real host with systemd, thrown away after this job.
+      - name: Run the server under the systemd unit
+        if: matrix.product == 'server'
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          sudo apt-get install -y libbpf1
+          sudo systemctl daemon-reexec
+          file=$(python3 -I .github/scripts/collect_archives.py name server "$PLATFORM")
+          tar -xzf "dist/$file" -C "$RUNNER_TEMP"
+          sudo scripts/test-systemd-unit.sh --throwaway-host "$RUNNER_TEMP/${file%.tar.gz}/warden-server"
 
   image:
     name: image (${{ matrix.platform }})
