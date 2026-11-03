@@ -14,9 +14,11 @@ use warden_broker_proto::{
 };
 use zeroize::Zeroizing;
 
+mod commit_signing_key;
 pub mod local;
 pub mod onepassword;
 
+pub use commit_signing_key::{CommitSigningKey, CommitSigningPolicy, CommitSigningProbe};
 pub use local::{LocalBackend, LocalProbe};
 pub use onepassword::{CaProbe, OnePasswordConnect, VaultProbe};
 
@@ -590,6 +592,12 @@ pub enum PolicyError {
     /// The SSH CA item is absent, ambiguous or unusable.
     #[error("SSH CA: {0}")]
     Ca(String),
+    /// No commit signing key is configured.
+    #[error("no commit signing key is configured")]
+    NoCommitSigningKey,
+    /// The commit signing key is ambiguous or unusable. Never quotes the key.
+    #[error("commit signing key: {0}")]
+    CommitSigningKey(String),
     /// The secret backend could not be reached or answered with an error.
     #[error("secret backend unavailable: {0}")]
     Unavailable(String),
@@ -674,6 +682,13 @@ pub trait SecretBackend: Send + Sync + 'static {
     /// # Errors
     /// [`PolicyError::Ca`] or [`PolicyError::Unavailable`].
     async fn ssh_ca(&self) -> Result<CaKey, PolicyError>;
+
+    /// Load the commit signing key.
+    ///
+    /// # Errors
+    /// [`PolicyError::NoCommitSigningKey`] if none is configured,
+    /// [`PolicyError::CommitSigningKey`] or [`PolicyError::Unavailable`].
+    async fn commit_signing_key(&self) -> Result<CommitSigningKey, PolicyError>;
 
     /// Look up an API secret's policy by name. The whole item is validated,
     /// the credential included, but its value is not returned.

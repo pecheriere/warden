@@ -9,7 +9,7 @@ use warden_broker_proto::TargetName;
 use zeroize::Zeroizing;
 
 use super::{CA_TAG, OnePasswordConnect, TARGET_TAG, Vault};
-use crate::policy::{PolicyError, SecretBackend, SshMode};
+use crate::policy::{CommitSigningProbe, PolicyError, SecretBackend, SshMode};
 
 /// What Connect says about the configured token and vault.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -124,6 +124,11 @@ impl OnePasswordConnect {
             Err(PolicyError::Ca(reason)) => CaProbe::Invalid(reason),
             Err(e) => CaProbe::Unknown(e.to_string()),
         }
+    }
+
+    /// Load the commit signing key and drop it.
+    pub async fn probe_commit_signing(&self) -> CommitSigningProbe {
+        CommitSigningProbe::of(self.commit_signing_key().await)
     }
 
     /// How many target items in the vault are in certificate mode. A title

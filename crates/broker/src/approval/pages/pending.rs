@@ -17,6 +17,7 @@ fn stored_access(entry: &PendingEntry) -> Markup {
     let subject = match &entry.request.access {
         Access::Ssh { target, user, .. } => format!("ssh {user}@{target}"),
         Access::Api { secret, .. } => format!("api {secret}"),
+        Access::CommitSigning {} => "commit signing".to_owned(),
     };
     html! {
         code { bdi { (subject) } }

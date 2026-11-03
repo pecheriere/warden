@@ -9,6 +9,7 @@ use std::path::{Component, Path, PathBuf};
 
 use secrecy::SecretString;
 use url::Url;
+use warden_broker_proto::Window;
 use zeroize::Zeroizing;
 
 use crate::notify::{ChannelKind, ChannelList, parse_channels};
@@ -310,6 +311,9 @@ pub struct Config {
     /// pending limit) and `WARDEN_REQUEST_LIMIT_WINDOW_SECS` (default 600, 60
     /// to 3600).
     pub requests: RequestLimits,
+    /// `WARDEN_COMMIT_SIGNING_MAX_WINDOW`, default `30d`: the longest commit
+    /// signing grant the server allows, `1d`, `7d`, `30d` or `90d`.
+    pub commit_signing_max_window: Window,
     /// The SSH relay.
     pub relay: RelayConfig,
     /// How long the body of a signed request may take to arrive. Not set
@@ -591,6 +595,15 @@ impl Config {
 
         let proxy = proxy_limits(&get)?;
         let requests = request_limits(&get)?;
+        let commit_signing_max_window = get("WARDEN_COMMIT_SIGNING_MAX_WINDOW").map_or(
+            Ok(Window::COMMIT_SIGNING_DEFAULT),
+            |raw| {
+                Window::commit_signing(raw.trim()).map_err(|_| ConfigError::Invalid {
+                    var: "WARDEN_COMMIT_SIGNING_MAX_WINDOW",
+                    reason: "must be 1d, 7d, 30d or 90d",
+                })
+            },
+        )?;
 
         let relay = RelayConfig {
             listen: addr("WARDEN_RELAY_LISTEN", "127.0.0.1:2222")?,
@@ -628,6 +641,7 @@ impl Config {
             notify,
             proxy,
             requests,
+            commit_signing_max_window,
             relay,
             body_read_timeout: BodyReadTimeout::default(),
         })

@@ -4,8 +4,10 @@ mod agent;
 mod client;
 mod config;
 mod doctor;
+mod git_signing;
 mod guidance;
 mod http;
+mod setup_git;
 mod sign;
 mod ssh;
 mod ssh_agent;
@@ -159,12 +161,29 @@ enum Cmd {
         #[arg(long)]
         strict: bool,
     },
+    /// Set something up to work through warden.
+    Setup {
+        #[command(subcommand)]
+        what: SetupWhat,
+    },
     /// Show local grants and the broker's view of this agent's grants.
     Status,
     /// Revoke a grant on the broker and stop its local agent.
     Revoke {
         /// Grant identifier.
         grant: Id,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum SetupWhat {
+    /// Have git sign every commit through the broker, which holds the key:
+    /// this program becomes `gpg.ssh.program`. A commit then fails, saying why,
+    /// whenever this agent has no active grant or the broker cannot be reached.
+    Git {
+        /// Change this repository's configuration, not the global one.
+        #[arg(long)]
+        local: bool,
     },
 }
 
@@ -198,6 +217,17 @@ enum RequestKind {
         path: Option<String>,
         /// Window length: 15m, 30m, 1h or 4h.
         #[arg(long = "for")]
+        window: Window,
+        /// What the access is for, shown to the owner.
+        #[arg(long)]
+        goal: Goal,
+    },
+    /// Commit signing by the broker's key, for much longer than other access: no
+    /// prompt per commit. A signature means warden signed the commit for this
+    /// agent, not that anyone reviewed the change.
+    Signing {
+        /// Window length: 1d, 7d, 30d or 90d, up to what the server allows.
+        #[arg(long = "for", default_value = "30d", value_parser = Window::commit_signing)]
         window: Window,
         /// What the access is for, shown to the owner.
         #[arg(long)]
@@ -237,6 +267,11 @@ impl std::error::Error for Exit {}
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    // Called by git as its signing program, with `ssh-keygen`'s arguments.
+    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    if git_signing::is_program_call(&args) {
+        return git_signing::run(&args).await;
+    }
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(e) => return parse_failure_exit(&e),
@@ -330,6 +365,20 @@ async fn run(cmd: Cmd) -> Result<()> {
                     goal,
                 },
         } => request_api(secret, methods, path, window, goal).await,
+        Cmd::Request {
+            kind: RequestKind::Signing { window, goal },
+        } => request_signing(window, goal).await,
+        Cmd::Setup {
+            what: SetupWhat::Git { local },
+        } => {
+            let (_, client) = client()?;
+            let scope = if local {
+                setup_git::Scope::Local
+            } else {
+                setup_git::Scope::Global
+            };
+            setup_git::run(&client, scope).await
+        }
         Cmd::Request {
             kind: RequestKind::Cancel { id },
         } => cancel(&id).await,
@@ -618,6 +667,26 @@ async fn request_api(
     ))?;
     announce(&grant);
     println!("{}", api_scope(api));
+    Ok(())
+}
+
+async fn request_signing(window: Window, goal: Goal) -> Result<()> {
+    let (config, client) = client()?;
+    let req = CreateRequest {
+        goal,
+        access: Access::CommitSigning {},
+        window,
+    };
+    let grant = request_grant(&config, &client, &req, "for commit signing").await?;
+    let GrantAccess::CommitSigning(signing) = &grant.access else {
+        bail!("the broker returned another kind of grant for a commit signing request");
+    };
+    announce(&grant);
+    println!(
+        "commits are signed with key {} until then. Set git up with `warden setup git` if it \
+         is not yet.",
+        signing.key_fingerprint
+    );
     Ok(())
 }
 
@@ -964,7 +1033,9 @@ fn ssh_setup<'a>(
                 &relay.user,
             )
         }
-        GrantAccess::Api(_) => bail!("the broker returned a non-ssh grant for an ssh request"),
+        GrantAccess::Api(_) | GrantAccess::CommitSigning(_) => {
+            bail!("the broker returned a non-ssh grant for an ssh request")
+        }
     };
     ensure!(
         granted_user == user,
@@ -1150,6 +1221,9 @@ async fn status() -> Result<()> {
             GrantAccess::Ssh(ssh) => format!("{}@{}:{}", ssh.user, ssh.host, ssh.port),
             GrantAccess::Api(api) => format!("api:{}", api.secret),
             GrantAccess::Relay(relay) => format!("{}@{} via relay", relay.user, relay.target),
+            GrantAccess::CommitSigning(signing) => {
+                format!("commit signing with {}", signing.key_fingerprint)
+            }
         };
         println!(
             "  {subject}  grant {}  until {}",

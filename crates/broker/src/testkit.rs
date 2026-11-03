@@ -52,8 +52,8 @@ use crate::config::Config;
 use crate::identity::TailscaleServeIdentity;
 use crate::notify::{Doorbell, Notifier, NotifyError};
 use crate::policy::{
-    ApiSecretPolicy, CaKey, PolicyError, RelayCredential, SecretBackend, SecretValue, SshMode,
-    SshTarget, ValueFormat, not_a_relay_target,
+    ApiSecretPolicy, CaKey, CommitSigningKey, PolicyError, RelayCredential, SecretBackend,
+    SecretValue, SshMode, SshTarget, ValueFormat, not_a_relay_target,
 };
 use crate::proxy::{CallInfo, ProxyLimits};
 use crate::relay::{RelayEndpoint, RelayLimits, RelayServer, host_key};
@@ -225,6 +225,8 @@ pub struct FakeBackend {
     api_secrets: Mutex<HashMap<String, (ApiSecretPolicy, Zeroizing<String>)>>,
     api_swap: Mutex<Option<(ApiSecretPolicy, Zeroizing<String>)>>,
     ca: PrivateKey,
+    commit_signing: Mutex<Option<PrivateKey>>,
+    commit_signing_outage: Mutex<Option<String>>,
     target_outage: Mutex<Option<String>>,
     ca_outage: Mutex<Option<String>>,
     api_outage: Mutex<Option<String>>,
@@ -244,6 +246,10 @@ impl FakeBackend {
             api_secrets: Mutex::new(HashMap::new()),
             api_swap: Mutex::new(None),
             ca: PrivateKey::random(&mut OsRng, Algorithm::Ed25519).expect("CA key generation"),
+            commit_signing: Mutex::new(Some(
+                PrivateKey::random(&mut OsRng, Algorithm::Ed25519).expect("key generation"),
+            )),
+            commit_signing_outage: Mutex::new(None),
             target_outage: Mutex::new(None),
             ca_outage: Mutex::new(None),
             api_outage: Mutex::new(None),
@@ -447,6 +453,55 @@ impl FakeBackend {
         *self.ca_outage.lock().expect("outage lock poisoned") = detail.map(str::to_owned);
     }
 
+    /// Make commit signing key lookups fail with [`PolicyError::Unavailable`]
+    /// carrying `detail` (`None` restores them).
+    ///
+    /// # Panics
+    /// If the lock is poisoned.
+    pub fn set_commit_signing_outage(&self, detail: Option<&str>) {
+        *self
+            .commit_signing_outage
+            .lock()
+            .expect("outage lock poisoned") = detail.map(str::to_owned);
+    }
+
+    /// Replace the commit signing key (`None`: no key is configured).
+    ///
+    /// # Panics
+    /// If the lock is poisoned.
+    pub fn set_commit_signing_key(&self, key: Option<PrivateKey>) {
+        *self.commit_signing.lock().expect("key lock poisoned") = key;
+    }
+
+    /// The commit signing key's public half.
+    ///
+    /// # Panics
+    /// If the lock is poisoned or no key is configured.
+    #[must_use]
+    pub fn commit_signing_public_key(&self) -> PublicKey {
+        self.commit_signing
+            .lock()
+            .expect("key lock poisoned")
+            .as_ref()
+            .expect("a commit signing key")
+            .public_key()
+            .clone()
+    }
+
+    /// The commit signing key's private half, so that a test can look for it in
+    /// what the broker wrote.
+    ///
+    /// # Panics
+    /// If the lock is poisoned or no key is configured.
+    #[must_use]
+    pub fn commit_signing_private_key(&self) -> PrivateKey {
+        self.commit_signing
+            .lock()
+            .expect("key lock poisoned")
+            .clone()
+            .expect("a commit signing key")
+    }
+
     /// Make every read of a relay target with its credential take `delay`
     /// before answering, as a slow secret backend would (`None` restores
     /// them).
@@ -530,6 +585,17 @@ impl SecretBackend for FakeBackend {
         CaKey::new(self.ca.clone())
     }
 
+    async fn commit_signing_key(&self) -> Result<CommitSigningKey, PolicyError> {
+        Self::outage(&self.commit_signing_outage)?;
+        let key = self
+            .commit_signing
+            .lock()
+            .map_err(|_| PolicyError::Unavailable("fake backend lock poisoned".to_owned()))?
+            .clone()
+            .ok_or(PolicyError::NoCommitSigningKey)?;
+        CommitSigningKey::new(key)
+    }
+
     async fn api_secret(&self, name: &SecretName) -> Result<ApiSecretPolicy, PolicyError> {
         self.api_entry(name, |(policy, _)| policy.clone())
     }
@@ -593,11 +659,23 @@ pub struct BaseUrls {
 
 /// The limits a test may change from the broker's defaults; kept across
 /// [`TestBroker::restart`].
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 struct Limits {
     proxy: ProxyLimits,
     requests: RequestLimits,
     body_read_timeout: BodyReadTimeout,
+    commit_signing_max: Window,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            proxy: ProxyLimits::default(),
+            requests: RequestLimits::default(),
+            body_read_timeout: BodyReadTimeout::default(),
+            commit_signing_max: Window::COMMIT_SIGNING_DEFAULT,
+        }
+    }
 }
 
 /// A broker running in-process: real state, real routes driven with
@@ -735,6 +813,21 @@ impl TestBroker {
         Self::fresh(
             Limits {
                 proxy,
+                ..Limits::default()
+            },
+            Some(format!("{RELAY_PUBLIC_HOST}:{RELAY_PUBLIC_PORT}")),
+        )
+        .await
+    }
+
+    /// Like [`TestBroker::new`], with `WARDEN_COMMIT_SIGNING_MAX_WINDOW` at this.
+    ///
+    /// # Panics
+    /// If any part of the setup fails.
+    pub async fn with_commit_signing_max(commit_signing_max: Window) -> Self {
+        Self::fresh(
+            Limits {
+                commit_signing_max,
                 ..Limits::default()
             },
             Some(format!("{RELAY_PUBLIC_HOST}:{RELAY_PUBLIC_PORT}")),
@@ -881,6 +974,7 @@ impl TestBroker {
             relay_endpoint,
         )
         .with_limits(limits.requests)
+        .with_commit_signing_max(limits.commit_signing_max)
         .with_call_limits(config.proxy.max_calls_per_agent, config.proxy.max_calls);
         let passkeys = Passkeys::new(
             pool.clone(),
@@ -1284,6 +1378,19 @@ impl TestBroker {
             *user = UnixUser::try_from("backup".to_owned()).expect("valid user");
         }
         request
+    }
+
+    /// A request for commit signing.
+    ///
+    /// # Panics
+    /// If `goal` is not a valid goal.
+    #[must_use]
+    pub fn commit_signing_request(goal: &str, window: Window) -> CreateRequest {
+        CreateRequest {
+            goal: Goal::try_from(goal.to_owned()).expect("valid goal"),
+            access: Access::CommitSigning {},
+            window,
+        }
     }
 
     /// A request to use API secret `secret`.

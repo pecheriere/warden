@@ -6,6 +6,32 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Upgrading
+
+- New migration `0008_commit_signing_renewal`. An older `warden-server audit verify`
+  refuses a log with the new entries.
+
+### Added
+
+- Commit signing through the broker, so that the signing key is not on the agent's
+  machine, every signature is recorded and one agent can be cut off. The broker holds
+  an `ssh-ed25519` key (a 1Password item tagged `warden:commit-signing`, or
+  `[commit_signing]` in a local policy) and signs only the `git` namespace, only what
+  parses strictly as a commit, and only under the agent's own grant. `warden request
+  signing` asks for that grant, `warden setup git` makes `warden` git's signing program,
+  and `git commit` then works with no prompt. A signature means warden signed the commit
+  for that agent, not that anyone reviewed the change. Tag signing is not part of this:
+  a tag object is refused.
+- A commit signing grant lasts 30 days by default, up to
+  `WARDEN_COMMIT_SIGNING_MAX_WINDOW`. It is the only grant allowed past 4 hours, and
+  [the threat model](docs/threat-model.md#commit-signing) says why. warden tells the
+  owner a few days before one ends, and a new Renew button on the grants page takes one
+  passkey approval. Revoking stops new signatures at once.
+- With a commit signing setup, a commit fails, saying why and how to ask for a grant,
+  when the agent has no active grant or the broker cannot be reached. Nothing makes the
+  commit unsigned instead.
+- `warden doctor` and `warden-server doctor` check the commit signing setup.
+
 ## [0.9.0] - 2026-11-02
 
 ### Upgrading

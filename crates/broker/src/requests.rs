@@ -27,7 +27,9 @@ use warden_broker_proto::{
 use crate::agents::{self, AgentError};
 use crate::audit::{AuditError, AuditEvent, AuditLog};
 use crate::notify::{Doorbell, Notifier, doorbell};
-use crate::policy::{ApiSecretPolicy, PolicyError, SecretBackend, SshMode, SshTarget};
+use crate::policy::{
+    ApiSecretPolicy, CommitSigningPolicy, PolicyError, SecretBackend, SshMode, SshTarget,
+};
 use crate::proxy::{CallSlots, ProxyLimits};
 use crate::relay::{LiveSessions, RelayEndpoint};
 use crate::ssh_ca;
@@ -41,11 +43,14 @@ use self::transition::detached;
 pub(crate) use self::transition::{begin, note_if_not_applied, record};
 
 mod bus;
+mod commit_signing;
 mod limits;
 mod pending;
 
 pub use self::bus::StatusBus;
 use self::bus::next_change;
+pub use self::commit_signing::ActiveCommitSigning;
+use self::commit_signing::SigningRefusals;
 use self::limits::Refusals;
 pub use self::limits::{LimitRefusal, RequestLimits};
 pub use self::pending::PendingEntry;
@@ -204,6 +209,12 @@ impl From<PolicyError> for RequestError {
             },
             PolicyError::Unavailable(m) => Self::Unavailable(m),
             PolicyError::Ca(m) => Self::Unavailable(format!("SSH CA: {m}")),
+            PolicyError::NoCommitSigningKey => {
+                Self::Rejected(warden_broker_proto::commit_signing::NOT_CONFIGURED.to_owned())
+            }
+            PolicyError::CommitSigningKey(m) => {
+                Self::Unavailable(format!("commit signing key: {m}"))
+            }
         }
     }
 }
@@ -216,6 +227,8 @@ pub enum Destination {
     Ssh(SshTarget),
     /// An API secret.
     Api(ApiSecretPolicy),
+    /// Commit signing by the broker's key.
+    CommitSigning(CommitSigningPolicy),
 }
 
 impl Destination {
@@ -228,6 +241,7 @@ impl Destination {
         match self {
             Self::Ssh(target) => target.destination_digest(),
             Self::Api(policy) => policy.destination_digest(),
+            Self::CommitSigning(policy) => policy.destination_digest(),
         }
     }
 
@@ -237,6 +251,7 @@ impl Destination {
         match self {
             Self::Ssh(target) => target.max_window,
             Self::Api(policy) => policy.max_window,
+            Self::CommitSigning(policy) => policy.max_window,
         }
     }
 
@@ -248,6 +263,12 @@ impl Destination {
         let subject = match self {
             Self::Ssh(target) => format!("target {}", target.name),
             Self::Api(policy) => format!("secret {}", policy.name),
+            Self::CommitSigning(_) => {
+                if !window.is_commit_signing() {
+                    return Err("a commit signing grant lasts 1d, 7d, 30d or 90d".to_owned());
+                }
+                "commit signing".to_owned()
+            }
         };
         check_window(window, self.max_window(), &subject)
     }
@@ -379,6 +400,11 @@ pub struct Requests {
     limits: RequestLimits,
     /// What has been recorded and told about refusals under `limits`.
     refusals: Arc<Refusals>,
+    /// Longest commit signing grant the server allows. The only grant allowed to
+    /// outlast 4 hours: see `docs/threat-model.md`.
+    commit_signing_max: Window,
+    /// What has been recorded of refusals to sign.
+    signing_refusals: Arc<SigningRefusals>,
 }
 
 /// Which pending requests an expiry pass looks at.
@@ -420,6 +446,8 @@ impl Requests {
             recorded_change: Arc::default(),
             limits: RequestLimits::default(),
             refusals: Arc::default(),
+            commit_signing_max: Window::COMMIT_SIGNING_DEFAULT,
+            signing_refusals: Arc::default(),
         }
     }
 
@@ -488,57 +516,7 @@ impl Requests {
         agent: &AgentName,
         req: CreateRequest,
     ) -> Result<CreatedResponse, RequestError> {
-        let (dedupe_key, subject) = match &req.access {
-            Access::Ssh {
-                target,
-                user,
-                public_key,
-            } => {
-                check_ed25519(public_key)?;
-                let policy = self.backend.ssh_target(target).await?;
-                if !policy.users.contains(user) {
-                    return Err(RequestError::Rejected(format!(
-                        "user {user} not allowed for target {target}"
-                    )));
-                }
-                check_window(req.window, policy.max_window, &format!("target {target}"))
-                    .map_err(RequestError::Rejected)?;
-                if policy.mode == SshMode::Relay && self.relay.is_none() {
-                    return Err(RequestError::Rejected(format!(
-                        "target {target}: {RELAY_NOT_CONFIGURED}"
-                    )));
-                }
-                (
-                    format!("{agent}|ssh|{target}"),
-                    format!("ssh {user}@{target}"),
-                )
-            }
-            Access::Api {
-                secret,
-                methods,
-                path_prefix,
-            } => {
-                let policy = self
-                    .backend
-                    .api_secret(secret)
-                    .await
-                    .map_err(RequestError::from_secret_lookup)?;
-                check_window(req.window, policy.max_window, &format!("secret {secret}"))
-                    .map_err(RequestError::Rejected)?;
-                let scope = policy
-                    .scope(methods.as_deref(), path_prefix.as_deref())
-                    .map_err(RequestError::Rejected)?;
-                let methods: Vec<&str> = scope.methods().iter().map(http::Method::as_str).collect();
-                (
-                    format!(
-                        "{agent}|api|{secret}|{}|{}",
-                        methods.join(","),
-                        scope.path_prefix()
-                    ),
-                    scope.subject(secret),
-                )
-            }
-        };
+        let (dedupe_key, subject) = self.check_against_policy(agent, &req).await?;
         for _ in 0..INSERT_ATTEMPTS {
             // A stale pending row past its expiry must not hold the slot.
             self.expire_due(Scope::Dedupe(dedupe_key.clone())).await?;
@@ -591,6 +569,75 @@ impl Requests {
             }
         }
         Err(RequestError::Contended)
+    }
+
+    /// Check `req` of `agent` against the policy as it is now. Returns its dedupe
+    /// slot, and what it asks for in the owner's notification.
+    async fn check_against_policy(
+        &self,
+        agent: &AgentName,
+        req: &CreateRequest,
+    ) -> Result<(String, String), RequestError> {
+        Ok(match &req.access {
+            Access::Ssh {
+                target,
+                user,
+                public_key,
+            } => {
+                check_ed25519(public_key)?;
+                let policy = self.backend.ssh_target(target).await?;
+                if !policy.users.contains(user) {
+                    return Err(RequestError::Rejected(format!(
+                        "user {user} not allowed for target {target}"
+                    )));
+                }
+                check_window(req.window, policy.max_window, &format!("target {target}"))
+                    .map_err(RequestError::Rejected)?;
+                if policy.mode == SshMode::Relay && self.relay.is_none() {
+                    return Err(RequestError::Rejected(format!(
+                        "target {target}: {RELAY_NOT_CONFIGURED}"
+                    )));
+                }
+                (
+                    format!("{agent}|ssh|{target}"),
+                    format!("ssh {user}@{target}"),
+                )
+            }
+            Access::Api {
+                secret,
+                methods,
+                path_prefix,
+            } => {
+                let policy = self
+                    .backend
+                    .api_secret(secret)
+                    .await
+                    .map_err(RequestError::from_secret_lookup)?;
+                check_window(req.window, policy.max_window, &format!("secret {secret}"))
+                    .map_err(RequestError::Rejected)?;
+                let scope = policy
+                    .scope(methods.as_deref(), path_prefix.as_deref())
+                    .map_err(RequestError::Rejected)?;
+                let methods: Vec<&str> = scope.methods().iter().map(http::Method::as_str).collect();
+                (
+                    format!(
+                        "{agent}|api|{secret}|{}|{}",
+                        methods.join(","),
+                        scope.path_prefix()
+                    ),
+                    scope.subject(secret),
+                )
+            }
+            Access::CommitSigning {} => {
+                Destination::CommitSigning(self.commit_signing_policy().await?)
+                    .check_window(req.window)
+                    .map_err(RequestError::Rejected)?;
+                (
+                    format!("{agent}|commit_signing"),
+                    "commit signing".to_owned(),
+                )
+            }
+        })
     }
 
     async fn insert(
@@ -1007,6 +1054,7 @@ impl Requests {
         let id: Id = parse(&row, "id")?;
         let agent: AgentName = parse(&row, "agent")?;
         let view = serde_json::to_string(&grant)?;
+        let renews = matches!(grant.access, GrantAccess::CommitSigning(_));
         let mut events = vec![AuditEvent::Approved {
             id: id.clone(),
             grant_id: grant.grant_id.clone(),
@@ -1019,6 +1067,9 @@ impl Requests {
                 grant_id: grant.grant_id.clone(),
                 not_after: grant.not_after,
             });
+        }
+        if renews {
+            events.extend(self.renewal_events(&agent).await?);
         }
         let transition = format!("approval of request {id}");
         record(&self.audit, events, &transition).await?;
@@ -1055,12 +1106,20 @@ impl Requests {
             .bind(&view)
             .execute(&mut *tx)
             .await?;
+            let renewed = if renews {
+                commit_signing::end_renewed(&mut tx, &agent, &grant.grant_id, self.clock.now())
+                    .await?
+            } else {
+                Vec::new()
+            };
             tx.commit().await?;
-            Ok(())
+            Ok(renewed)
         }
         .await;
         note_if_not_applied(&self.audit, &applied, &transition).await;
-        applied?;
+        for request in applied? {
+            self.bus.publish(&request);
+        }
         self.bus.publish(&id);
         Ok(())
     }
@@ -1632,7 +1691,7 @@ pub fn sha256_hex(token: &str) -> String {
     hex::encode(Sha256::digest(token.as_bytes()))
 }
 
-/// The wire spelling of `window` (`15m`, `30m`, `1h`, `4h`).
+/// The wire spelling of `window` (`15m`, `30m`, `1h`, `4h`, `1d`, `7d`, `30d`, `90d`).
 #[must_use]
 pub const fn window_label(window: Window) -> &'static str {
     match window {
@@ -1640,6 +1699,10 @@ pub const fn window_label(window: Window) -> &'static str {
         Window::M30 => "30m",
         Window::H1 => "1h",
         Window::H4 => "4h",
+        Window::D1 => "1d",
+        Window::D7 => "7d",
+        Window::D30 => "30d",
+        Window::D90 => "90d",
     }
 }
 
@@ -1669,6 +1732,9 @@ pub async fn sweep_loop(
                 // must not hold up expiry or the waiting entries.
                 let flushing = requests.clone();
                 drop(tokio::spawn(async move { flushing.flush_refusals(false).await }));
+                // On its own task too: it waits for the notification channels.
+                let noticing = requests.clone();
+                drop(tokio::spawn(async move { noticing.notify_ending_commit_signing().await }));
             }
             // Any change, or the sender going away, means stop.
             _ = shutdown.changed() => {

@@ -16,7 +16,9 @@ use crate::approval::passkeys;
 use crate::config::{BackendSettings, Config};
 use crate::health::probe_target;
 use crate::notify::{ChannelSettings, Doorbell, NotifyError};
-use crate::policy::{CaProbe, LocalBackend, LocalProbe, OnePasswordConnect, VaultProbe};
+use crate::policy::{
+    CaProbe, CommitSigningProbe, LocalBackend, LocalProbe, OnePasswordConnect, VaultProbe,
+};
 use crate::requests::revocation::count_waiting_read_only;
 
 /// How long a listener has to accept a connection.
@@ -93,6 +95,13 @@ impl Environment for Live {
         match self {
             Self::OnePassword(connect) => connect.probe_ca().await,
             Self::Local(_) => CaProbe::Unknown(NOT_CONFIGURED.to_owned()),
+        }
+    }
+
+    async fn commit_signing(&self) -> CommitSigningProbe {
+        match self {
+            Self::OnePassword(connect) => connect.probe_commit_signing().await,
+            Self::Local(_) => CommitSigningProbe::Unknown(NOT_CONFIGURED.to_owned()),
         }
     }
 

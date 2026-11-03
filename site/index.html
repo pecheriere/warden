@@ -115,7 +115,7 @@
       </article>
       <article class="answer">
         <h3>warden moves the approval to your phone</h3>
-        <p>The agent asks for one piece of access, with a stated goal and a short window. You approve or deny it from wherever you are. Secrets stay in your vault and on your warden server (on the server alone with the weaker local backend). It still needs a person: if nobody answers, the request expires after 10 minutes and the agent has to ask again, and a grant lasts at most 4 hours. If you are asleep, the agent waits.</p>
+        <p>The agent asks for one piece of access, with a stated goal and a short window. You approve or deny it from wherever you are. Secrets stay in your vault and on your warden server (on the server alone with the weaker local backend). It still needs a person: if nobody answers, the request expires after 10 minutes and the agent has to ask again, and a grant lasts at most 4 hours, or for signing commits, which you can approve for longer, 30 days by default. If you are asleep, the agent waits.</p>
       </article>
     </div>
   </div>
@@ -253,7 +253,7 @@
         <h3><svg class="ico" width="20" height="20" aria-hidden="true"><use href="#i-lock"/></svg>What warden is built to hold</h3>
         <ul class="plain">
           <li><strong>An agent can only ask.</strong> Every grant needs a WebAuthn assertion from your enrolled passkey, tied to one request and one window.</li>
-          <li><strong>Grants are bounded.</strong> At most 4 hours, one target or secret, and the account or methods you approved. There is no "always allow". In SSH certificate mode the time limit is on new logins: a session already open keeps running.</li>
+          <li><strong>Grants are bounded.</strong> At most 4 hours, one target or secret, and the account or methods you approved. There is no "always allow". In SSH certificate mode the time limit is on new logins: a session already open keeps running. Signing commits is the one longer grant: warden keeps the key and records each signature, but a signature means warden signed for that agent, not that you reviewed the change.</li>
           <li><strong>The approval page stays off agent machines.</strong> Your tailnet policy grants it to your phone only, so an injected agent cannot put a prompt in front of you on a machine it controls. You set this policy: warden itself only checks that the caller is the owner.</li>
           <li><strong>Nothing on the internet.</strong> warden is reachable only over your tailnet, and refuses requests that arrive through Tailscale Funnel.</li>
           <li><strong>Open source.</strong> MIT or Apache-2.0, written in Rust with <code>unsafe</code> forbidden in its own crates. The <a href="https://github.com/pecheriere/warden/blob/main/docs/threat-model.md">threat model</a> is public.</li>

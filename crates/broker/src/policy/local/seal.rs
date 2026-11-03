@@ -131,6 +131,12 @@ fn access_lines(policy: &PolicyFile) -> Vec<String> {
             secret_file(Some(&ca.private_key_file))
         ));
     }
+    if let Some(key) = &policy.commit_signing {
+        lines.push(format!(
+            "commit signing: secret file {}",
+            secret_file(Some(&key.private_key_file))
+        ));
+    }
     for (name, entry) in &policy.targets {
         lines.push(format!(
             "target {}: address {}, mode {}, users {}, window {}, {} host key(s), key file {}, \

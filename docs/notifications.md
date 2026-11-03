@@ -14,6 +14,12 @@ A notification contains the agent, the target and user, the goal (truncated to
 contains secrets. The approval link opens the passkey approval page, which is
 only reachable over the tailnet.
 
+warden also tells you a few days before a commit signing grant ends: 3 days before, or
+sooner for a grant of a week or less. That notification names only the agent, and links to
+Active grants, where **Renew** leads to the usual approval page and passkey. It is sent once
+per grant, and tried again hourly if no channel took it. The audit log's
+`commit_signing_renewal_notified` entry names the channel.
+
 ## If you miss a notification
 
 A request stays pending for 10 minutes whether or not the notification was seen,
