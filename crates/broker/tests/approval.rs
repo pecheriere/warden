@@ -916,6 +916,7 @@ async fn live_lists_session_and_call_under_their_grant() {
                 "started_at": TEST_START,
                 "bytes_to_target": 0,
                 "bytes_from_target": 0,
+                "idle_secs": 0,
             }],
             "proxy_calls": [{
                 "method": "POST",
@@ -923,6 +924,21 @@ async fn live_lists_session_and_call_under_their_grant() {
                 "started_at": TEST_START,
             }],
         }]})
+    );
+}
+
+/// Idle time follows the broker's clock.
+#[tokio::test]
+async fn live_session_idle_time_follows_the_clock() {
+    let (broker, grant) = approved_grant().await;
+    let _session = broker.hold_live_session(&grant, "bot");
+    broker.clock.advance(125);
+
+    let live = broker.get("/grants/live").await;
+    assert_eq!(live.status, StatusCode::OK, "{}", live.body);
+    assert_eq!(
+        live.json()["grants"][0]["relay_sessions"][0]["idle_secs"],
+        125
     );
 }
 
@@ -1709,16 +1725,55 @@ async fn grants_page_lists_live_session_under_its_grant() {
         "{}",
         page.body
     );
+
+    assert!(
+        page.body
+            .contains(r#"<span class="nowrap idle">Active now</span>"#),
+        "{}",
+        page.body
+    );
+    broker.clock.advance(125);
+    let page = broker.get("/grants").await;
+    assert!(
+        page.body
+            .contains(r#"<span class="nowrap idle">Idle 2 min</span>"#),
+        "{}",
+        page.body
+    );
 }
 
+/// The page says when the certificate was issued and when it expires, the
+/// same as the certificate itself, and never that it was used.
 #[tokio::test]
-async fn grants_page_says_certificate_logins_are_not_visible() {
-    let (broker, _grant) = approved_grant().await;
+async fn grants_page_shows_the_issued_certificate_and_not_its_use() {
+    let (broker, created, token) = pending().await;
+    let approved = broker.approve(&token, Window::M30).await;
+    assert_eq!(approved.status, StatusCode::OK, "{}", approved.body);
+    let RequestStatus::Approved(view) = status(&broker, &created.id).await else {
+        panic!("expected approved");
+    };
+    let GrantAccess::Ssh(ssh) = view.access else {
+        panic!("not a certificate grant");
+    };
+    let cert = Certificate::from_openssh(&ssh.certificate).unwrap();
+    // Backdated 60 s to tolerate clock skew with the target.
+    assert_eq!(
+        i64::try_from(cert.valid_after()).unwrap() + 60,
+        TEST_START,
+        "issued at the start of the test"
+    );
+    assert_eq!(
+        i64::try_from(cert.valid_before()).unwrap(),
+        TEST_START + 1800
+    );
+
+    // Time passes: what the page says stays when it was issued.
+    broker.clock.advance(60);
     let page = broker.get("/grants").await;
     assert_eq!(page.status, StatusCode::OK, "{}", page.body);
     assert!(
         page.body.contains(
-            r#"data-kind="cert"><p class="detail">Certificate logins are not visible to warden.</p></div>"#
+            r#"data-kind="cert"><p class="detail">Certificate issued <time datetime="2027-01-15T08:00:00Z">08:00 UTC</time>, expires <time datetime="2027-01-15T08:30:00Z">08:30 UTC</time>.</p><p class="detail">Certificate logins are not visible to warden, so this does not show whether it was used.</p></div>"#
         ),
         "{}",
         page.body

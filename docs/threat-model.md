@@ -483,7 +483,9 @@ These were recorded during implementation and are accepted for this release.
     minute at most.
 - **Certificate logins are not audited.** They go straight to the target. warden
   records the approval and the certificate, and the target's `sshd` logs the login
-  with the certificate's key id. Ship those logs if you need that trail.
+  with the certificate's key id. Ship those logs if you need that trail. The
+  Active grants page shows when the certificate was issued and when it expires,
+  never whether it was used.
 - **Connect and notifiers can be configured over plain HTTP.** warden accepts
   `http` for `WARDEN_OP_CONNECT_URL` and the notifier URLs when the URL shows a
   local or private host, because Connect on its own network and a local Home

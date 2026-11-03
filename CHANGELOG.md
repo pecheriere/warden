@@ -6,6 +6,13 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- The Active grants page shows how long each relay session has been idle (since
+  bytes last moved either way), and when a certificate grant's certificate was
+  issued and when it expires. warden still cannot see logins made with a
+  certificate, and the page says it does not show whether one was used.
+
 ### Fixed
 
 - Approval UI accessibility: the selected grant window now has a border with at

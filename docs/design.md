@@ -642,10 +642,18 @@ github (CAN MODIFY: POST, PUT)`.
 The Active grants page lists a card per active grant with its Revoke button,
 and under each what the grant is doing right now, from the relay's live
 sessions and the proxy's calls in flight: for a relay grant each open session
-(start time, bytes to and from the target), for an API grant each call in
+(start time, bytes to and from the target, idle time), for an API grant each call in
 flight (method and path, start time), under a live indicator ("2 sessions
-open", "1 call in flight"). A certificate grant shows "Certificate logins are
-not visible to warden.": the logins go straight to the target. The page
+open", "1 call in flight"). Idle time is the time since bytes were last read from
+either side, the same quiet time the relay's idle timeout counts. The session's
+250 ms watchdog notes it from the counters it already reads, by the broker's clock,
+so the path that carries the bytes pays nothing for it; SSH keepalives and window
+changes do not count. `/grants/live` sends seconds rather than a time, so a viewer's
+wrong clock does not change what is shown, and a poll that changes only the idle
+time rewrites only that text, so a selection in the card survives. A certificate grant shows when its one
+certificate was issued (at approval) and when it expires, and says that certificate
+logins are not visible to warden, so this does not show whether it was used: the
+logins go straight to the target. The page
 renders this server-side; `warden.js` refreshes it every 5 s from `GET
 /grants/live` (owner only, `Cache-Control: no-store`) while the page is
 visible, with at most one request in flight, and stops polling on a 401 or
