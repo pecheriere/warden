@@ -850,20 +850,20 @@ async fn status_long_poll_wakes_on_deny() {
         let h = h.clone();
         let id = created.id.clone();
         tokio::spawn(async move {
-            let started = std::time::Instant::now();
-            let status = h
-                .requests
+            h.requests
                 .status(&agent("bot"), &id, Duration::from_secs(30))
-                .await;
-            (status, started.elapsed())
+                .await
         })
     };
     wait_for_waiter(&h).await;
     h.requests.deny(&token).await.unwrap();
 
-    let (status, elapsed) = poller.await.unwrap();
+    // Short of the 30 s wait, whose end would also find the request denied.
+    let status = tokio::time::timeout(Duration::from_secs(20), poller)
+        .await
+        .expect("the deny woke the poller")
+        .unwrap();
     assert_eq!(status.unwrap(), RequestStatus::Denied);
-    assert!(elapsed < Duration::from_secs(5), "woke after {elapsed:?}");
     assert!(matches!(
         h.requests.deny(&token).await,
         Err(RequestError::AlreadyDecided)

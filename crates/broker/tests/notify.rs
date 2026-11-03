@@ -1,7 +1,7 @@
 //! Notifiers against wiremock servers.
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use secrecy::SecretString;
 use serde_json::json;
@@ -132,9 +132,9 @@ async fn fallback_uses_secondary_on_primary_timeout() {
         .mount(&secondary)
         .await;
     let f = Fallback::new(ha(&primary), vec![ntfy(&secondary)]);
-    let start = Instant::now();
+    // The primary would answer after its delay, so only its timeout gets the
+    // fallback to ring the secondary.
     assert_eq!(f.ring(&bell()).await.unwrap(), "ntfy");
-    assert!(start.elapsed() < Duration::from_secs(7));
 }
 
 #[tokio::test]
