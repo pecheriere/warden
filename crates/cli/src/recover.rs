@@ -259,6 +259,23 @@ mod tests {
     }
 
     #[test]
+    fn the_scope_collect_prints_cannot_reach_the_terminal_raw() {
+        let scope = crate::api_scope(&ApiGrant {
+            secret: "home-api".parse().unwrap(),
+            origin: "https://api.example.com\u{1b}[2J".to_owned(),
+            methods: vec!["POST\u{1b}[2J".to_owned(), "GET\u{202e}".to_owned()],
+            path_prefix: "/api/\u{1b}]0;x\u{7}\n".to_owned(),
+            header: "Authorization".to_owned(),
+            digest: "d".repeat(64),
+        });
+        assert_eq!(scope, warden_broker_proto::doctor::sanitize(&scope));
+        assert!(!scope.chars().any(char::is_control), "{scope:?}");
+        assert!(!scope.contains('\u{202e}'), "{scope:?}");
+        assert!(scope.starts_with("scope: can modify: POST"), "{scope:?}");
+        assert!(scope.contains("https://api.example.com"), "{scope:?}");
+    }
+
+    #[test]
     fn a_pending_line_names_what_an_agent_needs_to_act() {
         let line = pending_line(&PendingRequest {
             id: Id::random(),

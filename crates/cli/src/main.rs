@@ -21,7 +21,7 @@ use clap::{Parser, Subcommand};
 use ssh_key::rand_core::OsRng;
 use ssh_key::{Algorithm, Certificate, PrivateKey};
 use url::Url;
-use warden_broker_proto::doctor::EXIT_NOTHING_FAILED;
+use warden_broker_proto::doctor::{EXIT_NOTHING_FAILED, sanitize};
 use warden_broker_proto::signing::{Audience, PROTOCOL};
 use warden_broker_proto::{
     Access, AgentName, ApiGrant, CreateRequest, Goal, GrantAccess, GrantView, Id, RequestStatus,
@@ -669,19 +669,20 @@ fn check_scope_not_wider(
 }
 
 /// The scope of `api` for the owner-facing line after approval: whether it
-/// can modify anything, the methods and where it applies.
+/// can modify anything, the methods and where it applies. These come from the
+/// broker as plain strings, so the line is made safe to print.
 fn api_scope(api: &ApiGrant) -> String {
     let access = if is_read_only(&api.methods) {
         "read-only".to_owned()
     } else {
         format!("can modify: {}", modifying_methods(&api.methods).join(", "))
     };
-    format!(
+    sanitize(&format!(
         "scope: {access}; methods {}; {}{}",
         api.methods.join(", "),
         api.origin,
         api.path_prefix
-    )
+    ))
 }
 
 fn announce(grant: &GrantView) {

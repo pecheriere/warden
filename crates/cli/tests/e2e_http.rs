@@ -808,3 +808,58 @@ async fn e2e_same_api_request_again_picks_up_a_killed_runs_request() {
     let call = s.cli.run(&["http", SECRET_NAME, "GET", &url]);
     assert_eq!(call.status.code(), Some(0), "{}", text(&call.stderr));
 }
+
+/// Have the owner approve an api request of `agent`, whose key is `key`, and
+/// return the id of its grant, as the broker lists it for that agent.
+async fn approved_on_the_broker(s: &Setup, agent: &str, key: &str) -> String {
+    let request = TestBroker::api_request(SECRET_NAME, "call the e2e api", Window::M15);
+    let (_, token) = s.broker.create_request(agent, request).await;
+    let approved = s.broker.approve(&token, Window::M15).await;
+    assert!(approved.status.is_success(), "{}", approved.body);
+    let grants = s.broker.api_get(key, "/v1/grants").await.json();
+    grants[0]["grant_id"].as_str().unwrap().to_owned()
+}
+
+/// `warden request collect` refuses `grant`, says so and leaves nothing behind.
+fn assert_not_collected(s: &Setup, grant: &str) {
+    let out = s.cli.run(&["request", "collect", grant]);
+    let stderr = text(&out.stderr);
+    assert_eq!(out.status.code(), Some(5), "{stderr}");
+    assert!(stderr.contains("no live grant"), "{stderr}");
+    assert_eq!(out.stdout, [] as [u8; 0]);
+    assert_eq!(s.cli.files_containing(grant), [] as [PathBuf; 0]);
+    let listed = text(&s.cli.run(&["status"]).stdout);
+    assert_eq!(section(&listed, "local api grants:"), [] as [&str; 0]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn e2e_collect_refuses_a_grant_that_is_not_this_agents_or_not_live() {
+    let s = setup().await;
+
+    // Another agent's live grant: the same answer as one that does not exist.
+    let other = s.broker.add_agent("other").await;
+    let others = approved_on_the_broker(&s, "other", &other).await;
+    assert_not_collected(&s, &others);
+
+    // This agent's own, revoked.
+    let key = s.cli.key.clone();
+    let revoked = approved_on_the_broker(&s, "e2e", &key).await;
+    let answer = s
+        .broker
+        .api_post(&key, &format!("/v1/grants/{revoked}/revoke"))
+        .await;
+    assert!(answer.status.is_success(), "{}", answer.body);
+    assert_not_collected(&s, &revoked);
+
+    // This agent's own, past its window.
+    let expired = approved_on_the_broker(&s, "e2e", &key).await;
+    s.broker.clock.advance(3600);
+    assert_not_collected(&s, &expired);
+
+    // The refusals came from the grant, not from a broken setup: a live one of
+    // this agent is recorded, and the check above would have seen it.
+    let live = approved_on_the_broker(&s, "e2e", &key).await;
+    let out = s.cli.run(&["request", "collect", &live]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    assert_ne!(s.cli.files_containing(&live), [] as [PathBuf; 0]);
+}
