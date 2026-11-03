@@ -262,7 +262,7 @@ class Workflows(unittest.TestCase):
         self.assertNotIn("write", job.split("upload-artifact", 1)[0].split("steps:", 1)[0])
 
     def test_the_demo_builds_only_after_the_cli_and_image_are_attested(self) -> None:
-        """Otherwise the demo's crates could replace a CLI archive before it is attested."""
+        """A file replaced after the attestations is then unattested, and refused."""
         demo = self.needs("demo")
         self.assertIn("merge", demo)
         self.assertIn("attest-cli", demo)

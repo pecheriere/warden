@@ -139,11 +139,13 @@ jobs:
       contents: read
 
   attest-cli:
-    # Attests the CLI archives before the demo's build runs at all, so that nothing
-    # the demo's extra dependencies do can get a changed CLI archive attested. Reads
-    # the builds' artifacts unmerged, and attests in the same job as the check, with
-    # no download in between. It builds nothing. Its digests are the record of what
-    # was attested: a job output, which another job's artifact token cannot change.
+    # Attests the CLI archives before the demo's release build starts, so that a
+    # change made after this job is unattested. This does not cover anything earlier:
+    # the `ci` job already ran every workspace crate in this run, the demo's included
+    # (see "Not covered yet" in docs/verifying-releases.md). Reads the builds'
+    # artifacts unmerged, and attests in the same job as the check, with no download
+    # in between. It builds nothing. Its digests are the record of what was attested:
+    # a job output, which another job's artifact token cannot change.
     needs: cli
     runs-on: ubuntu-latest
     permissions:
@@ -229,10 +231,12 @@ jobs:
           push-to-registry: true
 
   demo:
-    # Last of the builds: it compiles many crates the CLI does not use, and any job
-    # that runs them could replace another job's artifact with a stolen runner
-    # token. By now the CLI archives and the image are attested, so a replaced file
-    # would be unattested, and the draft job and scripts/sign-release.sh refuse it.
+    # Last of the builds. Any job that runs dependencies could replace another job's
+    # artifact with a stolen runner token. By now the CLI archives and the image are
+    # attested, so a file replaced from here on would be unattested, and the draft job
+    # and scripts/sign-release.sh refuse it. `ci` must stay before attestation, so that
+    # nothing is published or attested until the tests pass, which leaves the gap
+    # "Not covered yet" in docs/verifying-releases.md describes.
     needs: [merge, attest-cli]
     uses: $/.github/workflows/build-archives.yml
     with:
