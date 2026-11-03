@@ -39,10 +39,15 @@ Compare that fingerprint with the signing keys on the maintainer's GitHub accoun
 curl -fsSL https://api.github.com/users/pecheriere/ssh_signing_keys | jq -r '.[].key' | ssh-keygen -lf -
 ```
 
-The first command should print
-`SHA256:aF+0knqtnI3TWceyXtxVRGbcfH64yoZfRGJ3HnDbPT4`, and the second should list
-it. The account can hold other signing keys; only the ones in `release-signers`
-sign releases.
+The first command should print two fingerprints, and the second should list both:
+
+- `SHA256:ntKexh209NMYbpJ61FiTDYFpGUFZEr7v4BDlWEU1ATk` signs release tags and manifests from v0.9.0.
+- `SHA256:aF+0knqtnI3TWceyXtxVRGbcfH64yoZfRGJ3HnDbPT4` signed tags up to v0.8.1. It
+  is listed so that they still verify, and only for tags: a manifest signed with it
+  fails verification, because the list limits this key to the `git` namespace.
+
+The account can hold other signing keys; only the ones in `release-signers` sign
+releases.
 
 **There is no source for this key off GitHub yet.** The file, the account and this
 page are all on GitHub, so a compromise of GitHub could change them together, and
@@ -134,7 +139,9 @@ signature covers that image.
 
 The private key is not on GitHub: the repository has no Actions secret holding it,
 no workflow uses it, and only its public half is listed on the account and in this
-repository. The release workflow
+repository. From v0.9.0 it is held in 1Password, which asks the maintainer to approve
+each signature, so it is not in a file that a process on the maintainer's machine
+could read. The release workflow
 cannot sign the manifest, which is why the maintainer signs it after the workflow
 has finished, with `scripts/sign-release.sh`, before publishing the draft.
 
