@@ -41,7 +41,7 @@ is not one: see [Sign-off](#sign-off-dco).
 | `crates/broker/migrations` | SQLite migrations, applied at startup; never edit a released one, add a new file |
 | `crates/broker/src/testkit` | test helpers (throwaway `sshd`, fixtures), behind the `testkit` feature |
 | `crates/cli` | `warden-broker-cli`, the `warden` command agents run |
-| `crates/demo` | `warden-demo`: the throwaway local demo, never shipped (`docs/demo.md`) |
+| `crates/demo` | `warden-demo`: the throwaway local demo, never in the image, released only as its own archive (`docs/demo.md`) |
 | `docs/` | user and design documentation |
 | `site/` | the landing page on GitHub Pages: static HTML and CSS, no scripts, no external resources. It names no version and leaves setup commands to the README, so a release does not touch it |
 | `deploy/systemd` | the systemd unit that `docs/deployment-systemd.md` installs |
@@ -185,9 +185,12 @@ Semantic versioning, one version for the whole workspace.
    `warden-release`. A tag cannot be replaced afterwards, and step 3 refuses one
    from another key. `.github/workflows/release.yml` refuses a tag that
    does not match the version, reruns CI, builds the multi-arch image,
-   pushes it to `ghcr.io/pecheriere/warden`, builds the CLI archives, attests
-   both, and leaves a draft release for the tag, with the archives attached
-   and the changelog section as its notes.
+   pushes it to `ghcr.io/pecheriere/warden`, builds and attests the CLI archives, then
+   the demo archives, and leaves a draft release for the tag, with the archives attached
+   and the changelog section as its notes. If the demo fails, the image and CLI
+   attestations exist but no draft does, and the run's summary says so: rerun the
+   failed jobs. A refusal that the archives are not the ones attested is a possible
+   compromise: investigate before rerunning.
 3. When the workflow has finished, the maintainer signs the manifest with
    `scripts/sign-release.sh vx.y.z`. It checks the tag's signature and the
    attestations of the draft's archives and of the image, then uploads

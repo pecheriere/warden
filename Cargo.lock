@@ -4628,6 +4628,7 @@ dependencies = [
  "ssh-key 0.6.7",
  "thiserror 2.0.21",
  "unicode-properties",
+ "url",
 ]
 
 [[package]]

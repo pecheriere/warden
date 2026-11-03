@@ -9,9 +9,10 @@ fails, the request ends in `error`. The worst-case delay before the owner is
 notified (or the request fails) is 5 s times the number of channels. The audit
 log's `notified` entry names the channel that delivered the notification.
 
-A notification contains the agent, the target and user, the goal (truncated to
-200 characters, with `…` appended when cut) and the approval link. It never
-contains secrets. The approval link opens the passkey approval page, which is
+A notification contains the agent, the target and user, the session label if the
+agent stated one (worded as its statement), the goal (truncated to 200 characters,
+with `…` appended when cut) and the approval link. It never contains secrets, or a
+link stated in the request, which a notifier could preview. The approval link opens the passkey approval page, which is
 only reachable over the tailnet.
 
 ## If you miss a notification
@@ -158,7 +159,8 @@ channel is one module plus its registration, in `crates/broker/src/notify/`:
    `ChannelKind::ALL` (a unit test fails if you forget). The compiler lists
    every `match` that needs the new arm.
 4. Keep secrets out of the payload: the doorbell carries the title, the
-   truncated goal and the approval link only.
+   stated session label, the truncated goal and the approval link only. Never add
+   the link a request states.
 5. Use the shared HTTP client (`http_client()`): fixed connect and request
    timeouts, no redirects. Never add a configurable timeout; the chain also
    enforces 5 s per channel.

@@ -30,6 +30,10 @@ pub fn request_ended(status: &RequestStatus) -> String {
     }
 }
 
+/// Said when the broker's request is this one without its session label and link.
+pub const CONTEXT_NOT_SHOWN: &str = "the owner does not see this session label or link: this \
+     broker may be too old to know them, or the same request without them is already pending";
+
 /// The error for a request the broker answered with `pending`, whose
 /// fingerprint is not the one this request has. `subject` names the target or
 /// secret. All the CLI knows is that the fingerprints differ, so this says no

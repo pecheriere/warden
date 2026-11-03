@@ -94,7 +94,7 @@ and secure by construction.
 | Agent (an automated agent on the workstation or an agent host) | Semi-trusted: well-intentioned but may be prompt-injected. Bounded by goal, window, targets and destination rules. |
 | warden server | Trusted; holds a **read-only** 1Password Connect token, and reads the SSH CA key at each approval. Compromise = compromise of everything it brokers; hardened accordingly. |
 | 1Password Connect | Trusted secret backend; reachable only from warden. |
-| Notifiers (Home Assistant Companion, ntfy) | Untrusted doorbells: receive goal text and a link only. |
+| Notifiers (Home Assistant Companion, ntfy) | Untrusted doorbells: receive goal text, a stated session label and a link to the approval page only. |
 | Tailscale | Transport and network-level identity; the tailnet policy is the outer access control. |
 | SSH targets, API origins | Reached only as approved. warden trusts a target only once it proves a pinned host key, and an origin only through verified TLS. Their answers are untrusted. |
 
@@ -138,8 +138,9 @@ Components, all in one Rust workspace:
   `ssh` and proxied HTTP calls, and checks its own setup with `warden doctor`.
 - **`warden-demo`** ([local demo](demo.md)): the broker's code with the Tailscale
   identity, 1Password and notifiers replaced, for trying the flow on one machine.
-  Not secure for real use, never published and never in the image, which
-  `scripts/check-demo-not-shipped.sh` enforces in CI.
+  Not secure for real use, never on a registry and never in the image, which
+  `scripts/check-demo-not-shipped.sh` enforces in CI. A release attaches it only as
+  its own attested archive, named as a demo.
 - A shared crate for the protocol types and request signing.
 
 Backends/notifiers are traits (`SecretBackend`, `Notifier`) with the v1
@@ -642,10 +643,18 @@ github (CAN MODIFY: POST, PUT)`.
 The Active grants page lists a card per active grant with its Revoke button,
 and under each what the grant is doing right now, from the relay's live
 sessions and the proxy's calls in flight: for a relay grant each open session
-(start time, bytes to and from the target), for an API grant each call in
+(start time, bytes to and from the target, idle time), for an API grant each call in
 flight (method and path, start time), under a live indicator ("2 sessions
-open", "1 call in flight"). A certificate grant shows "Certificate logins are
-not visible to warden.": the logins go straight to the target. The page
+open", "1 call in flight"). Idle time is the time since bytes were last read from
+either side, the same quiet time the relay's idle timeout counts. The session's
+250 ms watchdog notes it from the counters it already reads, by the broker's clock,
+so the path that carries the bytes pays nothing for it; SSH keepalives and window
+changes do not count. `/grants/live` sends seconds rather than a time, so a viewer's
+wrong clock does not change what is shown, and a poll that changes only the idle
+time rewrites only that text, so a selection in the card survives. A certificate grant shows when its one
+certificate was issued (at approval) and when it expires, and says that certificate
+logins are not visible to warden, so this does not show whether it was used: the
+logins go straight to the target. The page
 renders this server-side; `warden.js` refreshes it every 5 s from `GET
 /grants/live` (owner only, `Cache-Control: no-store`) while the page is
 visible, with at most one request in flight, and stops polling on a 401 or

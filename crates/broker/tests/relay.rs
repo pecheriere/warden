@@ -112,6 +112,8 @@ async fn approved_agent(broker: &TestBroker, name: &str) -> Agent {
     broker.add_agent(name).await;
     let key = random_key();
     let request = CreateRequest {
+        session: None,
+        link: None,
         goal: Goal::try_from("relay test".to_owned()).unwrap(),
         access: Access::Ssh {
             target: TargetName::try_from(TARGET.to_owned()).unwrap(),
@@ -1132,6 +1134,38 @@ async fn snapshot_counts_bytes() {
     assert_eq!(s.broker.live_relay_bytes(), [] as [(u64, u64); 0]);
 }
 
+/// A session's last activity stays while nothing moves and follows the bytes
+/// that move, by the broker's clock.
+#[tokio::test(flavor = "multi_thread")]
+async fn snapshot_tracks_last_activity() {
+    let s = key_target().await;
+    let agent = approved_agent(&s.broker, "bot").await;
+    let c = login(&s.broker, s.relay, TARGET, &agent.key).await;
+    let mut channel = c.handle.channel_open_session().await.unwrap();
+    channel.exec(true, "cat").await.unwrap();
+    assert!(reply(&mut channel).await);
+    let started = s.broker.clock.now();
+    assert_eq!(s.broker.live_relay_last_activity(), vec![started]);
+
+    s.broker.clock.advance(100);
+    assert_eq!(s.broker.live_relay_last_activity(), vec![started]);
+
+    channel.data(&b"hello"[..]).await.unwrap();
+    // The watchdog notes it at its next check.
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while s.broker.live_relay_last_activity() != vec![started + 100] {
+        assert!(
+            Instant::now() < deadline,
+            "last activity never moved: {:?}",
+            s.broker.live_relay_last_activity()
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    channel.close().await.unwrap();
+    await_events(&s.broker, "relay_session_ended", 1).await;
+}
+
 fn too_many(out: &Output, what: &str) {
     assert_eq!(out.status.code(), Some(255), "{}", text(&out.stderr));
     assert!(text(&out.stderr).contains(what), "{}", text(&out.stderr));
@@ -1264,8 +1298,10 @@ async fn spawn_server(dir: &Path, relay_public: bool) -> (tokio::process::Child,
     let (api, approval, relay) = (free_port(), free_port(), free_port());
     let host_key = dir.join("relay_host_ed25519");
     let mut cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_warden-server"));
+    // Only `cargo llvm-cov` sets this: without it, this process reports no coverage.
     cmd.arg("serve")
         .env_clear()
+        .envs(std::env::var_os("LLVM_PROFILE_FILE").map(|file| ("LLVM_PROFILE_FILE", file)))
         .env("WARDEN_DB_PATH", dir.join("warden.db"))
         .env("WARDEN_AUDIT_PATH", dir.join("audit.jsonl"))
         .env("WARDEN_PUBLIC_URL", "https://warden.example.ts.net")

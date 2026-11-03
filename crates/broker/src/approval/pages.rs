@@ -9,11 +9,17 @@ use warden_broker_proto::{Access, ApiGrant, CreateRequest, Fingerprint, GrantAcc
 
 use super::LiveGrant;
 use crate::policy::{ApiScope, SshMode};
-use crate::requests::{ActiveGrant, Destination, HistoryEntry, PendingView, window_label};
+use crate::requests::{
+    ActiveGrant, Destination, HistoryEntry, LinkHosts, PendingView, window_label,
+};
 
 mod pending;
+mod stated;
+#[cfg(test)]
+mod stated_tests;
 
 pub use self::pending::pending;
+use self::stated::{stated_fields, stated_lines};
 
 /// Every window, shortest first.
 const WINDOWS: [Window; 4] = [Window::M15, Window::M30, Window::H1, Window::H4];
@@ -167,7 +173,6 @@ fn warning_icon() -> Markup {
     }
 }
 
-/// A key: approving or creating with a passkey.
 /// A fingerprint where it is not the page's main fact: the words people compare,
 /// then the hex that the API, the audit log and older CLIs show.
 fn fingerprint_forms(fingerprint: &Fingerprint) -> Markup {
@@ -176,6 +181,7 @@ fn fingerprint_forms(fingerprint: &Fingerprint) -> Markup {
     }
 }
 
+/// A key: approving or creating with a passkey.
 fn key_icon() -> Markup {
     html! {
         circle cx="8" cy="15" r="4" {}
@@ -248,7 +254,7 @@ const fn window_words(window: Window) -> &'static str {
 /// The approval page for a pending request: the details on one side, the
 /// fingerprint and the decision (grant window, Approve, Deny) on the other.
 #[must_use]
-pub fn approve(view: &PendingView, now: i64) -> Markup {
+pub fn approve(view: &PendingView, hosts: &LinkHosts, now: i64) -> Markup {
     let max = view.destination.max_window();
     let default = view.request.window.min(max);
     let remaining = (view.expires_at - now).max(0);
@@ -288,6 +294,7 @@ pub fn approve(view: &PendingView, now: i64) -> Markup {
                         span.label { "Goal" }
                         span { bdi { (view.request.goal) } }
                     }
+                    (stated_fields(&view.request, hosts))
                 }
             }
             div.col {
@@ -533,6 +540,19 @@ fn bytes(n: u64) -> String {
     }
 }
 
+/// How long a session has been quiet, for people: `Active now` under 5 s (the
+/// page refreshes every 5 s), then `Idle 12 s`, `Idle 4 min`, `Idle 2 h 5 min`,
+/// rounded down. `idleLabel` in `warden.js` is the same function.
+fn idle_label(secs: u64) -> String {
+    match secs {
+        0..5 => "Active now".to_owned(),
+        5..60 => format!("Idle {secs} s"),
+        60..3_600 => format!("Idle {} min", secs / 60),
+        _ if secs % 3_600 < 60 => format!("Idle {} h", secs / 3_600),
+        _ => format!("Idle {} h {} min", secs / 3_600, secs % 3_600 / 60),
+    }
+}
+
 /// The live area of a grant card: what the grant is doing right now
 /// (`live`), refreshed by `warden.js` from `GET /grants/live`, which builds
 /// the same markup.
@@ -552,7 +572,12 @@ fn live_area(grant: &ActiveGrant, live: Option<&LiveGrant<'_>>) -> Markup {
     html! {
         div.live-area data-grant=(grant.grant_id) data-kind=(kind.name()) {
             @if kind == LiveKind::Cert {
-                p.detail { "Certificate logins are not visible to warden." }
+                // Issued, never "used": warden cannot know.
+                p.detail {
+                    "Certificate issued " (clock(grant.not_before))
+                    ", expires " (clock(grant.not_after)) "."
+                }
+                p.detail { "Certificate logins are not visible to warden, so this does not show whether it was used." }
             } @else if summary.is_empty() {
                 p.detail { (if kind == LiveKind::Relay { "No sessions open" } else { "No calls in flight" }) }
             } @else {
@@ -567,6 +592,7 @@ fn live_area(grant: &ActiveGrant, live: Option<&LiveGrant<'_>>) -> Markup {
                                 " · "
                                 span.nowrap { (bytes(session.bytes_from_target)) " from target" }
                             }
+                            span.nowrap.idle { (idle_label(session.idle_secs)) }
                         }
                     }
                     @for call in calls {
@@ -602,7 +628,13 @@ fn unwritten_warning(unwritten: i64) -> Markup {
 /// entry per grant) and revoke buttons, under a warning if `unwritten` audit
 /// entries are waiting for the log.
 #[must_use]
-pub fn grants(grants: &[ActiveGrant], live: &[LiveGrant<'_>], now: i64, unwritten: i64) -> Markup {
+pub fn grants(
+    grants: &[ActiveGrant],
+    live: &[LiveGrant<'_>],
+    hosts: &LinkHosts,
+    now: i64,
+    unwritten: i64,
+) -> Markup {
     if grants.is_empty() {
         let content = end_state(
             &Chip {
@@ -625,6 +657,7 @@ pub fn grants(grants: &[ActiveGrant], live: &[LiveGrant<'_>], now: i64, unwritte
                     div.field.tight {
                         span.who #(format!("agent-{}", grant.grant_id)) { bdi { (grant.agent) } }
                         (grant_access(grant))
+                        (stated_lines(&grant.request, hosts))
                         div.meta {
                             span { "Fingerprint " (fingerprint_forms(&grant.fingerprint)) }
                             span {
@@ -653,7 +686,7 @@ pub fn grants(grants: &[ActiveGrant], live: &[LiveGrant<'_>], now: i64, unwritte
 /// Read-only list of recent requests, newest first: a card per request on a
 /// phone, a table from 720 px.
 #[must_use]
-pub fn history(entries: &[HistoryEntry]) -> Markup {
+pub fn history(entries: &[HistoryEntry], hosts: &LinkHosts) -> Markup {
     if entries.is_empty() {
         let content = end_state(
             &Chip {
@@ -690,7 +723,10 @@ pub fn history(entries: &[HistoryEntry]) -> Markup {
                                 span { span.nowrap { (date) } " " span.nowrap { (time) } }
                             }
                             td.who data-label="Agent" { bdi { (entry.agent) } }
-                            td data-label="Goal" { bdi { (entry.request.goal) } }
+                            td data-label="Goal" {
+                                bdi { (entry.request.goal) }
+                                (stated_lines(&entry.request, hosts))
+                            }
                             td data-label="Access" { code { (subject) } }
                             td data-label="Fingerprint" { span { (fingerprint_forms(&entry.fingerprint)) } }
                             td data-label="Status" { span.chip { (entry.status) } }
@@ -793,11 +829,13 @@ mod tests {
 
     use super::super::{LiveGrant, LiveProxyCall, LiveRelaySession, STYLESHEET};
     use super::{
-        approve, bytes, cancelled, clock, enroll, grants, history, internal_error, not_found,
-        not_pending, secs_label, unavailable, utc_parts,
+        approve, bytes, cancelled, clock, enroll, grants, history, idle_label, internal_error,
+        not_found, not_pending, secs_label, unavailable, utc_parts,
     };
     use crate::policy::{ApiSecretPolicy, SshMode, SshTarget, ValueFormat};
-    use crate::requests::{ActiveGrant, Destination, HistoryEntry, PendingEntry, PendingView};
+    use crate::requests::{
+        ActiveGrant, Destination, HistoryEntry, LinkHosts, PendingEntry, PendingView,
+    };
 
     const NOW: i64 = 1_800_000_000;
 
@@ -842,6 +880,8 @@ mod tests {
 
     fn ssh_request(goal: Goal, window: Window) -> CreateRequest {
         CreateRequest {
+            session: None,
+            link: None,
             goal,
             access: Access::Ssh {
                 target: TargetName::try_from("switch-01".to_owned()).unwrap(),
@@ -854,6 +894,8 @@ mod tests {
 
     fn api_request(goal: Goal, methods: &[&str]) -> CreateRequest {
         CreateRequest {
+            session: None,
+            link: None,
             goal,
             access: Access::Api {
                 secret: SecretName::try_from("home-api".to_owned()).unwrap(),
@@ -918,6 +960,7 @@ mod tests {
             fingerprint: fingerprint(n),
             request,
             access,
+            not_before: NOW - 300,
             not_after: NOW + 1800,
         }
     }
@@ -986,11 +1029,13 @@ mod tests {
                         started_at: NOW - 1260,
                         bytes_to_target: 1_234,
                         bytes_from_target: 3_456_789,
+                        idle_secs: 750,
                     },
                     LiveRelaySession {
                         started_at: NOW - 95,
                         bytes_to_target: 512,
                         bytes_from_target: 48_200,
+                        idle_secs: 2,
                     },
                 ],
                 proxy_calls: Vec::new(),
@@ -1087,6 +1132,68 @@ mod tests {
         ]
     }
 
+    /// `request` with a session label and a link, as long as they get in practice.
+    fn stated(mut request: CreateRequest) -> CreateRequest {
+        request.session = Some("release-work on the nightly pipeline".parse().unwrap());
+        request.link = Some(
+            "https://git.example.com/acme/home-lab/pull/1234"
+                .parse()
+                .unwrap(),
+        );
+        request
+    }
+
+    /// The list a fixture's links are on.
+    fn stated_hosts() -> LinkHosts {
+        LinkHosts::parse("git.example.com").unwrap()
+    }
+
+    /// The pages that show a session label and a link, one on a host off the list.
+    fn stated_pages() -> Vec<(&'static str, Markup)> {
+        let hosts = stated_hosts();
+        let mut request = stated(ssh_request(goal("Deploy the nightly build"), Window::M30));
+        let approve_page = approve(
+            &pending(
+                agent("build-agent"),
+                request.clone(),
+                ssh_destination(SshMode::Cert),
+            ),
+            &hosts,
+            NOW,
+        );
+        let mut entries = pending_entries();
+        entries.truncate(2);
+        entries[0].request = stated(ssh_request(goal("Deploy the nightly build"), Window::H1));
+        entries[1].request = stated(api_request(goal("Read device status"), &["GET"]));
+        let mut active = active_grants();
+        active.truncate(2);
+        active[0].request = request.clone();
+        active[1].request = stated(api_request(goal("Read device status"), &["GET"]));
+        let mut past = history_entries();
+        past[1].request = request.clone();
+        request.link = Some("https://other.example.org/session".parse().unwrap());
+        past[2].request = request.clone();
+        let off_list = approve(
+            &pending(
+                agent("build-agent"),
+                request,
+                ssh_destination(SshMode::Cert),
+            ),
+            &hosts,
+            NOW,
+        );
+        vec![
+            ("approve-stated", approve_page),
+            ("approve-stated-off-list", off_list),
+            ("pending-stated", super::pending(&entries, &hosts, NOW)),
+            (
+                "grants-stated",
+                grants(&active, &idle(&active), &hosts, NOW, 0),
+            ),
+            ("history-stated", history(&past, &hosts)),
+        ]
+    }
+
     /// Every page with fixture data, named for the screenshot script.
     fn pages() -> Vec<(&'static str, Markup)> {
         let long = long_goal();
@@ -1104,6 +1211,7 @@ mod tests {
                         ssh_request(long.clone(), Window::H1),
                         ssh_destination(SshMode::Cert),
                     ),
+                    &LinkHosts::default(),
                     NOW,
                 ),
             ),
@@ -1115,6 +1223,7 @@ mod tests {
                         ssh_request(goal("Deploy the nightly build"), Window::M30),
                         ssh_destination(SshMode::Relay),
                     ),
+                    &LinkHosts::default(),
                     NOW,
                 ),
             ),
@@ -1126,34 +1235,66 @@ mod tests {
                         api_request(goal("Read device status"), &["GET"]),
                         api_destination(),
                     ),
+                    &LinkHosts::default(),
                     NOW,
                 ),
             ),
             (
                 "approve-api-modify",
-                approve(&pending(long_agent(), modify, api_destination()), NOW),
+                approve(
+                    &pending(long_agent(), modify, api_destination()),
+                    &LinkHosts::default(),
+                    NOW,
+                ),
             ),
             ("not-pending", not_pending()),
             ("cancelled", cancelled()),
             ("not-found", not_found()),
             ("unavailable", unavailable("The broker is starting up.")),
             ("internal-error", internal_error()),
-            ("grants-empty", grants(&[], &[], NOW, 0)),
-            ("grants-empty-unwritten", grants(&[], &[], NOW, 2)),
-            ("grants", grants(&active, &idle(&active), NOW, 0)),
-            ("grants-unwritten", grants(&active, &idle(&active), NOW, 2)),
-            ("grants-live", grants(&live_grants, &live, NOW, 0)),
-            ("history-empty", history(&[])),
-            ("history", history(&history_entries())),
+            (
+                "grants-empty",
+                grants(&[], &[], &LinkHosts::default(), NOW, 0),
+            ),
+            (
+                "grants-empty-unwritten",
+                grants(&[], &[], &LinkHosts::default(), NOW, 2),
+            ),
+            (
+                "grants",
+                grants(&active, &idle(&active), &LinkHosts::default(), NOW, 0),
+            ),
+            (
+                "grants-unwritten",
+                grants(&active, &idle(&active), &LinkHosts::default(), NOW, 2),
+            ),
+            (
+                "grants-live",
+                grants(&live_grants, &live, &LinkHosts::default(), NOW, 0),
+            ),
+            ("history-empty", history(&[], &LinkHosts::default())),
+            (
+                "history",
+                history(&history_entries(), &LinkHosts::default()),
+            ),
             ("enroll", enroll()),
-            ("pending-empty", super::pending(&[], NOW)),
-            ("pending", super::pending(&pending_entries(), NOW)),
+            (
+                "pending-empty",
+                super::pending(&[], &LinkHosts::default(), NOW),
+            ),
+            (
+                "pending",
+                super::pending(&pending_entries(), &LinkHosts::default(), NOW),
+            ),
             // The screenshots show the viewport only: these two first.
             (
                 "pending-modify-and-outage",
-                super::pending(&pending_entries()[2..], NOW),
+                super::pending(&pending_entries()[2..], &LinkHosts::default(), NOW),
             ),
         ]
+        .into_iter()
+        .chain(stated_pages())
+        .collect()
     }
 
     /// The text of every tag (`<...>`) in `html`. Maud escapes `<` and `>` in
@@ -1177,6 +1318,13 @@ mod tests {
         assert!(!html.contains("<style"), "{name}: style element");
         assert!(!html.contains("<img"), "{name}: image element");
         for tag in tags(html) {
+            // The one thing a page may point away with, and only for someone to
+            // open: not a resource the page loads.
+            if tag.starts_with(r#"<a class="stated-link" href="https://"#)
+                && tag.ends_with(r#" target="_blank" rel="noopener noreferrer">"#)
+            {
+                continue;
+            }
             let without_svg = tag.replace("http://www.w3.org/2000/svg", "");
             assert!(
                 !without_svg.contains("http://") && !without_svg.contains("https://"),
@@ -1199,9 +1347,9 @@ mod tests {
 
     #[test]
     fn the_grants_page_warns_only_while_entries_are_waiting() {
-        let quiet = grants(&[], &[], NOW, 0).into_string();
+        let quiet = grants(&[], &[], &LinkHosts::default(), NOW, 0).into_string();
         assert!(!quiet.contains("Not in the audit log"), "{quiet}");
-        let html = grants(&[], &[], NOW, 3).into_string();
+        let html = grants(&[], &[], &LinkHosts::default(), NOW, 3).into_string();
         assert!(html.contains("Not in the audit log"), "{html}");
         assert!(html.contains("3 audit log entries"), "{html}");
         assert!(html.contains(r#"role="alert""#), "{html}");
@@ -1248,7 +1396,7 @@ mod tests {
     #[test]
     fn pending_cards_offer_both_decisions_and_never_guess_at_the_scope() {
         let entries = pending_entries();
-        let html = super::pending(&entries, NOW).into_string();
+        let html = super::pending(&entries, &LinkHosts::default(), NOW).into_string();
         assert_eq!(html.matches("<section class=\"card pending\"").count(), 4);
         assert_eq!(html.matches("Approve…</button>").count(), 4, "{html}");
         assert_eq!(html.matches(">Deny</button>").count(), 4, "{html}");
@@ -1263,12 +1411,12 @@ mod tests {
         assert!(!html.contains("<form"), "{html}");
 
         // With the policy unreadable the card does not say read-only or not.
-        let unread = super::pending(&entries[3..], NOW).into_string();
+        let unread = super::pending(&entries[3..], &LinkHosts::default(), NOW).into_string();
         assert!(unread.contains("could not be read"), "{unread}");
         assert!(!unread.contains("Read-only"), "{unread}");
         assert!(!unread.contains("Can modify"), "{unread}");
 
-        let html = super::pending(&[], NOW).into_string();
+        let html = super::pending(&[], &LinkHosts::default(), NOW).into_string();
         assert!(html.contains("Nothing waiting"), "{html}");
         // The empty state refreshes too, and has room for what a denial said.
         assert!(html.contains(r#"data-pending="empty""#), "{html}");
@@ -1284,7 +1432,7 @@ mod tests {
 
     #[test]
     fn marks_the_current_page_in_the_navigation() {
-        let html = grants(&[], &[], NOW, 0).into_string();
+        let html = grants(&[], &[], &LinkHosts::default(), NOW, 0).into_string();
         // Both the inline links and the menu's copy mark it.
         assert_eq!(
             html.matches(r#"<a href="/grants" aria-current="page">"#)
@@ -1314,6 +1462,7 @@ mod tests {
                 api_request(goal("Read device status"), &["GET"]),
                 api_destination(),
             ),
+            &LinkHosts::default(),
             NOW,
         )
         .into_string();
@@ -1335,6 +1484,7 @@ mod tests {
                 ssh_request(goal("Deploy the nightly build"), Window::M30),
                 ssh_destination(SshMode::Cert),
             ),
+            &LinkHosts::default(),
             NOW,
         )
         .into_string();
@@ -1357,6 +1507,7 @@ mod tests {
         request.window = Window::H4;
         let html = approve(
             &pending(agent("build-agent"), request, api_destination()),
+            &LinkHosts::default(),
             NOW,
         )
         .into_string();
@@ -1402,6 +1553,7 @@ mod tests {
                 ssh_request(goal("Deploy the nightly build"), Window::M30),
                 ssh_destination(SshMode::Cert),
             ),
+            &LinkHosts::default(),
             NOW,
         )
         .into_string();
@@ -1426,8 +1578,11 @@ mod tests {
             ("not_found", not_found()),
             ("unavailable", unavailable("x")),
             ("internal_error", internal_error()),
-            ("grants_empty", grants(&[], &[], NOW, 0)),
-            ("history_empty", history(&[])),
+            (
+                "grants_empty",
+                grants(&[], &[], &LinkHosts::default(), NOW, 0),
+            ),
+            ("history_empty", history(&[], &LinkHosts::default())),
         ] {
             let html = page.into_string();
             assert!(
@@ -1461,7 +1616,7 @@ mod tests {
     #[test]
     fn grants_are_cards_with_the_revoke_hook() {
         let active = active_grants();
-        let html = grants(&active, &idle(&active), NOW, 0).into_string();
+        let html = grants(&active, &idle(&active), &LinkHosts::default(), NOW, 0).into_string();
         assert_eq!(
             html.matches(r#"<section class="card grant">"#).count(),
             4,
@@ -1495,11 +1650,11 @@ mod tests {
     #[test]
     fn grants_show_live_activity_under_each_grant() {
         let (active, live) = live_grants_fixture();
-        let html = grants(&active, &live, NOW, 0).into_string();
+        let html = grants(&active, &live, &LinkHosts::default(), NOW, 0).into_string();
         let (relay, api, cert) = (id(5), id(4), id(2));
         assert!(
             html.contains(&format!(
-                r#"<div class="live-area" data-grant="{relay}" data-kind="relay"><p class="live">2 sessions open</p><ul class="live-list" role="list"><li><span>Session since <time datetime="2027-01-15T07:39:00Z">07:39 UTC</time></span><span><span class="nowrap">1.2 KB to target</span> · <span class="nowrap">3.4 MB from target</span></span></li><li><span>Session since <time datetime="2027-01-15T07:58:25Z">07:58 UTC</time></span><span><span class="nowrap">512 B to target</span> · <span class="nowrap">48.2 KB from target</span></span></li></ul></div>"#
+                r#"<div class="live-area" data-grant="{relay}" data-kind="relay"><p class="live">2 sessions open</p><ul class="live-list" role="list"><li><span>Session since <time datetime="2027-01-15T07:39:00Z">07:39 UTC</time></span><span><span class="nowrap">1.2 KB to target</span> · <span class="nowrap">3.4 MB from target</span></span><span class="nowrap idle">Idle 12 min</span></li><li><span>Session since <time datetime="2027-01-15T07:58:25Z">07:58 UTC</time></span><span><span class="nowrap">512 B to target</span> · <span class="nowrap">48.2 KB from target</span></span><span class="nowrap idle">Active now</span></li></ul></div>"#
             )),
             "{html}"
         );
@@ -1511,7 +1666,7 @@ mod tests {
         );
         assert!(
             html.contains(&format!(
-                r#"<div class="live-area" data-grant="{cert}" data-kind="cert"><p class="detail">Certificate logins are not visible to warden.</p></div>"#
+                r#"<div class="live-area" data-grant="{cert}" data-kind="cert"><p class="detail">Certificate issued <time datetime="2027-01-15T07:55:00Z">07:55 UTC</time>, expires <time datetime="2027-01-15T08:30:00Z">08:30 UTC</time>.</p><p class="detail">Certificate logins are not visible to warden, so this does not show whether it was used.</p></div>"#
             )),
             "{html}"
         );
@@ -1525,9 +1680,27 @@ mod tests {
     }
 
     #[test]
+    fn idle_time_reads_in_the_largest_fitting_units() {
+        for (secs, shown) in [
+            (0, "Active now"),
+            (4, "Active now"),
+            (5, "Idle 5 s"),
+            (59, "Idle 59 s"),
+            (60, "Idle 1 min"),
+            (3_599, "Idle 59 min"),
+            (3_600, "Idle 1 h"),
+            (3_659, "Idle 1 h"),
+            (3_660, "Idle 1 h 1 min"),
+            (86_400, "Idle 24 h"),
+        ] {
+            assert_eq!(idle_label(secs), shown, "{secs}");
+        }
+    }
+
+    #[test]
     fn idle_grants_say_nothing_is_live() {
         let active = active_grants();
-        let html = grants(&active, &idle(&active), NOW, 0).into_string();
+        let html = grants(&active, &idle(&active), &LinkHosts::default(), NOW, 0).into_string();
         assert_eq!(
             html.matches(r#"<div class="live-area""#).count(),
             4,
@@ -1543,7 +1716,7 @@ mod tests {
         );
         assert_eq!(html.matches("No calls in flight").count(), 2, "{html}");
         // A grant missing from the live entries renders as idle.
-        let html = grants(&active, &[], NOW, 0).into_string();
+        let html = grants(&active, &[], &LinkHosts::default(), NOW, 0).into_string();
         assert_eq!(html.matches("No calls in flight").count(), 2, "{html}");
     }
 
@@ -1556,6 +1729,7 @@ mod tests {
                 started_at: NOW,
                 bytes_to_target: 0,
                 bytes_from_target: 0,
+                idle_secs: 0,
             }],
             proxy_calls: vec![
                 LiveProxyCall {
@@ -1570,7 +1744,7 @@ mod tests {
                 },
             ],
         }];
-        let html = grants(&active, &live, NOW, 0).into_string();
+        let html = grants(&active, &live, &LinkHosts::default(), NOW, 0).into_string();
         assert!(
             html.contains(r#"<p class="live">1 session open · 2 calls in flight</p>"#),
             "{html}"
@@ -1583,7 +1757,7 @@ mod tests {
 
     #[test]
     fn history_labels_every_cell_for_the_phone_cards() {
-        let html = history(&history_entries()).into_string();
+        let html = history(&history_entries(), &LinkHosts::default()).into_string();
         assert!(html.contains(r#"<table class="history">"#), "{html}");
         for label in [
             "Time",

@@ -120,6 +120,7 @@ impl SignedCli {
             .env("TMPDIR", self.root.path().join("tmp"))
             .env("SSH_AUTH_SOCK", &self.agent.socket)
             .env_remove("WARDEN_AGENT_KEY")
+            .env_remove("WARDEN_SESSION")
             .stdin(Stdio::null());
         cmd
     }
@@ -266,6 +267,52 @@ async fn signed_setup() -> Setup {
     }
 }
 
+/// A wrong label or link stops the command as a usage error, before it reads any
+/// configuration, and a link's value is not repeated: it could hold a credential.
+#[test]
+fn e2e_a_bad_session_or_link_is_a_usage_error() {
+    let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+    let cli = SignedCli::new(&key);
+    let request = ["request", "api", SECRET_NAME, "--for", "15m", "--goal", "x"];
+    let link = cli.run(
+        &[
+            &request[..],
+            &["--link", "https://u:hunter2@git.example.com/"],
+        ]
+        .concat(),
+    );
+    assert_eq!(link.status.code(), Some(64), "{}", text(&link.stderr));
+    assert!(
+        text(&link.stderr).contains("--link"),
+        "{}",
+        text(&link.stderr)
+    );
+    assert!(
+        !text(&link.stderr).contains("hunter2"),
+        "{}",
+        text(&link.stderr)
+    );
+    let option = cli.run(&[&request[..], &["--session", "a\nb"]].concat());
+    assert_eq!(option.status.code(), Some(64), "{}", text(&option.stderr));
+    let variable = cli
+        .command()
+        .args(request)
+        .env("WARDEN_SESSION", "a\nb")
+        .output()
+        .unwrap();
+    assert_eq!(
+        variable.status.code(),
+        Some(64),
+        "{}",
+        text(&variable.stderr)
+    );
+    assert!(
+        text(&variable.stderr).contains("WARDEN_SESSION"),
+        "{}",
+        text(&variable.stderr)
+    );
+}
+
 /// Request API access, approve it, then make a GET and a POST whose body
 /// comes from standard input, each signed.
 async fn api_calls(s: &Setup, cli: &SignedCli) {
@@ -282,10 +329,14 @@ async fn api_calls(s: &Setup, cli: &SignedCli) {
             "15m",
             "--goal",
             "call the e2e api with a signed agent",
+            "--session",
+            "e2e-session",
         ],
     )
     .await;
     assert!(text(&api.stdout).starts_with("approved: grant "));
+    let log = fs::read_to_string(s.broker.audit_path()).unwrap();
+    assert!(log.contains(r#""session":"e2e-session""#), "{log}");
     let call = cli.run(&["http", SECRET_NAME, "GET", &s.upstream.url("/hello")]);
     assert_eq!(call.status.code(), Some(0), "{}", text(&call.stderr));
     assert_eq!(text(&call.stdout), "hello from upstream");

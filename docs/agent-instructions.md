@@ -7,7 +7,8 @@ rules is in [Agent usage](agent-usage.md#rules-for-requesting-access), and
 [Examples](agent-examples.md) walks through an SSH deployment and an API call.
 
 Add the targets and secrets this agent may use where the block says so: it
-cannot list them, and it should not guess.
+cannot list them, and it should not guess. If several sessions of this agent run
+on one machine, also see [Telling sessions apart](agent-usage.md#telling-sessions-apart).
 
 ````markdown
 ## Privileged access: warden
@@ -65,6 +66,24 @@ the issue, change or error. One line, at most 500 characters, nothing secret.
 
 The goal must be true. Do not write one that makes the request look smaller
 than it is, and do not use a grant for anything else.
+
+### Naming your session
+
+If your session has a name, say it, so the person can tell which session is
+asking. Add `--session "<name>"` to the request, unless `WARDEN_SESSION` is
+already set: one line, at most 64 characters. If `warden` or the broker is too old
+for that (`warden` rejects the option, or says the owner does not see the label),
+start the goal with the name instead: `[release-work] restart the web container
+to load the config from PR #42`.
+
+This is a claim, not an identity. Nothing checks it, and you share your key with
+every other session of this agent. Use your session's real name, and do not use a
+name to make a request look like it comes from someone else.
+
+If the person has asked for a link back to your work, add `--link <url>`: `https`,
+no query or fragment. The request is refused if the broker's owner has not listed
+that host; make it again without the link, and do not look for another way to
+pass it.
 
 ### The window
 

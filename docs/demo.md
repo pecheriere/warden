@@ -8,7 +8,48 @@ a passkey in a browser, the agent uses the grant, and the audit log shows it.
 and it serves plain HTTP on loopback. Do not put real secrets near it. A real
 deployment is described in [deployment.md](deployment.md).
 
-## What you need
+## Get it
+
+You need a browser that can create a passkey, and one of these two ways to get
+the binaries. There is no Docker version: reaching a container from the browser
+means listening on something other than loopback inside it, which the demo
+refuses.
+
+### With the release binaries
+
+Releases after v0.9.0 attach `warden-demo-<version>-<platform>.tar.gz` for macOS
+arm64, Linux amd64 and Linux arm64, next to the `warden` CLI. Pick a release that
+lists them on the [releases page](https://github.com/pecheriere/warden/releases).
+The name, a `NOT-FOR-REAL-USE.txt` in the archive and the program's own output
+all say that it is a demo. It is attested and signed like the other files, so you
+can [verify where it came from](verifying-releases.md), which says nothing about
+whether it is safe for real use: it is not.
+
+Checking the attestation needs a logged-in [`gh`](https://cli.github.com/). In a
+first terminal:
+
+```sh
+version=x.y.z         # the release you picked
+platform=linux-amd64  # or linux-arm64, macos-arm64
+base="https://github.com/pecheriere/warden/releases/download/v$version"
+mkdir warden-try && cd warden-try
+for name in warden-demo warden; do
+  file="$name-$version-$platform.tar.gz"
+  curl -fLO "$base/$file"
+  gh attestation verify "$file" --repo pecheriere/warden \
+    --signer-workflow pecheriere/warden/.github/workflows/release.yml \
+    --source-ref "refs/tags/v$version"
+  tar -xzf "$file" --strip-components=1
+done
+./warden-demo
+```
+
+On macOS, download with `curl` as above rather than a browser: the binaries are
+not notarized, and macOS may block one that a browser downloaded. On a minimal
+Linux system, install the `ca-certificates` package: the `warden` CLI refuses to
+start without the system's CA certificates.
+
+### From source
 
 - Rust, through [rustup](https://rustup.rs): the repository pins its version,
   and rustup installs that for you.
@@ -16,15 +57,7 @@ deployment is described in [deployment.md](deployment.md).
   Debian or Ubuntu: `sudo apt install build-essential pkg-config libssl-dev`.
   Without the headers, add `--features warden-broker/vendored-openssl` to the
   build command, which also needs `perl` and `make`.
-- A browser that can create a passkey. The first build takes a few minutes.
-
-The demo currently needs Rust, because it is built from source: whether to
-publish a demo binary has not been decided, and the binaries a release attaches
-are the `warden` CLI only. There is no Docker version either. Reaching a
-container from the browser means listening on something other than loopback
-inside it, which the demo refuses.
-
-## Run it
+- The first build takes a few minutes.
 
 In a first terminal:
 
@@ -34,18 +67,22 @@ cargo build --locked -p warden-demo -p warden-broker-cli
 target/debug/warden-demo
 ```
 
-It prints these steps with the real ports, paths and enrollment code. The
-ports change on every run.
+## Run it
+
+The demo prints these steps with the real ports, paths and enrollment code. The
+ports change on every run, and it names the `warden` beside it, or the one on your
+`PATH` if there is none beside it. Use what it prints where these steps say
+`warden`.
 
 1. **Enroll a passkey.** Open the printed `http://localhost:<port>/enroll`,
    enter the printed code and any name. Use `localhost`, as printed: `WebAuthn`
    does not work on an IP address.
 
-2. **Be the agent.** In a second terminal, in the same directory:
+2. **Be the agent.** In a second terminal:
 
    ```sh
    source '<the printed path>/agent.env'
-   target/debug/warden request api demo-api --for 15m --goal "try the warden demo"
+   warden request api demo-api --for 15m --goal "try the warden demo"
    ```
 
    It waits for your decision, and the first terminal prints an approval link
@@ -58,7 +95,7 @@ ports change on every run.
    the agent printed, and approve with your passkey. Then, as the agent:
 
    ```sh
-   target/debug/warden http demo-api GET https://localhost:<port>/v1/hello
+   warden http demo-api GET https://localhost:<port>/v1/hello
    ```
 
    The answer shows `"authorization_received": "[REDACTED]"`. The demo API
@@ -119,8 +156,14 @@ Tailscale Serve's identity.
 
 `warden-demo` takes no options and reads no `WARDEN_*` variable, so it cannot be
 pointed at another address. `scripts/check-demo-not-shipped.sh` runs in CI and
-fails if `warden-server` or `warden` links the demo or the testkit, if the
-broker mentions the demo or gains another identity source, if the Dockerfile
-builds or copies anything more, if the release workflow could build the demo, or
-if the crate becomes publishable. `.dockerignore` keeps the demo's sources out
-of the image build, and the CI image job checks the built image for it.
+fails if `warden-server` or `warden` links the demo or the testkit, if the demo
+enables the testkit, if the broker mentions the demo or gains another identity
+source, if the Dockerfile builds or copies anything more, if the release workflow
+builds the demo other than through `scripts/package-binary.sh`, or if the crate
+becomes publishable to a registry. `.dockerignore` keeps the demo's sources out of
+the image build, and the CI image job checks the built image for it.
+
+A release attaches the demo only as its own archive, built on its own runner by
+that script, which refuses a binary whose startup banner does not match the
+archive it is going into. Downloading the demo gives you the demo: it adds nothing
+to a `warden-server` or a `warden` you already have.

@@ -1,0 +1,8 @@
+warden-demo is a demo. It is not secure for real use.
+
+Everyone on the machine counts as the owner, it serves plain HTTP on loopback,
+and all its data is throwaway. Do not put real secrets near it, and do not use
+it as a warden server.
+
+What it shows: https://github.com/pecheriere/warden/blob/main/docs/demo.md
+A real deployment: https://github.com/pecheriere/warden/blob/main/docs/deployment.md
