@@ -1869,7 +1869,7 @@ async fn feed_until_held(
     let mut input = child.stdin.take().unwrap();
     let stdout = child.stdout.take().unwrap();
     let fed = Arc::new(AtomicUsize::new(0));
-    let feed = tokio::spawn({
+    let feeder = tokio::spawn({
         let fed = Arc::clone(&fed);
         async move {
             let chunk = vec![0_u8; 1 << 20];
@@ -1885,7 +1885,7 @@ async fn feed_until_held(
     });
     let deadline = Instant::now() + Duration::from_secs(60);
     let (mut seen, mut since) = (0, Instant::now());
-    while !feed.is_finished() {
+    while !feeder.is_finished() {
         let count = fed.load(Ordering::Acquire);
         if count != seen {
             (seen, since) = (count, Instant::now());
