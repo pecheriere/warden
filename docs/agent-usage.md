@@ -466,12 +466,23 @@ appending to the file that `CLAUDE_ENV_FILE` names:
 ```sh
 #!/bin/bash
 # The hook's input is JSON on stdin; session_title is there only for a custom title.
+# An invalid WARDEN_SESSION stops every request, so keep only printable ASCII, which
+# can pass any label check, and cut by bytes, which cannot split a character then.
 input="$(cat)"
-label="$(printf '%s' "$input" | jq -r '.session_title // .session_id[0:8]' | tr -d '\n' | cut -c1-64)"
-printf 'export WARDEN_SESSION=%s\n' "$(printf '%q' "$label")" >> "$CLAUDE_ENV_FILE"
+clean() { LC_ALL=C tr -cd ' -~' | head -c 64; }
+label="$(printf '%s' "$input" | jq -r '.session_title // empty' 2>/dev/null | clean)"
+if [ -z "${label// /}" ]; then
+  label="$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null | clean | head -c 8)"
+fi
+# With no usable name, set nothing: the request simply has no label.
+if [ -n "${label// /}" ] && [ -n "${CLAUDE_ENV_FILE:-}" ]; then
+  printf 'export WARDEN_SESSION=%q\n' "$label" >> "$CLAUDE_ENV_FILE"
+fi
 ```
 
-This has not been tried against a real session.
+A title in another script or with emoji loses those characters, and falls back to the
+ID if nothing is left. This was run with sample input against `warden`'s validation,
+not in a real session.
 
 ## Using a grant
 

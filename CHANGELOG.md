@@ -22,7 +22,10 @@ All notable changes to this project are recorded here. The format follows
 ### Upgrading
 
 - A `request_created` audit entry can have a new `session` field. An older
-  `warden-server audit verify` refuses a log with such an entry.
+  `warden-server audit verify` refuses a log with such an entry, and an older
+  `warden-server` does not start on one, because it verifies the log when it opens
+  it. So once an agent has sent a label, rolling back also means restoring the
+  audit log from the backup taken before the upgrade.
 - Upgrade the broker before relying on labels and links: an older broker ignores
   them, and `warden request` warns that the owner does not see them.
 
