@@ -123,6 +123,8 @@ impl Requests {
                     goal,
                     access,
                     window,
+                    session,
+                    link,
                 } = serde_json::from_str(&body)?;
                 Ok(PendingRequest {
                     id: parse(row, "id")?,
@@ -130,6 +132,8 @@ impl Requests {
                     goal,
                     access,
                     window,
+                    session,
+                    link,
                     created_at: row.try_get("created_at")?,
                     expires_at: row.try_get("expires_at")?,
                 })

@@ -14,7 +14,7 @@ use zeroize::Zeroizing;
 use crate::notify::{ChannelKind, ChannelList, parse_channels};
 use crate::policy::onepassword::parse_host_port;
 use crate::proxy::ProxyLimits;
-use crate::requests::RequestLimits;
+use crate::requests::{LinkHosts, RequestLimits};
 use crate::signed::BodyReadTimeout;
 
 mod plain_http;
@@ -310,6 +310,9 @@ pub struct Config {
     /// pending limit) and `WARDEN_REQUEST_LIMIT_WINDOW_SECS` (default 600, 60
     /// to 3600).
     pub requests: RequestLimits,
+    /// `WARDEN_REQUEST_LINK_HOSTS`: the hosts a request may link to. Unset, no
+    /// request may carry a link.
+    pub link_hosts: LinkHosts,
     /// The SSH relay.
     pub relay: RelayConfig,
     /// How long the body of a signed request may take to arrive. Not set
@@ -591,6 +594,15 @@ impl Config {
 
         let proxy = proxy_limits(&get)?;
         let requests = request_limits(&get)?;
+        let link_hosts = get("WARDEN_REQUEST_LINK_HOSTS")
+            .map_or_else(
+                || Ok(LinkHosts::default()),
+                |value| LinkHosts::parse(&value),
+            )
+            .map_err(|reason| ConfigError::Invalid {
+                var: "WARDEN_REQUEST_LINK_HOSTS",
+                reason,
+            })?;
 
         let relay = RelayConfig {
             listen: addr("WARDEN_RELAY_LISTEN", "127.0.0.1:2222")?,
@@ -628,6 +640,7 @@ impl Config {
             notify,
             proxy,
             requests,
+            link_hosts,
             relay,
             body_read_timeout: BodyReadTimeout::default(),
         })

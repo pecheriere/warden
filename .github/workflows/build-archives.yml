@@ -1,0 +1,83 @@
+name: build archives
+
+# Builds one product's release archives, each on a native runner, for release.yml.
+# Called once for the CLI and once, later, for the demo.
+#
+# This job compiles dependencies and runs their build scripts, so it holds neither
+# the attestation identity nor write access to the release. Like the image, it
+# builds with no cache: pull request builds write to the cache, and an entry from one
+# must not be able to reach a published binary. Each binary builds on its own runner,
+# so that the build scripts of one binary's dependencies cannot touch another binary.
+
+on:
+  workflow_call:
+    inputs:
+      product:
+        description: What to build, cli or demo
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ inputs.product }} (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - platform: macos-arm64
+            target: aarch64-apple-darwin
+            runner: macos-15
+          - platform: linux-amd64
+            target: x86_64-unknown-linux-musl
+            runner: ubuntu-24.04
+          - platform: linux-arm64
+            target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Before the build, so that nothing the build runs can change the answer.
+      - id: archive
+        name: Name the one file this job may produce
+        env:
+          PRODUCT: ${{ inputs.product }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          file=$(python3 -I .github/scripts/collect_archives.py name "$PRODUCT" "$PLATFORM")
+          printf 'file=%s\n' "$file" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@d124f86f28ff42855784ff3319f48ac182c248f8 # 1.99.1
+        with:
+          toolchain: "1.99"
+      # In the checkout, so the target lands on the toolchain rust-toolchain.toml
+      # selects, which the action's `targets` input does not reach.
+      - name: Add the build target
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          rustup toolchain install
+          rustup target add "$TARGET"
+      # The musl targets link everything statically, aws-lc's C code included,
+      # which needs a C compiler for musl.
+      - name: Install the musl C toolchain
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Build and pack the binary
+        env:
+          PRODUCT: ${{ inputs.product }}
+          TARGET: ${{ matrix.target }}
+          PLATFORM: ${{ matrix.platform }}
+        run: scripts/package-binary.sh "$PRODUCT" "$TARGET" "$PLATFORM" dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: archive-${{ inputs.product }}-${{ matrix.platform }}
+          # The exact file, never a wildcard: a build script could leave a file in
+          # dist named for another job's archive.
+          path: dist/${{ steps.archive.outputs.file }}
+          if-no-files-found: error
+          retention-days: 1

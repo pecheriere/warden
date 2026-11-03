@@ -6,9 +6,9 @@ use warden_broker_proto::Access;
 
 use super::{
     Chip, Nav, clock, destination_access, empty_icon, end_state_parts, icon, key_icon, layout,
-    window_words,
+    stated_fields, window_words,
 };
-use crate::requests::PendingEntry;
+use crate::requests::{LinkHosts, PendingEntry};
 
 /// What `entry` asks for when its current policy could not be read. It claims
 /// nothing about whether the access can modify anything: the approval page does
@@ -38,7 +38,7 @@ fn notices() -> Markup {
 /// The card of one pending request. Both buttons are described by whose request
 /// it is and its fingerprint, since every card has the same two labels. The agent
 /// is a heading so that a screen reader can move from card to card.
-fn card(entry: &PendingEntry, now: i64) -> Markup {
+fn card(entry: &PendingEntry, hosts: &LinkHosts, now: i64) -> Markup {
     let who = format!("agent-{}", entry.id);
     let fingerprint = format!("fingerprint-{}", entry.id);
     let described_by = format!("{who} {fingerprint}");
@@ -60,6 +60,8 @@ fn card(entry: &PendingEntry, now: i64) -> Markup {
                 span.label { "Goal" }
                 span { bdi { (entry.request.goal) } }
             }
+            // Above the meta line, so that the link is not next to the buttons.
+            (stated_fields(&entry.request, hosts))
             div.meta {
                 span #(fingerprint) { "Fingerprint " code { (entry.fingerprint) } }
                 span { "Asks for " (window_words(entry.request.window)) }
@@ -85,7 +87,7 @@ fn card(entry: &PendingEntry, now: i64) -> Markup {
 /// what the script refreshes, from the empty state as well, so both forms have
 /// the notices, which it keeps when it replaces this `main`.
 #[must_use]
-pub fn pending(entries: &[PendingEntry], now: i64) -> Markup {
+pub fn pending(entries: &[PendingEntry], hosts: &LinkHosts, now: i64) -> Markup {
     if entries.is_empty() {
         let parts = end_state_parts(
             &Chip {
@@ -113,7 +115,7 @@ pub fn pending(entries: &[PendingEntry], now: i64) -> Markup {
                 "The link in its notification then stops working."
             }
             (notices())
-            @for entry in entries { (card(entry, now)) }
+            @for entry in entries { (card(entry, hosts, now)) }
         }
     };
     layout("Pending requests", Some(Nav::Pending), true, &content)

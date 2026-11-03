@@ -478,3 +478,61 @@ async fn a_call_that_finishes_has_no_abort_in_its_entry() {
     assert_eq!(audited.get("aborted"), None, "{audited}");
     assert_eq!(s.upstream.abandoned(), 0);
 }
+
+/// An agent never sees an answer the audit log has no record of: if the entry for
+/// a finished call cannot be written, the answer stays with the broker.
+#[tokio::test]
+async fn an_answer_is_withheld_when_its_entry_cannot_be_written() {
+    let s = setup().await;
+    let log = s.broker.audit_path().to_owned();
+    let (resp, good) = tokio::join!(within("the call ending", get(&s, "/held")), async {
+        reached(&s, 1).await;
+        let good = std::fs::read(&log).unwrap();
+        let mut corrupt = good.clone();
+        corrupt.extend_from_slice(b"not an audit line\n");
+        std::fs::write(&log, corrupt).unwrap();
+        s.upstream.release_held();
+        good
+    });
+    assert_eq!(
+        resp.status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "{}",
+        resp.body
+    );
+    assert!(!resp.body.contains("late answer"), "{}", resp.body);
+    std::fs::write(&log, good).unwrap();
+    assert_eq!(audit_events(&s.broker, "proxy_call_started").len(), 1);
+    assert_eq!(audit_events(&s.broker, "proxy_call").len(), 0);
+}
+
+/// The scope of a call comes from the stored grant. One that can no longer be read
+/// limits nothing, so the secret is not used for the call at all.
+#[tokio::test]
+async fn a_damaged_grant_sends_nothing() {
+    let s = setup().await;
+    let pool = &s.broker.state().pool;
+    let view: String = sqlx::query_scalar("SELECT view FROM grants WHERE id = ?")
+        .bind(s.grant.as_str())
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    let damaged = view.replace(r#""GET""#, r#""NOT A METHOD""#);
+    assert_ne!(damaged, view);
+    sqlx::query("UPDATE grants SET view = ? WHERE id = ?")
+        .bind(damaged)
+        .bind(s.grant.as_str())
+        .execute(pool)
+        .await
+        .unwrap();
+
+    let resp = get(&s, "/plain").await;
+    assert_eq!(
+        resp.status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "{}",
+        resp.body
+    );
+    assert!(!resp.body.contains("METHOD"), "{}", resp.body);
+    assert!(s.upstream.received().is_empty());
+}

@@ -119,6 +119,20 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', r"'\''"))
 }
 
+/// How the banner should name the `warden` CLI: the one beside this binary when
+/// there is one, as in `target/debug` or a directory holding both unpacked
+/// archives, and otherwise whatever `warden` is on the `PATH`.
+fn warden_command(demo_binary: Option<&Path>) -> String {
+    demo_binary
+        .and_then(Path::parent)
+        .map(|dir| dir.join("warden"))
+        .filter(|cli| cli.is_file())
+        .map_or_else(
+            || "warden".to_owned(),
+            |cli| shell_quote(&cli.display().to_string()),
+        )
+}
+
 /// Create `path` with its parents, readable only by this user.
 async fn private_dir(path: &Path) -> Result<()> {
     tokio::fs::DirBuilder::new()
@@ -317,7 +331,8 @@ impl Prepared {
              \x20 WARDEN DEMO. THIS IS NOT SECURE FOR REAL USE.\n\
              \x20 Everyone on this machine counts as the owner, and everything\n\
              \x20 below is throwaway. Do not put real secrets near it.\n\
-             \x20 A real deployment works differently: see docs/deployment.md.\n\
+             \x20 A real deployment works differently:\n\
+             \x20 https://github.com/pecheriere/warden/blob/main/docs/deployment.md\n\
              ================================================================\n\
              \n\
              Listening on loopback only. Data in {dir} (deleted when this stops).\n\
@@ -326,13 +341,13 @@ impl Prepared {
              \x20    {enroll}\n\
              \x20  Enrollment code (works once, for 10 minutes): {code}\n\
              \n\
-             2. In a second terminal, in the same directory, be the agent:\n\
+             2. In a second terminal, be the agent:\n\
              \x20    source {env}\n\
-             \x20    target/debug/warden request api {SECRET_NAME} --for 15m --goal \"try the warden demo\"\n\
+             \x20    {warden} request api {SECRET_NAME} --for 15m --goal \"try the warden demo\"\n\
              \x20  It waits for your decision. The approval link appears here.\n\
              \n\
              3. Approve with your passkey on that page. Then, as the agent:\n\
-             \x20    target/debug/warden http {SECRET_NAME} GET {target}\n\
+             \x20    {warden} http {SECRET_NAME} GET {target}\n\
              \x20  The demo API received the secret. The agent sees [REDACTED].\n\
              \n\
              4. Read what happened:\n\
@@ -343,6 +358,7 @@ impl Prepared {
             dir = self.dir.path().display(),
             code = self.enrollment_code,
             env = shell_quote(&self.agent_env.display().to_string()),
+            warden = warden_command(std::env::current_exe().ok().as_deref()),
             target = self.target_url,
             history = self
                 .approval_url
@@ -536,7 +552,7 @@ mod tests {
     use url::Url;
     use warden_broker::config::{Config, parse_public_url};
 
-    use super::{check_loopback, demo_config, shell_quote};
+    use super::{check_loopback, demo_config, shell_quote, warden_command};
 
     fn addr(text: &str) -> SocketAddr {
         text.parse().unwrap()
@@ -595,5 +611,26 @@ mod tests {
     fn shell_quote_survives_quotes_and_spaces() {
         assert_eq!(shell_quote("/tmp/a b"), "'/tmp/a b'");
         assert_eq!(shell_quote("it's"), r"'it'\''s'");
+    }
+
+    #[test]
+    fn names_the_cli_beside_the_demo_when_there_is_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let cli = dir.path().join("warden");
+        std::fs::write(&cli, "").unwrap();
+        assert_eq!(
+            warden_command(Some(&dir.path().join("warden-demo"))),
+            shell_quote(&cli.display().to_string())
+        );
+    }
+
+    #[test]
+    fn falls_back_to_the_path_without_a_cli_beside_the_demo() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            warden_command(Some(&dir.path().join("warden-demo"))),
+            "warden"
+        );
+        assert_eq!(warden_command(None), "warden");
     }
 }

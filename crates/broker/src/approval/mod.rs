@@ -241,6 +241,9 @@ pub struct LiveRelaySession {
     pub bytes_to_target: u64,
     /// Bytes relayed from the target so far.
     pub bytes_from_target: u64,
+    /// Seconds since bytes last moved either way, by the broker's clock (so
+    /// a viewer's wrong clock does not change it).
+    pub idle_secs: u64,
 }
 
 /// A proxied call in flight.
@@ -256,11 +259,12 @@ pub struct LiveProxyCall<'a> {
 
 /// `sessions` and `calls` grouped under the grant of `grants` they belong
 /// to, one entry per grant in `grants` order; entries of any other grant are
-/// left out.
+/// left out. `now` is the current time, Unix seconds.
 fn live_grants<'a>(
     grants: &[ActiveGrant],
     sessions: &[LiveSessionInfo],
     calls: &'a [CallInfo],
+    now: i64,
 ) -> Vec<LiveGrant<'a>> {
     grants
         .iter()
@@ -273,6 +277,8 @@ fn live_grants<'a>(
                     started_at: s.started_at,
                     bytes_to_target: s.bytes_to_target,
                     bytes_from_target: s.bytes_from_target,
+                    // Zero, not negative, if the clock stepped back.
+                    idle_secs: u64::try_from(now.saturating_sub(s.last_activity)).unwrap_or(0),
                 })
                 .collect(),
             proxy_calls: calls
@@ -370,7 +376,9 @@ fn passkey_error(e: &PasskeyError) -> Response {
 
 async fn approve_page(State(state): State<AppState>, Path(token): Path<String>) -> Response {
     match state.requests.pending_for_token(&token).await {
-        Ok(view) => pages::approve(&view, state.clock.now()).into_response(),
+        Ok(view) => {
+            pages::approve(&view, state.requests.link_hosts(), state.clock.now()).into_response()
+        }
         Err(RequestError::NotFound) => match state.requests.is_cancelled(&token).await {
             Ok(true) => (StatusCode::NOT_FOUND, pages::cancelled()).into_response(),
             Ok(false) => (StatusCode::NOT_FOUND, pages::not_pending()).into_response(),
@@ -405,8 +413,10 @@ async fn grants_page(State(state): State<AppState>) -> Response {
         (Ok(grants), Ok(unwritten)) => {
             let sessions = state.requests.live_sessions().snapshot();
             let calls = state.requests.proxy_calls().snapshot();
-            let live = live_grants(&grants, &sessions, &calls);
-            pages::grants(&grants, &live, state.clock.now(), unwritten).into_response()
+            let now = state.clock.now();
+            let live = live_grants(&grants, &sessions, &calls, now);
+            let hosts = state.requests.link_hosts();
+            pages::grants(&grants, &live, hosts, now, unwritten).into_response()
         }
         (Err(e), _) | (_, Err(e)) => internal_page("grants page", &e),
     }
@@ -422,14 +432,14 @@ async fn grants_live(State(state): State<AppState>) -> Response {
     let sessions = state.requests.live_sessions().snapshot();
     let calls = state.requests.proxy_calls().snapshot();
     let live = LiveActivity {
-        grants: live_grants(&grants, &sessions, &calls),
+        grants: live_grants(&grants, &sessions, &calls, state.clock.now()),
     };
     Json(live).into_response()
 }
 
 async fn history_page(State(state): State<AppState>) -> Response {
     match state.requests.history(HISTORY_LIMIT).await {
-        Ok(entries) => pages::history(&entries).into_response(),
+        Ok(entries) => pages::history(&entries, state.requests.link_hosts()).into_response(),
         Err(e) => internal_page("history page", &e),
     }
 }

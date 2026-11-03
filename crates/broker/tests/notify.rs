@@ -36,6 +36,8 @@ fn ntfy(server: &MockServer) -> Arc<dyn Notifier> {
 
 fn request(goal: &str) -> CreateRequest {
     CreateRequest {
+        session: None,
+        link: None,
         goal: Goal::try_from(goal.to_owned()).unwrap(),
         access: Access::Ssh {
             target: TargetName::try_from("pi".to_owned()).unwrap(),

@@ -56,12 +56,24 @@ so. Merges to `main` are squashed, so the commit carries GitHub's signature rath
 than the maintainer's, and it does not show who made the change. Treat an unexplained
 change as a reason to stop.
 
-## 2. Verify a CLI archive
+## 2. Verify an archive
+
+A release can hold these archives, and the manifest lists each one it holds. Each
+is built by its own job, and the workflow stops before attesting anything unless each
+job's upload holds exactly its own file. The demo's release build starts only after
+the CLI archives and the image are attested, and is attested separately, so a CLI
+archive changed after that point is refused. That does not cover earlier in the run:
+see [Not covered yet](#not-covered-yet).
+
+| File | What it is | Platforms | In releases |
+|---|---|---|---|
+| `warden-<version>-<platform>.tar.gz` | The `warden` CLI | `linux-amd64`, `linux-arm64`, `macos-arm64` | v0.9.0 onward |
+| `warden-demo-<version>-<platform>.tar.gz` | [The local demo](demo.md). **Not secure for real use**: verifying it shows where it came from, not that it is safe to rely on. | `linux-amd64`, `linux-arm64`, `macos-arm64` | After v0.9.0 |
 
 ```sh
 version=x.y.z         # the release you picked
 platform=linux-amd64  # or linux-arm64, macos-arm64
-file="warden-$version-$platform.tar.gz"
+file="warden-$version-$platform.tar.gz"   # or warden-demo-$version-$platform.tar.gz
 base="https://github.com/pecheriere/warden/releases/download/v$version"
 curl -fLO "$base/$file"
 curl -fLO "$base/warden-$version-SHA256SUMS"
@@ -81,6 +93,10 @@ gh attestation verify "$file" --repo pecheriere/warden \
 ```
 
 `gh` must be logged in. Any step that fails means you should not use the file.
+
+The attestation step finds an attestation by the file's digest, not its name. The
+signed manifest ties each name to a digest, and `scripts/sign-release.sh` refuses to
+sign a file attested under another name, so check the manifest as well.
 
 ## 3. Verify the image
 
@@ -116,9 +132,10 @@ grep -x "tag $tag" tag.payload   # the name it was signed under; expect one line
 
 ## What older releases have
 
-| Version | Tag | Image attestation | CLI archives | Signed manifest |
+| Version | Tag | Image attestation | Archives | Signed manifest |
 |---|---|---|---|---|
-| v0.9.0 onward | Signed | Yes | Yes, attested | Yes |
+| After v0.9.0 | Signed | Yes | CLI and demo, attested | Yes |
+| v0.9.0 | Signed | Yes | CLI, attested | Yes |
 | v0.8.1 | Signed | Yes | None | **No** |
 | v0.8.0 | Signed | Never released | Never released | No |
 | v0.1.0 to v0.7.0 | **Not signed** (lightweight tags) | Yes | None | **No** |
@@ -140,6 +157,24 @@ cannot sign the manifest, which is why the maintainer signs it after the workflo
 has finished, with `scripts/sign-release.sh`, before publishing the draft.
 
 ## Not covered yet
+
+**A malicious dependency that runs before the attestations.** The release's `ci` job
+tests every workspace crate, so each dependency's build script runs in the same
+workflow run before anything is attested. That has to come first, so that no image or
+attestation exists until the tests pass. A build script that stole that job's runner
+token could try to replace an artifact from another job in the run, such as a CLI
+archive or an image digest, before it is attested. That file would then be attested
+as genuine. Whether such a token still works after its job ends has not been tested.
+The risk applies to every crate in the workspace, and the demo's extra crates add to
+it. The order of the release's jobs protects only what happens after attestation. The
+image digests are not pinned between the jobs that record and use them: a replaced one
+could only name an image already in the registry, but that image would get the tag and
+the attestation.
+
+**The demo archive itself.** Anything in the demo's dependencies can change the demo
+binary, and the result is attested and signed as the demo. Those checks show which
+workflow produced it, not that its dependencies are honest. It runs on your machine, so
+try it somewhere you would run any other unaudited program.
 
 Release assets have no software bill of materials. Baseline Level 3 asks for one
 on compiled assets (`osps_qa_02_02`).

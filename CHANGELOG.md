@@ -6,6 +6,16 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Upgrading
+
+- A `request_created` audit entry can have a new `session` field. An older
+  `warden-server audit verify` refuses a log with such an entry, and an older
+  `warden-server` does not start on one, because it verifies the log when it opens
+  it. So once an agent has sent a label, rolling back also means restoring the
+  audit log from the backup taken before the upgrade.
+- Upgrade the broker before relying on labels and links: an older broker ignores
+  them, and `warden request` warns that the owner does not see them.
+
 ### Added
 
 - `GET /v1/requests` lists an agent's own pending requests, and `warden status` shows
@@ -16,6 +26,33 @@ All notable changes to this project are recorded here. The format follows
   the `warden request` that asked for it was gone. `warden status` marks such grants. An
   SSH grant cannot be collected, as its key was lost with that run: the docs say what to
   do instead.
+- `warden request --session <label>`, or `WARDEN_SESSION`, says which session of an
+  agent is asking. The approval page, Pending, Active grants, History, the
+  notification and the audit log show it as what the agent stated, not as verified.
+  It is part of the fingerprint.
+- `warden request --link <url>` adds a page about the work for the owner to open:
+  on the same pages and in the fingerprint, in no notification or audit entry. Off by
+  default; `WARDEN_REQUEST_LINK_HOSTS` lists the hosts allowed, and a request linking
+  to any other host is refused.
+- `docs/agent-instructions.md` tells an agent to name its session, and says that this
+  is a claim.
+- The Active grants page shows how long each relay session has been idle (since
+  bytes last moved either way), and when a certificate grant's certificate was
+  issued and when it expires. warden still cannot see logins made with a
+  certificate, and the page says it does not show whether one was used.
+- Releases attach `warden-demo-<version>-<platform>.tar.gz` for macOS arm64, Linux
+  amd64 and Linux arm64: the local demo as its own attested binary, so trying warden
+  needs no Rust ([docs/demo.md](docs/demo.md)). It is labelled as a demo, is not secure
+  for real use, and stays out of the server image. The signed manifest lists it.
+
+### Changed
+
+- `warden-demo` names the `warden` beside it in its printed steps, or the one on the
+  `PATH`, rather than `target/debug/warden`.
+- `scripts/package-cli.sh` is now `scripts/package-binary.sh`, and takes the product
+  as its first argument.
+- `scripts/sign-release.sh` requires the demo archives on a draft, from the next
+  release on.
 
 ### Fixed
 

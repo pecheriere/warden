@@ -49,7 +49,7 @@ fn access_summary(access: &Access) -> String {
     match access {
         Access::Ssh { target, user, .. } => format!("ssh {user}@{target}"),
         Access::Api {
-            secret: item,
+            secret,
             methods,
             path_prefix,
         } => {
@@ -57,16 +57,27 @@ fn access_summary(access: &Access) -> String {
                 .as_ref()
                 .map_or_else(|| "read-only".to_owned(), |m| sanitize(&m.join(",")));
             match path_prefix {
-                Some(path) => format!("api:{item} {methods} under {}", sanitize(path)),
-                None => format!("api:{item} {methods}"),
+                Some(path) => format!("api:{secret} {methods} under {}", sanitize(path)),
+                None => format!("api:{secret} {methods}"),
             }
         }
     }
 }
 
+/// One line about a pending request. It holds all that the fingerprint depends on,
+/// so that the same command can be written again from it. The session label and the
+/// link are validated when they are parsed, like the goal.
 fn pending_line(request: &PendingRequest) -> String {
+    let session = request
+        .session
+        .as_ref()
+        .map_or_else(String::new, |label| format!("  session: {label}"));
+    let link = request
+        .link
+        .as_ref()
+        .map_or_else(String::new, |link| format!("  link: {link}"));
     format!(
-        "  {} for {}  request {}  fingerprint {}  made {}  expires {}  goal: {}",
+        "  {} for {}  request {}  fingerprint {}  made {}  expires {}{session}{link}  goal: {}",
         access_summary(&request.access),
         request.window.label(),
         request.id,
@@ -287,12 +298,16 @@ mod tests {
                 path_prefix: None,
             },
             window: Window::M15,
+            session: Some("build-work".to_owned().try_into().unwrap()),
+            link: Some("https://git.example.com/a".to_owned().try_into().unwrap()),
             created_at: 100,
             expires_at: 700,
         });
         for part in [
             "api:home-api read-only for 15m",
             "fingerprint ab02-cd02-ef02",
+            "session: build-work",
+            "link: https://git.example.com/a",
             "goal: read the thermostat",
         ] {
             assert!(line.contains(part), "{line}");

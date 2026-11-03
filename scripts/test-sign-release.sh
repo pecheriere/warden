@@ -61,7 +61,18 @@ case "$1 ${2:-}" in
       shift
     done
     if [ "$digest" != "$(cat "$STUB/attested-commit")" ]; then exit 1; fi
-    case "$subject" in oci://*) cat "$STUB/image-digest" ;; esac
+    case "$subject" in
+      oci://*) cat "$STUB/image-digest" ;;
+      # What the attestation records: the digest and name of each file it covers.
+      *)
+        name=$(basename "$subject")
+        if [ -e "$STUB/attested-as" ]; then name=$(cat "$STUB/attested-as"); fi
+        sum=$(shasum -a 256 "$subject" | cut -d' ' -f1)
+        if [ -e "$STUB/attested-digest" ]; then sum=$(cat "$STUB/attested-digest"); fi
+        printf '%s  %s\n' "$sum" "$name"
+        printf '%s  %s\n' 0000000000000000000000000000000000000000000000000000000000000000 other.tar.gz
+        ;;
+    esac
     ;;
   *)
     echo "stub gh: unexpected call: $*" >&2
@@ -73,15 +84,17 @@ chmod +x "$work/bin/gh"
 export PATH="$work/bin:$PATH"
 
 reset_stub() {
-  rm -rf "$STUB/uploaded" "$STUB/unattested" "$STUB/assets"
+  rm -rf "$STUB/uploaded" "$STUB/unattested" "$STUB/assets" "$STUB/attested-as" "$STUB/attested-digest"
   mkdir -p "$STUB/uploaded" "$STUB/assets"
   git -C "$repo" rev-parse "$tag^{commit}" > "$STUB/remote-commit"
   cp "$STUB/remote-commit" "$STUB/attested-commit"
   : > "$STUB/also-listed"
   echo true > "$STUB/is-draft"
   echo "$image_digest" > "$STUB/image-digest"
-  for platform in linux-amd64 linux-arm64 macos-arm64; do
-    echo "$platform" > "$STUB/assets/warden-$version-$platform.tar.gz"
+  for name in warden warden-demo; do
+    for platform in linux-amd64 linux-arm64 macos-arm64; do
+      echo "$name $platform" > "$STUB/assets/$name-$version-$platform.tar.gz"
+    done
   done
 }
 
@@ -141,6 +154,14 @@ rm "$STUB/assets/warden-$version-linux-arm64.tar.gz"
 must_refuse 'missing archive' 'unexpected archives' "$tag"
 
 reset_stub
+rm "$STUB/assets/warden-demo-$version-macos-arm64.tar.gz"
+must_refuse 'missing demo archive' 'unexpected archives' "$tag"
+
+reset_stub
+echo extra > "$STUB/assets/warden-demo-$version-windows-amd64.tar.gz"
+must_refuse 'extra demo archive' 'unexpected asset' "$tag"
+
+reset_stub
 echo extra > "$STUB/assets/warden-$version-windows-amd64.tar.gz"
 must_refuse 'extra archive' 'unexpected asset' "$tag"
 
@@ -153,8 +174,20 @@ echo "warden-$version-macos-arm64.tar.gz" > "$STUB/unattested"
 must_refuse 'archive without an attestation' 'no valid attestation' "$tag"
 
 reset_stub
+echo "warden-demo-$version-linux-amd64.tar.gz" > "$STUB/unattested"
+must_refuse 'demo archive without an attestation' 'no valid attestation' "$tag"
+
+reset_stub
 echo "warden:$version" > "$STUB/unattested"
 must_refuse 'image without an attestation' 'no valid attestation' "$tag"
+
+reset_stub
+echo "warden-demo-$version-linux-amd64.tar.gz" > "$STUB/attested-as"
+must_refuse 'demo archive renamed as the CLI' 'not what was attested' "$tag"
+
+reset_stub
+printf 'a%.0s' {1..64} > "$STUB/attested-digest"
+must_refuse 'attestation of other bytes under the same name' 'not what was attested' "$tag"
 
 reset_stub
 echo 1111111111111111111111111111111111111111 > "$STUB/attested-commit"
@@ -193,6 +226,16 @@ if ! grep -Fxq "$image_digest  ghcr.io/pecheriere/warden:$version" "$manifest"; 
   exit 1
 fi
 echo 'ok: the manifest names the image digest'
+
+for name in warden warden-demo; do
+  for platform in linux-amd64 linux-arm64 macos-arm64; do
+    if ! grep -Fq "  $name-$version-$platform.tar.gz" "$manifest"; then
+      echo "FAIL: the manifest does not list $name for $platform" >&2
+      exit 1
+    fi
+  done
+done
+echo 'ok: the manifest lists every archive'
 
 if ssh-keygen -Y verify -f "$repo/docs/release-signers" -I "$identity" -n git \
   -s "$manifest.sig" < "$manifest" > /dev/null 2>&1; then

@@ -80,6 +80,18 @@ async fn an_agent_sees_its_own_pending_request_and_no_link() {
     }
 }
 
+/// The session label is part of the fingerprint, so an agent writing the same
+/// request again needs it back.
+#[tokio::test]
+async fn a_session_label_comes_back_as_sent() {
+    let broker = TestBroker::new().await;
+    let key = broker.add_agent("bot").await;
+    let mut request = pi_request();
+    request.session = Some("build-work".to_owned().try_into().unwrap());
+    broker.create_request("bot", request).await;
+    assert_eq!(list(&broker, &key).await[0]["session"], "build-work");
+}
+
 #[tokio::test]
 async fn another_agent_sees_nothing_of_it() {
     let broker = broker().await;

@@ -1,7 +1,8 @@
 //! Out-of-band notifications that tell the owner a request needs approval.
 //!
-//! Notifications carry the agent, target, a truncated goal and the approval
-//! link, never secrets. [`Fallback`] tries the configured channels in order
+//! Notifications carry the agent, target, the session label the agent stated, a
+//! truncated goal and the approval link, never secrets, and never the link a
+//! request states: a notifier could preview it, fetching a page the agent chose. [`Fallback`] tries the configured channels in order
 //! and stops at the first that accepts; the channels are chosen by
 //! [`ChannelSettings`].
 
@@ -172,11 +173,17 @@ impl Notifier for Fallback {
 
 /// Build the owner notification for a new request; `subject` says what it
 /// is for (`ssh user@target`, or an API scope's [`subject`](crate::policy::ApiScope::subject)).
+/// A session label goes in the body, worded as the agent's claim. The link a
+/// request states is left out on purpose: see the module's documentation.
 #[must_use]
 pub fn doorbell(agent: &AgentName, subject: &str, req: &CreateRequest, url: Url) -> Doorbell {
+    let goal = truncate_goal(req.goal.as_str());
     Doorbell {
         title: format!("warden: {agent} wants {subject}"),
-        message: truncate_goal(req.goal.as_str()),
+        message: match &req.session {
+            Some(session) => format!("Session stated by the agent: {session}\n{goal}"),
+            None => goal,
+        },
         url,
     }
 }

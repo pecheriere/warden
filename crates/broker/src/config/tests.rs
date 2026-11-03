@@ -11,7 +11,7 @@ use super::{
     BackendSettings, Config, ConfigError, ConnectSettings, MAX_SECRET_FILE_BYTES, UrlTransport,
 };
 use crate::notify::ChannelSettings;
-use crate::requests::RequestLimits;
+use crate::requests::{LinkHosts, RequestLimits};
 
 const TOKEN_FILE: &str = "WARDEN_OP_CONNECT_TOKEN_FILE";
 const SECRET: &str = "ops_not-a-real-token";
@@ -39,6 +39,32 @@ fn request_limits(extra: &[(&str, &str)]) -> Result<RequestLimits, ConfigError> 
     let mut vars = vec![("WARDEN_OP_CONNECT_TOKEN", SECRET)];
     vars.extend_from_slice(extra);
     Config::from_lookup(lookup(&vars)).map(|config| config.requests)
+}
+
+fn link_hosts(extra: &[(&str, &str)]) -> Result<LinkHosts, ConfigError> {
+    let mut vars = vec![("WARDEN_OP_CONNECT_TOKEN", SECRET)];
+    vars.extend_from_slice(extra);
+    Config::from_lookup(lookup(&vars)).map(|config| config.link_hosts)
+}
+
+#[test]
+fn link_hosts_are_off_unless_listed_and_refused_if_malformed() {
+    assert_eq!(link_hosts(&[]).unwrap(), LinkHosts::default());
+    assert_eq!(
+        link_hosts(&[("WARDEN_REQUEST_LINK_HOSTS", " ")]).unwrap(),
+        LinkHosts::default()
+    );
+    assert_eq!(
+        link_hosts(&[("WARDEN_REQUEST_LINK_HOSTS", "git.example.com")]).unwrap(),
+        LinkHosts::parse("git.example.com").unwrap()
+    );
+    assert!(matches!(
+        link_hosts(&[("WARDEN_REQUEST_LINK_HOSTS", "https://git.example.com")]),
+        Err(ConfigError::Invalid {
+            var: "WARDEN_REQUEST_LINK_HOSTS",
+            ..
+        })
+    ));
 }
 
 #[test]
