@@ -9,7 +9,15 @@ import unittest
 from pathlib import Path
 
 import collect_archives
-from collect_archives import PLATFORMS, PRODUCTS, ArchiveError, archive_name, check_archive, collect
+from collect_archives import (
+    PLATFORMS,
+    PRODUCTS,
+    ArchiveError,
+    archive_name,
+    check_archive,
+    collect,
+    package_names,
+)
 
 VERSION = "1.2.3"
 ROOT = Path(__file__).resolve().parents[2]
@@ -62,6 +70,18 @@ class Names(unittest.TestCase):
         )
         self.assertEqual(
             archive_name("demo", VERSION, "macos-arm64"), "warden-demo-1.2.3-macos-arm64.tar.gz"
+        )
+
+    def test_names_the_clis_packages(self) -> None:
+        """Only the CLI is packaged, for both Linux architectures."""
+        self.assertEqual(
+            package_names(VERSION),
+            [
+                "warden_1.2.3_amd64.deb",
+                "warden-1.2.3-1.x86_64.rpm",
+                "warden_1.2.3_arm64.deb",
+                "warden-1.2.3-1.aarch64.rpm",
+            ],
         )
 
     def test_the_server_is_for_linux_only(self) -> None:
@@ -311,6 +331,41 @@ class Workflows(unittest.TestCase):
         self.assertIn("product: cli", job_text("release.yml", "cli"))
         self.assertIn("product: demo", demo)
 
+    def test_packages_come_from_the_attested_cli_and_are_attested_in_turn(self) -> None:
+        """Packages are made from what was attested, and checked against it again."""
+        packages = job_text("release.yml", "packages")
+        self.assertIn("needs: attest-cli", packages)
+        self.assertIn("name: attested-cli", packages)
+        self.assertIn("needs.attest-cli.outputs.sums", packages)
+        self.assertLess(
+            packages.index("needs.attest-cli.outputs.sums"), packages.index("package-linux.sh")
+        )
+        self.assertNotIn("id-token", packages)
+        self.assertNotIn("*", packages.split("upload-artifact", 1)[1])
+        attest = job_text("release.yml", "attest-packages")
+        self.assertIn("name: archive-packages", attest)
+        self.assertIn("needs.packages.outputs.sums", attest)
+        self.assertLess(attest.index("outputs.sums"), attest.index("attest-build-provenance"))
+        self.assertEqual(attest.count("download-artifact"), 1)
+        self.assertNotIn("run: scripts/", attest)
+        self.assertIn("attest-packages", self.needs("merge"))
+        self.assertIn("attest-packages", self.needs("server"))
+        self.assertIn("needs.packages.outputs.sums", job_text("release.yml", "draft-release"))
+
+    def test_repeatable_builds_compare_the_packages(self) -> None:
+        """The RPM records a build host, so only separate machines would show a change."""
+        job = job_text("repeatable-build.yml", "binaries")
+        self.assertIn("scripts/package-linux.sh", job)
+        self.assertIn('compare "package $file"', job_text("repeatable-build.yml", "compare"))
+
+    def test_nothing_packages_the_demo_or_the_server(self) -> None:
+        """A package manager must never update a server, or install the demo."""
+        config = (ROOT / "packaging/nfpm.yaml").read_text()
+        self.assertIn("dst: /usr/bin/warden\n", config)
+        self.assertEqual(config.count("dst: /usr/bin/"), 1)
+        self.assertNotIn("warden-demo", config)
+        self.assertNotIn("warden-server", config)
+
     def test_the_server_builds_only_after_the_cli_and_image_are_attested(self) -> None:
         """Its crates are more than the CLI's, so it runs after the CLI's attestation."""
         server = self.needs("server")
@@ -357,6 +412,8 @@ class Workflows(unittest.TestCase):
         for needed in (
             "merge",
             "attest-cli",
+            "packages",
+            "attest-packages",
             "server",
             "attest-server",
             "demo",
@@ -375,6 +432,12 @@ class Workflows(unittest.TestCase):
     def test_ci_checks_what_each_build_produced(self) -> None:
         """A dropped notice fails on the pull request, not on a release tag."""
         self.assertIn("collect_archives.py check", job_text("ci.yml", "binaries"))
+
+    def test_ci_builds_and_installs_the_packages(self) -> None:
+        """A required check, so a package that stops working fails on the pull request."""
+        job = job_text("ci.yml", "binaries")
+        self.assertIn("scripts/package-linux.sh", job)
+        self.assertIn("scripts/test-linux-packages-docker.sh", job)
 
     def test_ci_runs_the_server_under_the_unit(self) -> None:
         """A unit can stop a static binary resolving names, which only running it shows."""

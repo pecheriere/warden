@@ -61,20 +61,21 @@ change as a reason to stop.
 A release can hold these archives, and the manifest lists each one it holds. Each
 is built by its own job, and the workflow stops before attesting anything unless each
 job's upload holds exactly its own file. They are attested one product at a time: the
-CLI and the image first, then the server, then the demo, so an archive changed after
+CLI, its packages and the image first, then the server, then the demo, so a file changed after
 its attestation is refused. That does not cover earlier in the run: see
 [Not covered yet](#not-covered-yet).
 
 | File | What it is | Platforms | In releases |
 |---|---|---|---|
 | `warden-<version>-<platform>.tar.gz` | The `warden` CLI | `linux-amd64`, `linux-arm64`, `macos-arm64` | v0.9.0 onward |
+| `warden_<version>_<arch>.deb`, `warden-<version>-1.<arch>.rpm` | The `warden` CLI as a package, holding the same binary as its archive. Not signed with a package key: these checks are what cover them. | `amd64`, `arm64` (`x86_64`, `aarch64` for `.rpm`) | After v0.9.0 |
 | `warden-server-<version>-<platform>.tar.gz` | `warden-server`, for [running without Docker](deployment-systemd.md) | `linux-amd64`, `linux-arm64` | After v0.9.0 |
 | `warden-demo-<version>-<platform>.tar.gz` | [The local demo](demo.md). **Not secure for real use**: verifying it shows where it came from, not that it is safe to rely on. | `linux-amd64`, `linux-arm64`, `macos-arm64` | After v0.9.0 |
 
 ```sh
 version=x.y.z         # the release you picked
 platform=linux-amd64  # or linux-arm64, macos-arm64
-file="warden-$version-$platform.tar.gz"   # or warden-server-..., warden-demo-...
+file="warden-$version-$platform.tar.gz"   # or any file in the table above
 base="https://github.com/pecheriere/warden/releases/download/v$version"
 curl -fLO "$base/$file"
 curl -fLO "$base/warden-$version-SHA256SUMS"
@@ -135,7 +136,7 @@ grep -x "tag $tag" tag.payload   # the name it was signed under; expect one line
 
 | Version | Tag | Image attestation | Archives | Signed manifest |
 |---|---|---|---|---|
-| After v0.9.0 | Signed | Yes | CLI, server and demo, attested | Yes |
+| After v0.9.0 | Signed | Yes | CLI with `.deb` and `.rpm`, server and demo, attested | Yes |
 | v0.9.0 | Signed | Yes | CLI, attested | Yes |
 | v0.8.1 | Signed | Yes | None | **No** |
 | v0.8.0 | Signed | Never released | Never released | No |
@@ -171,6 +172,15 @@ crates add to it. The order of the release's jobs protects only what happens aft
 image digests are not pinned between the jobs that record and use them: a replaced one
 could only name an image already in the registry, but that image would get the tag and
 the attestation.
+
+**The checks on the `.deb` and `.rpm` share a job with what they check.** The `packages`
+job runs nfpm and the checks on the same runner, where it also has passwordless `sudo`
+to install the tools, and `attest-packages` attests whatever digests that job recorded.
+So a bad nfpm download, despite its pinned checksum, or a bad `rpm` package could change
+a package and the verdict together. The job compiles no dependencies and has no
+attestation identity, and the packages are rebuilt in the
+[repeatable build](reproducing-builds.md), which would show a difference only if the bad
+tool were not on both runners.
 
 **The demo archive itself.** Anything in the demo's dependencies can change the demo
 binary, and the result is attested and signed as the demo. Those checks show which

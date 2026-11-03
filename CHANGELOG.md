@@ -24,6 +24,10 @@ All notable changes to this project are recorded here. The format follows
 
 ### Added
 
+- Releases attach the `warden` CLI as `.deb` and `.rpm` packages for amd64 and arm64,
+  built from the same binaries, attested and listed in the signed manifest. See
+  [docs/agent-usage.md](docs/agent-usage.md). There is no package repository, so nothing
+  updates them automatically.
 - Commit signing through the broker, so that the signing key is not on the agent's
   machine, every signature is recorded and one agent can be cut off. The broker holds
   an `ssh-ed25519` key (a 1Password item tagged `warden:commit-signing`, or

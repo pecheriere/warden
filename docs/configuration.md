@@ -314,7 +314,8 @@ refused with `401`.
 ## CLI commands
 
 `warden` is the agent's client. It needs the OpenSSH client tools (`ssh`,
-`ssh-agent`, `ssh-add`). Releases after v0.8.1 attach attested binaries:
+`ssh-agent`, `ssh-add`). Releases after v0.8.1 attach attested binaries, and those
+after v0.9.0 also `.deb` and `.rpm` packages:
 [Agent usage](agent-usage.md#one-time-setup) has the commands to download and
 verify one. On another platform, build it with Rust 1.99 or later. For an older
 release, which has no binaries, use its tag in the same command:

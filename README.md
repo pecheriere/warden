@@ -269,7 +269,7 @@ it; follow it for a real setup.
    docker compose exec warden /warden-server agent add build-agent \
      --public-key "ssh-ed25519 AAAA… build-agent"
    # on the agent machine (Rust 1.99 or later; releases after v0.8.1 also
-   # attach binaries, see Agent usage)
+   # attach binaries, and after v0.9.0 .deb and .rpm packages, see Agent usage)
    cargo install --locked --git https://github.com/pecheriere/warden --tag v0.9.0 warden-broker-cli
    warden login --server https://warden-api.example.ts.net --agent build-agent \
      --ssh-key ~/.ssh/build-agent.pub

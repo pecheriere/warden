@@ -50,7 +50,10 @@ case "$1 ${2:-}" in
       cat "$STUB/is-draft"
     fi
     ;;
-  'release download') cp "$STUB"/assets/* "$9/" ;;
+  'release download')
+    while [ "$1" != --dir ]; do shift; done
+    cp "$STUB"/assets/* "$2/"
+    ;;
   'release upload') cp "$4" "$5" "$STUB/uploaded/" ;;
   'attestation verify')
     subject=$3
@@ -98,6 +101,10 @@ reset_stub() {
   done
   for platform in linux-amd64 linux-arm64; do
     echo "server $platform" > "$STUB/assets/warden-server-$version-$platform.tar.gz"
+  done
+  for package in "warden_${version}_amd64.deb" "warden_${version}_arm64.deb" \
+    "warden-$version-1.x86_64.rpm" "warden-$version-1.aarch64.rpm"; do
+    echo "$package" > "$STUB/assets/$package"
   done
 }
 
@@ -159,6 +166,30 @@ must_refuse 'missing archive' 'unexpected archives' "$tag"
 reset_stub
 rm "$STUB/assets/warden-demo-$version-macos-arm64.tar.gz"
 must_refuse 'missing demo archive' 'unexpected archives' "$tag"
+
+reset_stub
+rm "$STUB/assets/warden_${version}_arm64.deb"
+must_refuse 'missing .deb' 'unexpected archives' "$tag"
+
+reset_stub
+rm "$STUB/assets/warden-$version-1.x86_64.rpm"
+must_refuse 'missing .rpm' 'unexpected archives' "$tag"
+
+reset_stub
+echo extra > "$STUB/assets/warden-demo_${version}_amd64.deb"
+must_refuse 'a package of the demo' 'unexpected asset' "$tag"
+
+reset_stub
+echo extra > "$STUB/assets/warden-server-$version-1.x86_64.rpm"
+must_refuse 'a package of the server' 'unexpected asset' "$tag"
+
+reset_stub
+echo "warden-$version-1.aarch64.rpm" > "$STUB/unattested"
+must_refuse '.rpm without an attestation' 'no valid attestation' "$tag"
+
+reset_stub
+echo "warden-demo-$version-linux-amd64.tar.gz" > "$STUB/attested-as"
+must_refuse 'demo archive renamed as a package' 'not what was attested' "$tag"
 
 reset_stub
 rm "$STUB/assets/warden-server-$version-linux-arm64.tar.gz"
@@ -257,6 +288,13 @@ done
 for platform in linux-amd64 linux-arm64; do
   if ! grep -Fq "  warden-server-$version-$platform.tar.gz" "$manifest"; then
     echo "FAIL: the manifest does not list warden-server for $platform" >&2
+    exit 1
+  fi
+done
+for package in "warden_${version}_amd64.deb" "warden_${version}_arm64.deb" \
+  "warden-$version-1.x86_64.rpm" "warden-$version-1.aarch64.rpm"; do
+  if ! grep -Fq "  $package" "$manifest"; then
+    echo "FAIL: the manifest does not list $package" >&2
     exit 1
   fi
 done
