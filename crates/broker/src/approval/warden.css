@@ -52,10 +52,11 @@ fieldset{border:0;margin:0;padding:0;min-width:0}
 fieldset legend{padding:0;margin-bottom:8px}
 .capped{margin:-4px 0 8px}
 .seg{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);gap:4px;padding:4px;border-radius:14px;background:var(--soft)}
-.seg label{height:44px;border-radius:11px;display:flex;align-items:center;justify-content:center;font-weight:700;color:var(--muted)}
+.seg label{height:44px;border:2px solid transparent;border-radius:11px;display:flex;align-items:center;justify-content:center;font-weight:700;color:var(--muted)}
 .seg input{position:absolute;opacity:0}
 .seg label{cursor:pointer}
-.seg input:checked+label{background:var(--raised);color:var(--ink);box-shadow:0 1px 3px rgba(0,0,0,.18)}
+/* The border, not the fill, gives the selected segment its 3:1 against the track. */
+.seg input:checked+label{background:var(--raised);color:var(--ink);border-color:var(--primary);box-shadow:0 1px 3px rgba(0,0,0,.18)}
 .seg input:focus-visible+label{outline:2px solid var(--primary);outline-offset:2px}
 .actions{display:grid;gap:14px}
 .btns{display:grid;gap:10px}
@@ -95,7 +96,9 @@ font-weight:700;font-size:15px;font-family:inherit;cursor:pointer}
 .pending .meta code{white-space:nowrap;word-break:normal}
 /* As wide as its longest text, so that a changing time never rewraps the line and moves a card. */
 .pending .remaining{display:inline-block;min-width:11ch}
-.pending.ended .field,.pending.ended .meta{opacity:.6}
+.pending h2.who{margin:0}
+/* Dimmed, yet the labels and the word saying how it ended keep their 4.5:1. */
+.pending.ended .field,.pending.ended .meta{opacity:.85}
 .pending .btns{grid-template-columns:repeat(2,minmax(0,1fr))}
 /* What the page says, above the empty state, across its columns on a short screen. */
 main.done .notices{grid-column:1/-1;display:flex;flex-direction:column;gap:6px}
@@ -146,7 +149,7 @@ column-gap:64px;align-items:start;padding-top:28px}}
 /* Folded and short: the decision panel and the fingerprint both fit without scrolling. */
 @media (max-height:700px) and (max-width:599px){header{padding-top:6px;padding-bottom:6px}header .mascot{width:32px;height:32px}
 .menu{width:40px;height:40px}main{gap:8px}.col{gap:8px}.chip{padding:4px 10px;font-size:12px}h1{font-size:21px}
-.card{padding:10px 12px;gap:6px;border-radius:14px}.field{gap:1px}.who{font-size:15px}.card span:not(.label):not(.badge),.card code{font-size:14px}
+.card{padding:10px 12px;gap:6px;border-radius:14px}.field{gap:1px}.who{font-size:15px}.card span:not(.label):not(.badge),.card code,.card h2.who{font-size:14px}
 .badge{padding:3px 8px;font-size:13px}.fp{padding:8px 12px;border-radius:14px}.seg label{height:40px}
 .actions{gap:8px;padding-top:8px}.btn{height:46px}fieldset legend{margin-bottom:4px}}
 @media (max-height:560px) and (min-width:600px){main.done{display:grid;grid-template-columns:auto 1fr;column-gap:40px;text-align:left;
