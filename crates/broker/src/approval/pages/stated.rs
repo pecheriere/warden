@@ -20,7 +20,7 @@ fn anchor(link: &SessionLink, text: &Markup) -> Markup {
 /// before the list changed. Only the host, as text.
 fn not_a_link(link: &SessionLink) -> Markup {
     html! {
-        span.detail {
+        span.detail.stated-line {
             code { (link.host()) } " is not on your list of link hosts, so this is not a link."
         }
     }
@@ -59,11 +59,11 @@ pub(super) fn stated_fields(request: &CreateRequest, hosts: &LinkHosts) -> Marku
 pub(super) fn stated_lines(request: &CreateRequest, hosts: &LinkHosts) -> Markup {
     html! {
         @if let Some(session) = &request.session {
-            span.detail { "Session stated by the agent: " bdi { (session) } }
+            span.detail.stated-line { "Session stated by the agent: " bdi { (session) } }
         }
         @if let Some(link) = &request.link {
             @if hosts.allows(link) {
-                span.detail {
+                span.detail.stated-line {
                     "Link stated by the agent: "
                     (anchor(link, &html! { code { (link.host()) } }))
                 }
