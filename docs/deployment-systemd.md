@@ -101,7 +101,7 @@ What each loss means:
   slower under load, which should not matter at warden's request rates. It also
   [resolves names differently](#name-resolution-in-a-release-binary).
 - **With a build from source, the host supplies glibc.** The rest is linked statically:
-  Rust crates and, with the feature below, OpenSSL. Host updates patch glibc, so
+  Rust crates and, with the build below, OpenSSL. Host updates patch glibc, so
   restart warden after them, and only a new warden release patches the rest. The binary
   must not be built against a newer glibc than the host's.
 

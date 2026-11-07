@@ -96,7 +96,7 @@ On another platform, build it instead, with Rust 1.99 or later. For an older
 release, which has no binaries, use its tag in the same command:
 
 ```sh
-cargo install --locked --git https://github.com/pecheriere/warden --tag v0.9.0 warden-broker-cli
+cargo install --locked --git https://github.com/pecheriere/warden --tag v0.10.0 warden-broker-cli
 ```
 
 The machine must be on the tailnet, and the tailnet policy must let it reach

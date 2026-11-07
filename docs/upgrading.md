@@ -28,7 +28,7 @@ database without a backup.
 
 ## Fingerprints as words
 
-From the release after 0.9.0, the approval pages and `warden request` write a
+From 0.10.0, the approval pages and `warden request` write a
 fingerprint as five words, with the hex form beside them. They are the same 48
 bits, so there is nothing to migrate, and you can upgrade the broker and the CLI in
 either order:

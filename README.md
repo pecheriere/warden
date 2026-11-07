@@ -55,7 +55,7 @@ tailnet.
 Each warden server has one owner, who approves every request. One owner can
 have many agents, but there are no teams, roles or shared approvals.
 
-**Status: early.** The current release is **0.9.0**. warden has a single
+**Status: early.** The current release is **0.10.0**. warden has a single
 maintainer and has not had an independent security review. Before 1.0,
 expect this to change:
 
@@ -236,7 +236,7 @@ it; follow it for a real setup.
    published ports, Connect on its own network. Verify the image first:
 
    ```sh
-   gh attestation verify oci://ghcr.io/pecheriere/warden:0.9.0 --owner pecheriere
+   gh attestation verify oci://ghcr.io/pecheriere/warden:0.10.0 --owner pecheriere
    ```
 
    [The Compose file](docs/deployment.md#5-run-warden),
@@ -270,7 +270,7 @@ it; follow it for a real setup.
      --public-key "ssh-ed25519 AAAA… build-agent"
    # on the agent machine (Rust 1.99 or later; releases after v0.8.1 also
    # attach binaries, and after v0.9.0 .deb and .rpm packages, see Agent usage)
-   cargo install --locked --git https://github.com/pecheriere/warden --tag v0.9.0 warden-broker-cli
+   cargo install --locked --git https://github.com/pecheriere/warden --tag v0.10.0 warden-broker-cli
    warden login --server https://warden-api.example.ts.net --agent build-agent \
      --ssh-key ~/.ssh/build-agent.pub
    ```

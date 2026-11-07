@@ -3971,7 +3971,7 @@ dependencies = [
 
 [[package]]
 name = "warden-broker"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4011,7 +4011,7 @@ dependencies = [
 
 [[package]]
 name = "warden-broker-proto"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "getrandom 0.4.3",
  "hex",

@@ -30,8 +30,8 @@ serde_json = "1.0.154"
 # The features the broker enables, so the targets test the same build of it.
 ssh-key = { version = "0.6.7", default-features = false, features = ["alloc", "ecdsa", "ed25519", "getrandom"] }
 url = "2.5.8"
-warden-broker = { path = "../crates/broker", version = "0.9.0", features = ["fuzzing"] }
-warden-broker-proto = { path = "../crates/proto", version = "0.9.0" }
+warden-broker = { path = "../crates/broker", version = "0.10.0", features = ["fuzzing"] }
+warden-broker-proto = { path = "../crates/proto", version = "0.10.0" }
 
 [[bin]]
 name = "signed_headers"

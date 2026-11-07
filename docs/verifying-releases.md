@@ -68,9 +68,9 @@ its attestation is refused. That does not cover earlier in the run: see
 | File | What it is | Platforms | In releases |
 |---|---|---|---|
 | `warden-<version>-<platform>.tar.gz` | The `warden` CLI | `linux-amd64`, `linux-arm64`, `macos-arm64` | v0.9.0 onward |
-| `warden_<version>_<arch>.deb`, `warden-<version>-1.<arch>.rpm` | The `warden` CLI as a package, holding the same binary as its archive. Not signed with a package key: these checks are what cover them. | `amd64`, `arm64` (`x86_64`, `aarch64` for `.rpm`) | After v0.9.0 |
-| `warden-server-<version>-<platform>.tar.gz` | `warden-server`, for [running without Docker](deployment-systemd.md) | `linux-amd64`, `linux-arm64` | After v0.9.0 |
-| `warden-demo-<version>-<platform>.tar.gz` | [The local demo](demo.md). **Not secure for real use**: verifying it shows where it came from, not that it is safe to rely on. | `linux-amd64`, `linux-arm64`, `macos-arm64` | After v0.9.0 |
+| `warden_<version>_<arch>.deb`, `warden-<version>-1.<arch>.rpm` | The `warden` CLI as a package, holding the same binary as its archive. Not signed with a package key: these checks are what cover them. | `amd64`, `arm64` (`x86_64`, `aarch64` for `.rpm`) | v0.10.0 onward |
+| `warden-server-<version>-<platform>.tar.gz` | `warden-server`, for [running without Docker](deployment-systemd.md) | `linux-amd64`, `linux-arm64` | v0.10.0 onward |
+| `warden-demo-<version>-<platform>.tar.gz` | [The local demo](demo.md). **Not secure for real use**: verifying it shows where it came from, not that it is safe to rely on. | `linux-amd64`, `linux-arm64`, `macos-arm64` | v0.10.0 onward |
 
 ```sh
 version=x.y.z         # the release you picked
@@ -136,7 +136,7 @@ grep -x "tag $tag" tag.payload   # the name it was signed under; expect one line
 
 | Version | Tag | Image attestation | Archives | Signed manifest |
 |---|---|---|---|---|
-| After v0.9.0 | Signed | Yes | CLI with `.deb` and `.rpm`, server and demo, attested | Yes |
+| v0.10.0 onward | Signed | Yes | CLI with `.deb` and `.rpm`, server and demo, attested | Yes |
 | v0.9.0 | Signed | Yes | CLI, attested | Yes |
 | v0.8.1 | Signed | Yes | None | **No** |
 | v0.8.0 | Signed | Never released | Never released | No |

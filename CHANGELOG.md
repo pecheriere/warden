@@ -6,17 +6,53 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-07
+
 ### Upgrading
 
-- New migration `0008_commit_signing_renewal`. An older `warden-server audit verify`
-  refuses a log with the new entries.
-- A `request_created` audit entry can have a new `session` field. An older
-  `warden-server audit verify` refuses a log with such an entry, and an older
-  `warden-server` does not start on one, because it verifies the log when it opens
-  it. So once an agent has sent a label, rolling back also means restoring the
-  audit log from the backup taken before the upgrade.
+Back up warden's data first, with warden stopped, as
+[docs/upgrading.md](https://github.com/pecheriere/warden/blob/v0.10.0/docs/upgrading.md)
+says. Nothing in this release stops a 0.9.0 setup from starting, and no setting has to
+change.
+
+- **Upgrade soon if you run the 0.9.0 image or build it with `vendored-openssl`.** 0.9.0
+  links OpenSSL 3.6.3, from a line that no longer gets fixes, security fixes included, so
+  it lacks fixes released since. This release links 3.5.9, from the 3.5 long-term support
+  line. Stored passkeys are unaffected.
+- New migration `0008_commit_signing_renewal`. As with every migration, rolling back
+  means restoring the backup together with the old version.
+- New audit entries: `commit_signed`, `commit_signing_refused`,
+  `commit_signing_refusals_held`, `commit_signing_renewal_notified`,
+  `commit_signing_limit_reached` and `commit_signing_limit_notified`, and a `session`
+  field on `request_created`. An older `warden-server audit verify` refuses a log
+  holding any of them, and an older `warden-server` does not start on one, because it
+  verifies the log when it opens it. So once an agent has sent a label or signed a
+  commit, rolling back also means restoring the audit log from the backup.
+- No exit code changes. `warden request` now writes its fingerprint line as
+  `fingerprint <words> (<hex>)`, and `warden status` lists the agent's pending requests
+  after its grants and marks grants waiting to be collected: a script that reads either
+  output needs checking. [docs/upgrading.md](docs/upgrading.md#fingerprints-as-words)
+  says what to compare when the broker and the CLI are on different versions.
 - Upgrade the broker before relying on labels and links: an older broker ignores
-  them, and `warden request` warns that the owner does not see them.
+  them, and `warden request` warns that the owner does not see them. Commit signing
+  needs both on 0.10.0: an older broker refuses `warden request signing`.
+- `warden setup git` changes git's own configuration (`gpg.format`, `gpg.ssh.program`,
+  `user.signingkey` and `commit.gpgsign`), globally unless `--local` is given, and
+  prints the values it replaced. Once it has run, every commit on that machine needs a
+  `warden` of this release or later at that path, and fails without one. To go back to a
+  CLI older than 0.10.0, or to stop signing through warden, restore or unset those
+  values first.
+- New settings, all optional, with defaults that keep 0.9.0's behaviour:
+  `WARDEN_COMMIT_SIGNING_MAX_WINDOW` (`30d`), `WARDEN_COMMIT_SIGNING_MAX_PER_DAY` (5000)
+  and `WARDEN_REQUEST_LINK_HOSTS` (unset: no request may carry a link) on the server,
+  and `WARDEN_SESSION` for the CLI. An invalid value stops the server from starting,
+  naming the variable, as for other settings. Commit signing stays off until a key is
+  configured.
+- With the local backend, a policy with `[commit_signing]` stops an older warden from
+  loading it, and warden refuses to start if that key is also the SSH CA key.
+- systemd: the unit now has `SocketBindAllow=udp:0`, which a release binary needs to
+  resolve names. Take the unit from the new tag when you move to a release binary, and
+  read [how its resolver differs](docs/deployment-systemd.md#name-resolution-in-a-release-binary).
 - If you build the server from source: the `vendored-openssl` feature is gone. Run
   `scripts/build-openssl.sh` and set `OPENSSL_DIR`, `OPENSSL_STATIC` and
   `WARDEN_OPENSSL_PINNED`, as
