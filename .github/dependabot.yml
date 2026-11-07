@@ -12,6 +12,16 @@ updates:
       interval: weekly
     cooldown:
       default-days: 14
+    # ssh-key, ssh-encoding and ed25519-dalek move together to their next
+    # majors with ssh-key 0.7, which isn't stable yet; bumping one alone breaks
+    # the build. Tracked in #60.
+    ignore:
+      - dependency-name: ssh-key
+        update-types: [version-update:semver-major, version-update:semver-minor]
+      - dependency-name: ssh-encoding
+        update-types: [version-update:semver-major, version-update:semver-minor]
+      - dependency-name: ed25519-dalek
+        update-types: [version-update:semver-major]
     groups:
       cargo:
         applies-to: version-updates
@@ -26,6 +36,16 @@ updates:
       interval: weekly
     cooldown:
       default-days: 14
+    # ssh-key, ssh-encoding and ed25519-dalek move together to their next
+    # majors with ssh-key 0.7, which isn't stable yet; bumping one alone breaks
+    # the build. Tracked in #60.
+    ignore:
+      - dependency-name: ssh-key
+        update-types: [version-update:semver-major, version-update:semver-minor]
+      - dependency-name: ssh-encoding
+        update-types: [version-update:semver-major, version-update:semver-minor]
+      - dependency-name: ed25519-dalek
+        update-types: [version-update:semver-major]
     groups:
       cargo:
         applies-to: version-updates
