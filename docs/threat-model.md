@@ -1062,6 +1062,13 @@ warden's guarantees depend on its environment being set up as follows.
   - SSH relay targets are not supported.
 
   [deployment-systemd.md](deployment-systemd.md) compares each guarantee.
+- **The CLI's `.deb` and `.rpm` are checked like its archives.** From v0.10.0 a release
+  attaches them, holding the same binary as the CLI's archive, attested and listed in
+  the signed manifest. They are not signed with a package key and come from no
+  repository, so the package manager checks nothing about where they came from: the
+  [release checks](verifying-releases.md) are what cover them, and nothing updates them.
+  They are made and checked in one job, which
+  [Verifying a release](verifying-releases.md#not-covered-yet) lists as not covered yet.
 - **Operator commands run as the broker's user, with its secrets.**
   `warden-server doctor` reads the vault with the Connect token, loads the CA key
   and drops it, and prints no secret; with `--send-test-notification` it sends a

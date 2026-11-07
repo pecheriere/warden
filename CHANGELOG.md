@@ -58,6 +58,21 @@ change.
   `WARDEN_OPENSSL_PINNED`, as
   [docs/building.md](docs/building.md) shows, or link a system OpenSSL.
 
+### Security
+
+- The image, the server binaries and the demo now link OpenSSL 3.5.9 in place of
+  3.6.3. Support for OpenSSL 3.6 has ended, and 3.6.3 lacks the fixes OpenSSL released
+  in 3.6.4 and 3.6.5. 3.5.9 includes the fixes for CVE-2026-84782 (DTLS),
+  CVE-2026-35189 (memory growth when processing X.509 CRL distribution points) and
+  CVE-2026-35191 (QUIC). warden uses OpenSSL only through `webauthn-rs`, to verify
+  passkeys: TLS, DTLS and QUIC do not go through OpenSSL in warden, and warden makes no
+  signatures with it. None of these is believed reachable in that use, with one
+  exception. When a passkey is enrolled, `webauthn-rs` parses any attestation
+  certificate the authenticator sends, and that parsing may reach the code
+  CVE-2026-35189 is in. Enrolling needs an enrollment code, which only someone on the
+  host can make. The `warden` CLI does not link OpenSSL. See
+  [OpenSSL's advisories](https://openssl-library.org/news/vulnerabilities/).
+
 ### Added
 
 - `GET /v1/requests` lists an agent's own pending requests, and `warden status` shows
