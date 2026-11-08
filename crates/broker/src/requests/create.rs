@@ -11,8 +11,6 @@ use warden_broker_proto::{
 
 use super::revocation::commit_with_entries;
 use super::transition::detached;
-#[cfg(doc)]
-use super::{LinkHosts, RequestLimits};
 use super::{
     PENDING_TTL_SECS, RELAY_NOT_CONFIGURED, RequestError, Requests, Scope, approval_token, begin,
     check_ed25519, check_window, commit_signing, limits, note_if_not_applied, parse, record,
@@ -32,9 +30,9 @@ impl Requests {
     /// the agent's limits.
     ///
     /// # Errors
-    /// [`RequestError::Limited`] if the agent is over its [`RequestLimits`],
+    /// [`RequestError::Limited`] if the agent is over its [`RequestLimits`](crate::requests::RequestLimits),
     /// [`RequestError::Rejected`] for policy violations, or a link to a host
-    /// that is not in [`LinkHosts`],
+    /// that is not in [`LinkHosts`](crate::requests::LinkHosts),
     /// [`RequestError::KeyInUse`] if the SSH public key backs another live
     /// request or grant, the target or secret errors from the backend,
     /// [`RequestError::AgentRevoked`], or storage failures. No row is stored

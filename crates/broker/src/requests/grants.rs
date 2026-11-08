@@ -12,8 +12,6 @@ use super::{
     ActiveGrant, AuditOutcome, GrantEnd, HistoryEntry, RelayGrantRecord, RequestError, Requests,
     begin, parse,
 };
-#[cfg(doc)]
-use super::{StatusBus, write_entries};
 use crate::agents::{self, AgentError};
 use crate::audit::AuditEvent;
 
@@ -347,10 +345,10 @@ impl Requests {
 /// running server can wake their long-polls.
 ///
 /// This does not touch the audit log: the entries wait in the database, and the
-/// caller then writes them with [`write_entries`] and reports what it could not.
+/// caller then writes them with [`write_entries`](crate::requests::write_entries) and reports what it could not.
 ///
 /// When this runs in another process (the `agent revoke` admin command), the
-/// server's in-process [`StatusBus`] is not told; its long-polls see
+/// server's in-process [`StatusBus`](crate::requests::StatusBus) is not told; its long-polls see
 /// `revoked` on their next re-read, within the 30 s wait cap, and its relay
 /// ends the agent's sessions at its next grant check (every second).
 ///
