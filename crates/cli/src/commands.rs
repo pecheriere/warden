@@ -5,14 +5,12 @@ use anyhow::{Context as _, Result};
 use warden_broker_proto::{Id, SecretName, TargetName};
 
 use crate::client::CallError;
-// Only the module: `setup_git` the function is defined below.
-use crate::setup_git::{self};
 use crate::{
     EXIT_CALL_STOPPED, EXIT_HTTP_FAIL, EXIT_NO_GRANT, EXIT_REVOKED, Exit, agent, client, guidance,
-    http, local_time, recover, ssh, unix_now,
+    http, local_time, recover, setup_git, ssh, unix_now,
 };
 
-pub(crate) async fn setup_git(local: bool) -> Result<()> {
+pub(crate) async fn run_setup_git(local: bool) -> Result<()> {
     let (_, client) = client()?;
     let scope = if local {
         setup_git::Scope::Local

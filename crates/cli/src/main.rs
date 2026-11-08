@@ -29,13 +29,10 @@ use warden_broker_proto::doctor::EXIT_NOTHING_FAILED;
 
 use crate::cli::{Cli, Cmd, RequestKind, SetupWhat};
 use crate::client::Client;
-use crate::commands::{HttpCall, revoke, run_http, run_ssh, setup_git, status};
+use crate::commands::{HttpCall, revoke, run_http, run_setup_git, run_ssh, status};
 use crate::config::Config;
 use crate::login::{KeyLogin, login, login_with_key};
-use crate::request::{
-    PENDING_EXPIRY_SECS, announce, api_scope, cancel, request_api, request_signing, request_ssh,
-    status_word,
-};
+use crate::request::{cancel, request_api, request_signing, request_ssh};
 
 /// Exit code: any other failure.
 const EXIT_ERROR: u8 = 1;
@@ -199,7 +196,7 @@ async fn run(cmd: Cmd) -> Result<()> {
         } => request_signing(window, goal, context).await,
         Cmd::Setup {
             what: SetupWhat::Git { local },
-        } => setup_git(local).await,
+        } => run_setup_git(local).await,
         Cmd::Request {
             kind: RequestKind::Cancel { id },
         } => cancel(&id).await,
