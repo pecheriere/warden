@@ -19,8 +19,6 @@ pub use upstream::{HttpsUpstream, Received};
 use webauthn_authenticator_rs::WebauthnAuthenticator;
 use webauthn_authenticator_rs::softpasskey::SoftPasskey;
 
-// --- in-process broker ------------------------------------------------------
-
 /// Owner login the test broker accepts.
 pub const TEST_OWNER: &str = "owner@example.com";
 
