@@ -37,7 +37,7 @@ its guarantees hold only under the
 | R1 | No access without the owner's passkey. An agent can only ask. | [`approve_finish`](../crates/broker/src/approval/mod.rs) issues a grant only after [`finish_approval`](../crates/broker/src/approval/passkeys.rs) verifies the assertion, with user verification required. |
 | R2 | An approval applies to the one request and window the owner saw. | [`ApprovalBinding`](../crates/broker/src/approval/passkeys.rs), checked again in `approve_finish`. See [how it binds](threat-model.md#approval-binding), and its limit below. |
 | R3 | Access is bounded in time and scope, and the agent cannot widen it. On a certificate target the time bound applies to new logins only: [an open login outlives the certificate](threat-model.md#accepted-residual-risks). | `check_policy` in [`approval/mod.rs`](../crates/broker/src/approval/mod.rs); [`ssh_ca::issue`](../crates/broker/src/ssh_ca.rs); [`proxy/rules.rs`](../crates/broker/src/proxy/rules.rs); `scope` in [`policy/api.rs`](../crates/broker/src/policy/api.rs). |
-| R4 | The agent never receives a reusable secret: no CA key, API secret or relay credential. It keeps only its own identity key, which can ask and use active grants, and [can be copied](security-assessment.md#ranked-risks) unless held in hardware. | Grant types in [`proto/src/lib.rs`](../crates/proto/src/lib.rs) carry no secret field. [`proxy/client.rs`](../crates/broker/src/proxy/client.rs) adds the secret itself and [`proxy/redact.rs`](../crates/broker/src/proxy/redact.rs) redacts answers. |
+| R4 | The agent never receives a reusable secret: no CA key, API secret or relay credential. It keeps only its own identity key, which can ask and use active grants, and [can be copied](security-assessment.md#ranked-risks) unless held in hardware. | Grant types in [`proto/src/grant.rs`](../crates/proto/src/grant.rs) carry no secret field. [`proxy/client.rs`](../crates/broker/src/proxy/client.rs) adds the secret itself and [`proxy/redact.rs`](../crates/broker/src/proxy/redact.rs) redacts answers. |
 | R5 | A secret reaches only the place the owner configured. | Exact origin match in `check_url` ([`proxy/rules.rs`](../crates/broker/src/proxy/rules.rs)); no redirects and no proxy in `client_for` ([`proxy/client.rs`](../crates/broker/src/proxy/client.rs)); pinned host keys in `check_server_key` ([`relay/onward.rs`](../crates/broker/src/relay/onward.rs)). |
 | R6 | Secrets are not logged, audited, sent to notifiers or put in errors. | `Debug` of secret types prints `<redacted>` ([`policy/mod.rs`](../crates/broker/src/policy/mod.rs), [`agents.rs`](../crates/broker/src/agents.rs), [`config.rs`](../crates/broker/src/config.rs)); fixed upstream errors in `ProxyError` ([`proxy/client.rs`](../crates/broker/src/proxy/client.rs)); the `Scrubber` in [`doctor/mod.rs`](../crates/broker/src/doctor/mod.rs). |
 | R7 | Every request, decision and grant is recorded, and every use that passes through warden: relay sessions and proxied calls. A change to the record can be detected unless the whole file is rewritten. **warden does not see certificate logins** (B9 below): it records the issue, and only the target's `sshd` logs the login. | [`audit.rs`](../crates/broker/src/audit.rs) (hash chain), `record` in [`requests/transition.rs`](../crates/broker/src/requests/transition.rs). Exceptions: finding [F15](security-assessment.md#findings-of-this-review), and revocation, which [does not wait for the log](threat-model.md#what-the-audit-log-can-miss) ([`requests/revocation.rs`](../crates/broker/src/requests/revocation.rs)). |
@@ -167,11 +167,11 @@ constructed, so code holding the type does not check again.
 
 | Input | Allowed | Code |
 |---|---|---|
-| Agent, target and secret names | `^[a-z0-9][a-z0-9-]{0,31}$` | `AgentName`, `TargetName`, `SecretName` in [`proto/src/lib.rs`](../crates/proto/src/lib.rs) |
+| Agent, target and secret names | `^[a-z0-9][a-z0-9-]{0,31}$` | `AgentName`, `TargetName`, `SecretName` in [`proto/src/names.rs`](../crates/proto/src/names.rs) |
 | Unix user | `^[a-z_][a-z0-9_-]{0,31}$` | `UnixUser`, same file |
 | Goal | 1 to 500 characters, no control or Unicode format characters | `Goal`, same file |
-| Ids | 32 lowercase hex characters | `Id`, same file |
-| Window | `15m`, `30m`, `1h`, `4h` | `Window`, same file |
+| Ids | 32 lowercase hex characters | `Id` in [`proto/src/lib.rs`](../crates/proto/src/lib.rs) |
+| Window | `15m`, `30m`, `1h`, `4h` | `Window` in [`proto/src/window.rs`](../crates/proto/src/window.rs) |
 | SSH public key in a request | One OpenSSH `ssh-ed25519` key | `check_ed25519` in [`requests.rs`](../crates/broker/src/requests.rs) |
 | Agent signing key | `ssh-ed25519` or `ecdsa-sha2-nistp256`; not `sk-*`, not a certificate, not a published test key | `SigningPublicKey` in [`proto/src/signing.rs`](../crates/proto/src/signing.rs) |
 | Signature headers | Exactly four, each once; visible ASCII; timestamp digits only; nonce 32 hex; signature at most 4096 characters | `SignatureHeaders::parse` in [`signed.rs`](../crates/broker/src/signed.rs) |
@@ -301,7 +301,7 @@ or anything like them, which a search of `crates/` confirms.
 
 | Client | Verification | Code |
 |---|---|---|
-| Proxied API calls | Hostname always checked. System roots, or only the item's `ca_pem`. `https_only`. Redirects not followed. | `client_for` in [`proxy/client.rs`](../crates/broker/src/proxy/client.rs); `untrusted_cert_refused_without_ca_pem` and `redirect_is_returned_not_followed` in [`tests/proxy.rs`](../crates/broker/tests/proxy.rs) |
+| Proxied API calls | Hostname always checked. System roots, or only the item's `ca_pem`. `https_only`. Redirects not followed. | `client_for` in [`proxy/client.rs`](../crates/broker/src/proxy/client.rs); `untrusted_cert_refused_without_ca_pem` in [`tests/proxy/upstream.rs`](../crates/broker/tests/proxy/upstream.rs) and `redirect_is_returned_not_followed` in [`tests/proxy/forwarding.rs`](../crates/broker/tests/proxy/forwarding.rs) |
 | CLI to broker | `reqwest` defaults, which verify. `http` only to loopback. Redirects not followed. | `http_client` in [`cli/src/client.rs`](../crates/cli/src/client.rs) |
 | Notifiers | `reqwest` defaults. Redirects not followed. | `http_client` in [`notify/mod.rs`](../crates/broker/src/notify/mod.rs) |
 | Connect | `reqwest` defaults, when the URL is `https`. Redirects not followed. | `OnePasswordConnect::new` in [`policy/onepassword.rs`](../crates/broker/src/policy/onepassword.rs) |
@@ -406,9 +406,9 @@ It too applies to new logins only.
 - **Every change** passes `cargo fmt`, clippy with `all` and `pedantic` denied,
   all tests and `cargo doc` with warnings denied. See the list in
   [`AGENTS.md`](../AGENTS.md) and [`ci.yml`](../.github/workflows/ci.yml).
-- **The tests** cover forgery and replay ([`signed.rs`](../crates/broker/tests/signed.rs)),
+- **The tests** cover forgery and replay ([`signed/`](../crates/broker/tests/signed/)),
   approval binding ([`approval/`](../crates/broker/tests/approval/)), proxy
-  rules and redaction ([`proxy.rs`](../crates/broker/tests/proxy.rs)), and the
+  rules and redaction ([`proxy/`](../crates/broker/tests/proxy/)), and the
   relay against a real OpenSSH server ([`relay/`](../crates/broker/tests/relay/main.rs)).
   This document's claims are not themselves tested, but the
   [protocol's test vectors and worked client](agent-protocol.md#4-test-vectors) are.
