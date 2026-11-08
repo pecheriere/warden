@@ -73,7 +73,7 @@ trusted, but it is weaker than a signature over the request itself.
 | Boundary | What crosses | Untrusted side | Controls | Code |
 |---|---|---|---|---|
 | **B1** Agent to API | Signed or bearer requests; grants, redacted answers | The agent, and anything that reaches the port | `refuse_funnel`; the signature, or a bearer key plus the owner's login; body size and time limits; typed input | [`signed.rs`](../crates/broker/src/signed.rs), [`identity.rs`](../crates/broker/src/identity.rs), [`api.rs`](../crates/broker/src/api.rs) |
-| **B2** Agent to relay | An SSH session | The agent, and anything that reaches the port | Public-key login only, with the approved key; limits before login; one session channel; no forwarding or subsystems | [`relay/server.rs`](../crates/broker/src/relay/server.rs), [`relay/session.rs`](../crates/broker/src/relay/session.rs), [`relay/read_ahead.rs`](../crates/broker/src/relay/read_ahead.rs) |
+| **B2** Agent to relay | An SSH session | The agent, and anything that reaches the port | Public-key login only, with the approved key; limits before login; one session channel; no forwarding or subsystems | [`relay/server.rs`](../crates/broker/src/relay/server.rs), [`relay/server/handler/protocol.rs`](../crates/broker/src/relay/server/handler/protocol.rs), [`relay/session/limits.rs`](../crates/broker/src/relay/session/limits.rs), [`relay/read_ahead.rs`](../crates/broker/src/relay/read_ahead.rs) |
 | **B3** Browser to approval UI | Pages; WebAuthn ceremonies; deny and revoke | The browser, and anything that reaches the listener | `require_owner`; `require_same_origin_json`; a strict CSP; server-rendered pages that show agent text as text; a passkey to approve | [`approval/mod.rs`](../crates/broker/src/approval/mod.rs), [`approval/pages.rs`](../crates/broker/src/approval/pages.rs), [`approval/warden.js`](../crates/broker/src/approval/warden.js) |
 | **B4** Operator to broker | Settings, `warden-server` commands | None: the host is inside the trust boundary | Validated settings that are never echoed; secret-file checks; changes to agents and passkeys audited | [`config.rs`](../crates/broker/src/config.rs), [`main.rs`](../crates/broker/src/main.rs) |
 | **B5** Broker to Connect | The token out; policy, secrets and the CA key back | Connect is trusted, but its answers are still validated | Fields are parsed and refused when invalid; redirects off; secrets held in wiped memory. TLS only if the URL says so: see [Cleartext](#5-common-weaknesses) | [`policy/onepassword.rs`](../crates/broker/src/policy/onepassword.rs) |
@@ -108,7 +108,7 @@ falls short.
   - if the grant state cannot be read for 10 s, relay sessions end
     (`FAIL_CLOSED_AFTER` in [`relay/server.rs`](../crates/broker/src/relay/server.rs));
   - if `proxy_call_started` or `relay_session_started` cannot be written, nothing
-    is sent ([`api.rs`](../crates/broker/src/api.rs), `relay/server.rs`);
+    is sent ([`api.rs`](../crates/broker/src/api.rs), `relay/server/start.rs`);
   - a route that lacks the signature middleware still refuses `Warden-*` headers
     (`AuthedAgent` in [`identity.rs`](../crates/broker/src/identity.rs));
   - `doctor` never counts a check that could not run as passed
@@ -177,7 +177,7 @@ constructed, so code holding the type does not check again.
 | Signature headers | Exactly four, each once; visible ASCII; timestamp digits only; nonce 32 hex; signature at most 4096 characters | `SignatureHeaders::parse` in [`signed.rs`](../crates/broker/src/signed.rs) |
 | Request bodies | 16 KiB, or 2 MiB for a proxied call, on the agent API; 64 KiB on the approval UI; JSON into typed structures | `BODY_LIMIT`, `PROXY_BODY_LIMIT` in [`api.rs`](../crates/broker/src/api.rs); `BODY_LIMIT` in [`approval/mod.rs`](../crates/broker/src/approval/mod.rs) |
 | Proxied URL, method, headers, body | The rules in [the design](design.md#83-http-proxy-mode-secret-injection), inspected as sent | `check` in [`proxy/rules.rs`](../crates/broker/src/proxy/rules.rs) |
-| Relay session requests | `pty-req`, `env` (`LANG`, `LC_*`, `TERM`), `window-change`, `signal`, `shell`, `exec`; limits before start | [`relay/server.rs`](../crates/broker/src/relay/server.rs) |
+| Relay session requests | `pty-req`, `env` (`LANG`, `LC_*`, `TERM`), `window-change`, `signal`, `shell`, `exec`; limits before start | [`relay/server/handler/protocol.rs`](../crates/broker/src/relay/server/handler/protocol.rs), `admit_before_start` in [`relay/server/handler.rs`](../crates/broker/src/relay/server/handler.rs) |
 | 1Password items | Every field parsed, an item with an invalid field refused | [`policy/onepassword.rs`](../crates/broker/src/policy/onepassword.rs) |
 | Local policy and secret files | The same validators as 1Password items, plus owner, mode, link, single-file mount and content digest checks on what was opened, each read. A problem refuses the start or the request. | [`policy/local.rs`](../crates/broker/src/policy/local.rs), [`policy/local/files.rs`](../crates/broker/src/policy/local/files.rs), [`policy/local/seal.rs`](../crates/broker/src/policy/local/seal.rs) |
 | Answers from the broker, in the CLI | Control characters removed from messages; hosts checked by `is_safe_host`; host keys parsed and written again | `sanitize` in [`proto/src/doctor.rs`](../crates/proto/src/doctor.rs); [`cli/src/agent.rs`](../crates/cli/src/agent.rs) |
@@ -409,7 +409,7 @@ It too applies to new logins only.
 - **The tests** cover forgery and replay ([`signed.rs`](../crates/broker/tests/signed.rs)),
   approval binding ([`approval.rs`](../crates/broker/tests/approval.rs)), proxy
   rules and redaction ([`proxy.rs`](../crates/broker/tests/proxy.rs)), and the
-  relay against a real OpenSSH server ([`relay.rs`](../crates/broker/tests/relay.rs)).
+  relay against a real OpenSSH server ([`relay/`](../crates/broker/tests/relay/main.rs)).
   This document's claims are not themselves tested, but the
   [protocol's test vectors and worked client](agent-protocol.md#4-test-vectors) are.
 - **Dependencies**: `cargo deny` for advisories, licences and sources, nightly

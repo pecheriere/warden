@@ -43,7 +43,7 @@ Three limits matter once Tailscale is gone:
 
 - **The relay's pre-login limit is the only per-source limit warden has.**
   `PreAuthLimiter` in
-  [`relay/session.rs`](../../crates/broker/src/relay/session.rs) allows 5
+  [`relay/session/limits.rs`](../../crates/broker/src/relay/session/limits.rs) allows 5
   connections per address and 10 overall. Behind any TCP forwarder all peers
   share one address, so it acts as a global limit, as the threat model already
   says for Serve.
