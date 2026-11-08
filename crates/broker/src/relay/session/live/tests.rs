@@ -1,3 +1,6 @@
+//! Tests of the live sessions: ending them by revocation, expiry or failing
+//! closed, their listing, and the reason recorded when an end races another.
+
 use std::sync::atomic::Ordering;
 
 use std::time::Duration;

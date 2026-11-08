@@ -1,3 +1,6 @@
+//! Tests of the relay loop's queues and watchdog: room and progress, an
+//! agent that leaves, idleness, and stalled or wedged directions.
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
