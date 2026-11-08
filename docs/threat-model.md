@@ -211,7 +211,10 @@ change.
     written. Until then
     it has no hash chain, and whoever controls the host could remove it. Writers
     claim an entry first, so two processes do not both write it, though entries
-    can then reach the log out of order. A crash just after writing one can write it
+    can then reach the log out of order. An entry written meanwhile by a change that
+    does wait for the log, such as a new request, can also come before it: the log's
+    order is the order of writing, and only the entries that wait in the database
+    can trail their change. A crash just after writing one can write it
     twice, and its claim holds it back for up to 5 minutes.
   - The owner sees it. The grants page warns for as long as any entry is waiting,
     whatever the page reloads for. A revocation also sends a notification, with the

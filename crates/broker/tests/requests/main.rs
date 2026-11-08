@@ -256,6 +256,17 @@ fn audit_types(h: &Harness) -> Vec<String> {
         .collect()
 }
 
+/// Wait until the audit log holds an entry of `kind`.
+async fn wait_for_audit_entry(h: &Harness, kind: &str) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !audit_types(h).iter().any(|t| t == kind) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("no audit entry of that kind within 5 s");
+}
+
 fn grant_for(h: &Harness, window: Window) -> GrantView {
     let now = h.clock_now();
     GrantView {

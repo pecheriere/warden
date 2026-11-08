@@ -17,6 +17,7 @@ use super::{
     CREDENTIAL, ECDSA_PUBLIC, START, TOKEN, agent, api_request, audit_types, broken_connect,
     connect_with_credential, create_notified, ed25519_public, grant_for, harness, harness_with,
     harness_with_relay, healthy_connect, message, pi_request, row_count, ssh_request, wait_for,
+    wait_for_audit_entry,
 };
 
 #[tokio::test]
@@ -554,6 +555,10 @@ async fn dropped_deny_future_leaves_log_usable() {
             .unwrap(),
         RequestStatus::Denied
     );
+    // Its audit entry trails it: a denial is committed with the entry waiting in
+    // the database, and written to the log only after that. So wait for it before
+    // the next request, whose entry could otherwise land first.
+    wait_for_audit_entry(&h, "denied").await;
     // And the next transition works on an intact log.
     let (_, token) = create_notified(&h, "bot", pi_request()).await;
     h.requests.deny(&token).await.unwrap();
