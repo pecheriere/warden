@@ -1,4 +1,5 @@
-//! Times, byte counts and durations as the pages show them.
+//! Tests for the format helpers: times, byte counts and durations as the pages
+//! show them.
 
 use super::super::format::{bytes, clock, idle_label, secs_label, utc_parts};
 

@@ -1,5 +1,9 @@
 //! Fixtures for the page tests, every page rendered with them, and the tests
 //! that name the page module's own items.
+//!
+//! The fixtures live here, in the parent of the per-page test modules under
+//! `tests/`, so every one of those modules can use them without widening their
+//! visibility.
 
 mod accessibility;
 mod approve_page;
