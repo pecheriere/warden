@@ -216,6 +216,15 @@ issue: an advisory with no fixed release yet fails no check.
    draft and publishes it: `gh release edit vx.y.z --draft=false`. Do not use
    `gh release create` here: releases are immutable, so a release published
    without the files can never gain them, including the signed manifest.
+5. Publishing starts `.github/workflows/homebrew.yml`, which waits for the
+   maintainer's approval in the `homebrew-tap` environment. Once approved, it
+   opens a pull request on
+   [pecheriere/homebrew-tap](https://github.com/pecheriere/homebrew-tap) that
+   bumps the formula, rendered from the signed manifest. The tap's CI checks it
+   against the manifest and installs it on each platform. Homebrew users get the
+   release only when the maintainer merges that pull request. If the job fails
+   because `HOMEBREW_TAP_TOKEN` has expired, replace the token, then run the
+   workflow by hand with the version.
 
 An agent creates a tag or a release only after asking the maintainer and
 getting a yes for that specific version and commit. A yes for one release

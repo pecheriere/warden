@@ -1,0 +1,90 @@
+name: homebrew
+
+# Opens a pull request on pecheriere/homebrew-tap that bumps the warden formula to
+# a published release. Homebrew users get nothing new until the owner merges it.
+#
+# It starts when a release is published, so after its manifest is signed and its
+# archives can be downloaded, and then waits in the homebrew-tap environment until
+# the owner approves it. The formula comes from the tap's own scripts/formula.py,
+# which refuses a manifest whose signature does not verify against the tap's copy
+# of the release keys. The tap's CI checks the same again on the pull request.
+#
+# HOMEBREW_TAP_TOKEN, a secret of the homebrew-tap environment, is a fine-grained
+# token limited to the tap repository, with read and write access to its contents
+# and pull requests. Only the last step sees it, and that step runs nothing from
+# the tap. When it expires, this job fails: replace it, then run the workflow by
+# hand for the release.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: The published release to bump the formula to, such as 0.11.0
+        required: true
+
+permissions: {}
+
+jobs:
+  bump:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: homebrew-tap
+    permissions:
+      contents: read
+    steps:
+      - name: Take the version from the release or the input
+        id: version
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          INPUT: ${{ inputs.version }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = release ]; then
+            version=${TAG#v}
+          else
+            version=$INPUT
+          fi
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::not a release version: $version"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: pecheriere/homebrew-tap
+          ref: main
+          persist-credentials: false
+      - name: Render the formula from the release's signed manifest
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: python3 -I scripts/formula.py render "$VERSION" Formula/warden.rb
+      - name: Open the pull request on the tap
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if git diff --quiet -- Formula/warden.rb; then
+            echo "The tap's formula is already at $VERSION."
+            exit 0
+          fi
+          tap=repos/pecheriere/homebrew-tap
+          branch=warden-$VERSION
+          if gh api "$tap/branches/$branch" > /dev/null 2>&1; then
+            echo "::error::the tap already has a branch $branch: merge or close its pull request, delete the branch, then rerun"
+            exit 1
+          fi
+          gh api "$tap/git/refs" -f "ref=refs/heads/$branch" -f "sha=$(git rev-parse HEAD)" > /dev/null
+          gh api -X PUT "$tap/contents/Formula/warden.rb" \
+            -f "message=warden $VERSION" \
+            -f "content=$(base64 -w0 Formula/warden.rb)" \
+            -f "sha=$(git rev-parse HEAD:Formula/warden.rb)" \
+            -f "branch=$branch" > /dev/null
+          gh pr create --repo pecheriere/homebrew-tap --base main --head "$branch" \
+            --title "warden $VERSION" \
+            --body "Bumps the formula to warden $VERSION, rendered from the release's signed manifest by \`scripts/formula.py\`.
+
+          Release: https://github.com/pecheriere/warden/releases/tag/v$VERSION
+          Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
+
+          Merge it once CI passes: Homebrew users get the new version from then on."
