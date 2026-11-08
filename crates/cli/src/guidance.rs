@@ -7,7 +7,7 @@
 
 use warden_broker_proto::{CreatedResponse, Id, RequestStatus, SecretName, TargetName};
 
-use crate::{PENDING_EXPIRY_SECS, status_word};
+use crate::request::{PENDING_EXPIRY_SECS, status_word};
 
 /// Explains the placeholders of a suggested `warden request`.
 pub const REQUEST_PLACEHOLDERS: &str = "window: the shortest of 15m, 30m, 1h or 4h that covers \
