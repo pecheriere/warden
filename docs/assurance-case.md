@@ -407,7 +407,7 @@ It too applies to new logins only.
   all tests and `cargo doc` with warnings denied. See the list in
   [`AGENTS.md`](../AGENTS.md) and [`ci.yml`](../.github/workflows/ci.yml).
 - **The tests** cover forgery and replay ([`signed.rs`](../crates/broker/tests/signed.rs)),
-  approval binding ([`approval.rs`](../crates/broker/tests/approval.rs)), proxy
+  approval binding ([`approval/`](../crates/broker/tests/approval/)), proxy
   rules and redaction ([`proxy.rs`](../crates/broker/tests/proxy.rs)), and the
   relay against a real OpenSSH server ([`relay.rs`](../crates/broker/tests/relay.rs)).
   This document's claims are not themselves tested, but the
