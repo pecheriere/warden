@@ -301,7 +301,7 @@ or anything like them, which a search of `crates/` confirms.
 
 | Client | Verification | Code |
 |---|---|---|
-| Proxied API calls | Hostname always checked. System roots, or only the item's `ca_pem`. `https_only`. Redirects not followed. | `client_for` in [`proxy/client.rs`](../crates/broker/src/proxy/client.rs); `untrusted_cert_refused_without_ca_pem` and `redirect_is_returned_not_followed` in [`tests/proxy.rs`](../crates/broker/tests/proxy.rs) |
+| Proxied API calls | Hostname always checked. System roots, or only the item's `ca_pem`. `https_only`. Redirects not followed. | `client_for` in [`proxy/client.rs`](../crates/broker/src/proxy/client.rs); `untrusted_cert_refused_without_ca_pem` in [`tests/proxy/upstream.rs`](../crates/broker/tests/proxy/upstream.rs) and `redirect_is_returned_not_followed` in [`tests/proxy/forwarding.rs`](../crates/broker/tests/proxy/forwarding.rs) |
 | CLI to broker | `reqwest` defaults, which verify. `http` only to loopback. Redirects not followed. | `http_client` in [`cli/src/client.rs`](../crates/cli/src/client.rs) |
 | Notifiers | `reqwest` defaults. Redirects not followed. | `http_client` in [`notify/mod.rs`](../crates/broker/src/notify/mod.rs) |
 | Connect | `reqwest` defaults, when the URL is `https`. Redirects not followed. | `OnePasswordConnect::new` in [`policy/onepassword.rs`](../crates/broker/src/policy/onepassword.rs) |
@@ -406,9 +406,9 @@ It too applies to new logins only.
 - **Every change** passes `cargo fmt`, clippy with `all` and `pedantic` denied,
   all tests and `cargo doc` with warnings denied. See the list in
   [`AGENTS.md`](../AGENTS.md) and [`ci.yml`](../.github/workflows/ci.yml).
-- **The tests** cover forgery and replay ([`signed.rs`](../crates/broker/tests/signed.rs)),
+- **The tests** cover forgery and replay ([`signed/`](../crates/broker/tests/signed/)),
   approval binding ([`approval/`](../crates/broker/tests/approval/)), proxy
-  rules and redaction ([`proxy.rs`](../crates/broker/tests/proxy.rs)), and the
+  rules and redaction ([`proxy/`](../crates/broker/tests/proxy/)), and the
   relay against a real OpenSSH server ([`relay/`](../crates/broker/tests/relay/main.rs)).
   This document's claims are not themselves tested, but the
   [protocol's test vectors and worked client](agent-protocol.md#4-test-vectors) are.
