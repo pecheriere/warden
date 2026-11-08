@@ -61,7 +61,8 @@ fn assert_invalid(result: Result<ApiSecretPolicy, PolicyError>, want_field: &str
             assert_eq!(field, want_field, "reason: {reason}");
             assert!(!reason.contains(CREDENTIAL), "credential echoed: {reason}");
         }
-        other => panic!("expected Invalid for {want_field}, got {other:?}"),
+        Ok(_) => panic!("expected Invalid for {want_field}, got Ok"),
+        Err(other) => panic!("expected Invalid for {want_field}, got {other}"),
     }
 }
 
