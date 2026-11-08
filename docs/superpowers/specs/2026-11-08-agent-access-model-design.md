@@ -96,17 +96,26 @@ signing while the Mac is locked, which defeats running agents unattended.
 - The owner approves one standing grant per agent identity for the routine
   scope, with a window of up to 30 days (a new per-kind maximum, like
   `WARDEN_COMMIT_SIGNING_MAX_WINDOW`; other grants keep their 4-hour cap).
-- With the grant active, the CLI asks the broker for a GitHub token for a named
-  repository. The broker mints an installation token from the agent App,
-  restricted to that repository and the routine permissions, lifetime 1 hour,
-  and audits the mint (agent, repository, permissions, expiry).
+- With the grant active, the CLI asks the broker for a GitHub token. The
+  broker mints an installation token from the agent App with the routine
+  permissions (fixed by the broker, never chosen by the agent), lifetime 1
+  hour, and audits the mint (agent, installation, permissions, expiry).
+  *Designer's call:* the token covers every repository the App is installed
+  on, not one repository per token. The installation is the scope the owner
+  sets per repository; an agent that may mint for any installed repository
+  gains nothing from per-repository tokens except a narrower hour if one is
+  copied, and per-repository tokens would make plain `gh` fail across
+  repositories. The CLI caches the token (0600, in the agent user's state
+  directory) and mints again when it has less than 5 minutes left.
+- GitHub Apps sign with RSA only. The broker signs the App's JWT (RS256) with
+  `aws-lc-rs`, already in the dependency tree, never with the `rsa` crate,
+  whose private-key operations are what RUSTSEC-2023-0071 covers; `deny.toml`'s
+  "holds no RSA private key" justification is reworded to say exactly that.
 - `warden setup github` installs, in the agent user's account:
   - a git credential helper for `https://github.com`, so plain `git fetch` and
     `git push` work over HTTPS;
-  - a way for plain `gh` to get a token for the current repository (a `gh`
-    wrapper earlier on `PATH` that sets `GH_TOKEN`, or an equivalent the
-    builder finds cleaner). `gh` commands outside a repository need a
-    repository argument or fail with a clear message.
+  - a way for plain `gh` to get the token (a `gh` wrapper earlier on `PATH`
+    that sets `GH_TOKEN`, or an equivalent the builder finds cleaner).
 - Without an active grant, the helper requests one, says it is waiting for
   approval, and continues when approved. A denial is a clear error telling the
   agent not to retry around it.
