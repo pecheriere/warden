@@ -1,19 +1,23 @@
 name: homebrew
 
-# Opens a pull request on pecheriere/homebrew-tap that bumps the warden formula to
-# a published release. Homebrew users get nothing new until the owner merges it.
+# Bumps the warden formula in pecheriere/homebrew-tap to each published release.
+# Publishing the release, with its manifest signed by a key that is not on GitHub,
+# is the step the owner takes; nothing here asks again.
 #
-# It starts when a release is published, so after its manifest is signed and its
-# archives can be downloaded, and then waits in the homebrew-tap environment until
-# the owner approves it. The formula comes from the tap's own scripts/formula.py,
-# which refuses a manifest whose signature does not verify against the tap's copy
-# of the release keys. The tap's CI checks the same again on the pull request.
+# It starts when a release is published, so once its manifest is signed and its
+# archives can be downloaded. `render` writes the formula with the tap's own
+# scripts/formula.py, which refuses a manifest whose signature does not verify
+# against the tap's copy of the release keys, and a version older than the tap's.
+# `open-pr` opens a pull request on the tap with auto-merge on. The tap's required
+# checks verify the formula again, with main's script and keys, and install it on
+# each platform, so the pull request merges only if they pass.
 #
-# HOMEBREW_TAP_TOKEN, a secret of the homebrew-tap environment, is a fine-grained
-# token limited to the tap repository, with read and write access to its contents
-# and pull requests. Only the last step sees it, and that step runs nothing from
-# the tap. When it expires, this job fails: replace it, then run the workflow by
-# hand for the release.
+# HOMEBREW_TAP_TOKEN, a secret of the homebrew-tap environment, which only `v*` tags
+# and main can use, is a fine-grained token limited to the tap repository, with read
+# and write access to its contents and pull requests and none to its workflows. Only
+# `open-pr` sees it, and that job runs nothing from the tap: it reads the formula
+# from `render` as data. When the token expires, `open-pr` fails: replace it, then
+# run the workflow by hand for the release.
 
 on:
   release:
@@ -27,12 +31,16 @@ on:
 permissions: {}
 
 jobs:
-  bump:
+  render:
+    # A prerelease is not for Homebrew users.
+    if: github.event_name != 'release' || !github.event.release.prerelease
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    environment: homebrew-tap
     permissions:
       contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      changed: ${{ steps.render.outputs.changed }}
     steps:
       - name: Take the version from the release or the input
         id: version
@@ -56,35 +64,73 @@ jobs:
           ref: main
           persist-credentials: false
       - name: Render the formula from the release's signed manifest
+        id: render
         env:
           VERSION: ${{ steps.version.outputs.version }}
-        run: python3 -I scripts/formula.py render "$VERSION" Formula/warden.rb
-      - name: Open the pull request on the tap
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
+          python3 -I scripts/formula.py render "$VERSION" Formula/warden.rb
           if git diff --quiet -- Formula/warden.rb; then
             echo "The tap's formula is already at $VERSION."
-            exit 0
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
+          mkdir -p "$RUNNER_TEMP/formula"
+          cp Formula/warden.rb "$RUNNER_TEMP/formula/warden.rb"
+          git rev-parse HEAD > "$RUNNER_TEMP/formula/base-commit"
+          git rev-parse HEAD:Formula/warden.rb > "$RUNNER_TEMP/formula/base-blob"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: steps.render.outputs.changed == 'true'
+        with:
+          name: formula
+          path: ${{ runner.temp }}/formula
+          retention-days: 1
+
+  open-pr:
+    needs: render
+    if: needs.render.outputs.changed == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: homebrew-tap
+    permissions: {}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: formula
+          path: formula
+      - name: Open the pull request on the tap, with auto-merge on
+        env:
+          VERSION: ${{ needs.render.outputs.version }}
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
           tap=repos/pecheriere/homebrew-tap
           branch=warden-$VERSION
-          if gh api "$tap/branches/$branch" > /dev/null 2>&1; then
-            echo "::error::the tap already has a branch $branch: merge or close its pull request, delete the branch, then rerun"
+          base_commit=$(cat formula/base-commit)
+          base_blob=$(cat formula/base-blob)
+          if ! [[ "$base_commit" =~ ^[0-9a-f]{40}$ && "$base_blob" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::the render job's output is malformed"
             exit 1
           fi
-          gh api "$tap/git/refs" -f "ref=refs/heads/$branch" -f "sha=$(git rev-parse HEAD)" > /dev/null
+          # 404 means there is no such branch; anything else but success is an error.
+          status=$(gh api "$tap/branches/$branch" --include 2>/dev/null | awk 'NR == 1 { print $2 }' || true)
+          if [ "$status" = 200 ]; then
+            echo "::error::the tap already has a branch $branch: close its pull request, delete the branch, then rerun"
+            exit 1
+          elif [ "$status" != 404 ]; then
+            echo "::error::cannot check the tap for a branch $branch (HTTP ${status:-none}): is HOMEBREW_TAP_TOKEN valid?"
+            exit 1
+          fi
+          gh api "$tap/git/refs" -f "ref=refs/heads/$branch" -f "sha=$base_commit" > /dev/null
           gh api -X PUT "$tap/contents/Formula/warden.rb" \
             -f "message=warden $VERSION" \
-            -f "content=$(base64 -w0 Formula/warden.rb)" \
-            -f "sha=$(git rev-parse HEAD:Formula/warden.rb)" \
+            -f "content=$(base64 -w0 formula/warden.rb)" \
+            -f "sha=$base_blob" \
             -f "branch=$branch" > /dev/null
-          gh pr create --repo pecheriere/homebrew-tap --base main --head "$branch" \
+          url=$(gh pr create --repo pecheriere/homebrew-tap --base main --head "$branch" \
             --title "warden $VERSION" \
-            --body "Bumps the formula to warden $VERSION, rendered from the release's signed manifest by \`scripts/formula.py\`.
+            --body "Bumps the formula to warden $VERSION, rendered from the release's signed manifest by \`scripts/formula.py\`. It merges by itself once the required checks pass.
 
           Release: https://github.com/pecheriere/warden/releases/tag/v$VERSION
-          Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
-
-          Merge it once CI passes: Homebrew users get the new version from then on."
+          Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID")
+          gh pr merge "$url" --auto --squash
+          echo "Opened $url with auto-merge on."
