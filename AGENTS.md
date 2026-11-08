@@ -216,6 +216,13 @@ issue: an advisory with no fixed release yet fails no check.
    draft and publishes it: `gh release edit vx.y.z --draft=false`. Do not use
    `gh release create` here: releases are immutable, so a release published
    without the files can never gain them, including the signed manifest.
+5. Within about an hour, a scheduled workflow in
+   [pecheriere/homebrew-tap](https://github.com/pecheriere/homebrew-tap) opens a
+   pull request that bumps the formula, rendered from the signed manifest, with
+   auto-merge on. Its checks verify it against the manifest and install it on each
+   platform; it merges when they pass, and Homebrew users get the release. If they
+   fail, read why before anything else: a formula that does not match the signed
+   manifest is a possible compromise.
 
 An agent creates a tag or a release only after asking the maintainer and
 getting a yes for that specific version and commit. A yes for one release

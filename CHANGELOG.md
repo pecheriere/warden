@@ -14,6 +14,10 @@ All notable changes to this project are recorded here. The format follows
   adds the grant id, address, expiry and paths, and `--min-remaining <duration>` exits 5
   when the grant ends sooner. With no active grant it exits 5, as `warden ssh` does. See
   [Tools that run ssh themselves](docs/agent-usage.md#tools-that-run-ssh-themselves).
+- `brew install pecheriere/tap/warden` installs the CLI on macOS (Apple silicon) and
+  Linux, from the release's binaries, pinned by the checksums in its signed manifest.
+  `brew upgrade` gets each new release once the tap's checks have verified it. See
+  [Agent usage](docs/agent-usage.md#one-time-setup).
 
 ### Changed
 

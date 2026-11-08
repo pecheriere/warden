@@ -62,8 +62,7 @@ expect this to change:
 - **Settings and upgrades.** Releases can include breaking changes, and
   database migrations are one-way. Read the [changelog](CHANGELOG.md) and
   back up before you upgrade.
-- **How you install and set it up.** The CLI is built from source today
-  ([#71](https://github.com/pecheriere/warden/issues/71)), and setup is
+- **How you install and set it up.** Setup is
   manual ([#77](https://github.com/pecheriere/warden/issues/77),
   [#78](https://github.com/pecheriere/warden/issues/78)).
 - **Which setups exist.** See [Supported setups](#supported-setups).
@@ -268,9 +267,9 @@ it; follow it for a real setup.
    # on the server, with the agent's public key line
    docker compose exec warden /warden-server agent add build-agent \
      --public-key "ssh-ed25519 AAAA… build-agent"
-   # on the agent machine (Rust 1.99 or later; releases after v0.8.1 also
-   # attach binaries, and after v0.9.0 .deb and .rpm packages, see Agent usage)
-   cargo install --locked --git https://github.com/pecheriere/warden --tag v0.10.0 warden-broker-cli
+   # on the agent machine, with Homebrew (binaries, .deb, .rpm and building
+   # from source are in Agent usage)
+   brew install pecheriere/tap/warden
    warden login --server https://warden-api.example.ts.net --agent build-agent \
      --ssh-key ~/.ssh/build-agent.pub
    ```

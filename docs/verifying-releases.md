@@ -100,6 +100,25 @@ The attestation step finds an attestation by the file's digest, not its name. Th
 signed manifest ties each name to a digest, and `scripts/sign-release.sh` refuses to
 sign a file attested under another name, so check the manifest as well.
 
+### Homebrew
+
+`brew install pecheriere/tap/warden` downloads the CLI's archive for your platform,
+from the same release. Homebrew refuses it unless it matches the checksum in the
+[tap's formula](https://github.com/pecheriere/homebrew-tap/blob/main/Formula/warden.rb).
+The tap's CI checks those checksums against the signed manifest, with its own copy
+of `release-signers`, before a bump merges. To check
+the archive yourself, verify the manifest's signature as above, then check the file
+Homebrew kept. Its name in the cache differs, so compare the hash by hand:
+
+```sh
+version=x.y.z           # the version Homebrew installed: brew list --versions warden
+file=$(brew --cache pecheriere/tap/warden)
+shasum -a 256 "$file"   # must equal the manifest's line for warden-<version>-<platform>.tar.gz
+gh attestation verify "$file" --repo pecheriere/warden \
+  --signer-workflow pecheriere/warden/.github/workflows/release.yml \
+  --source-ref "refs/tags/v$version"
+```
+
 ## 3. Verify the image
 
 The manifest lists the digest of the multi-arch image. Run warden by that digest,

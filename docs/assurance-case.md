@@ -423,7 +423,10 @@ It too applies to new logins only.
 - **The `main` branch** takes pull requests only, with signed commits, linear
   history and required checks.
 - **Releases**: the image, the CLI's packages and the CLI, server and demo binaries have build-provenance attestations
-  ([`release.yml`](../.github/workflows/release.yml)).
+  ([`release.yml`](../.github/workflows/release.yml)). The Homebrew tap's formula
+  is bumped from the release's signed manifest, and the tap's required checks verify
+  it against that manifest before it merges
+  ([pecheriere/homebrew-tap](https://github.com/pecheriere/homebrew-tap)).
 - **Fuzzing and coverage**: a scheduled job fuzzes part of the code that parses
   untrusted input ([#91](https://github.com/pecheriere/warden/issues/91)), and CI
   measures coverage and fails below 80% of lines

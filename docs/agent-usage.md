@@ -47,7 +47,21 @@ The rest of this section gives the details.
 
 Install the CLI on the agent's machine. It needs the OpenSSH client tools.
 
-Releases after v0.8.1 attach binaries for macOS arm64, Linux amd64 and Linux
+With [Homebrew](https://brew.sh), on macOS (Apple silicon) or Linux (x86-64 or arm64):
+
+```sh
+brew install pecheriere/tap/warden
+```
+
+This installs the latest release's binary from the
+[pecheriere/homebrew-tap](https://github.com/pecheriere/homebrew-tap) formula, and
+`brew upgrade` updates it after that. Homebrew checks each download against the
+checksum in the formula, and the tap's CI refuses a formula whose checksums are not
+the ones in the release's signed manifest. To check the binary as well, run
+[the release checks](verifying-releases.md#homebrew) on the archive Homebrew
+downloaded.
+
+Without Homebrew, releases after v0.8.1 attach binaries for macOS arm64, Linux amd64 and Linux
 arm64 (fully static, with no dependency on the distribution's libc). Pick a
 release that lists `warden-<version>-<platform>.tar.gz` files on the
 [releases page](https://github.com/pecheriere/warden/releases). Checking the

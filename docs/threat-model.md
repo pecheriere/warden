@@ -1081,6 +1081,23 @@ warden's guarantees depend on its environment being set up as follows.
   [release checks](verifying-releases.md) are what cover them, and nothing updates them.
   They are made and checked in one job, which
   [Verifying a release](verifying-releases.md#not-covered-yet) lists as not covered yet.
+- **The Homebrew tap decides what `brew upgrade` installs.** The formula in
+  [pecheriere/homebrew-tap](https://github.com/pecheriere/homebrew-tap) pins the CLI's
+  release archives by SHA-256, and Homebrew refuses any other download. Whoever can
+  change that formula chooses the binary. Within about an hour of a release being
+  published, a scheduled workflow in the tap opens a bump pull request with auto-merge
+  on, using a token that can write to the tap only and that only the tap's `main` can
+  use. warden holds no secret for it. Publishing the release is the maintainer's
+  decision; the bump needs no other. The tap's required checks refuse a formula whose
+  checksums are not in the release's signed manifest, checked with `main`'s script
+  and the tap's own copy of the release keys, or that goes back to an older release.
+  Those checks run the scripts and keys of the commit the change is based on, never
+  the change's own. Any change but a formula bump, including a second formula file,
+  merges only if the maintainer signed each of its commits, which the token's commits
+  through the API cannot be. So whoever steals the token can open pull requests but
+  can merge only a bump to a release the maintainer signed. The token cannot change
+  the tap's workflows. A compromised maintainer account, or the maintainer's commit key, can
+  change the tap, as it can a release.
 - **Operator commands run as the broker's user, with its secrets.**
   `warden-server doctor` reads the vault with the Connect token, loads the CA key
   and drops it, and prints no secret; with `--send-test-notification` it sends a
