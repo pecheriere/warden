@@ -222,9 +222,10 @@ issue: an advisory with no fixed release yet fails no check.
    tap's required checks verify it against the manifest and install it on each
    platform; it merges when they pass, and Homebrew users get the release. If
    they fail, read why before doing anything: a formula that does not match the
-   signed manifest is a possible compromise. If `open-pr` fails because
-   `HOMEBREW_TAP_TOKEN` has expired, replace the token, then run the workflow by
-   hand with the version.
+   signed manifest is a possible compromise. If the tap's `main` moved while the
+   checks ran, the pull request waits: update its branch on the tap. If `open-pr`
+   fails because `HOMEBREW_TAP_TOKEN` has expired, replace the token, then rerun
+   the run's failed jobs.
 
 An agent creates a tag or a release only after asking the maintainer and
 getting a yes for that specific version and commit. A yes for one release

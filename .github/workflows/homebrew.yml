@@ -13,27 +13,24 @@ name: homebrew
 # each platform, so the pull request merges only if they pass.
 #
 # HOMEBREW_TAP_TOKEN, a secret of the homebrew-tap environment, which only `v*` tags
-# and main can use, is a fine-grained token limited to the tap repository, with read
+# can use, is a fine-grained token limited to the tap repository, with read
 # and write access to its contents and pull requests and none to its workflows. Only
 # `open-pr` sees it, and that job runs nothing from the tap: it reads the formula
 # from `render` as data. When the token expires, `open-pr` fails: replace it, then
-# run the workflow by hand for the release.
+# rerun the failed jobs.
 
+# `released` fires when a release is published, or a prerelease is promoted, and
+# never for a prerelease. There is no manual trigger: `render` runs code from the
+# tap, so it runs only for a release tag, whose caches nothing else reads. To retry,
+# rerun the failed jobs of the release's run.
 on:
   release:
-    types: [published]
-  workflow_dispatch:
-    inputs:
-      version:
-        description: The published release to bump the formula to, such as 0.11.0
-        required: true
+    types: [released]
 
 permissions: {}
 
 jobs:
   render:
-    # A prerelease is not for Homebrew users.
-    if: github.event_name != 'release' || !github.event.release.prerelease
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -42,17 +39,12 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       changed: ${{ steps.render.outputs.changed }}
     steps:
-      - name: Take the version from the release or the input
+      - name: Take the version from the release's tag
         id: version
         env:
           TAG: ${{ github.event.release.tag_name }}
-          INPUT: ${{ inputs.version }}
         run: |
-          if [ "$GITHUB_EVENT_NAME" = release ]; then
-            version=${TAG#v}
-          else
-            version=$INPUT
-          fi
+          version=${TAG#v}
           if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "::error::not a release version: $version"
             exit 1
