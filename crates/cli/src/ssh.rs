@@ -5,7 +5,7 @@ use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{Context as _, Result, bail, ensure};
+use anyhow::{Context as _, Result, ensure};
 use warden_broker_proto::{TargetName, UnixUser};
 
 use crate::agent::{GrantRecord, Route, is_safe_host, load_grants};
@@ -37,18 +37,38 @@ pub fn active_grant(grants: &Path, target: &TargetName, now: i64) -> Option<Acti
         .max_by_key(|g| g.record.not_after)
 }
 
-/// The arguments for `ssh` (program name excluded). The grant's agent is the
-/// only identity source: `IdentityFile=none` keeps ssh from also offering
-/// `~/.ssh/id_*`. Host, port and user come
-/// from the server-signed grant and are validated again here; `--` ends
-/// option parsing so the remote `command` can never be read as ssh options.
-/// A relay grant connects to the relay's address and logs in as the
-/// target's name (the relay then logs in to the target as the user); every
-/// other option is the same.
+/// How ssh reaches a target through a grant, checked: what `warden ssh` passes
+/// on the command line and `warden ssh-config` writes as a `Host` block, so the
+/// two cannot drift apart.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Connection {
+    /// Host to connect to: the target's, or the relay's.
+    pub host: String,
+    /// Port to connect to.
+    pub port: u16,
+    /// Account to log in as: the grant's user, or the target's name through
+    /// the relay.
+    pub login: String,
+    /// The grant agent's socket.
+    pub socket: String,
+    /// The grant's pinned `known_hosts`.
+    pub known_hosts: String,
+    /// Every other option, as `(keyword, value)` with the value already quoted
+    /// for ssh. The same text works after `-o keyword=` and in a config file.
+    pub options: Vec<(&'static str, String)>,
+}
+
+/// The [`Connection`] for `grant`. The grant's agent is the only identity
+/// source: `IdentityFile none` keeps ssh from also offering `~/.ssh/id_*`, and
+/// `ForwardAgent no` keeps the agent on this machine. Host, port and user come
+/// from the server-signed grant and are validated again here. A relay grant
+/// connects to the relay's address and logs in as the target's name (the relay
+/// then logs in to the target as the user); every other option is the same.
 ///
 /// # Errors
-/// If the recorded host, user or target is not safe to pass to ssh.
-pub fn ssh_args(grant: &ActiveGrant, command: &[String]) -> Result<Vec<OsString>> {
+/// If the recorded host, user or target is not safe to pass to ssh, or a path
+/// cannot be quoted for it.
+pub fn connection(grant: &ActiveGrant) -> Result<Connection> {
     let rec = &grant.record;
     ensure!(
         is_safe_host(&rec.host),
@@ -62,45 +82,69 @@ pub fn ssh_args(grant: &ActiveGrant, command: &[String]) -> Result<Vec<OsString>
         // A `TargetName` is `[a-z0-9-]` only, checked when grant.json is read.
         Route::Relay => rec.target.to_string(),
     };
-    let identity_agent = path_option("IdentityAgent", &rec.socket)?;
-    let known_hosts = path_option("UserKnownHostsFile", &grant.dir.join("known_hosts"))?;
-    let mut args: Vec<OsString> = vec![
-        "-F".into(),
-        "/dev/null".into(),
-        "-o".into(),
-        identity_agent,
-        "-o".into(),
-        "IdentityFile=none".into(),
-        "-o".into(),
-        "IdentitiesOnly=no".into(),
-        "-o".into(),
-        known_hosts,
-        "-o".into(),
-        "StrictHostKeyChecking=yes".into(),
-        "-o".into(),
-        "PasswordAuthentication=no".into(),
-        "-o".into(),
-        "KbdInteractiveAuthentication=no".into(),
-        "-p".into(),
-        rec.port.to_string().into(),
-        "--".into(),
-        format!("{login}@{}", rec.host).into(),
+    let known_hosts = grant.dir.join("known_hosts");
+    let options = vec![
+        ("IdentityAgent", quote_path("IdentityAgent", &rec.socket)?),
+        ("IdentityFile", "none".to_owned()),
+        ("IdentitiesOnly", "no".to_owned()),
+        (
+            "UserKnownHostsFile",
+            quote_path("UserKnownHostsFile", &known_hosts)?,
+        ),
+        ("StrictHostKeyChecking", "yes".to_owned()),
+        ("PasswordAuthentication", "no".to_owned()),
+        ("KbdInteractiveAuthentication", "no".to_owned()),
+        ("ForwardAgent", "no".to_owned()),
     ];
+    Ok(Connection {
+        host: rec.host.clone(),
+        port: rec.port,
+        login,
+        socket: utf8("IdentityAgent", &rec.socket)?.to_owned(),
+        known_hosts: utf8("UserKnownHostsFile", &known_hosts)?.to_owned(),
+        options,
+    })
+}
+
+/// The arguments for `ssh` (program name excluded): `-F /dev/null` so no
+/// config file adds to them, the [`Connection`]'s options, and `--` to end
+/// option parsing so the remote `command` can never be read as ssh options.
+///
+/// # Errors
+/// As [`connection`].
+pub fn ssh_args(grant: &ActiveGrant, command: &[String]) -> Result<Vec<OsString>> {
+    let conn = connection(grant)?;
+    let mut args: Vec<OsString> = vec!["-F".into(), "/dev/null".into()];
+    for (key, value) in &conn.options {
+        args.push("-o".into());
+        args.push(format!("{key}={value}").into());
+    }
+    args.extend([
+        "-p".into(),
+        conn.port.to_string().into(),
+        "--".into(),
+        format!("{}@{}", conn.login, conn.host).into(),
+    ]);
     args.extend(command.iter().map(OsString::from));
     Ok(args)
 }
 
-/// `<key>="<path>"` for `ssh -o`. ssh splits option values on whitespace,
-/// honours double quotes and backslash escapes, and expands `%` tokens in
-/// both path options used here, so the path is quoted with `%` doubled.
-/// Paths that quoting cannot carry safely are refused.
+/// `path` as UTF-8, for the option `key`.
+fn utf8<'a>(key: &str, path: &'a Path) -> Result<&'a str> {
+    path.to_str()
+        .with_context(|| format!("{key} path {} is not valid UTF-8", path.display()))
+}
+
+/// `"<path>"` for the ssh option `key`, after `-o key=` or in a config file.
+/// ssh splits option values on whitespace, honours double quotes and
+/// backslash escapes, and expands `%` tokens in both path options used here,
+/// so the path is quoted with `%` doubled. Paths that quoting cannot carry
+/// safely are refused.
 ///
 /// # Errors
 /// If the path is not UTF-8 or contains `"`, `\` or a control character.
-fn path_option(key: &str, path: &Path) -> Result<OsString> {
-    let Some(text) = path.to_str() else {
-        bail!("{key} path {} is not valid UTF-8", path.display());
-    };
+fn quote_path(key: &str, path: &Path) -> Result<String> {
+    let text = utf8(key, path)?;
     ensure!(
         !text
             .chars()
@@ -108,7 +152,7 @@ fn path_option(key: &str, path: &Path) -> Result<OsString> {
         "{key} path \"{}\" contains a character ssh cannot take in an option",
         text.escape_debug()
     );
-    Ok(format!("{key}=\"{}\"", text.replace('%', "%%")).into())
+    Ok(format!("\"{}\"", text.replace('%', "%%")))
 }
 
 /// Replace this process with `ssh`. Returns only on failure.
@@ -124,7 +168,7 @@ mod tests {
 
     use warden_broker_proto::Id;
 
-    use super::{ActiveGrant, active_grant, path_option, ssh_args};
+    use super::{ActiveGrant, active_grant, quote_path, ssh_args};
     use crate::agent::{GrantRecord, Route};
 
     fn grant(host: &str, port: u16) -> ActiveGrant {
@@ -174,6 +218,8 @@ mod tests {
                 "PasswordAuthentication=no",
                 "-o",
                 "KbdInteractiveAuthentication=no",
+                "-o",
+                "ForwardAgent=no",
                 "-p",
                 "2222",
                 "--",
@@ -216,23 +262,23 @@ mod tests {
     }
 
     #[test]
-    fn path_option_quotes_spaces_and_doubles_percent() {
-        let opt = path_option(
+    fn quote_path_quotes_spaces_and_doubles_percent() {
+        let opt = quote_path(
             "UserKnownHostsFile",
             Path::new("/Users/u/Library/Application Support/warden/100%/known_hosts"),
         )
         .unwrap();
         assert_eq!(
-            opt.to_str().unwrap(),
-            "UserKnownHostsFile=\"/Users/u/Library/Application Support/warden/100%%/known_hosts\""
+            opt,
+            "\"/Users/u/Library/Application Support/warden/100%%/known_hosts\""
         );
     }
 
     #[test]
-    fn path_option_rejects_quote_backslash_and_control_chars() {
+    fn quote_path_rejects_quote_backslash_and_control_chars() {
         for bad in ["/a\"b", "/a\\b", "/a\nb", "/a\tb"] {
             assert!(
-                path_option("IdentityAgent", Path::new(bad)).is_err(),
+                quote_path("IdentityAgent", Path::new(bad)).is_err(),
                 "{bad:?}"
             );
         }

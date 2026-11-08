@@ -224,6 +224,77 @@ async fn e2e_request_approve_ssh_runs_command() {
     drop(s.sshd);
 }
 
+/// A tool that runs ssh itself, with its own options as an installer would
+/// add them, connects through the block `warden ssh-config` wrote; once the
+/// grant is revoked, `warden ssh-config` exits 5.
+#[tokio::test(flavor = "multi_thread")]
+async fn e2e_ssh_config_block_lets_plain_ssh_connect() {
+    let s = setup().await;
+    let grant = request_and_approve(&s).await;
+    let file = s.cli.root.path().join("tool dir").join("ssh_config");
+    fs::create_dir_all(file.parent().unwrap()).unwrap();
+
+    let out = s.cli.run(&[
+        "ssh-config",
+        TARGET,
+        "--output",
+        file.to_str().unwrap(),
+        "--json",
+        "--min-remaining",
+        "5m",
+    ]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["grant"], grant.as_str());
+    assert_eq!(json["target"], TARGET);
+    assert_eq!(json["port"], s.sshd.port);
+    assert_eq!(
+        fs::read_to_string(&file).unwrap(),
+        json["config"].as_str().unwrap()
+    );
+    assert_eq!(
+        fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+
+    let ssh = Command::new("ssh")
+        .arg("-F")
+        .arg(&file)
+        .args(["-o", "BatchMode=yes", "-o", "ControlMaster=no"])
+        .args([TARGET, "echo", "ok"])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(
+        ssh.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&ssh.stderr)
+    );
+    assert_eq!(String::from_utf8(ssh.stdout).unwrap(), "ok\n");
+
+    // The grant is for an hour at most, so asking for more is refused.
+    let long = s.cli.run(&["ssh-config", TARGET, "--min-remaining", "2h"]);
+    assert_eq!(long.status.code(), Some(5));
+    assert_eq!(long.stdout, [] as [u8; 0]);
+
+    let revoke = s.cli.run(&["revoke", &grant]);
+    assert_eq!(revoke.status.code(), Some(0));
+    let after = s.cli.run(&["ssh-config", TARGET]);
+    assert_eq!(after.status.code(), Some(5));
+    assert_eq!(after.stdout, [] as [u8; 0]);
+    let stderr = String::from_utf8(after.stderr).unwrap();
+    assert!(
+        stderr.contains("no active grant for box") && stderr.contains("warden request ssh box"),
+        "{stderr}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn cert_for_other_target_is_rejected() {
     // The host trusts the same CA but is configured for target `nas`; a

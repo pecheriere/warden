@@ -334,6 +334,7 @@ cargo install --locked --git https://github.com/pecheriere/warden --tag v0.10.0 
 | `warden request cancel <id>` | Withdraws one of this agent's pending requests. |
 | `warden request collect <grant>` | Starts using an `api` grant approved after the `warden request` that asked for it was gone. Refuses an SSH grant, whose key was lost with that run, and a commit signing grant, which needs nothing on the machine. See [Agent usage](agent-usage.md#if-the-warden-request-is-gone). |
 | `warden ssh <target> [-- <command>…]` | Runs `ssh` through the active grant for the target that stays valid longest. |
+| `warden ssh-config <target> [--output <file>] [--json] [--min-remaining <duration>]` | Prints an `ssh_config` `Host` block for that same grant, for tools that run `ssh` themselves. See [Tools that run ssh themselves](agent-usage.md#tools-that-run-ssh-themselves). |
 | `warden http <secret> <METHOD> <url> [-H 'Name: value']… [-d <body> \| --data-file <path\|->] [-i] [--fail]` | Makes one HTTPS call through an `api` grant. |
 | `warden setup git [--local]` | Has git sign every commit through the broker: sets `gpg.format`, `gpg.ssh.program`, `user.signingkey` and `commit.gpgsign`, in git's global configuration or with `--local` the repository's, and prints what it replaced. Needs an active commit signing grant, to read the broker's public key. |
 | `warden doctor [--strict]` | Checks this machine's setup and says what to fix. See [Checking an agent machine](#checking-an-agent-machine). |

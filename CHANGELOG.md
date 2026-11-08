@@ -6,6 +6,20 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `warden ssh-config <target>` prints an `ssh_config` `Host` block for the grant
+  `warden ssh` would use, with the same options, for tools that run `ssh` themselves
+  (`ssh -F <file> <target>`). `--output <file>` writes it 0600 and atomically, `--json`
+  adds the grant id, address, expiry and paths, and `--min-remaining <duration>` exits 5
+  when the grant ends sooner. With no active grant it exits 5, as `warden ssh` does. See
+  [Tools that run ssh themselves](docs/agent-usage.md#tools-that-run-ssh-themselves).
+
+### Changed
+
+- `warden ssh` passes `-o ForwardAgent=no` explicitly. It already ignored every config
+  file, so forwarding was already off.
+
 ## [0.10.0] - 2026-11-07
 
 ### Upgrading

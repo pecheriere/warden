@@ -115,14 +115,7 @@ pub fn private_dir(dir: &Path) -> Result<()> {
 /// # Errors
 /// If `path` holds other contents or the file cannot be written.
 pub fn write_new_private(path: &Path, contents: &[u8]) -> Result<()> {
-    let name = path
-        .file_name()
-        .with_context(|| format!("{} is not a file path", path.display()))?;
-    let dir = path
-        .parent()
-        .filter(|d| !d.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    let temp = dir.join(format!(".{}.{}.tmp", name.to_string_lossy(), Id::random()));
+    let (dir, temp) = temp_beside(path)?;
     let written = write_temp(&temp, contents).and_then(|()| publish(&temp, path, dir, contents));
     if written.is_err() {
         // Best effort: the temporary file may not exist, and the error that
@@ -132,8 +125,29 @@ pub fn write_new_private(path: &Path, contents: &[u8]) -> Result<()> {
     written
 }
 
+/// The directory holding `path`, and a fresh temporary file name in it,
+/// `.<name>.<random>.tmp`, for writing `path` atomically.
+///
+/// # Errors
+/// If `path` has no file name.
+pub fn temp_beside(path: &Path) -> Result<(&Path, PathBuf)> {
+    let name = path
+        .file_name()
+        .with_context(|| format!("{} is not a file path", path.display()))?;
+    let dir = path
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let temp = dir.join(format!(".{}.{}.tmp", name.to_string_lossy(), Id::random()));
+    Ok((dir, temp))
+}
+
 /// Create `temp` (0600, which must not exist) holding `contents`, synced.
-fn write_temp(temp: &Path, contents: &[u8]) -> Result<()> {
+/// `create_new` never follows a symlink at `temp`.
+///
+/// # Errors
+/// If `temp` exists or cannot be written.
+pub fn write_temp(temp: &Path, contents: &[u8]) -> Result<()> {
     let mut file = fs::OpenOptions::new()
         .write(true)
         .create_new(true)

@@ -62,6 +62,23 @@ pub fn no_ssh_grant(target: &TargetName) -> String {
     )
 }
 
+/// The error for `warden ssh-config --min-remaining` when even the active
+/// grant for `target` that stays valid longest, `grant`, ends within `wanted`:
+/// it has `remaining` left.
+pub fn ssh_grant_ends_too_soon(
+    target: &TargetName,
+    grant: &Id,
+    remaining: jiff::SignedDuration,
+    wanted: jiff::SignedDuration,
+) -> String {
+    format!(
+        "the active grant for {target} ({grant}) ends in {remaining:#}, sooner than the \
+         {wanted:#} asked for with --min-remaining. If the task needs longer, ask the owner \
+         with: warden request ssh {target} --user <user> --for <window> --goal <goal> (user: \
+         the least privileged account; {REQUEST_PLACEHOLDERS})"
+    )
+}
+
 /// The error for `warden http` without an active grant for the item `name`.
 pub fn no_api_grant(name: &SecretName) -> String {
     format!(

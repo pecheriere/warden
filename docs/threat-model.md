@@ -389,6 +389,18 @@ These were recorded during implementation and are accepted for this release.
   Use relay mode where sessions must end on time.
   [Ending them by hand](assurance-case.md#the-ssh-ca-key) is possible. Distributing
   a revocation list to targets is out of scope.
+- **`warden ssh-config` lets another tool use a grant's agent.** It prints an
+  `ssh_config` block that points at the grant's `ssh-agent` socket and pinned
+  `known_hosts`, with the options `warden ssh` passes. It writes no key or
+  certificate, and gives nothing the agent's operating-system user could not
+  already reach: the socket is that user's. Expiry and revocation work as for
+  `warden ssh` (the agent drops the key at `not_after`, and revoking removes the
+  socket), but a connection already logged in, including a `ControlMaster`
+  master kept by `ControlPersist`, lives until it closes, like any open login
+  above. The block sets `ForwardAgent no`. A caller that adds the socket to
+  `SSH_AUTH_SOCK` or to a normal `~/.ssh/config` would offer the grant's key to
+  any host it connects to; the [agent usage](agent-usage.md#tools-that-run-ssh-themselves)
+  says not to, and warden cannot stop it.
 - **Revocation from the server CLI is not instant for waiting clients.** A
   `warden-server agent revoke` run from the command line changes the database,
   but the running server only re-reads it when a long poll wakes, so a waiting

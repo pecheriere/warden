@@ -852,11 +852,15 @@ The broker's SSH CA signed the request's `public_key` into `certificate`
    ssh -F /dev/null -o IdentityAgent=<grant agent socket> -o IdentityFile=none \
      -o UserKnownHostsFile=<grant dir>/known_hosts -o StrictHostKeyChecking=yes \
      -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no \
-     -p <port> -- <user>@<host> [command]
+     -o ForwardAgent=no -p <port> -- <user>@<host> [command]
    ```
 
    Pass the remote command after `--` and the destination, never as ssh
-   options.
+   options. With the `warden` CLI, `warden ssh-config <target>` prints the
+   same options as an `ssh_config` `Host` block, for tools that run ssh
+   themselves; it exits 5 when there is no active grant, or with
+   `--min-remaining` none that lasts that long. See
+   [Tools that run ssh themselves](agent-usage.md#tools-that-run-ssh-themselves).
 
 ### Relay grants (`"kind":"relay"`)
 
@@ -879,7 +883,7 @@ credential that never leaves the broker. To use it:
    ssh -F /dev/null -o IdentityAgent=<grant agent socket> -o IdentityFile=none \
      -o UserKnownHostsFile=<grant dir>/known_hosts -o StrictHostKeyChecking=yes \
      -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no \
-     -p <relay_port> -- <target>@<relay_host> [command]
+     -o ForwardAgent=no -p <relay_port> -- <target>@<relay_host> [command]
    ```
 
 A shell or one command per session; port forwarding, agent forwarding, X11

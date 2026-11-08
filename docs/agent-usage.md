@@ -587,6 +587,79 @@ up (`flow control`), or when the window ends. Do not retry in a loop: check
 a target that refuses its login look alike to ssh (255); the owner can tell
 them apart in the audit log.
 
+### Tools that run ssh themselves
+
+Some tools need to run `ssh` themselves, with options of their own
+(`BatchMode`, `ControlMaster`, `ControlPath`, `ControlPersist`, `-G`), so they
+cannot go through `warden ssh`. `warden ssh-config` gives them the same grant
+as an `ssh_config` `Host` block:
+
+```sh
+warden ssh-config web-01 --output "$dir/ssh_config" --min-remaining 10m
+ssh -F "$dir/ssh_config" -o BatchMode=yes web-01 -- systemctl status x
+```
+
+It picks the grant `warden ssh` would use, and the block carries exactly the
+options `warden ssh` passes on its command line:
+
+```
+# warden grant <id> for web-01, not_after=1800000000 (2027-01-15T08:00:00Z)
+Host web-01
+  HostName 192.0.2.10
+  Port 22
+  User deploy
+  IdentityAgent "/tmp/warden-501/0123456789ab.sock"
+  IdentityFile none
+  IdentitiesOnly no
+  UserKnownHostsFile "/home/agent/.local/state/warden/grants/<id>/known_hosts"
+  StrictHostKeyChecking yes
+  PasswordAuthentication no
+  KbdInteractiveAuthentication no
+  ForwardAgent no
+```
+
+- The `Host` name is the target name, so `ssh -F <file> <target>` stays the
+  same from one grant to the next. For a relay grant, `HostName` and `Port`
+  are the relay's and `User` is the target name, as with `warden ssh`.
+- Paths are quoted, with `%` doubled. A path that quoting cannot carry (a
+  `"`, a `\` or a control character in it) is refused, with exit 1.
+- Without `--output`, the block goes to stdout. `--output <file>` writes it
+  0600 and atomically: a temporary file in the same directory, renamed over
+  the old one. If `<file>` exists and is not a regular file, such as a symlink
+  or a directory, it is refused, with exit 1; a symlink is never followed.
+- `--json` prints one JSON object on stdout, also with `--output`: `target`,
+  `grant` (its id), `host`, `port`, `user` (the block's `User`), `not_after`
+  (Unix seconds), `socket` and `known_hosts` (plain paths, not quoted) and
+  `config` (the block).
+- `--min-remaining <duration>`, such as `10m`, `1h30m` or `90s`, exits 5 when
+  the grant ends sooner, so the tool does not start work the grant would cut
+  short. The message gives how long the grant has left and the
+  `warden request ssh …` command.
+- With no active grant for the target, or if its agent socket is gone, it
+  exits 5 with the `warden request ssh …` command, as `warden ssh` does.
+
+The block names this grant's agent socket, which changes with every grant.
+Make it again right before each connection rather than keeping it: one
+command, and it always reflects the live grant. A block from an ended grant
+points at a socket that is gone, so its connections fail.
+
+The block points at the grant's agent and its pinned `known_hosts`; no key or
+certificate is written. Expiry and revocation work as for `warden ssh`: the
+agent drops the key at `not_after`, and revoking removes the socket. A
+connection that has already logged in, including a `ControlMaster` master the
+tool keeps open with `ControlPersist`, lives until it closes, as a
+`warden ssh` session does. End it when the work is done.
+
+Keep the grant's socket inside this block:
+
+- Do not put the socket in `SSH_AUTH_SOCK`. Every ssh, git and other program
+  that reads it would then offer the grant's key, to any host.
+- Do not add the block, or `IdentityAgent` with the socket, to a normal
+  `~/.ssh/config`. Use it only with `ssh -F <file>`, which reads no other
+  config file.
+- Keep `ForwardAgent no`. Forwarding the agent lets the remote host use the
+  key for as long as the connection is open.
+
 ### An HTTP API
 
 ```sh
@@ -686,12 +759,12 @@ is reported once on stderr and never stops the command.
 
 | Code | Meaning |
 |------|---------|
-| 0 | Success: the request was approved, the command ran, or the grant was revoked. `warden ssh` exits with ssh's own code. |
+| 0 | Success: the request was approved, the command ran, the block was written, or the grant was revoked. `warden ssh` exits with ssh's own code. |
 | 1 | Error. The message on stderr comes from the broker or the CLI. |
 | 2 | The request was denied. Do not retry the same request. Ask the owner what to change. |
 | 3 | The request expired without a decision. The owner may be away. Retry later, not in a loop. |
 | 4 | The grant was revoked: reported by `warden request`, or by `warden http` when the broker says the grant it used was revoked. `warden http` then removes the stale local record; request access again. |
-| 5 | Called by git to sign a commit, with no active commit signing grant. `warden ssh` or `warden http` found no active grant (for `warden http`, none that covers the method and path), or the broker said the grant `warden http` used has expired, whose local record is then removed. The message gives the `warden request …` command to run if the task needs it. `warden request collect` exits 5 too, when the grant is not live or is an SSH grant whose key is lost. |
+| 5 | Called by git to sign a commit, with no active commit signing grant. `warden ssh`, `warden ssh-config` or `warden http` found no active grant (for `warden http`, none that covers the method and path; for `warden ssh-config --min-remaining`, none that stays valid that long), or the broker said the grant `warden http` used has expired, whose local record is then removed. The message gives the `warden request …` command to run if the task needs it. `warden request collect` exits 5 too, when the grant is not live or is an SSH grant whose key is lost. |
 | 6 | The request was cancelled while `warden request` waited for it (`warden request cancel` from another terminal). |
 | 7 | `warden doctor --strict` found no failure, but could not check everything: see [Checking an agent machine](configuration.md#checking-an-agent-machine). Without `--strict` it exits 0 and lists those items. It exits 1 when a check failed. |
 | 8 | The broker stopped a `warden http` call that was out, because it could not read the grant's state. No response came back, and the API may have acted on the call: find out before repeating one that changes something. The grant stays; if this repeats, tell the owner. |

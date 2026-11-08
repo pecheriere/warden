@@ -13,6 +13,7 @@ mod setup_git;
 mod sign;
 mod ssh;
 mod ssh_agent;
+mod ssh_config;
 
 use std::io::{BufRead as _, IsTerminal as _};
 use std::path::PathBuf;
@@ -46,7 +47,8 @@ const EXIT_DENIED: u8 = 2;
 const EXIT_EXPIRED: u8 = 3;
 /// Exit code: the grant was revoked.
 const EXIT_REVOKED: u8 = 4;
-/// Exit code: `warden ssh` found no active grant for the target.
+/// Exit code: `warden ssh` or `warden ssh-config` found no active grant for the
+/// target (for `ssh-config --min-remaining`, none that lasts long enough).
 const EXIT_NO_GRANT: u8 = 5;
 /// Exit code: a request was cancelled (by the agent, from another terminal)
 /// while this command waited for it.
@@ -131,6 +133,11 @@ enum Cmd {
         #[arg(last = true)]
         command: Vec<String>,
     },
+    /// Print an `ssh_config` Host block for the grant `warden ssh` would use,
+    /// for tools that run ssh themselves (`ssh -F <file> <target>`). Make it
+    /// right before connecting: it holds this grant's agent socket, which
+    /// changes with every grant.
+    SshConfig(ssh_config::Request),
     /// Call an HTTPS API through the broker, which adds the secret.
     Http {
         /// Secret name.
@@ -423,6 +430,7 @@ async fn run(cmd: Cmd) -> Result<()> {
             run_http(call, include, fail).await
         }
         Cmd::Ssh { target, command } => run_ssh(&target, &command),
+        Cmd::SshConfig(request) => ssh_config::run(&request),
         Cmd::Doctor { strict } => {
             let report = doctor::examine(&doctor::Live).await;
             print!("{}", report.render(strict));
