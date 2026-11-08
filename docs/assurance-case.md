@@ -170,8 +170,8 @@ constructed, so code holding the type does not check again.
 | Agent, target and secret names | `^[a-z0-9][a-z0-9-]{0,31}$` | `AgentName`, `TargetName`, `SecretName` in [`proto/src/names.rs`](../crates/proto/src/names.rs) |
 | Unix user | `^[a-z_][a-z0-9_-]{0,31}$` | `UnixUser`, same file |
 | Goal | 1 to 500 characters, no control or Unicode format characters | `Goal`, same file |
-| Ids | 32 lowercase hex characters | `Id`, same file |
-| Window | `15m`, `30m`, `1h`, `4h` | `Window`, same file |
+| Ids | 32 lowercase hex characters | `Id` in [`proto/src/lib.rs`](../crates/proto/src/lib.rs) |
+| Window | `15m`, `30m`, `1h`, `4h` | `Window` in [`proto/src/window.rs`](../crates/proto/src/window.rs) |
 | SSH public key in a request | One OpenSSH `ssh-ed25519` key | `check_ed25519` in [`requests.rs`](../crates/broker/src/requests.rs) |
 | Agent signing key | `ssh-ed25519` or `ecdsa-sha2-nistp256`; not `sk-*`, not a certificate, not a published test key | `SigningPublicKey` in [`proto/src/signing.rs`](../crates/proto/src/signing.rs) |
 | Signature headers | Exactly four, each once; visible ASCII; timestamp digits only; nonce 32 hex; signature at most 4096 characters | `SignatureHeaders::parse` in [`signed.rs`](../crates/broker/src/signed.rs) |
