@@ -11,9 +11,8 @@ use warden_broker_proto::doctor::sanitize;
 use warden_broker_proto::{Access, GrantAccess, GrantView, Id, PendingRequest};
 
 use crate::client::Client;
-use crate::{
-    EXIT_ERROR, EXIT_NO_GRANT, Exit, agent, announce, api_scope, client, http, local_time,
-};
+use crate::request::{announce, api_scope};
+use crate::{EXIT_ERROR, EXIT_NO_GRANT, Exit, agent, client, http, local_time};
 
 /// The ids of the grants recorded on this machine. A record that cannot be read
 /// counts for nothing here; `warden status` shows it as unreadable.
@@ -417,7 +416,7 @@ mod tests {
 
     #[test]
     fn the_scope_collect_prints_cannot_reach_the_terminal_raw() {
-        let scope = crate::api_scope(&ApiGrant {
+        let scope = crate::request::api_scope(&ApiGrant {
             secret: "home-api".parse().unwrap(),
             origin: "https://api.example.com\u{1b}[2J".to_owned(),
             methods: vec!["POST\u{1b}[2J".to_owned(), "GET\u{202e}".to_owned()],
