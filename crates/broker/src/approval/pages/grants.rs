@@ -186,8 +186,12 @@ pub fn grants(
                     // Every button reads "Revoke"; the description says whose
                     // grant and which one.
                     div.grant-actions {
-                        @if matches!(grant.access, GrantAccess::CommitSigning(_)) {
-                            (commit_signing::renew_button(grant))
+                        @if matches!(
+                            grant.access,
+                            GrantAccess::CommitSigning(_) | GrantAccess::GithubToken(_)
+                        ) {
+                            button.renew type="button" data-grant=(grant.grant_id)
+                                aria-describedby=(format!("agent-{0} grant-{0}", grant.grant_id)) { "Renew" }
                         }
                         button.revoke type="button" data-grant=(grant.grant_id)
                             aria-describedby=(format!("agent-{0} grant-{0}", grant.grant_id)) { "Revoke" }

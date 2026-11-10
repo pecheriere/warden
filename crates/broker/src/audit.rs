@@ -306,6 +306,13 @@ pub enum AuditEvent {
         /// Name of the channel that delivered the notification.
         channel: String,
     },
+    /// The owner was told that a GitHub token grant is about to end.
+    GithubTokenRenewalNotified {
+        /// The grant.
+        grant_id: Id,
+        /// Name of the channel that delivered the notification.
+        channel: String,
+    },
     /// A commit signing grant reached its limit of signatures for the day. Written
     /// once a day per grant; the refusals themselves are recorded as usual.
     CommitSigningLimitReached {

@@ -982,10 +982,12 @@ What holds:
   limiter commit signing uses, so refused calls cannot fill the log. A body over the route's
   16 KiB limit is refused before the caller is known, and is not recorded, as on every route.
 - **An agent cannot approve it, and nothing renews by itself.** A grant takes the passkey,
-  and one agent has one grant at a time: approving a new one ends the one before it. Unlike
-  commit signing, there is **no notification before a GitHub token grant ends and no Renew
-  button**. The agent's next call after it ends asks the owner again, so the request comes
-  while the agent is working, and the owner approves it as a new grant.
+  and so does renewing it. One agent has one grant at a time: approving a new one ends the
+  one before it. As for commit signing, warden notifies the owner a few days before a grant
+  ends, naming only the agent, and **Renew** on Active grants opens a request that still needs
+  the passkey; the grant works until that approval. If the owner lets it end, the agent's
+  next call asks the owner again, so the request comes while the agent is working, and the
+  owner approves it as a new grant.
 - **The CLI asks for a grant itself** when `git` or `gh` needs a token and there is none, so
   a prompt-injected agent does not need a special command to ask. It is the same request as
   any other: it needs the passkey, shows the goal the CLI wrote, and counts against the

@@ -1,43 +1,23 @@
-//! The commit signing grant's own lifecycle: finding an agent's active grant,
-//! renewing, telling the owner before one ends, and recording refusals.
+//! The commit signing grant's own lifecycle: finding an agent's active grant, its
+//! daily limit and recording refusals. Renewing it and the notice before it ends are
+//! in `renewal`, with the GitHub token grant's.
 //!
 //! An agent holds at most one: approving a new grant ends the one it replaces, in
 //! the same transaction, so that revoking the grant on the owner's screen really
 //! does stop that agent's signatures.
 
 use sqlx::Row as _;
-use url::Url;
-use warden_broker_proto::{
-    Access, AgentName, CommitSigningGrant, CreateRequest, Goal, GrantAccess, GrantView, Id, Window,
-};
+use warden_broker_proto::{AgentName, CommitSigningGrant, GrantAccess, GrantView, Id, Window};
 
-use super::transition::detached;
-use super::{Destination, RequestError, Requests, Scope, approval_token, begin, parse};
+use super::{RequestError, Requests, parse};
 use crate::audit::AuditEvent;
 use crate::notify::Doorbell;
 use crate::policy::{CommitSigningKey, CommitSigningPolicy, PolicyError, check_separate_from_ca};
-
-/// The owner hears at most this long before a grant ends, in seconds, and sooner
-/// only for a grant so short that a quarter of it is less.
-const NOTICE_SECS: i64 = 3 * 86_400;
-
-/// Least time between tries to tell the owner about one grant, in seconds.
-const NOTICE_RETRY_SECS: i64 = 3600;
 
 /// Signatures per grant per UTC day, unless the server says otherwise. Far more than
 /// rebases need, and small enough that a looping agent cannot fill the audit log's
 /// disk in the life of a grant.
 pub const SIGNATURES_PER_DAY: u32 = 5000;
-
-/// Commit signing grants ending soon at `?1`, whose owner was not told yet and was
-/// not tried since `?2`.
-const ENDING_SOON: &str = "\
-    SELECT id, agent, not_after FROM grants \
-    WHERE not_after > ?1 AND revoked_at IS NULL \
-    AND json_extract(view, '$.access.kind') = 'commit_signing' \
-    AND not_after - ?1 <= MIN(?3, window_secs / 4) \
-    AND renewal_noticed_at IS NULL \
-    AND (renewal_notice_tried_at IS NULL OR renewal_notice_tried_at <= ?2)";
 
 /// A usable commit signing grant.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -236,78 +216,6 @@ impl Requests {
         }))
     }
 
-    /// Start renewing commit signing grant `grant_id`, for the owner: a request of its
-    /// agent for the same length, or as long as the server now allows, with an approval
-    /// link the owner goes on to approve with a passkey. If that agent already has a
-    /// commit signing request waiting, there can be only one, so this opens it instead,
-    /// with the goal and window its agent gave: the approval page shows them, and the
-    /// owner chooses the window there either way. Rings nobody, as the owner is the one
-    /// asking. Returns the request and its link. Nothing is granted by this, and the
-    /// grant keeps working until the approval.
-    ///
-    /// # Errors
-    /// [`RequestError::NotFound`] if no such commit signing grant is active, what
-    /// [`Requests::create`] returns when a request cannot be made.
-    pub async fn renew_commit_signing(&self, grant_id: &Id) -> Result<(Id, Url), RequestError> {
-        let row = sqlx::query(
-            "SELECT agent, window_secs FROM grants \
-             WHERE id = ?1 AND revoked_at IS NULL AND not_after > ?2 \
-             AND json_extract(view, '$.access.kind') = 'commit_signing'",
-        )
-        .bind(grant_id.as_str())
-        .bind(self.clock.now())
-        .fetch_optional(&self.pool)
-        .await?
-        .ok_or(RequestError::NotFound)?;
-        let agent: AgentName = parse(&row, "agent")?;
-        let secs: i64 = row.try_get("window_secs")?;
-        let window = Window::COMMIT_SIGNING
-            .into_iter()
-            .find(|w| u64::try_from(secs).is_ok_and(|s| s == w.secs()))
-            .ok_or_else(|| RequestError::Corrupt("unknown commit signing window".to_owned()))?
-            .min(self.commit_signing_max);
-        // The key is read so that a broker that lost it says so here, on the screen
-        // the owner is looking at, rather than on the approval page.
-        let policy = Destination::CommitSigning(self.approvable_commit_signing_policy().await?);
-        policy
-            .check_window(window)
-            .map_err(RequestError::Rejected)?;
-        let req = CreateRequest {
-            goal: Goal::try_from("Renew commit signing".to_owned())
-                .map_err(|_| RequestError::Internal("the renewal goal is not valid"))?,
-            access: Access::CommitSigning {},
-            window,
-            session: None,
-            link: None,
-        };
-        let this = self.clone();
-        detached(async move { this.create_renewal(&agent, req).await }).await
-    }
-
-    async fn create_renewal(
-        &self,
-        agent: &AgentName,
-        req: CreateRequest,
-    ) -> Result<(Id, Url), RequestError> {
-        let dedupe_key = format!("{agent}|commit_signing");
-        self.expire_due(Scope::Dedupe(dedupe_key.clone())).await?;
-        if let Some(existing) = self.pending_in_slot(&dedupe_key).await? {
-            let link = self.replace_link(&existing.id).await?;
-            return Ok((existing.id, link));
-        }
-        let token = approval_token()?;
-        let link = self.approval_link(&token)?;
-        let change = self.recorded_change.lock().await;
-        let created = self
-            .insert(agent, &req, "commit signing", &dedupe_key, &token)
-            .await;
-        drop(change);
-        if let Err(RequestError::Limited(refusal)) = &created {
-            self.record_refusal(agent, *refusal).await;
-        }
-        Ok((created?.id, link))
-    }
-
     /// Record a refusal to sign for `agent`: one by one, up to a limit per minute,
     /// and after that as a count. Cannot change the outcome: the agent is refused
     /// already, so a failure here is logged.
@@ -342,122 +250,5 @@ impl Requests {
                 AuditEvent::CommitSigningRefusalsHeld { agent, count }
             })
             .await;
-    }
-
-    /// Tell the owner about every commit signing grant about to end. A grant is
-    /// told about once, and a failed try is repeated once an hour. The notice names
-    /// the agent and nothing it wrote, and links to the grants page, where renewing
-    /// takes one passkey approval. Failures are logged and never stop anything.
-    pub async fn notify_ending_commit_signing(&self) {
-        let now = self.clock.now();
-        let due = sqlx::query(ENDING_SOON)
-            .bind(now)
-            .bind(now - NOTICE_RETRY_SECS)
-            .bind(NOTICE_SECS)
-            .fetch_all(&self.pool)
-            .await;
-        let due = match due {
-            Ok(due) => due,
-            Err(e) => {
-                tracing::error!(error = %e, "could not read which signing grants end soon");
-                return;
-            }
-        };
-        for row in &due {
-            if let Err(e) = self.notify_ending(row, now).await {
-                tracing::error!(error = %e, "could not tell the owner a signing grant ends soon");
-            }
-        }
-    }
-
-    async fn notify_ending(
-        &self,
-        row: &sqlx::sqlite::SqliteRow,
-        now: i64,
-    ) -> Result<(), RequestError> {
-        let grant_id: Id = parse(row, "id")?;
-        let agent: AgentName = parse(row, "agent")?;
-        let not_after: i64 = row.try_get("not_after")?;
-        // Claimed first, so that a sweep that overlaps this one does not ring too.
-        let mut tx = begin(&self.pool).await?;
-        let claimed = sqlx::query(
-            "UPDATE grants SET renewal_notice_tried_at = ?1 WHERE id = ?2 \
-             AND renewal_noticed_at IS NULL \
-             AND (renewal_notice_tried_at IS NULL OR renewal_notice_tried_at <= ?3)",
-        )
-        .bind(now)
-        .bind(grant_id.as_str())
-        .bind(now - NOTICE_RETRY_SECS)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected();
-        tx.commit().await?;
-        if claimed == 0 {
-            return Ok(());
-        }
-        let mut url = self.public_url.clone();
-        url.path_segments_mut()
-            .map_err(|()| RequestError::Internal("public URL cannot be a base"))?
-            .pop_if_empty()
-            .push("grants");
-        let bell = Doorbell {
-            title: format!("warden: commit signing for {agent} ends soon"),
-            message: format!(
-                "It ends in {}. Renewing takes one passkey approval; without it, this agent's \
-                 commits fail once it ends.",
-                time_left(not_after - now)
-            ),
-            url,
-        };
-        match self.notifier.ring(&bell).await {
-            Ok(channel) => {
-                sqlx::query("UPDATE grants SET renewal_noticed_at = ? WHERE id = ?")
-                    .bind(now)
-                    .bind(grant_id.as_str())
-                    .execute(&self.pool)
-                    .await?;
-                self.audit
-                    .append(AuditEvent::CommitSigningRenewalNotified {
-                        grant_id,
-                        channel: channel.to_owned(),
-                    })
-                    .await?;
-            }
-            Err(e) => {
-                tracing::warn!(grant = %grant_id, error = %e, "signing renewal notice failed");
-                self.audit
-                    .append(AuditEvent::Error {
-                        context: "commit signing renewal notice".to_owned(),
-                        message: format!("grant {grant_id}: {e}"),
-                    })
-                    .await?;
-            }
-        }
-        Ok(())
-    }
-}
-
-/// `secs` for the owner: `3 days`, `1 day`, `5 hours`, `less than an hour`.
-fn time_left(secs: i64) -> String {
-    match secs {
-        ..3600 => "less than an hour".to_owned(),
-        3600..7200 => "1 hour".to_owned(),
-        7200..86_400 => format!("{} hours", secs / 3600),
-        86_400..172_800 => "1 day".to_owned(),
-        _ => format!("{} days", secs / 86_400),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::time_left;
-
-    #[test]
-    fn time_left_reads_as_people_say_it() {
-        assert_eq!(time_left(59), "less than an hour");
-        assert_eq!(time_left(3600), "1 hour");
-        assert_eq!(time_left(7200), "2 hours");
-        assert_eq!(time_left(86_400), "1 day");
-        assert_eq!(time_left(3 * 86_400), "3 days");
     }
 }

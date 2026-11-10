@@ -138,11 +138,11 @@ async fn the_owner_hears_once_a_few_days_before_a_grant_ends() {
     let requests = broker.state().requests.clone();
 
     broker.clock.advance(27 * 86_400 - 1);
-    requests.notify_ending_commit_signing().await;
+    requests.notify_ending_grants().await;
     assert_eq!(renewal_notices(&broker), []);
 
     broker.clock.advance(1);
-    requests.notify_ending_commit_signing().await;
+    requests.notify_ending_grants().await;
     let notices = renewal_notices(&broker);
     assert_eq!(notices.len(), 1);
     assert_eq!(notices[0].title, "warden: commit signing for bot ends soon");
@@ -157,7 +157,7 @@ async fn the_owner_hears_once_a_few_days_before_a_grant_ends() {
     assert_eq!(told[0]["grant_id"], grant);
 
     broker.clock.advance(86_400);
-    requests.notify_ending_commit_signing().await;
+    requests.notify_ending_grants().await;
     assert_eq!(renewal_notices(&broker).len(), 1, "told once");
 }
 
@@ -176,14 +176,14 @@ async fn a_short_grant_is_told_about_late_and_a_revoked_one_not_at_all() {
         StatusCode::OK
     );
     let requests = broker.state().requests.clone();
-    requests.notify_ending_commit_signing().await;
+    requests.notify_ending_grants().await;
     assert_eq!(
         renewal_notices(&broker),
         [],
         "not as soon as it is approved"
     );
     broker.clock.advance(18 * 3600);
-    requests.notify_ending_commit_signing().await;
+    requests.notify_ending_grants().await;
     assert_eq!(renewal_notices(&broker).len(), 1);
 
     let (other, _, grant) = granted().await;
@@ -192,7 +192,7 @@ async fn a_short_grant_is_told_about_late_and_a_revoked_one_not_at_all() {
         .post_json(&format!("/grants/{grant}/revoke"), &json!({}))
         .await;
     assert_eq!(revoked.status, StatusCode::OK, "{}", revoked.body);
-    other.state().requests.notify_ending_commit_signing().await;
+    other.state().requests.notify_ending_grants().await;
     assert_eq!(renewal_notices(&other), []);
 }
 
@@ -208,6 +208,6 @@ async fn other_grants_are_never_told_about() {
         StatusCode::OK
     );
     broker.clock.advance(3599);
-    broker.state().requests.notify_ending_commit_signing().await;
+    broker.state().requests.notify_ending_grants().await;
     assert_eq!(renewal_notices(&broker), []);
 }
