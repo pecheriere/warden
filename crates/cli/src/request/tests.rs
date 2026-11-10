@@ -200,3 +200,26 @@ fn a_request_for_git_or_gh_asks_for_no_more_than_the_broker_allows() {
     // A broker that allowed longer still gets at most 30 days.
     assert_eq!(tool_window(Some(Window::D90)), Window::D30);
 }
+
+#[test]
+fn only_a_request_made_here_is_withdrawn() {
+    use warden_broker_proto::{CreatedResponse, Id};
+
+    use super::made_here;
+    use crate::request_context::Answered;
+
+    let answer = |created| CreatedResponse {
+        id: Id::random(),
+        fingerprint: "ab02-cd02-ef02".to_owned().try_into().unwrap(),
+        created,
+    };
+    for answered in [Answered::Same, Answered::WithoutContext, Answered::Other] {
+        // The broker says which: its word stands, whatever the fingerprint.
+        assert!(made_here(&answer(Some(true)), answered), "{answered:?}");
+        assert!(!made_here(&answer(Some(false)), answered), "{answered:?}");
+    }
+    // A broker older than the flag: the fingerprint decides, as before it.
+    assert!(made_here(&answer(None), Answered::Same));
+    assert!(made_here(&answer(None), Answered::WithoutContext));
+    assert!(!made_here(&answer(None), Answered::Other));
+}

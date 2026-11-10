@@ -387,8 +387,9 @@ enum Pending {
 /// 130 at once.
 ///
 /// `pending` says whether a request already pending in this one's place, with
-/// another fingerprint, is waited on instead. Ctrl-C never withdraws such a
-/// request: this command did not make it.
+/// another fingerprint, is waited on instead. Ctrl-C withdraws only a request
+/// this command made ([`made_here`]): never such a request, nor one with the
+/// same fingerprint that the broker says was already pending.
 async fn request_grant(
     config: &Config,
     client: &Client,
@@ -415,7 +416,12 @@ async fn request_grant(
         // The request may be made already: give the broker's answer a
         // moment, then withdraw what it made.
         let exit = match tokio::time::timeout(CANCEL_TIMEOUT, &mut create).await {
-            Ok(Ok(created)) => withdraw_after_interrupt(client, &created.id).await,
+            Ok(Ok(created))
+                if made_here(&created, compare(&created.fingerprint, &config.agent, req)) =>
+            {
+                withdraw_after_interrupt(client, &created.id).await
+            }
+            Ok(Ok(created)) => Exit::new(EXIT_INTERRUPTED, left_pending(&created.id)),
             Ok(Err(_)) | Err(_) => Exit::new(
                 EXIT_INTERRUPTED,
                 "interrupted; the request may have been made; it expires unanswered on the broker",
@@ -440,14 +446,7 @@ async fn request_grant(
     };
     let Some(waited) = waited else {
         if !ours {
-            return Err(Exit::new(
-                EXIT_INTERRUPTED,
-                format!(
-                    "interrupted; request {} was made elsewhere and is left pending",
-                    created.id
-                ),
-            )
-            .into());
+            return Err(Exit::new(EXIT_INTERRUPTED, left_pending(&created.id)).into());
         }
         exit_on_interrupt(
             interrupt,
@@ -495,8 +494,7 @@ async fn request_grant(
 }
 
 /// Whether `created`, the broker's answer to `req`, may be waited on, and if so
-/// whether it is this request, which only then is this command's to withdraw on
-/// Ctrl-C.
+/// whether this command made it, which only then is its to withdraw on Ctrl-C.
 ///
 /// # Errors
 /// With `pending` [`Pending::Same`], a request of another fingerprint.
@@ -507,27 +505,41 @@ fn answered_is_ours(
     pending: Pending,
     created: &CreatedResponse,
 ) -> Result<bool> {
-    Ok(match compare(&created.fingerprint, &config.agent, req) {
-        Answered::Same => true,
+    let answered = compare(&created.fingerprint, &config.agent, req);
+    match answered {
+        Answered::Same => {}
         // The access is the same and only what this CLI added is missing. The
         // owner sees the request as its fingerprint says, so waiting on it is safe.
-        Answered::WithoutContext => {
-            eprintln!("warden: {}", guidance::CONTEXT_NOT_SHOWN);
-            true
-        }
+        Answered::WithoutContext => eprintln!("warden: {}", guidance::CONTEXT_NOT_SHOWN),
         // Approving it might not grant what was asked here.
         Answered::Other if pending == Pending::Same => {
             bail!(guidance::already_pending(subject, created));
         }
-        Answered::Other => {
-            eprintln!(
-                "warden: a matching request made elsewhere is already pending (id {}); waiting \
-                 on it instead. It is not this command's, so Ctrl-C leaves it pending",
-                created.id
-            );
-            false
-        }
-    })
+        Answered::Other => {}
+    }
+    let ours = made_here(created, answered);
+    if !ours {
+        eprintln!(
+            "warden: a matching request made elsewhere is already pending (id {}); waiting \
+             on it instead. It is not this command's, so Ctrl-C leaves it pending",
+            created.id
+        );
+    }
+    Ok(ours)
+}
+
+/// Whether this command made `created`, the broker's answer to its request, whose
+/// fingerprint compares to it as `answered`. The broker says whether it made the
+/// request or answered with one already pending, which another process may have
+/// made. A broker older than that flag does not say, and then a request with this
+/// one's fingerprint is taken to be this command's, as before the flag.
+fn made_here(created: &CreatedResponse, answered: Answered) -> bool {
+    created.created.unwrap_or(answered != Answered::Other)
+}
+
+/// What Ctrl-C says about request `id`, made elsewhere, which it leaves alone.
+fn left_pending(id: &Id) -> String {
+    format!("interrupted; request {id} was made elsewhere and is left pending")
 }
 
 /// From now on, end the process at once on Ctrl-C: print `message` and exit

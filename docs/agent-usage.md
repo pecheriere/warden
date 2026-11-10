@@ -469,7 +469,11 @@ notification stops being actionable:
   (waiting at most 5 s for the broker), says so on stderr and exits 130. If
   the broker cannot be reached in time, it says that too: check
   `warden status` and revoke any grant it shows. A second Ctrl-C stops
-  waiting for the broker at once.
+  waiting for the broker at once. It cancels only a request it made: when it
+  waits on one already pending that another command made, such as the same
+  request from another terminal, it says so and Ctrl-C leaves that request
+  pending. With an older broker, which does not say who made a
+  request, it goes by the fingerprint instead.
 - Or run `warden request cancel <id>` with the id printed on the
   `request …` line, for example from another terminal. The waiting
   `warden request` then exits 6.
@@ -846,7 +850,7 @@ is reported once on stderr and never stops the command.
 | 8 | The broker stopped a `warden http` call that was out, because it could not read the grant's state. No response came back, and the API may have acted on the call: find out before repeating one that changes something. The grant stays; if this repeats, tell the owner. |
 | 22 | `warden http --fail` got an upstream status of 400 or more. The body is still written to stdout. |
 | 64 | Wrong arguments: nothing ran. The message on stderr shows the usage. Fix the command and run it again. |
-| 130 | Interrupted with Ctrl-C while `warden request` waited; the pending request was cancelled (or, if the broker did not answer in time or Ctrl-C was pressed again, left to expire). Also Ctrl-C while an approved grant was being installed; the message names the grant to revoke. |
+| 130 | Interrupted with Ctrl-C while `warden request` waited; the pending request it made was cancelled (a request made elsewhere is left pending) (or, if the broker did not answer in time or Ctrl-C was pressed again, left to expire). Also Ctrl-C while an approved grant was being installed; the message names the grant to revoke. |
 
 A broker error includes being over the [request limits](configuration.md#request-limits):
 an agent can have 5 requests pending and make 10 new ones per 10 minutes by

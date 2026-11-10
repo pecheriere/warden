@@ -239,6 +239,7 @@ mod tests {
                         .to_owned()
                         .try_into()
                         .unwrap(),
+                    created: Some(false),
                 },
             );
             let shown = format!(
@@ -258,6 +259,7 @@ mod tests {
             &CreatedResponse {
                 id: id.clone(),
                 fingerprint: "ab02-cd02-ef02".to_owned().try_into().unwrap(),
+                created: Some(false),
             },
         );
         assert!(message.contains("for switch-01"), "{message}");

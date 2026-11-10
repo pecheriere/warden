@@ -218,6 +218,7 @@ mod tests {
         let created = CreatedResponse {
             id: "0".repeat(32).try_into().unwrap(),
             fingerprint: "42d5-403c-c2f0".to_owned().try_into().unwrap(),
+            created: None,
         };
         assert_eq!(
             serde_json::to_string(&created).unwrap(),

@@ -655,6 +655,48 @@ async fn e2e_request_refused_by_a_pending_one_prints_a_working_cancel() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn e2e_ctrl_c_leaves_the_same_request_made_elsewhere() {
+    use std::io::Read as _;
+
+    let s = setup().await;
+    let first = spawn_request(&s.cli, &[]);
+    let token = CapturingNotifier::token(&s.broker.capture.next().await);
+    let id = only_request_id(&s).await;
+
+    // The same request again: same fingerprint, so it waits on the first one,
+    // which the broker says it did not make here.
+    let mut second = spawn_request(&s.cli, &[]);
+    let mut stderr = wait_for_waiting_line(&mut second).await;
+    rustix::process::kill_process(
+        rustix::process::Pid::from_child(&second),
+        rustix::process::Signal::INT,
+    )
+    .unwrap();
+    let out = tokio::task::spawn_blocking(move || second.wait_with_output())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(130));
+    let mut rest = String::new();
+    stderr.read_to_string(&mut rest).unwrap();
+    assert!(
+        rest.contains(&format!("request {id} was made elsewhere")),
+        "{rest}"
+    );
+    assert!(rest.contains("left pending"), "{rest}");
+
+    // The first command's request is still pending, and its approval serves it.
+    assert_eq!(only_request_id(&s).await, id);
+    let approved = s.broker.approve(&token, Window::M15).await;
+    assert!(approved.status.is_success(), "{}", approved.body);
+    let out = tokio::task::spawn_blocking(move || first.wait_with_output())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn e2e_second_ctrl_c_exits_at_once() {
     use std::io::Read as _;
 

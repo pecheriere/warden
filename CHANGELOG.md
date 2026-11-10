@@ -6,6 +6,16 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Ctrl-C while `warden request` was creating a request could withdraw a request that
+  another process had made, when the broker answered with one already pending in its
+  place. The broker's answer to `POST /v1/requests` now carries `created`, true only when
+  that call made the request, and the CLI withdraws only what it made. A CLI waiting on
+  the same request made in another terminal now leaves it pending on Ctrl-C too. Older
+  CLIs ignore the field; with an older broker the CLI goes by the fingerprint, as before
+  (#191).
+
 ## [0.11.0] - 2026-11-09
 
 ### Upgrading
