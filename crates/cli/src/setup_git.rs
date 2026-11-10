@@ -75,8 +75,9 @@ pub async fn run(client: &Client, scope: Scope) -> Result<()> {
                 .context("cannot read the broker's commit signing key, so git was left as it was");
         }
     };
-    let program = crate::exe_path::stable_exe()?;
-    let program = program
+    let exe = crate::exe_path::stable_exe()?;
+    let program = exe
+        .path
         .to_str()
         .ok_or_else(|| anyhow!("the path of this program is not valid UTF-8"))?;
     for (name, value) in settings(program, &key.public_key) {
@@ -93,6 +94,9 @@ pub async fn run(client: &Client, scope: Scope) -> Result<()> {
             );
         }
         println!("{name} = {value}");
+    }
+    if let Some(notice) = exe.notice() {
+        println!("{notice}");
     }
     println!(
         "commits are now signed by the broker with key {}. Register it as a signing key on the \

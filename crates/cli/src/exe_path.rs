@@ -36,12 +36,55 @@ type Lookup<'a> = &'a dyn Fn(&Path, bool) -> Option<Entry>;
 /// Resolves a path to its real file, or `None` when it cannot.
 type Canonical<'a> = &'a dyn Fn(&Path) -> Option<PathBuf>;
 
+/// Why the path warden was started from was not recorded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reason {
+    /// Someone other than the user or root owns it or a directory on the way, or group or
+    /// others can write there.
+    OthersCanWrite,
+    /// An entry on the way could not be read, so it could not be checked.
+    Unverified,
+}
+
+/// A path warden was started from that is this binary but was not recorded.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Fallback {
+    pub started: PathBuf,
+    pub reason: Reason,
+}
+
+/// The path to record, and why it is not the one warden was started from, if it is not.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StableExe {
+    pub path: PathBuf,
+    /// Set only when the path recorded differs from a path that names this binary.
+    pub fallback: Option<Fallback>,
+}
+
+impl StableExe {
+    /// One line telling the user that the resolved path was recorded, and why, when it
+    /// was recorded instead of the path warden was started from.
+    pub fn notice(&self) -> Option<String> {
+        let fallback = self.fallback.as_ref()?;
+        let why = match fallback.reason {
+            Reason::OthersCanWrite => "sits in a directory that others can write",
+            Reason::Unverified => "could not be verified",
+        };
+        Some(format!(
+            "recorded {}, not {}, which {why}. That path stops working when warden is upgraded, \
+             so run this command again after upgrading.",
+            self.path.display(),
+            fallback.started.display()
+        ))
+    }
+}
+
 /// This program's stable absolute path, verified to be this binary and not repointable
 /// by other users.
 ///
 /// # Errors
 /// If the operating system cannot say where this program is.
-pub fn stable_exe() -> Result<PathBuf> {
+pub fn stable_exe() -> Result<StableExe> {
     let current = std::env::current_exe().context("cannot tell where this program is")?;
     let real = std::fs::canonicalize(&current).context("cannot tell where this program is")?;
     let cwd = std::env::current_dir().ok();
@@ -77,7 +120,8 @@ pub fn stable_exe() -> Result<PathBuf> {
 }
 
 /// The path to record: the first of `started` that, made absolute, is the same file as
-/// `real` and passes [`trusted`], otherwise `real`.
+/// `real` and passes [`trusted`], otherwise `real`, with the reason when a candidate that
+/// is not `real` itself was refused.
 fn choose(
     started: &[PathBuf],
     real: &Path,
@@ -86,32 +130,62 @@ fn choose(
     uid: u32,
     canonical: Canonical<'_>,
     lookup: Lookup<'_>,
-) -> PathBuf {
-    started
+) -> StableExe {
+    let mut refused = None;
+    for candidate in started
         .iter()
         .filter_map(|s| absolute_candidate(s, cwd, path_var, real, canonical))
-        .find(|c| canonical(c).as_deref() == Some(real) && trusted(c, uid, lookup))
-        .unwrap_or_else(|| real.to_path_buf())
+        .filter(|c| canonical(c).as_deref() == Some(real))
+    {
+        if candidate == real {
+            break;
+        }
+        match trusted(&candidate, uid, lookup) {
+            Ok(()) => {
+                return StableExe {
+                    path: candidate,
+                    fallback: None,
+                };
+            }
+            Err(reason) => {
+                refused.get_or_insert(Fallback {
+                    started: candidate,
+                    reason,
+                });
+            }
+        }
+    }
+    StableExe {
+        path: real.to_path_buf(),
+        fallback: refused,
+    }
 }
 
 /// Whether `path` and each directory above it, as written, are owned by `uid` or root
 /// and not writable by group or others (a sticky bit does not make that safe). A
 /// symlink's own permission bits mean nothing to the system, so only its owner is read;
 /// what it points to is read as well, under the same rule.
-fn trusted(path: &Path, uid: u32, lookup: Lookup<'_>) -> bool {
+fn trusted(path: &Path, uid: u32, lookup: Lookup<'_>) -> Result<(), Reason> {
     let sound = |e: Entry, own_bits_count: bool| {
         (e.uid == uid || e.uid == 0) && (!own_bits_count || e.mode & 0o022 == 0)
     };
-    path.ancestors().all(|p| {
+    for p in path.ancestors() {
         let Some(link) = lookup(p, false) else {
-            return false;
+            return Err(Reason::Unverified);
         };
-        if link.is_symlink {
-            sound(link, false) && lookup(p, true).is_some_and(|target| sound(target, true))
+        let ok = if link.is_symlink {
+            let Some(target) = lookup(p, true) else {
+                return Err(Reason::Unverified);
+            };
+            sound(link, false) && sound(target, true)
         } else {
             sound(link, true)
+        };
+        if !ok {
+            return Err(Reason::OthersCanWrite);
         }
-    })
+    }
+    Ok(())
 }
 
 /// `started` as an absolute path without `.` or `..` parts, or `None` when there is no
@@ -189,9 +263,18 @@ mod tests {
         |path, follow| Some(base(path, follow))
     }
 
-    fn pick(started: &[&str], cwd: Option<&Path>, path_var: &OsStr, lookup: Lookup<'_>) -> PathBuf {
+    fn pick_full(
+        started: &[&str],
+        cwd: Option<&Path>,
+        path_var: &OsStr,
+        lookup: Lookup<'_>,
+    ) -> StableExe {
         let started: Vec<PathBuf> = started.iter().map(PathBuf::from).collect();
         choose(&started, &real(), cwd, path_var, ME, &fake, lookup)
+    }
+
+    fn pick(started: &[&str], cwd: Option<&Path>, path_var: &OsStr, lookup: Lookup<'_>) -> PathBuf {
+        pick_full(started, cwd, path_var, lookup).path
     }
 
     fn pick_one(started: &str) -> PathBuf {
@@ -273,7 +356,7 @@ mod tests {
             &|p| (p.file_name()? == "warden").then(real),
             &private(),
         );
-        assert_eq!(got, real());
+        assert_eq!(got.path, real());
     }
 
     /// `private`, except for the entries `f` replaces.
@@ -333,5 +416,94 @@ mod tests {
         let lookup = but(|p, _| (p == Path::new("/opt")).then_some(None));
         let got = pick(&["/opt/homebrew/bin/warden"], None, OsStr::new(""), &lookup);
         assert_eq!(got, real());
+    }
+
+    #[test]
+    fn a_refused_link_says_why() {
+        let writable =
+            but(|p, _| (p == Path::new("/opt")).then(|| Some(entry(ME, 0o040_775, false))));
+        let got = pick_full(
+            &["/opt/homebrew/bin/warden"],
+            None,
+            OsStr::new(""),
+            &writable,
+        );
+        assert_eq!(
+            got.fallback,
+            Some(Fallback {
+                started: PathBuf::from("/opt/homebrew/bin/warden"),
+                reason: Reason::OthersCanWrite,
+            })
+        );
+        let unreadable = but(|p, _| (p == Path::new("/opt")).then_some(None));
+        let got = pick_full(
+            &["/opt/homebrew/bin/warden"],
+            None,
+            OsStr::new(""),
+            &unreadable,
+        );
+        assert_eq!(got.fallback.map(|f| f.reason), Some(Reason::Unverified));
+    }
+
+    #[test]
+    fn nothing_is_said_when_the_started_path_is_the_recorded_one() {
+        let got = pick_full(
+            &["/opt/homebrew/Cellar/warden/1.0.0/bin/warden"],
+            None,
+            OsStr::new(""),
+            &but(|_, _| Some(None)),
+        );
+        assert_eq!(got.path, real());
+        assert_eq!(got.fallback, None);
+        assert_eq!(got.notice(), None);
+    }
+
+    #[test]
+    fn nothing_is_said_when_a_trusted_link_is_kept_or_none_names_this_binary() {
+        assert_eq!(
+            pick_full(
+                &["/opt/homebrew/bin/warden"],
+                None,
+                OsStr::new(""),
+                &private()
+            )
+            .notice(),
+            None
+        );
+        assert_eq!(
+            pick_full(&["/tmp/evil/warden"], None, OsStr::new(""), &private()).notice(),
+            None
+        );
+    }
+
+    #[test]
+    fn the_notice_names_both_paths_the_reason_and_the_rerun() {
+        let writable =
+            but(|p, _| (p == Path::new("/opt")).then(|| Some(entry(ME, 0o040_775, false))));
+        let notice = pick_full(
+            &["/opt/homebrew/bin/warden"],
+            None,
+            OsStr::new(""),
+            &writable,
+        )
+        .notice()
+        .expect("a notice");
+        assert!(
+            notice.contains("/opt/homebrew/Cellar/warden/1.0.0/bin/warden"),
+            "{notice}"
+        );
+        assert!(notice.contains("/opt/homebrew/bin/warden"), "{notice}");
+        assert!(notice.contains("others can write"), "{notice}");
+        assert!(notice.contains("again after upgrading"), "{notice}");
+        let unreadable = but(|p, _| (p == Path::new("/opt")).then_some(None));
+        let notice = pick_full(
+            &["/opt/homebrew/bin/warden"],
+            None,
+            OsStr::new(""),
+            &unreadable,
+        )
+        .notice()
+        .expect("a notice");
+        assert!(notice.contains("could not be verified"), "{notice}");
     }
 }

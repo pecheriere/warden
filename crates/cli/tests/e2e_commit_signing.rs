@@ -5,7 +5,7 @@
 
 use std::fs;
 use std::io::Write as _;
-use std::os::unix::fs::OpenOptionsExt as _;
+use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 
@@ -584,10 +584,30 @@ async fn setup_leaves_git_alone_when_the_broker_has_no_key() {
     assert!(!s.machine.root.path().join("home/gitconfig").exists());
 }
 
-/// A directory under `parent` with a symlink named `warden` to the built CLI. Tests use
-/// the home directory, which only the user and root can write to: a link under `/tmp`,
-/// writable by others, is rightly not recorded.
-fn linked_cli(parent: &Path) -> (TempDir, PathBuf) {
+/// A directory under Cargo's per-target temporary directory with a symlink named `warden`
+/// to the built CLI. A link in a directory others can write, such as `/tmp`, is rightly
+/// not recorded, so the directories above this one must pass the same rule; when they do
+/// not on this machine, the test fails and says which one, rather than passing without
+/// testing the rule or recording a weaker one.
+fn linked_cli() -> (TempDir, PathBuf) {
+    let parent = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    fs::create_dir_all(parent).unwrap();
+    let me = rustix::process::getuid().as_raw();
+    for dir in parent.ancestors() {
+        let meta = fs::metadata(dir).unwrap();
+        assert!(
+            (meta.uid() == me || meta.uid() == 0) && meta.mode() & 0o022 == 0,
+            "{} is owned by someone else or writable by group or others, so warden would not \
+             record a link below it; build in a checkout whose parent directories only you \
+             or root can write to",
+            dir.display()
+        );
+    }
+    linked_cli_in(parent)
+}
+
+/// The same under `parent`, without checking it.
+fn linked_cli_in(parent: &Path) -> (TempDir, PathBuf) {
     let dir = tempfile::Builder::new()
         .prefix("warden-link")
         .tempdir_in(parent)
@@ -605,7 +625,7 @@ fn linked_cli(parent: &Path) -> (TempDir, PathBuf) {
 async fn setup_git_records_the_path_the_program_was_started_from() {
     let s = setup().await;
     get_grant(&s).await;
-    let (_dir, link) = linked_cli(&dirs::home_dir().unwrap());
+    let (_dir, link) = linked_cli();
     let mut cmd = Command::new(&link);
     s.machine.env(&mut cmd);
     let out = cmd.args(["setup", "git"]).output().unwrap();
@@ -619,7 +639,7 @@ async fn setup_git_records_the_path_the_program_was_started_from() {
 async fn setup_git_finds_a_program_started_by_name_in_path() {
     let s = setup().await;
     get_grant(&s).await;
-    let (dir, link) = linked_cli(&dirs::home_dir().unwrap());
+    let (dir, link) = linked_cli();
     let mut path = vec![dir.path().to_path_buf()];
     path.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
     let mut cmd = Command::new("warden");
@@ -637,7 +657,7 @@ async fn setup_git_finds_a_program_started_by_name_in_path() {
 async fn setup_git_records_the_resolved_path_for_a_link_others_can_replace() {
     let s = setup().await;
     get_grant(&s).await;
-    let (_dir, link) = linked_cli(Path::new("/tmp"));
+    let (_dir, link) = linked_cli_in(Path::new("/tmp"));
     let mut cmd = Command::new(&link);
     s.machine.env(&mut cmd);
     let out = cmd.args(["setup", "git"]).output().unwrap();
@@ -647,4 +667,7 @@ async fn setup_git_records_the_resolved_path_for_a_link_others_can_replace() {
         Path::new(&recorded),
         fs::canonicalize(env!("CARGO_BIN_EXE_warden")).unwrap()
     );
+    let stdout = text(&out.stdout);
+    assert!(stdout.contains("others can write"), "{stdout}");
+    assert!(stdout.contains("again after upgrading"), "{stdout}");
 }

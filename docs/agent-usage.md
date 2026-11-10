@@ -746,6 +746,9 @@ that link, so the setting survives an upgrade. At setup the path must be this sa
 and the symlink and every directory leading to it must be owned by you or root and not
 writable by group or others (a sticky bit does not count); otherwise the resolved path is
 recorded. Warden checks this once, at setup, and does not watch those directories afterwards.
+When it records the resolved path instead of the one it was started from (a group-writable
+Linuxbrew prefix is a common case), the command says so in one line, with the reason, because
+that path breaks on upgrade: run the command again after upgrading.
 
 A signature means warden signed the commit for this agent, not that anyone reviewed the
 change. A commit does not say which repository or branch it is for, so warden does not ask.
