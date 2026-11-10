@@ -429,7 +429,16 @@ async fn request_grant(
         };
         return Err(exit.into());
     };
-    let ours = answered_is_ours(config, req, subject, pending, &created)?;
+    let ours = match answered_is_ours(config, req, subject, pending, &created) {
+        Ok(ours) => ours,
+        // The broker made it for this command, which will not wait on it: withdraw
+        // it rather than leave the owner a request nobody uses (best effort).
+        Err(refused) if created.created == Some(true) => {
+            let _ = tokio::time::timeout(CANCEL_TIMEOUT, client.cancel(&created.id)).await;
+            return Err(refused);
+        }
+        Err(refused) => return Err(refused),
+    };
     eprintln!(
         "request {}, fingerprint {} ({}) — waiting for approval…",
         created.id,
@@ -510,6 +519,11 @@ fn answered_is_ours(
         // The access is the same and only what this CLI added is missing. The
         // owner sees the request as its fingerprint says, so waiting on it is safe.
         Answered::WithoutContext => eprintln!("warden: {}", guidance::CONTEXT_NOT_SHOWN),
+        // Made here, yet hashed otherwise: the broker does not see this request as
+        // this CLI does, so approving it might not grant what was asked.
+        Answered::Other if pending == Pending::Same && created.created == Some(true) => {
+            bail!(guidance::hashed_otherwise(subject, created));
+        }
         // Approving it might not grant what was asked here.
         Answered::Other if pending == Pending::Same => {
             bail!(guidance::already_pending(subject, created));
@@ -519,8 +533,13 @@ fn answered_is_ours(
     let ours = made_here(created, answered);
     if !ours {
         eprintln!(
-            "warden: a matching request made elsewhere is already pending (id {}); waiting \
-             on it instead. It is not this command's, so Ctrl-C leaves it pending",
+            "warden: {} made elsewhere is already pending (id {}); waiting on it instead. \
+             It is not this command's, so Ctrl-C leaves it pending",
+            if answered == Answered::Other {
+                "a matching request"
+            } else {
+                "the same request"
+            },
             created.id
         );
     }
