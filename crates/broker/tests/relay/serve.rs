@@ -16,16 +16,21 @@ struct Server {
     output: Vec<String>,
 }
 
-/// Send each line `stream` prints to `lines`, until it closes. Reading all of
-/// it also keeps the server from blocking on a full pipe.
+/// Send each line `stream` prints to `lines` (invalid UTF-8 replaced), until it
+/// closes. Reading all of it also keeps the server from blocking on a full pipe.
 fn forward_lines(
     stream: impl AsyncRead + Unpin + Send + 'static,
     lines: mpsc::UnboundedSender<String>,
 ) {
     tokio::spawn(async move {
-        let mut reader = BufReader::new(stream).lines();
-        while let Ok(Some(line)) = reader.next_line().await {
-            if lines.send(line).is_err() {
+        // By bytes, so a line that is not UTF-8 does not end the reading: the
+        // server would then write into a closed pipe.
+        let mut reader = BufReader::new(stream).split(b'\n');
+        while let Ok(Some(line)) = reader.next_segment().await {
+            if lines
+                .send(String::from_utf8_lossy(&line).into_owned())
+                .is_err()
+            {
                 break;
             }
         }
@@ -124,16 +129,30 @@ impl Server {
             return line;
         }
         let status = self.child.wait().await.unwrap();
+        // The exit can win the race against a line still in the pipe: read the
+        // rest of the output before concluding that the line was not printed.
         let output = self.rest_of_output().await;
+        if let Some(line) = self.output.iter().find(|line| line.contains(needle)) {
+            return line.clone();
+        }
         panic!("warden-server exited with {status} before printing {needle:?}:\n{output}");
     }
 
-    /// All the server printed, once both of its streams have closed.
+    /// All the server printed, once both of its streams have closed. Only a
+    /// guard against a process that inherited a stream and keeps it open.
     async fn rest_of_output(&mut self) -> String {
-        while let Some(line) = self.lines.recv().await {
-            self.output.push(line);
-        }
-        self.output.join("\n")
+        let closed = tokio::time::timeout(Duration::from_secs(15), async {
+            while let Some(line) = self.lines.recv().await {
+                self.output.push(line);
+            }
+        })
+        .await;
+        let output = self.output.join("\n");
+        assert!(
+            closed.is_ok(),
+            "warden-server's output did not close within 15 s of its exit:\n{output}"
+        );
+        output
     }
 
     /// Stop the server with SIGTERM, check that it exits cleanly, and return
