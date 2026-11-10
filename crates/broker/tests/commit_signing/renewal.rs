@@ -90,6 +90,35 @@ async fn only_an_active_signing_grant_can_be_renewed() {
         .await;
     assert_eq!(resp.status, StatusCode::NOT_FOUND, "{}", resp.body);
 
+    // Nor an API grant: only the kinds an agent holds one of at a time renew.
+    broker.backend.set_api_secret(
+        warden_broker::testkit::FakeBackend::example_api_secret(),
+        "api-credential-0123456789abcdef",
+    );
+    let (created, token) = broker
+        .create_request(
+            "bot",
+            TestBroker::api_request("github", "call", Window::M15),
+        )
+        .await;
+    assert_eq!(
+        broker.approve(&token, Window::M15).await.status,
+        StatusCode::OK
+    );
+    let status = broker
+        .state()
+        .requests
+        .status(&name, &created.id, std::time::Duration::ZERO)
+        .await
+        .unwrap();
+    let warden_broker_proto::RequestStatus::Approved(api) = status else {
+        panic!("not approved");
+    };
+    let resp = broker
+        .post_json(&format!("/grants/{}/renew", api.grant_id), &json!({}))
+        .await;
+    assert_eq!(resp.status, StatusCode::NOT_FOUND, "{}", resp.body);
+
     let signing = approve(&broker, "bot").await;
     broker.clock.advance(30 * 86_400);
     let resp = broker

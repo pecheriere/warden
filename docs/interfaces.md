@@ -70,6 +70,7 @@ stable API for other clients. The code is in
 | `GET /grants` | | Active grants, with a Revoke button and live activity. |
 | `GET /grants/live` | | The live activity, as JSON, for the page to refresh. |
 | `POST /grants/{id}/revoke` | `{}` | Revokes a grant. Takes no passkey. |
+| `POST /grants/{id}/renew` | `{}` | For an active commit signing or GitHub token grant: makes a request of its agent for the same length, or as long as the server now allows, and returns its approval link as `{"link"}`. If that agent already has a request of that kind waiting, gives that one a new link instead. Approves nothing and takes no passkey: the grant keeps working until the owner approves the renewal on its page. 404 for any other grant, or one that has ended. |
 | `GET /history` | | The latest 100 requests. |
 | `GET /enroll` | | The page for enrolling a passkey. |
 | `POST /enroll/begin` | `{"code","label"}` | Spends an enrollment code and starts registration. |

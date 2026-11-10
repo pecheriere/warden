@@ -126,6 +126,13 @@ impl OneAtATime {
     }
 }
 
+/// Whether the owner can renew a grant of `access`, and hears before it ends: the
+/// kinds an agent holds one of at a time.
+#[must_use]
+pub(crate) const fn renewable(access: &GrantAccess) -> bool {
+    OneAtATime::of(access).is_some()
+}
+
 /// The stored kind of the grants `access` replaces when approved, or `None` for a
 /// kind an agent may hold any number of.
 pub(super) fn replaced_kind(access: &GrantAccess) -> Option<&'static str> {

@@ -35,6 +35,7 @@ use crate::relay::{LiveSessions, RelayEndpoint};
 pub mod revocation;
 mod transition;
 
+pub(crate) use self::renewal::renewable;
 pub use self::revocation::{AuditOutcome, EntriesWritten, unwritten_entries, write_entries};
 pub(crate) use self::transition::{begin, note_if_not_applied, record};
 
