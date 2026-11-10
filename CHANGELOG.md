@@ -30,6 +30,11 @@ All notable changes to this project are recorded here. The format follows
   the same request made in another terminal now leaves it pending on Ctrl-C too. Older
   CLIs ignore the field; with an older broker the CLI goes by the fingerprint, as before
   (#191).
+- `warden-server serve` installs its SIGTERM and Ctrl-C handlers before it opens a
+  listener, so a stop signal that arrives while it is still starting shuts it down
+  cleanly. Its startup lines (`warden-server listening`, `SSH relay listening`) now give
+  the addresses it bound, which differ from the configured ones when a listen address
+  uses port 0 (#203).
 
 ## [0.11.0] - 2026-11-09
 
