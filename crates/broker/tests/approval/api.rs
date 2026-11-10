@@ -398,7 +398,8 @@ async fn dedupe_is_per_kind() {
         .create(&bot(), TestBroker::api_request("pi", "call", Window::M15))
         .await
         .unwrap();
-    assert_eq!(again, api);
+    assert_eq!((&again.id, &again.fingerprint), (&api.id, &api.fingerprint));
+    assert_eq!((api.created, again.created), (Some(true), Some(false)));
     let again = broker
         .state()
         .requests

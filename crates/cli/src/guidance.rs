@@ -52,6 +52,21 @@ pub fn already_pending(subject: &str, pending: &CreatedResponse) -> String {
     )
 }
 
+/// The error when the broker made `made`, the request `subject`, but its
+/// fingerprint is not the one this CLI computes: the two hash requests differently,
+/// so the owner would not see what this CLI asked for. The caller withdraws it.
+pub fn hashed_otherwise(subject: &str, made: &CreatedResponse) -> String {
+    format!(
+        "the broker made request {id} {subject}, but its fingerprint {words} ({fingerprint}) \
+         differs from the one this CLI computes, so the owner would not see this request as \
+         sent. warden withdraws it and does not wait. Check that this CLI and the broker are \
+         on compatible versions",
+        id = made.id,
+        words = made.fingerprint.words(),
+        fingerprint = made.fingerprint,
+    )
+}
+
 /// The error for `warden ssh` without an active grant for `target`.
 pub fn no_ssh_grant(target: &TargetName) -> String {
     format!(
@@ -138,8 +153,8 @@ mod tests {
     use warden_broker_proto::{CreatedResponse, Id, RequestStatus};
 
     use super::{
-        already_pending, api_call_stopped, api_grant_expired, api_grant_revoked, no_api_grant,
-        no_ssh_grant, request_ended,
+        already_pending, api_call_stopped, api_grant_expired, api_grant_revoked, hashed_otherwise,
+        no_api_grant, no_ssh_grant, request_ended,
     };
     use crate::Cli;
     use crate::config::Config;
@@ -239,6 +254,7 @@ mod tests {
                         .to_owned()
                         .try_into()
                         .unwrap(),
+                    created: Some(false),
                 },
             );
             let shown = format!(
@@ -251,6 +267,26 @@ mod tests {
     }
 
     #[test]
+    fn hashed_otherwise_says_it_withdraws_and_offers_no_cancel() {
+        let id = Id::random();
+        let message = hashed_otherwise(
+            "for switch-01",
+            &CreatedResponse {
+                id: id.clone(),
+                fingerprint: "ab02-cd02-ef02".to_owned().try_into().unwrap(),
+                created: Some(true),
+            },
+        );
+        assert!(
+            message.contains(&format!("request {id} for switch-01")),
+            "{message}"
+        );
+        assert!(message.contains("ab02-cd02-ef02"), "{message}");
+        assert!(message.contains("withdraws it"), "{message}");
+        assert!(!message.contains("request cancel"), "{message}");
+    }
+
+    #[test]
     fn already_pending_names_the_id_the_expiry_and_a_valid_cancel() {
         let id = Id::random();
         let message = already_pending(
@@ -258,6 +294,7 @@ mod tests {
             &CreatedResponse {
                 id: id.clone(),
                 fingerprint: "ab02-cd02-ef02".to_owned().try_into().unwrap(),
+                created: Some(false),
             },
         );
         assert!(message.contains("for switch-01"), "{message}");

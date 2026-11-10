@@ -259,6 +259,7 @@ impl Requests {
         Ok(CreatedResponse {
             id,
             fingerprint: fp,
+            created: Some(true),
         })
     }
 
@@ -276,6 +277,7 @@ impl Requests {
             Ok(CreatedResponse {
                 id: parse(&row, "id")?,
                 fingerprint: parse(&row, "fingerprint")?,
+                created: Some(false),
             })
         })
         .transpose()
