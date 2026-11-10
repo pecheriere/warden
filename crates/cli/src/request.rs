@@ -507,7 +507,6 @@ fn answered_is_ours(
 ) -> Result<bool> {
     let answered = compare(&created.fingerprint, &config.agent, req);
     match answered {
-        Answered::Same => {}
         // The access is the same and only what this CLI added is missing. The
         // owner sees the request as its fingerprint says, so waiting on it is safe.
         Answered::WithoutContext => eprintln!("warden: {}", guidance::CONTEXT_NOT_SHOWN),
@@ -515,7 +514,7 @@ fn answered_is_ours(
         Answered::Other if pending == Pending::Same => {
             bail!(guidance::already_pending(subject, created));
         }
-        Answered::Other => {}
+        Answered::Same | Answered::Other => {}
     }
     let ours = made_here(created, answered);
     if !ours {
