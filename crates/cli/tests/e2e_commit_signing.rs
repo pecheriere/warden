@@ -584,26 +584,53 @@ async fn setup_leaves_git_alone_when_the_broker_has_no_key() {
     assert!(!s.machine.root.path().join("home/gitconfig").exists());
 }
 
-/// A directory under Cargo's per-target temporary directory with a symlink named `warden`
-/// to the built CLI. A link in a directory others can write, such as `/tmp`, is rightly
-/// not recorded, so the directories above this one must pass the same rule; when they do
-/// not on this machine, the test fails and says which one, rather than passing without
-/// testing the rule or recording a weaker one.
-fn linked_cli() -> (TempDir, PathBuf) {
-    let parent = Path::new(env!("CARGO_TARGET_TMPDIR"));
-    fs::create_dir_all(parent).unwrap();
+/// Why `dir` would not do as the parent of a link warden records: the first entry from
+/// `dir` up that is owned by someone other than the user or root, or writable by group or
+/// others. `None` when the whole chain passes, which is the rule `exe_path` applies.
+fn refusal(dir: &Path) -> Option<String> {
     let me = rustix::process::getuid().as_raw();
-    for dir in parent.ancestors() {
-        let meta = fs::metadata(dir).unwrap();
-        assert!(
-            (meta.uid() == me || meta.uid() == 0) && meta.mode() & 0o022 == 0,
-            "{} is owned by someone else or writable by group or others, so warden would not \
-             record a link below it; build in a checkout whose parent directories only you \
-             or root can write to",
-            dir.display()
-        );
+    for entry in dir.ancestors() {
+        match fs::metadata(entry) {
+            Ok(meta) if (meta.uid() == me || meta.uid() == 0) && meta.mode() & 0o022 == 0 => {}
+            Ok(meta) => {
+                return Some(format!(
+                    "{} has owner {} and mode {:o}",
+                    entry.display(),
+                    meta.uid(),
+                    meta.mode() & 0o7777
+                ));
+            }
+            Err(e) => return Some(format!("{} cannot be read: {e}", entry.display())),
+        }
     }
-    linked_cli_in(parent)
+    None
+}
+
+/// A directory with a symlink named `warden` to the built CLI. The parent is the first of
+/// Cargo's per-target temporary directory and the system temporary directory whose whole
+/// chain of directories passes the rule warden applies; a link in a directory others can
+/// write, such as `/tmp`, is rightly not recorded. When neither passes, the test fails and
+/// names each, rather than passing without testing the rule or weakening it.
+fn linked_cli() -> (TempDir, PathBuf) {
+    let candidates = [
+        PathBuf::from(env!("CARGO_TARGET_TMPDIR")),
+        std::env::temp_dir(),
+    ];
+    let mut refused = Vec::new();
+    for candidate in &candidates {
+        if fs::create_dir_all(candidate).is_ok() {
+            match refusal(candidate) {
+                None => return linked_cli_in(candidate),
+                Some(why) => refused.push(format!("{}: {why}", candidate.display())),
+            }
+        } else {
+            refused.push(format!("{}: cannot be created", candidate.display()));
+        }
+    }
+    panic!(
+        "no directory where warden would record a link: {}",
+        refused.join("; ")
+    );
 }
 
 /// The same under `parent`, without checking it.
