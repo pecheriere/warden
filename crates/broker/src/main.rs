@@ -10,6 +10,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use sqlx::SqlitePool;
 use tokio::net::TcpListener;
+use tokio::signal::unix::{Signal, SignalKind};
 use tokio::sync::watch;
 use tracing_subscriber::EnvFilter;
 use url::Url;
@@ -480,19 +481,39 @@ async fn start_relay(
     let listener = TcpListener::bind(config.relay.listen)
         .await
         .with_context(|| format!("binding the SSH relay on {}", config.relay.listen))?;
-    tracing::info!(relay = %config.relay.listen, max_sessions = limits.max_sessions, "SSH relay listening");
+    let relay = listener
+        .local_addr()
+        .context("reading the SSH relay's address")?;
+    tracing::info!(%relay, max_sessions = limits.max_sessions, "SSH relay listening");
     Ok(tokio::spawn(server.serve(listener, stop)))
 }
 
-/// Resolves on SIGTERM or Ctrl-C.
-async fn termination() -> Result<()> {
-    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        .context("installing the SIGTERM handler")?;
-    tokio::select! {
-        _ = term.recv() => {}
-        result = tokio::signal::ctrl_c() => result.context("installing the Ctrl-C handler")?,
+/// The SIGTERM and Ctrl-C handlers. Installing them before the first
+/// listener opens means a signal that arrives once the server accepts
+/// connections stops it cleanly instead of killing it.
+struct Termination {
+    term: Signal,
+    interrupt: Signal,
+}
+
+impl Termination {
+    fn install() -> Result<Self> {
+        Ok(Self {
+            term: tokio::signal::unix::signal(SignalKind::terminate())
+                .context("installing the SIGTERM handler")?,
+            interrupt: tokio::signal::unix::signal(SignalKind::interrupt())
+                .context("installing the Ctrl-C handler")?,
+        })
     }
-    Ok(())
+
+    /// Resolves on SIGTERM or Ctrl-C, including one received before this is
+    /// awaited.
+    async fn requested(mut self) {
+        tokio::select! {
+            _ = self.term.recv() => {}
+            _ = self.interrupt.recv() => {}
+        }
+    }
 }
 
 async fn stopped(mut rx: watch::Receiver<bool>) {
@@ -623,6 +644,34 @@ async fn build_app(config: &Arc<Config>) -> Result<App> {
     })
 }
 
+/// Log the addresses the HTTP listeners bound, which differ from the
+/// configured ones for port 0.
+fn log_listening(config: &Config, api: &TcpListener, approval: &TcpListener) -> Result<()> {
+    let api = api
+        .local_addr()
+        .context("reading the agent API's address")?;
+    let approval = approval
+        .local_addr()
+        .context("reading the approval UI's address")?;
+    match &config.backend {
+        BackendSettings::OnePassword(connect) => tracing::info!(
+            %api,
+            %approval,
+            public_url = %config.public_url,
+            vault = %connect.vault,
+            "warden-server listening"
+        ),
+        BackendSettings::Local(_) => tracing::info!(
+            %api,
+            %approval,
+            public_url = %config.public_url,
+            secret_backend = config.backend.name(),
+            "warden-server listening"
+        ),
+    }
+    Ok(())
+}
+
 async fn serve() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -647,6 +696,7 @@ async fn serve() -> Result<()> {
         relay_key,
     } = build_app(&config).await?;
 
+    let termination = Termination::install()?;
     let api_listener = TcpListener::bind(config.api_listen)
         .await
         .with_context(|| format!("binding the agent API on {}", config.api_listen))?;
@@ -654,22 +704,7 @@ async fn serve() -> Result<()> {
         .await
         .with_context(|| format!("binding the approval UI on {}", config.approval_listen))?;
     log_plain_http(&config);
-    match &config.backend {
-        BackendSettings::OnePassword(connect) => tracing::info!(
-            api = %config.api_listen,
-            approval = %config.approval_listen,
-            public_url = %config.public_url,
-            vault = %connect.vault,
-            "warden-server listening"
-        ),
-        BackendSettings::Local(_) => tracing::info!(
-            api = %config.api_listen,
-            approval = %config.approval_listen,
-            public_url = %config.public_url,
-            secret_backend = config.backend.name(),
-            "warden-server listening"
-        ),
-    }
+    log_listening(&config, &api_listener, &approval_listener)?;
 
     let (stop, stop_rx) = watch::channel(false);
     let relay = match &relay_key {
@@ -710,7 +745,7 @@ async fn serve() -> Result<()> {
         tokio::time::sleep(SHUTDOWN_GRACE).await;
     };
     let signal = async {
-        termination().await?;
+        termination.requested().await;
         tracing::info!("shutdown requested");
         // A send error means every receiver is gone, which is shutdown anyway.
         let _ = stop.send(true);
