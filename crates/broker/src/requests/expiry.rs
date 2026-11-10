@@ -105,7 +105,7 @@ pub async fn sweep_loop(
                 drop(tokio::spawn(async move { flushing.flush_refusals(false).await }));
                 // On its own task too: it waits for the notification channels.
                 let noticing = requests.clone();
-                drop(tokio::spawn(async move { noticing.notify_ending_commit_signing().await }));
+                drop(tokio::spawn(async move { noticing.notify_ending_grants().await }));
             }
             // Any change, or the sender going away, means stop.
             _ = shutdown.changed() => {

@@ -9,6 +9,7 @@ use warden_broker_proto::Window;
 
 mod mint;
 mod pages;
+mod renewal;
 mod windows;
 
 /// A broker that holds a GitHub App, with an enrolled agent `bot` whose key is

@@ -11,7 +11,7 @@ use super::{
     Chip, Nav, clock, commit_signing, empty_icon, ends, fingerprint_forms, github_token,
     grant_access, layout,
 };
-use crate::requests::{ActiveGrant, LinkHosts};
+use crate::requests::{ActiveGrant, LinkHosts, renewable};
 
 /// What warden can see of a grant's use, by its kind.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -186,8 +186,9 @@ pub fn grants(
                     // Every button reads "Revoke"; the description says whose
                     // grant and which one.
                     div.grant-actions {
-                        @if matches!(grant.access, GrantAccess::CommitSigning(_)) {
-                            (commit_signing::renew_button(grant))
+                        @if renewable(&grant.access) {
+                            button.renew type="button" data-grant=(grant.grant_id)
+                                aria-describedby=(format!("agent-{0} grant-{0}", grant.grant_id)) { "Renew" }
                         }
                         button.revoke type="button" data-grant=(grant.grant_id)
                             aria-describedby=(format!("agent-{0} grant-{0}", grant.grant_id)) { "Revoke" }

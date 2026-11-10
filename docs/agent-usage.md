@@ -805,9 +805,9 @@ every token minted in the audit log.
 **Revoking and tokens.** A grant that is revoked or ends stops new tokens at once, but a
 token already minted works until GitHub ends it, at most an hour later. The cached one is
 served for the rest of its hour even after the owner revokes in the approval UI. `warden
-revoke <grant>` on this machine deletes it. There is no **Renew** button and no notice before
-a GitHub token grant ends: the next call after it ends asks the owner again, and approving a
-new grant ends the old one.
+revoke <grant>` on this machine deletes it. The owner is told a few days before a GitHub
+token grant ends and can renew it from the approval UI with a passkey; otherwise the next
+call after it ends asks the owner again, and approving a new grant ends the old one.
 
 ## Ending a grant
 

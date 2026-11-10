@@ -15,21 +15,22 @@ with `…` appended when cut) and the approval link. It never contains secrets, 
 link stated in the request, which a notifier could preview. The approval link opens the passkey approval page, which is
 only reachable over the tailnet.
 
-warden also tells you a few days before a commit signing grant ends: 3 days before, or
-sooner for a grant of a week or less. That notification names only the agent, and links to
-Active grants, where **Renew** leads to the usual approval page and passkey, for the same
-length or as long as the server now allows. If that agent already has a commit signing request
-waiting, Renew opens that one, with the goal and window it asked for, which the page shows. The
-notification is sent once
-per grant, and tried again hourly if no channel took it. The audit log's
-`commit_signing_renewal_notified` entry names the channel.
+warden also tells you a few days before a commit signing or [GitHub token](github-app.md)
+grant ends: 3 days before, or sooner for a grant of a week or less. That notification names
+only the agent, and links to Active grants, where **Renew** leads to the usual approval page
+and passkey, for the same length or as long as the server now allows. If that agent already
+has a request of the same kind waiting, Renew opens that one, with the goal and window it
+asked for, which the page shows. The notification is sent once per grant, and tried again
+hourly if no channel took it. The audit log's `commit_signing_renewal_notified` or
+`github_token_renewal_notified` entry names the channel. Renewing a GitHub token grant is
+refused on Active grants if the broker no longer holds a GitHub App.
 
 warden tells you too if a commit signing grant reaches its limit of signatures for the day:
 once that day per grant, with one try. Its commits fail until 00:00 UTC.
 
-A [GitHub token](github-app.md) grant has no such notice and no **Renew** button. When it
-ends, the agent's next `git` or `gh` call to GitHub asks you for a new one, which arrives
-as a request like any other and ends the old grant when you approve it.
+If you let a GitHub token grant end instead, the agent's next `git` or `gh` call to GitHub
+asks you for a new one, which arrives as a request like any other and ends the old grant
+when you approve it.
 
 ## If you miss a notification
 

@@ -129,7 +129,7 @@ async fn grants_page_shows_github_token_grant_and_end() {
         "{}",
         grants.body
     );
-    assert!(!grants.body.contains("class=\"renew\""), "{}", grants.body);
+    assert!(grants.body.contains("class=\"renew\""), "{}", grants.body);
     let history = broker.get("/history").await;
     assert!(history.body.contains("github token"), "{}", history.body);
     assert!(history.body.contains("30d"), "{}", history.body);

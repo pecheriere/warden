@@ -5,7 +5,6 @@
 use maud::{Markup, html};
 
 use super::{icon, warning_icon};
-use crate::requests::ActiveGrant;
 
 /// What a signature does and does not mean.
 const MEANING: &str = "A signature means warden signed the commit for this agent, not that you \
@@ -40,13 +39,5 @@ pub(super) fn live_note() -> Markup {
             "Every signature is in the audit log. Revoking stops new signatures at once, and does \
              not undo those already made."
         }
-    }
-}
-
-/// The button that starts renewing `grant`, described like its Revoke button.
-pub(super) fn renew_button(grant: &ActiveGrant) -> Markup {
-    html! {
-        button.renew type="button" data-grant=(grant.grant_id)
-            aria-describedby=(format!("agent-{0} grant-{0}", grant.grant_id)) { "Renew" }
     }
 }

@@ -1,6 +1,6 @@
-//! `POST /grants/{id}/renew`: the owner starts renewing a commit signing grant. Like
-//! opening a pending request, this only leads to the approval page: renewing takes a
-//! passkey approval there, and the grant keeps working until then.
+//! `POST /grants/{id}/renew`: the owner starts renewing a commit signing or GitHub
+//! token grant. Like opening a pending request, this only leads to the approval page:
+//! renewing takes a passkey approval there, and the grant keeps working until then.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -21,12 +21,12 @@ struct Opened {
 }
 
 pub(super) async fn renew(State(state): State<AppState>, Path(id): Path<Id>) -> Response {
-    let (request, link) = match state.requests.renew_commit_signing(&id).await {
+    let (request, link) = match state.requests.renew_grant(&id).await {
         Ok(renewal) => renewal,
         Err(RequestError::NotFound) => {
             return json_error(
                 StatusCode::NOT_FOUND,
-                "this grant has ended, or is not for commit signing",
+                "this grant has ended, or cannot be renewed",
             );
         }
         Err(e @ RequestError::Limited(_)) => {

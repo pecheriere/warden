@@ -6,6 +6,21 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Upgrading
+
+- New audit entry: `github_token_renewal_notified`. An older `warden-server audit verify`
+  refuses a log holding one, and an older `warden-server` does not start on one, because it
+  verifies the log when it opens it. So once warden has told you a GitHub token grant ends
+  soon, rolling back also means restoring the audit log from the backup.
+
+### Added
+
+- GitHub token grants get the end-of-grant notice and the **Renew** button that commit
+  signing grants have: warden tells you 3 days before one ends, or a quarter of its window
+  if that is less, and Renew on Active grants opens a request for the same window, or as
+  long as the server now allows, that takes one passkey approval. The notice is recorded as
+  `github_token_renewal_notified` (#190).
+
 ### Fixed
 
 - Ctrl-C while `warden request` was creating a request could withdraw a request that

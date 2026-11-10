@@ -423,6 +423,16 @@ impl TestBroker {
         self.restart_with(None).await
     }
 
+    /// Like [`TestBroker::restart`], but the broker comes back with
+    /// `WARDEN_GITHUB_TOKEN_MAX_WINDOW` at `github_token_max`.
+    ///
+    /// # Panics
+    /// If any part of the setup fails.
+    pub async fn restart_with_github_token_max(mut self, github_token_max: Window) -> Self {
+        self.limits.github_token_max = github_token_max;
+        self.restart().await
+    }
+
     async fn restart_with(mut self, relay: Option<String>) -> Self {
         self.state.pool.close().await;
         let passkey = std::mem::take(self.default_passkey.get_mut());
