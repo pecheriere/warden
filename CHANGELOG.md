@@ -6,6 +6,30 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-09
+
+### Upgrading
+
+Back up warden's data first, with warden stopped, as
+[docs/upgrading.md](https://github.com/pecheriere/warden/blob/v0.11.0/docs/upgrading.md)
+says. Nothing in this release stops a 0.10.0 setup from starting, and no setting has to
+change. GitHub tokens stay off until you add a GitHub App item.
+
+- New migration `0009_github_token_mints`. As with every migration, rolling back means
+  restoring the backup together with the old version.
+- New audit entries: `github_token_minted`, `github_token_refused` and
+  `github_token_refusals_held`. An older `warden-server audit verify` refuses a log holding
+  any of them, and an older `warden-server` does not start on one, because it verifies the
+  log when it opens it. So once an agent has minted a GitHub token, rolling back also means
+  restoring the audit log from the backup.
+- GitHub tokens need both the broker and the CLI on 0.11.0, and the broker needs outbound
+  HTTPS to `api.github.com`: add it to your egress rules
+  ([Docker](docs/deployment.md#lock-wardens-egress),
+  [systemd](docs/deployment-systemd.md#5-limit-wardens-egress)) before you add the App.
+- `cargo deny` exempts RUSTSEC-2026-0459, in the SQLite that `sqlx` bundles, until a
+  `sqlx` release takes the fix (#197). warden opens only its own database, in a data
+  directory others cannot write to, so the advisory does not reach it.
+
 ### Added
 
 - GitHub tokens for agents, so that `git push` and `gh` work with no personal access token

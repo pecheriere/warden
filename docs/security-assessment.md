@@ -1,8 +1,12 @@
 # Security assessment
 
-**Date: 2026-11-09: GitHub tokens checked against real GitHub (F21, F22, and F20's last sentence). 2026-11-08: risks 1, 2, 9 and 13 updated for GitHub tokens for agents, which are not in a release yet, and risk 12 updated for the Homebrew tap. Otherwise covers release 0.10.0, reviewed at `main` commit `a9249d5`. The
+**Date: 2026-11-09. Covers release 0.11.0, reviewed at `main` commit `cb82e2d`. The
 review for this release checked the ranked risks and findings against the changes
-since 0.9.0; it did not repeat the full reading of the documents against the code.**
+since 0.10.0: GitHub tokens for agents (risks 1, 2, 9 and 13, F20 to F22, checked
+against real GitHub on 2026-11-09), the Homebrew tap (risk 12), `warden ssh-config`,
+which prints an `ssh_config` block and moves no risk, the file splits, which moved
+code without changing it, and an advisory exemption (F23). It did not repeat the full
+reading of the documents against the code.**
 
 **This is the project's own assessment. It is not an independent review, audit
 or penetration test.** warden has not had one. The people and tools that wrote
@@ -68,7 +72,7 @@ decision by the maintainer, and stay open until then.
 | F9 | **The protocol said the owner may approve a *shorter* window.** The page offers any window up to the item's maximum, including one longer than asked. This is the owner's choice and is limited by the item, but an agent should not assume `not_after` is no later than it asked. | Document corrected. |
 | F10 | **Open alerts at this date**, checked again on 2026-11-07. Five Scorecard alerts about project practices (CII badge, code review, maintained, vulnerabilities and branch protection), tracked under [#93](https://github.com/pecheriere/warden/issues/93). No CodeQL or Dependabot alert is open. | Open under #93. |
 | F11 | **The reason on `deny.toml`'s `RUSTSEC-2026-0387` exemption is out of date.** It says "only Ed25519 is used", but P-256 signatures are verified through that code. Verification handles no secret, so the exemption still seems right. | Resolved by [#118](https://github.com/pecheriere/warden/pull/118), which removed `crypto-bigint` 0.5 and that exemption. |
-| F12 | **`subtle` is listed in `[workspace.dependencies]`, and no crate uses it directly.** Still true at 0.10.0. | Harmless. For a code change. |
+| F12 | **`subtle` is listed in `[workspace.dependencies]`, and no crate uses it directly.** Still true at 0.11.0. | Harmless. For a code change. |
 | F13 | **The documents said a copied bearer key can only create requests.** `proxy_call`, `list_grants` and `revoke_grant` in [`api.rs`](../crates/broker/src/api.rs) take the same `AuthedAgent` as creating a request, so any copied agent key can use the agent's live API grants and manage its grants. | Documents corrected, and the risk re-rated (risk 9). The code does what it should: a key is the agent. |
 | F14 | **The documents treated a certificate's expiry as the end of access.** `sshd` checks a certificate when it authenticates, and not afterwards. On a throwaway OpenSSH 10.3 server on 2026-11-01, a session outlived its certificate's expiry, and outlived removing the CA with a reload, while new logins were refused in both cases. On OpenSSH 9.2 in a Debian 12 container, `usermod --expiredate 1` refused new logins and did not end an open session, and with `UsePAM yes`, `passwd -l` and `usermod -L` did not stop certificate logins at all. warden sees none of it. | Documents corrected, and risk 5 re-rated. [#35](https://github.com/pecheriere/warden/issues/35) covers what to do about it. |
 | F15 | **Certificate logins are not in the audit log.** They go straight to the target, so warden records the issue and not the use. The target's `sshd` logs each login with the certificate's key id, `warden:<agent>:<grant id>`. Interactive input to a relay session is not recorded either. | Documents corrected. Ship the targets' logs if you need this trail. |
@@ -79,6 +83,7 @@ decision by the maintainer, and stay open until then.
 | F20 | **GitHub tokens break the rule that an agent never holds a credential**, which this page, the README and the assurance case relied on. The token is a bearer secret for an hour, covers every repository of the App's installation, and a revoked grant does not recall it. | Documented in [the threat model](threat-model.md#github-tokens) and [GitHub tokens for agents](github-app.md), and risks 1, 2 and 9 changed. The owner's setup on GitHub, not warden, bounds what a token can do. Checked against real GitHub on 2026-11-09: see F21 and F22. |
 | F21 | **The deployment guide's egress rules left out `api.github.com`.** Found on 2026-11-09 by the first mint against real GitHub, from a broker whose egress was locked as the guide says: every mint failed with `503`. | Corrected: [the deployment guide](deployment.md#lock-wardens-egress) and [GitHub tokens for agents](github-app.md) say the broker needs it. |
 | F22 | **A token can post on public repositories the App is not installed on.** Found on 2026-11-09: a token opened an issue on a public repository of the App owner's account outside the installation, since that takes only read access and an installation token can read public repositories. Other accounts' repositories were not tried. The documents said a token covers the installation's repositories. | Documented in [the threat model](threat-model.md#github-tokens) and [GitHub tokens for agents](github-app.md#what-an-agent-gets). warden cannot narrow it. |
+| F23 | **RUSTSEC-2026-0459, in the SQLite that `sqlx` bundles, has no reachable fix.** SQLite before 3.54.0 can return uninitialised memory when it opens a database with a crafted `-wal` file. `sqlx` 0.9.0 accepts only `libsqlite3-sys` below 0.38, and the fix is in 0.39. | Exempted in `deny.toml` with its reason ([#198](https://github.com/pecheriere/warden/pull/198)): warden opens only its own database, in a data directory it refuses to start in if others can write to it, and the CLI does not link SQLite. Remove it when `sqlx` takes the fix ([#197](https://github.com/pecheriere/warden/issues/197)). |
 
 ## What this assessment did not do
 
@@ -93,9 +98,8 @@ decision by the maintainer, and stay open until then.
 - Check what dependencies log above the default level.
 - Check every line of the relay's flow control and teardown against the design.
   The claims there were spot-checked, and rest on the relay's tests.
-- For 0.10.0: sign a commit through a live broker and check it on a real GitHub
-  account, run the release jobs that are new in this release (they first run on its
-  tag), install the `.deb` and `.rpm` on a clean host, or test the release binary's
+- For 0.10.0, and still not done at 0.11.0: sign a commit through a live broker and
+  check it on a real GitHub account, install the `.deb` and `.rpm` on a clean host, or test the release binary's
   name resolution on a tailnet. The commit signing, label, link, pending list and
   fingerprint changes were checked against their threat model sections and tests, not
   against a deployment.
