@@ -111,8 +111,8 @@ warden request release <owner/name> <tag> --commit <full-sha> --goal "<goal>"
 
 **[call]** on command names, here and below. The tag must match
 `^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$` (landfall uses `-rc.N`); the version
-is the tag without the `v`. The commit is a full 40-hex SHA-1 (or 64-hex SHA-256)
-id. Before showing the request the broker checks, with a release App token for
+is the tag without the `v`. The commit is a full 40-hex SHA-1 id (**[call]**
+GitHub does not host SHA-256 repositories, so a 64-hex id is refused). Before showing the request the broker checks, with a release App token for
 that repository, and refuses on any failure or unreadable answer:
 
 - the repository has a release item and the release App is installed on it;
@@ -146,7 +146,7 @@ page ends it at once, as for other grants.
 Each runs only under an active release grant of the calling agent, at most once
 per grant, and is audited with the grant, repository, tag and outcome.
 
-1. **Tag.** `warden release tag <grant>`. The broker builds the tag object itself:
+1. **Tag.** `warden release tag <owner/name> <tag>`. The broker builds the tag object itself:
    object = the approved commit, type `commit`, tag = the approved name, tagger =
    the identity in the release item (**[call]** a `tagger` field, e.g. the owner's
    noreply address, since the tag stands for the owner's approval), the current
@@ -156,12 +156,12 @@ per grant, and is audited with the grant, repository, tag and outcome.
    which is where git keeps it), and checks that the id GitHub returns equals the
    id it computed for the object. On a mismatch it stops before creating the ref,
    so a stray tag object is left unreferenced and nothing is tagged. Then it
-   creates `refs/tags/<tag>` as the release App. The agent supplies nothing but the
-   grant id. **[guess]** GitHub's tag API stores the message and tagger byte for
+   creates `refs/tags/<tag>` as the release App. The agent names only the
+   repository and tag; the broker finds its active release grant for them. **[guess]** GitHub's tag API stores the message and tagger byte for
    byte as given, so the ids match; the builder proves it against `warden-app-test`
    before building the rest, and if it does not hold, stops and reports.
 2. **Manifest** (only when the repository has `manifest`).
-   `warden release sign-manifest <grant> <file>`. The agent has already run the
+   `warden release sign-manifest <owner/name> <tag> <file>`. The agent has already run the
    repository's attestation checks (warden: what `scripts/sign-release.sh` checks
    today). The broker accepts the file only if its name is the configured name for
    the approved version, it is at most 64 KiB, and every line is
@@ -174,7 +174,7 @@ per grant, and is audited with the grant, repository, tag and outcome.
    in `manifest_namespace`, finds the draft release for the tag, and uploads the
    manifest and `<manifest>.sig` to it, replacing assets of those names. It
    refuses if no draft exists for the tag or the release is already published.
-3. **Publish** (only when `publish` is `true`). `warden release publish <grant>`.
+3. **Publish** (only when `publish` is `true`). `warden release publish <owner/name> <tag>`.
    The broker refuses unless the release for the tag is a draft, and, where the
    repository has a manifest, the draft holds the manifest and its signature with
    the SHA-256 digests of the files it signed and uploaded under this grant (GitHub
