@@ -45,7 +45,8 @@ warden does **not** protect against:
   commit for that agent, not that anyone reviewed the change. See
   [Commit signing](#commit-signing).
 - **A GitHub token an agent already holds.** A token lasts an hour, covers every
-  repository the GitHub App is installed on, and is a bearer secret the agent has:
+  repository the GitHub App is installed on, can post issues and comments on public
+  repositories outside it, and is a bearer secret the agent has:
   revoking its grant stops new tokens, not that one. See [GitHub tokens](#github-tokens).
 - **Instant revocation everywhere.** An issued certificate stays valid on
   its target until it expires, and an open login to a certificate target continues
@@ -912,6 +913,14 @@ What an attacker gets, and what stops it:
   sets what each allows with GitHub's own rules: see
   [the three levels](github-app.md#the-three-levels-per-repository). The approval page says
   this in its badge.
+- **Issues and comments reach further than the installation.** Opening an issue or
+  commenting on a public repository takes only read access, and GitHub documents that an
+  installation token can read public repositories. On 2026-11-09 a token opened an issue on
+  a public repository of the App owner's account that the App was not installed on; other
+  accounts' public repositories were not tried, and should be assumed reachable too. A
+  prompt-injected agent can use this to spam, or to post what it read. An agent with network
+  access could post elsewhere anyway; what the token adds is the App's name, which carries
+  the owner's standing. warden cannot narrow this; GitHub's logs show it.
 - **The permissions are fixed**: `contents`, `pull_requests` and `issues` write, `metadata`
   read. Neither the agent nor the owner chooses them at approval, and the broker sends
   exactly these to GitHub whatever the App is allowed. No `workflows`, so GitHub refuses a push

@@ -371,7 +371,10 @@ until the drop-in allows what they need:**
   binds its UDP socket to port 0. That gives warden a port the kernel picks and no
   other: `udp:53`, `udp:8080`, `tcp:0` and `tcp:9000` were all refused with it in place;
 - every address of each notifier and API origin. A name with several addresses needs
-  them all.
+  them all;
+- with [GitHub tokens](github-app.md), the ranges GitHub publishes for its API (the
+  `api` list of `https://api.github.com/meta`). Without them every mint fails with
+  `503` "GitHub could not issue a token".
 
 This differs from the Docker rules in three ways:
 

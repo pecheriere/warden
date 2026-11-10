@@ -1046,7 +1046,8 @@ new one ends the one before it, whose `not_after` stops counting. Minting is ref
 `409` once the broker's App or installation is no longer the one with this `digest`.
 
 The token covers every repository the App's installation covers, with `contents`,
-`pull_requests` and `issues` write and `metadata` read. A client chooses neither repositories
+`pull_requests` and `issues` write and `metadata` read, and GitHub lets it open issues and
+comment on public repositories outside the installation too. A client chooses neither repositories
 nor permissions. Unlike the other kinds, this grant gives the agent a credential that outlives
 the grant: tokens last an hour, and revoking does not recall one. A client should keep the
 token only in memory or in a file only its user can read, mint another when less than 5

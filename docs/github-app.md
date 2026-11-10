@@ -15,8 +15,9 @@ set it up.
 ## What an agent gets
 
 - A token for **every repository the App is installed on**, not one repository. warden cannot
-  narrow it, and does not ask the agent for a repository. What the agent can reach is what you
-  installed the App on: see [the three levels](#the-three-levels-per-repository).
+  narrow it, and does not ask the agent for a repository. What the agent can push to and edit
+  is what you installed the App on: see [the three levels](#the-three-levels-per-repository).
+  Issues and comments reach further: see below.
 - **Fixed permissions**: `contents` write, `pull_requests` write, `issues` write and
   `metadata` read. warden asks GitHub for these and nothing else, whatever the App itself may
   do. No `workflows`, no `administration`.
@@ -28,6 +29,12 @@ set it up.
   it is long because the agent is expected to use it on its own: a prompt for every hour would
   be a reflex tap.
 - One grant at a time per agent. Approving a new one ends the one before it.
+- **Issues and comments on public repositories, too.** Opening an issue or commenting on a
+  public repository needs only read access, and GitHub documents that an App's token can read
+  public repositories.
+  So the agent can post as the App on public repositories you did not install it on: tested
+  on one of the owner's own, and to be assumed for anyone's. Choosing repositories limits pushes, pull requests and edits, not that.
+  What it posts shows as the App (`<app name>[bot]`), and GitHub's logs, not warden's, record it.
 
 ## What the agent holds
 
@@ -131,6 +138,10 @@ App `workflows` to get around this: it would let an agent change what CI runs, w
 repository's secrets.
 
 ## Set up the agent's machine
+
+**The broker needs outbound HTTPS to `api.github.com`.** If you limit its egress as
+[the deployment guide](deployment.md#lock-wardens-egress) does, allow that name, or every mint
+fails with "GitHub could not issue a token".
 
 Once the App is in the vault (warden reads the item afresh, so the server needs no restart),
 run this on each agent machine:

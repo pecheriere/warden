@@ -144,7 +144,7 @@ What warden can grant:
 | **SSH, certificate mode** | A certificate signed by warden's SSH CA, for a key that exists only in memory. It is valid for new logins during the window. A session already open keeps running after it, and warden cannot end it. | A reusable key for the target. |
 | **SSH, relay mode** (appliances, password-only hosts) | A session through warden's SSH relay; warden logs in to the target. warden closes the session when the window ends or the grant is revoked. | The target's key or password. |
 | **HTTP API calls** | warden makes each call, adds the secret, and returns the answer with the secret redacted. Calls are refused once the window ends or the grant is revoked. | The API secret. |
-| **GitHub** | A token from a [GitHub App](docs/github-app.md) you create for your agents, minted by warden for each hour of use under a grant of up to 30 days, for `git` and `gh`. | The App's private key. **The token itself is the exception:** the agent holds it for an hour, it covers every repository the App is installed on, and revoking a grant does not recall one already minted. |
+| **GitHub** | A token from a [GitHub App](docs/github-app.md) you create for your agents, minted by warden for each hour of use under a grant of up to 30 days, for `git` and `gh`. | The App's private key. **The token itself is the exception:** the agent holds it for an hour, it covers every repository the App is installed on (and issues and comments on public repositories), and revoking a grant does not recall one already minted. |
 
 ## Recommended setup
 
@@ -326,7 +326,7 @@ git push                                               # a token for the next ho
 
 The token is the one credential in warden that the agent holds and can use on its own: it
 lasts an hour, covers every repository the App is installed on, with `contents`, `pull
-requests` and `issues` write, and **revoking a grant does not recall a token already
+requests` and `issues` write, can open issues and comment on public repositories elsewhere, and **revoking a grant does not recall a token already
 minted**. What an agent can do with it is decided on GitHub, by where you install the App
 and the rules you set there. See [GitHub tokens for agents](docs/github-app.md) and the
 [threat model](docs/threat-model.md#github-tokens).

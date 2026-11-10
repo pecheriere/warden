@@ -691,7 +691,7 @@ targets are refused. For relay targets, use
 
 | Component | Inbound | Outbound |
 |-----------|---------|----------|
-| warden | Only from Tailscale Serve (or the reverse proxy Serve targets), to the listeners on `front`. | `connect-api`; the notification endpoints (Home Assistant, ntfy); the origins of your API secrets; the addresses of your relay targets. Nothing else. |
+| warden | Only from Tailscale Serve (or the reverse proxy Serve targets), to the listeners on `front`. | `connect-api`; the notification endpoints (Home Assistant, ntfy); the origins of your API secrets; the addresses of your relay targets; `api.github.com` on 443 if you set up [GitHub tokens](github-app.md). Nothing else. |
 | connect-api | From warden, on `connect`; from `connect-sync` on its bus port. | `connect-sync` (the bus); your 1Password servers on 443. |
 | connect-sync | From `connect-api` on its bus port. | `connect-api` (the bus); your 1Password servers on 443. |
 
@@ -734,6 +734,8 @@ iptables -A WARDEN-EGRESS -p tcp -d <home assistant address> --dport 443 -j RETU
 iptables -A WARDEN-EGRESS -p tcp -d <ntfy server address> --dport 443 -j RETURN
 iptables -A WARDEN-EGRESS -p tcp -d <API secret origin address> --dport 443 -j RETURN
 iptables -A WARDEN-EGRESS -p tcp -d <relay target address> --dport 22 -j RETURN
+# Only with GitHub tokens: one line per range of api.github.com (below).
+iptables -A WARDEN-EGRESS -p tcp -d <api.github.com range> --dport 443 -j RETURN
 iptables -A WARDEN-EGRESS -j REJECT
 iptables -C DOCKER-USER -i br-warden -j WARDEN-EGRESS 2>/dev/null \
   || iptables -I DOCKER-USER -i br-warden -j WARDEN-EGRESS
@@ -775,7 +777,13 @@ it is enabled: if the rules fail to load, Docker does not start. Run the
 script again (or `systemctl restart warden-firewall`) after you edit it.
 
 - One line per notification endpoint, API secret origin and relay target,
-  with the port it uses. Name resolution needs no rule: Docker's embedded
+  with the port it uses, and for [GitHub tokens](github-app.md) one per range
+  that GitHub publishes for its API (the `api` list of
+  `https://api.github.com/meta`). Without them every mint fails with
+  `503` "GitHub could not issue a token", and the broker logs "GitHub could not
+  be reached". GitHub changes those ranges. warden's GitHub client uses no
+  HTTP proxy, so the alternative is a transparent relay that passes TLS
+  through and allows `api.github.com` by its server name (SNI). Name resolution needs no rule: Docker's embedded
   DNS resolver answers inside the container and queries upstream from the
   host.
 - An address rule pins an IP, not a name. If an origin's addresses change

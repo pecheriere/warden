@@ -38,6 +38,9 @@ All notable changes to this project are recorded here. The format follows
     the broker's maximum if shorter), wait, and exit 5 if it is not approved. The CLI caches the token in `github-token.json` in its state
     directory (mode 0600) for the rest of its hour, and `warden revoke` on that machine
     deletes it. See [Agent usage](docs/agent-usage.md#github-tokens).
+  - The broker needs outbound HTTPS to `api.github.com` for this; both deployment guides'
+    egress rules say so. A token can also open issues and comment on public repositories outside the
+    installation, which takes only read access.
   - `warden doctor` has a `github.token` check, and `warden-server doctor` a `github-app`
     check.
 - `warden ssh-config <target>` prints an `ssh_config` `Host` block for the grant

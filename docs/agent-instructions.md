@@ -150,8 +150,9 @@ ahead, with a goal of your own:
 warden request github --goal "<which agent, and what it pushes or opens>"
 ```
 
-The token covers every repository the person installed the App on, and revoking does not
-recall one already minted, so keep to the repository your task is about.
+The token covers every repository the person installed the App on, and can also open issues
+and comment on any public repository. Revoking does not recall one already minted, so keep to
+the repository your task is about, and post nowhere else.
 
 ### When you are finished
 
