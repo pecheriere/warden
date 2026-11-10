@@ -84,9 +84,7 @@ fn unquote(quoted: &str) -> Option<String> {
 
 /// This program, as the helper and the wrapper name it.
 fn this_exe() -> Result<String> {
-    let exe = std::env::current_exe()
-        .and_then(fs::canonicalize)
-        .context("cannot tell where this program is")?;
+    let exe = crate::exe_path::stable_exe()?;
     printable(&exe, "this program")
 }
 

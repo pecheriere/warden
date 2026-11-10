@@ -23,6 +23,11 @@ All notable changes to this project are recorded here. The format follows
 
 ### Fixed
 
+- `warden setup git` and `warden setup github` record the path warden was started from, such
+  as `/opt/homebrew/bin/warden`, instead of the versioned directory it links to, so git's
+  signing program, the credential helper and the `gh` wrapper keep working after an
+  upgrade. The path is used only when it is the same binary; otherwise the resolved path
+  is recorded as before.
 - Ctrl-C while `warden request` was creating a request could withdraw a request that
   another process had made, when the broker answered with one already pending in its
   place. The broker's answer to `POST /v1/requests` now carries `created`, true only when

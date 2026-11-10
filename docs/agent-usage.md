@@ -739,7 +739,10 @@ your live grants and pending requests.
 Once, on each machine, with a grant: `warden setup git`. It makes this program git's `gpg.ssh.program`,
 sets `user.signingkey` to the broker's public key and turns on `commit.gpgsign`, so that
 `git commit`, `git rebase` and the rest work as usual. The key stays on the broker, which
-returns only the signature. Verifying goes to the real `ssh-keygen`.
+returns only the signature. Verifying goes to the real `ssh-keygen`. The program is recorded
+by the path it was started from, such as Homebrew's `/opt/homebrew/bin/warden`, not the
+versioned directory behind that link, so the setting survives an upgrade. The path is used
+only after it is shown to be this same binary; otherwise the resolved path is recorded.
 
 A signature means warden signed the commit for this agent, not that anyone reviewed the
 change. A commit does not say which repository or branch it is for, so warden does not ask.
@@ -767,8 +770,10 @@ helpers configured before it, then `!<warden> git-credential`. It writes `~/.loc
 script that sets `GH_TOKEN` from `warden github token` and runs the real `gh`. It refuses to
 replace a `gh` there that it did not write, and warns on stderr when `~/.local/bin` is not
 before the real `gh` on `PATH`, as plain `gh` would then run without a token. With no `gh` on
-`PATH` it sets git up and writes no wrapper. It prints each change. Run it again after
-an upgrade that moves the warden binary, as Homebrew's can.
+`PATH` it sets git up and writes no wrapper. It prints each change. Both the helper and the
+wrapper name warden by the path it was started from (Homebrew's `/opt/homebrew/bin/warden`,
+not its versioned directory), checked to be this same binary, so they survive an upgrade.
+Run it again if you move the binary to another path.
 
 After that `git push`, `git fetch` and `gh` work against GitHub as usual, with a token from
 warden. The token covers **every repository the owner's GitHub App is installed on**, with

@@ -583,3 +583,24 @@ async fn setup_leaves_git_alone_when_the_broker_has_no_key() {
     );
     assert!(!s.machine.root.path().join("home/gitconfig").exists());
 }
+
+/// Started through a symlink, as Homebrew installs it, `setup git` records the symlink,
+/// so an upgrade that replaces the versioned target does not break git. Only macOS
+/// reports the path a program was started from: on Linux the operating system gives
+/// the resolved file, which is what is recorded there.
+#[cfg(target_os = "macos")]
+#[tokio::test(flavor = "multi_thread")]
+async fn setup_git_records_the_path_the_program_was_started_from() {
+    let s = setup().await;
+    get_grant(&s).await;
+    let bin = s.machine.root.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    let link = bin.join("warden");
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_warden"), &link).unwrap();
+    let mut cmd = Command::new(&link);
+    s.machine.env(&mut cmd);
+    let out = cmd.args(["setup", "git"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    let recorded = s.machine.git_ok(&["config", "gpg.ssh.program"]);
+    assert_eq!(Path::new(&recorded), link);
+}

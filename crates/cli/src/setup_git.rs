@@ -75,9 +75,7 @@ pub async fn run(client: &Client, scope: Scope) -> Result<()> {
                 .context("cannot read the broker's commit signing key, so git was left as it was");
         }
     };
-    let program = std::env::current_exe()
-        .and_then(std::fs::canonicalize)
-        .context("cannot tell where this program is")?;
+    let program = crate::exe_path::stable_exe()?;
     let program = program
         .to_str()
         .ok_or_else(|| anyhow!("the path of this program is not valid UTF-8"))?;
