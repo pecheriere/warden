@@ -166,16 +166,16 @@ mod tests {
         }
     }
 
-    fn entry(uid: u32, mode: u32, is_symlink: bool) -> Option<Entry> {
-        Some(Entry {
+    fn entry(uid: u32, mode: u32, is_symlink: bool) -> Entry {
+        Entry {
             uid,
             mode,
             is_symlink,
-        })
+        }
     }
 
     /// A file system where everything is owned by `ME` and private to it.
-    fn private(path: &Path, follow: bool) -> Option<Entry> {
+    fn base(path: &Path, follow: bool) -> Entry {
         let is_symlink = !follow && path == Path::new("/opt/homebrew/bin/warden");
         entry(
             ME,
@@ -184,13 +184,18 @@ mod tests {
         )
     }
 
+    /// The file system as a lookup.
+    fn private() -> impl Fn(&Path, bool) -> Option<Entry> {
+        |path, follow| Some(base(path, follow))
+    }
+
     fn pick(started: &[&str], cwd: Option<&Path>, path_var: &OsStr, lookup: Lookup<'_>) -> PathBuf {
         let started: Vec<PathBuf> = started.iter().map(PathBuf::from).collect();
         choose(&started, &real(), cwd, path_var, ME, &fake, lookup)
     }
 
     fn pick_one(started: &str) -> PathBuf {
-        pick(&[started], None, OsStr::new(""), &private)
+        pick(&[started], None, OsStr::new(""), &private())
     }
 
     #[test]
@@ -213,7 +218,7 @@ mod tests {
 
     #[test]
     fn falls_back_without_a_candidate() {
-        assert_eq!(pick(&[], None, OsStr::new(""), &private), real());
+        assert_eq!(pick(&[], None, OsStr::new(""), &private()), real());
     }
 
     #[test]
@@ -222,7 +227,7 @@ mod tests {
             &["/tmp/evil/warden", "/opt/homebrew/bin/warden"],
             None,
             OsStr::new(""),
-            &private,
+            &private(),
         );
         assert_eq!(got, Path::new("/opt/homebrew/bin/warden"));
     }
@@ -231,13 +236,13 @@ mod tests {
     fn a_bare_name_takes_the_first_path_entry_that_is_this_binary() {
         let path = std::env::join_paths(["/tmp/evil", "relative/bin", "/opt/homebrew/bin"])
             .expect("paths join");
-        let got = pick(&["warden"], None, &path, &private);
+        let got = pick(&["warden"], None, &path, &private());
         assert_eq!(got, Path::new("/opt/homebrew/bin/warden"));
     }
 
     #[test]
     fn a_bare_name_found_nowhere_falls_back() {
-        let got = pick(&["warden"], None, OsStr::new("/tmp/evil"), &private);
+        let got = pick(&["warden"], None, OsStr::new("/tmp/evil"), &private());
         assert_eq!(got, real());
     }
 
@@ -247,7 +252,7 @@ mod tests {
             &["./bin/warden"],
             Some(Path::new("/opt/homebrew")),
             OsStr::new(""),
-            &private,
+            &private(),
         );
         assert_eq!(got, Path::new("/opt/homebrew/bin/warden"));
     }
@@ -266,7 +271,7 @@ mod tests {
             OsStr::new(""),
             ME,
             &|p| (p.file_name()? == "warden").then(real),
-            &private,
+            &private(),
         );
         assert_eq!(got, real());
     }
@@ -275,13 +280,13 @@ mod tests {
     fn but(
         f: impl Fn(&Path, bool) -> Option<Option<Entry>>,
     ) -> impl Fn(&Path, bool) -> Option<Entry> {
-        move |p, follow| f(p, follow).unwrap_or_else(|| private(p, follow))
+        move |p, follow| f(p, follow).unwrap_or_else(|| Some(base(p, follow)))
     }
 
     #[test]
     fn a_directory_others_can_write_on_the_way_falls_back() {
         for mode in [0o040_775, 0o040_757, 0o041_777] {
-            let lookup = but(|p, _| (p == Path::new("/opt")).then(|| entry(ME, mode, false)));
+            let lookup = but(|p, _| (p == Path::new("/opt")).then(|| Some(entry(ME, mode, false))));
             let got = pick(&["/opt/homebrew/bin/warden"], None, OsStr::new(""), &lookup);
             assert_eq!(got, real(), "{mode:o}");
         }
@@ -289,15 +294,16 @@ mod tests {
 
     #[test]
     fn a_directory_owned_by_someone_else_falls_back() {
-        let lookup =
-            but(|p, _| (p == Path::new("/opt/homebrew")).then(|| entry(ME + 1, 0o040_755, false)));
+        let lookup = but(|p, _| {
+            (p == Path::new("/opt/homebrew")).then(|| Some(entry(ME + 1, 0o040_755, false)))
+        });
         let got = pick(&["/opt/homebrew/bin/warden"], None, OsStr::new(""), &lookup);
         assert_eq!(got, real());
     }
 
     #[test]
     fn a_root_owned_directory_is_trusted() {
-        let lookup = but(|p, _| (p == Path::new("/opt")).then(|| entry(0, 0o040_755, false)));
+        let lookup = but(|p, _| (p == Path::new("/opt")).then(|| Some(entry(0, 0o040_755, false))));
         let got = pick(&["/opt/homebrew/bin/warden"], None, OsStr::new(""), &lookup);
         assert_eq!(got, Path::new("/opt/homebrew/bin/warden"));
     }
@@ -306,7 +312,7 @@ mod tests {
     fn a_symlink_owned_by_someone_else_falls_back() {
         let lookup = but(|p, follow| {
             (p == Path::new("/opt/homebrew/bin/warden") && !follow)
-                .then(|| entry(ME + 1, 0o120_777, true))
+                .then(|| Some(entry(ME + 1, 0o120_777, true)))
         });
         let got = pick(&["/opt/homebrew/bin/warden"], None, OsStr::new(""), &lookup);
         assert_eq!(got, real());
@@ -316,7 +322,7 @@ mod tests {
     fn a_symlink_whose_target_others_can_write_falls_back() {
         let lookup = but(|p, follow| {
             (p == Path::new("/opt/homebrew/bin/warden") && follow)
-                .then(|| entry(ME, 0o100_777, false))
+                .then(|| Some(entry(ME, 0o100_777, false)))
         });
         let got = pick(&["/opt/homebrew/bin/warden"], None, OsStr::new(""), &lookup);
         assert_eq!(got, real());
