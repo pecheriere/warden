@@ -11,7 +11,7 @@ use warden_broker::audit;
 use warden_broker::notify::{Fallback, Notifier};
 use warden_broker::requests::{Destination, RequestError};
 use warden_broker::testkit::{CapturingNotifier, FailingNotifier};
-use warden_broker_proto::{Access, RequestStatus, Window, fingerprint};
+use warden_broker_proto::{Access, CreatedResponse, RequestStatus, Window, fingerprint};
 
 use super::{
     CREDENTIAL, ECDSA_PUBLIC, START, TOKEN, agent, api_request, audit_types, broken_connect,
@@ -446,8 +446,14 @@ async fn duplicate_pending_returns_same_id() {
         h.requests.create(&bot, pi_request()),
         h.requests.create(&bot, pi_request()),
     );
+    // Only the first call made it, and the answers say so.
+    assert_eq!(first.created, Some(true));
+    let same = CreatedResponse {
+        created: Some(false),
+        ..first.clone()
+    };
     for again in [a, b, c] {
-        assert_eq!(again.unwrap(), first);
+        assert_eq!(again.unwrap(), same);
     }
     assert_eq!(row_count(&h.pool, "requests").await, 1);
     assert_eq!(h.capture.rung().len(), 1, "duplicates must not notify");

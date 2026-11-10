@@ -3,10 +3,10 @@
 use crate::GithubTokenGrant;
 use crate::github_token::{GithubTokenResponse, PERMISSIONS};
 use crate::{
-    Access, AgentName, ApiGrant, CreateRequest, Fingerprint, Goal, GrantAccess, GrantView, Id,
-    InfoResponse, ProxyRequest, ProxyResponse, RelayGrant, RequestStatus, SecretName, SessionLabel,
-    SessionLink, SshGrant, TargetName, UnixUser, Window, fingerprint, is_read_only,
-    modifying_methods, signing, under_prefix,
+    Access, AgentName, ApiGrant, CreateRequest, CreatedResponse, Fingerprint, Goal, GrantAccess,
+    GrantView, Id, InfoResponse, ProxyRequest, ProxyResponse, RelayGrant, RequestStatus,
+    SecretName, SessionLabel, SessionLink, SshGrant, TargetName, UnixUser, Window, fingerprint,
+    is_read_only, modifying_methods, signing, under_prefix,
 };
 
 fn sample_request() -> CreateRequest {
@@ -569,4 +569,26 @@ fn github_token_response_debug_redacts() {
             .token,
         "ghs_supersecretvalue"
     );
+}
+
+/// A broker older than the `created` flag leaves it out, and a CLI older than it
+/// ignores it: both still read the answer.
+#[test]
+fn created_flag_is_optional_on_the_wire() {
+    let id = "0".repeat(32);
+    let old: CreatedResponse = serde_json::from_str(&format!(
+        r#"{{"id":"{id}","fingerprint":"42d5-403c-c2f0"}}"#
+    ))
+    .unwrap();
+    assert_eq!(old.created, None);
+    let new = CreatedResponse {
+        created: Some(false),
+        ..old
+    };
+    let json = serde_json::to_string(&new).unwrap();
+    assert_eq!(
+        json,
+        format!(r#"{{"id":"{id}","fingerprint":"42d5-403c-c2f0","created":false}}"#)
+    );
+    assert_eq!(serde_json::from_str::<CreatedResponse>(&json).unwrap(), new);
 }

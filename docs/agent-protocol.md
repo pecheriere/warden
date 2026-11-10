@@ -588,10 +588,13 @@ Example:
 
 Responses:
 
-- `201`: `{"id":"0b8f4c1e9d2a47f3a5c6e7d8f9a0b1c2","fingerprint":"42d5-403c-c2f0"}`.
+- `201`: `{"id":"0b8f4c1e9d2a47f3a5c6e7d8f9a0b1c2","fingerprint":"42d5-403c-c2f0","created":true}`.
   The owner is notified. Show the id and fingerprint to whoever supervises
   the agent: the approval page shows the same fingerprint, as five words with
-  this hex form under them. This field is always hex.
+  this hex form under them. This field is always hex. `created` is `true` when
+  this call made the request and `false` when the broker answered with one
+  already pending (below). Brokers older than the field leave it out; ignore any
+  field you do not know.
 - `400`: the body is not valid JSON or a field is invalid (the message says
   which), or the policy refuses the request (the user, window, method or
   path is not allowed; the message names the rule). Not retried, not
@@ -627,6 +630,12 @@ printf '["build-bot",%s]' "$(cat body.json)" | openssl dgst -sha256 -r | cut -c1
 
 On a mismatch, do not wait on the other request: it is not yours to use.
 Compare the hex: the API never carries the words.
+
+A matching fingerprint does not make the request yours to withdraw: another
+process of the same agent may have made the same request and be waiting on it.
+Cancel only a request whose answer said `"created":true`. If the field is absent
+(an older broker), the answer cannot tell you, and a matching fingerprint is the
+best you have.
 
 To show your supervisor the words the page leads with, write the same 48 bits as
 one number in base 1296, least significant digit first, five digits, each digit

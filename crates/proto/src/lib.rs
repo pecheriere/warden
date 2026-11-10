@@ -286,6 +286,11 @@ pub struct CreatedResponse {
     pub id: Id,
     /// Fingerprint the approver sees.
     pub fingerprint: Fingerprint,
+    /// Whether this call made the request: `false` when the broker answered with
+    /// one already pending in its place, which another process may have made.
+    /// `None` from brokers older than the field, which do not say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created: Option<bool>,
 }
 
 /// One of the agent's own requests still waiting for the owner, as listed by
