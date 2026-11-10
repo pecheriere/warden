@@ -740,9 +740,12 @@ Once, on each machine, with a grant: `warden setup git`. It makes this program g
 sets `user.signingkey` to the broker's public key and turns on `commit.gpgsign`, so that
 `git commit`, `git rebase` and the rest work as usual. The key stays on the broker, which
 returns only the signature. Verifying goes to the real `ssh-keygen`. The program is recorded
-by the path it was started from, such as Homebrew's `/opt/homebrew/bin/warden`, not the
-versioned directory behind that link, so the setting survives an upgrade. The path is used
-only after it is shown to be this same binary; otherwise the resolved path is recorded.
+by the path it was started from (`argv[0]`, looked up in `PATH` for a bare name), such as
+Homebrew's `/opt/homebrew/bin/warden` on macOS or Linux, not the versioned directory behind
+that link, so the setting survives an upgrade. At setup the path must be this same binary,
+and the symlink and every directory leading to it must be owned by you or root and not
+writable by group or others (a sticky bit does not count); otherwise the resolved path is
+recorded. Warden checks this once, at setup, and does not watch those directories afterwards.
 
 A signature means warden signed the commit for this agent, not that anyone reviewed the
 change. A commit does not say which repository or branch it is for, so warden does not ask.
@@ -771,9 +774,10 @@ script that sets `GH_TOKEN` from `warden github token` and runs the real `gh`. I
 replace a `gh` there that it did not write, and warns on stderr when `~/.local/bin` is not
 before the real `gh` on `PATH`, as plain `gh` would then run without a token. With no `gh` on
 `PATH` it sets git up and writes no wrapper. It prints each change. Both the helper and the
-wrapper name warden by the path it was started from (Homebrew's `/opt/homebrew/bin/warden`,
-not its versioned directory), checked to be this same binary, so they survive an upgrade.
-Run it again if you move the binary to another path.
+wrapper name warden by the path it was started from (Homebrew's `/opt/homebrew/bin/warden`
+on macOS or Linux, not its versioned directory), under the same conditions as for
+`warden setup git` above, so they survive an upgrade. Run it again if you move the binary
+to another path.
 
 After that `git push`, `git fetch` and `gh` work against GitHub as usual, with a token from
 warden. The token covers **every repository the owner's GitHub App is installed on**, with

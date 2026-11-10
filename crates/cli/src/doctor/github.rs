@@ -210,9 +210,22 @@ enum Kind {
     Other,
 }
 
+/// Whether two paths name the same program: the same text, or the same file once
+/// symlinks are resolved. A helper written by `warden setup github` names the path
+/// warden was started from, which doctor may not have been.
+fn same_program(a: &str, b: &str) -> bool {
+    a == b
+        || matches!(
+            (std::fs::canonicalize(a), std::fs::canonicalize(b)),
+            (Ok(a), Ok(b)) if a == b
+        )
+}
+
 fn kind(value: &str, this_program: Option<&str>) -> Kind {
     match helper_program(value) {
-        Some(program) if Some(program.as_str()) == this_program => Kind::This,
+        Some(program) if this_program.is_some_and(|this| same_program(&program, this)) => {
+            Kind::This
+        }
         Some(program)
             if Path::new(&program)
                 .file_name()

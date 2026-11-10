@@ -584,23 +584,67 @@ async fn setup_leaves_git_alone_when_the_broker_has_no_key() {
     assert!(!s.machine.root.path().join("home/gitconfig").exists());
 }
 
+/// A directory under `parent` with a symlink named `warden` to the built CLI. Tests use
+/// the home directory, which only the user and root can write to: a link under `/tmp`,
+/// writable by others, is rightly not recorded.
+fn linked_cli(parent: &Path) -> (TempDir, PathBuf) {
+    let dir = tempfile::Builder::new()
+        .prefix("warden-link")
+        .tempdir_in(parent)
+        .unwrap();
+    let link = dir.path().join("warden");
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_warden"), &link).unwrap();
+    (dir, link)
+}
+
 /// Started through a symlink, as Homebrew installs it, `setup git` records the symlink,
-/// so an upgrade that replaces the versioned target does not break git. Only macOS
-/// reports the path a program was started from: on Linux the operating system gives
-/// the resolved file, which is what is recorded there.
-#[cfg(target_os = "macos")]
+/// so an upgrade that replaces the versioned target does not break git. This holds on
+/// Linux as well, where `current_exe` is already resolved and only `argv[0]` says how
+/// the program was started.
 #[tokio::test(flavor = "multi_thread")]
 async fn setup_git_records_the_path_the_program_was_started_from() {
     let s = setup().await;
     get_grant(&s).await;
-    let bin = s.machine.root.path().join("bin");
-    fs::create_dir(&bin).unwrap();
-    let link = bin.join("warden");
-    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_warden"), &link).unwrap();
+    let (_dir, link) = linked_cli(&dirs::home_dir().unwrap());
     let mut cmd = Command::new(&link);
     s.machine.env(&mut cmd);
     let out = cmd.args(["setup", "git"]).output().unwrap();
     assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
     let recorded = s.machine.git_ok(&["config", "gpg.ssh.program"]);
     assert_eq!(Path::new(&recorded), link);
+}
+
+/// The same, started by its bare name through `PATH`.
+#[tokio::test(flavor = "multi_thread")]
+async fn setup_git_finds_a_program_started_by_name_in_path() {
+    let s = setup().await;
+    get_grant(&s).await;
+    let (dir, link) = linked_cli(&dirs::home_dir().unwrap());
+    let mut path = vec![dir.path().to_path_buf()];
+    path.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+    let mut cmd = Command::new("warden");
+    s.machine.env(&mut cmd);
+    cmd.env("PATH", std::env::join_paths(path).unwrap());
+    let out = cmd.args(["setup", "git"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    let recorded = s.machine.git_ok(&["config", "gpg.ssh.program"]);
+    assert_eq!(Path::new(&recorded), link);
+}
+
+/// A link in a directory others can write, such as `/tmp`, could be repointed, so the
+/// resolved path is recorded instead.
+#[tokio::test(flavor = "multi_thread")]
+async fn setup_git_records_the_resolved_path_for_a_link_others_can_replace() {
+    let s = setup().await;
+    get_grant(&s).await;
+    let (_dir, link) = linked_cli(Path::new("/tmp"));
+    let mut cmd = Command::new(&link);
+    s.machine.env(&mut cmd);
+    let out = cmd.args(["setup", "git"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    let recorded = s.machine.git_ok(&["config", "gpg.ssh.program"]);
+    assert_eq!(
+        Path::new(&recorded),
+        fs::canonicalize(env!("CARGO_BIN_EXE_warden")).unwrap()
+    );
 }

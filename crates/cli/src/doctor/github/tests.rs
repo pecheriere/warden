@@ -266,3 +266,30 @@ fn an_unreadable_configuration_or_no_git_could_not_be_checked() {
     // And nothing at all is none, not a failure.
     assert_eq!(values_of(""), Vec::<String>::new());
 }
+
+#[test]
+fn a_helper_naming_this_program_through_a_symlink_counts() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let target = dir.path().join("warden-1.0.0");
+    fs::write(&target, b"").expect("write");
+    let link = dir.path().join("warden");
+    std::os::unix::fs::symlink(&target, &link).expect("symlink");
+    let other = dir.path().join("other");
+    fs::write(&other, b"").expect("write");
+    let value = |path: &std::path::Path| format!("!'{}' git-credential", path.display());
+    let with = |this: &std::path::Path, helper: &str| {
+        let mut setup = setup(&["", helper]);
+        setup.this_program = Some(this.display().to_string());
+        check(&Ok(setup), Some(Ok(true)))
+    };
+    // Doctor started through the link, the helper written with the resolved path, and the
+    // other way round.
+    assert_eq!(with(&link, &value(&target)).status, Status::Pass);
+    assert_eq!(with(&target, &value(&link)).status, Status::Pass);
+    // A different file named warden is still another warden.
+    let other_warden = dir.path().join("elsewhere");
+    fs::create_dir(&other_warden).expect("mkdir");
+    let other_warden = other_warden.join("warden");
+    std::os::unix::fs::symlink(&other, &other_warden).expect("symlink");
+    assert_eq!(with(&link, &value(&other_warden)).status, Status::Fail);
+}
