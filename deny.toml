@@ -24,15 +24,15 @@ ignore = [
     { id = "RUSTSEC-2023-0071", reason = "rsa 0.10.0-rc via russh 0.65.0, broker only: public-key verification of pinned host keys only; the one RSA private key warden holds (the GitHub App) is used only through aws-lc-rs" },
     # SQLite before 3.54.0 can return uninitialised page-cache memory when it
     # opens a database with a crafted `-wal` file of another page size. The fix,
-    # libsqlite3-sys 0.39, is out, but sqlx 0.9.0 pins 0.37 and no sqlx release
-    # takes 0.39 yet. warden opens only its own database (WARDEN_DB_PATH), in a
-    # data directory it owns with mode 0700, which `warden-server doctor`
-    # checks; the demo uses a fresh temporary directory, and the CLI does not
-    # link SQLite. Whoever can write the database and its `-wal` there already
+    # libsqlite3-sys 0.39, is out, but sqlx-sqlite 0.9.0 accepts only <0.38 and
+    # no sqlx release takes 0.39 yet. warden opens only its own database
+    # (WARDEN_DB_PATH), in a data directory it makes private, and it refuses to
+    # start if others can write to that directory (private_files.rs); the demo
+    # uses a fresh temporary directory, and the CLI does not link SQLite. Whoever can write the database and its `-wal` there already
     # controls the broker.
     # Remove this, and upgrade, when a sqlx release takes libsqlite3-sys 0.39
     # or later (#197).
-    { id = "RUSTSEC-2026-0459", reason = "bundled SQLite via sqlx 0.9.0, which pins libsqlite3-sys 0.37: warden opens only its own database in its 0700 data directory; no sqlx release takes the fixed 0.39 yet (#197)" },
+    { id = "RUSTSEC-2026-0459", reason = "bundled SQLite via sqlx 0.9.0, which accepts only libsqlite3-sys <0.38: warden opens only its own database, in a data directory others cannot write to or it refuses to start; no sqlx release takes the fixed 0.39 yet (#197)" },
 ]
 
 [licenses]
