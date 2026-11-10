@@ -5,7 +5,7 @@
 
 use std::fs;
 use std::io::Write as _;
-use std::os::unix::fs::OpenOptionsExt as _;
+use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 
@@ -582,4 +582,119 @@ async fn setup_leaves_git_alone_when_the_broker_has_no_key() {
         text(&out.stderr)
     );
     assert!(!s.machine.root.path().join("home/gitconfig").exists());
+}
+
+/// Why `dir` would not do as the parent of a link warden records: the first entry from
+/// `dir` up that is owned by someone other than the user or root, or writable by group or
+/// others. `None` when the whole chain passes, which is the rule `exe_path` applies.
+fn refusal(dir: &Path) -> Option<String> {
+    let me = rustix::process::getuid().as_raw();
+    for entry in dir.ancestors() {
+        match fs::metadata(entry) {
+            Ok(meta) if (meta.uid() == me || meta.uid() == 0) && meta.mode() & 0o022 == 0 => {}
+            Ok(meta) => {
+                return Some(format!(
+                    "{} has owner {} and mode {:o}",
+                    entry.display(),
+                    meta.uid(),
+                    meta.mode() & 0o7777
+                ));
+            }
+            Err(e) => return Some(format!("{} cannot be read: {e}", entry.display())),
+        }
+    }
+    None
+}
+
+/// A directory with a symlink named `warden` to the built CLI. The parent is the first of
+/// Cargo's per-target temporary directory and the system temporary directory whose whole
+/// chain of directories passes the rule warden applies; a link in a directory others can
+/// write, such as `/tmp`, is rightly not recorded. When neither passes, the test fails and
+/// names each, rather than passing without testing the rule or weakening it.
+fn linked_cli() -> (TempDir, PathBuf) {
+    let candidates = [
+        PathBuf::from(env!("CARGO_TARGET_TMPDIR")),
+        std::env::temp_dir(),
+    ];
+    let mut refused = Vec::new();
+    for candidate in &candidates {
+        if fs::create_dir_all(candidate).is_ok() {
+            match refusal(candidate) {
+                None => return linked_cli_in(candidate),
+                Some(why) => refused.push(format!("{}: {why}", candidate.display())),
+            }
+        } else {
+            refused.push(format!("{}: cannot be created", candidate.display()));
+        }
+    }
+    panic!(
+        "no directory where warden would record a link: {}",
+        refused.join("; ")
+    );
+}
+
+/// The same under `parent`, without checking it.
+fn linked_cli_in(parent: &Path) -> (TempDir, PathBuf) {
+    let dir = tempfile::Builder::new()
+        .prefix("warden-link")
+        .tempdir_in(parent)
+        .unwrap();
+    let link = dir.path().join("warden");
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_warden"), &link).unwrap();
+    (dir, link)
+}
+
+/// Started through a symlink, as Homebrew installs it, `setup git` records the symlink,
+/// so an upgrade that replaces the versioned target does not break git. This holds on
+/// Linux as well, where `current_exe` is already resolved and only `argv[0]` says how
+/// the program was started.
+#[tokio::test(flavor = "multi_thread")]
+async fn setup_git_records_the_path_the_program_was_started_from() {
+    let s = setup().await;
+    get_grant(&s).await;
+    let (_dir, link) = linked_cli();
+    let mut cmd = Command::new(&link);
+    s.machine.env(&mut cmd);
+    let out = cmd.args(["setup", "git"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    let recorded = s.machine.git_ok(&["config", "gpg.ssh.program"]);
+    assert_eq!(Path::new(&recorded), link);
+}
+
+/// The same, started by its bare name through `PATH`.
+#[tokio::test(flavor = "multi_thread")]
+async fn setup_git_finds_a_program_started_by_name_in_path() {
+    let s = setup().await;
+    get_grant(&s).await;
+    let (dir, link) = linked_cli();
+    let mut path = vec![dir.path().to_path_buf()];
+    path.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+    let mut cmd = Command::new("warden");
+    s.machine.env(&mut cmd);
+    cmd.env("PATH", std::env::join_paths(path).unwrap());
+    let out = cmd.args(["setup", "git"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    let recorded = s.machine.git_ok(&["config", "gpg.ssh.program"]);
+    assert_eq!(Path::new(&recorded), link);
+}
+
+/// A link in a directory others can write, such as `/tmp`, could be repointed, so the
+/// resolved path is recorded instead.
+#[tokio::test(flavor = "multi_thread")]
+async fn setup_git_records_the_resolved_path_for_a_link_others_can_replace() {
+    let s = setup().await;
+    get_grant(&s).await;
+    let (_dir, link) = linked_cli_in(Path::new("/tmp"));
+    let mut cmd = Command::new(&link);
+    s.machine.env(&mut cmd);
+    let out = cmd.args(["setup", "git"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    let recorded = s.machine.git_ok(&["config", "gpg.ssh.program"]);
+    assert_eq!(
+        Path::new(&recorded),
+        fs::canonicalize(env!("CARGO_BIN_EXE_warden")).unwrap()
+    );
+    let stdout = text(&out.stdout);
+    assert!(stdout.contains("others can write"), "{stdout}");
+    assert!(stdout.contains("again after upgrading"), "{stdout}");
 }

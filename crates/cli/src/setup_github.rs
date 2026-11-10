@@ -83,16 +83,14 @@ fn unquote(quoted: &str) -> Option<String> {
 }
 
 /// This program, as the helper and the wrapper name it.
-fn this_exe() -> Result<String> {
-    let exe = std::env::current_exe()
-        .and_then(fs::canonicalize)
-        .context("cannot tell where this program is")?;
-    printable(&exe, "this program")
+fn this_exe() -> Result<(String, Option<String>)> {
+    let exe = crate::exe_path::stable_exe()?;
+    Ok((printable(&exe.path, "this program")?, exe.notice()))
 }
 
 /// This program's path as `warden setup github` writes it, if it can tell.
 pub fn this_program() -> Option<String> {
-    this_exe().ok()
+    this_exe().ok().map(|(exe, _)| exe)
 }
 
 /// The `gh` wrapper running `real_gh` with a token from `exe`.
@@ -286,7 +284,7 @@ fn printable(path: &Path, what: &str) -> Result<String> {
 /// cannot be located, nothing is changed. If git refuses a value or the wrapper
 /// cannot be written, the message says so; what was changed before stays changed.
 pub fn run() -> Result<()> {
-    let exe = this_exe()?;
+    let (exe, notice) = this_exe()?;
     let home = dirs::home_dir().context("cannot determine the home directory")?;
     let bin = home.join(".local/bin");
     let wrapper = bin.join("gh");
@@ -303,6 +301,9 @@ pub fn run() -> Result<()> {
         .transpose()?;
 
     set_helper(&helper_value(&exe))?;
+    if let Some(notice) = notice {
+        println!("{notice}");
+    }
 
     let Some((gh_index, real_gh)) = real_gh else {
         println!(

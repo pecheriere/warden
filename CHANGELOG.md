@@ -23,6 +23,15 @@ All notable changes to this project are recorded here. The format follows
 
 ### Fixed
 
+- `warden setup git` and `warden setup github` record the path warden was started from
+  (`argv[0]`, looked up in `PATH` for a bare name), such as `/opt/homebrew/bin/warden` on
+  macOS or Linux, instead of the versioned directory it links to, so git's signing program,
+  the credential helper and the `gh` wrapper keep working after an upgrade. The path is
+  used only when, at setup, it is the same binary and the symlink and every directory
+  leading to it are owned by you or root and not writable by group or others; otherwise
+  the resolved path is recorded as before, and the command says so, with the reason and
+  that it must be run again after an upgrade. `warden doctor` compares the helper with this
+  program by the file each names, not by the text of the path.
 - Ctrl-C while `warden request` was creating a request could withdraw a request that
   another process had made, when the broker answered with one already pending in its
   place. The broker's answer to `POST /v1/requests` now carries `created`, true only when

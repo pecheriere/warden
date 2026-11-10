@@ -6,6 +6,7 @@ mod client;
 mod commands;
 mod config;
 mod doctor;
+mod exe_path;
 mod git_credential;
 mod git_signing;
 mod github_token;
