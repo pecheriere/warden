@@ -25,6 +25,7 @@ async fn granted() -> (Arc<TestBroker>, HttpsUpstream, String, String) {
     let upstream = HttpsUpstream::start().await;
     let api = GithubApi::pinned(
         upstream.origin().parse().unwrap(),
+        upstream.origin().parse().unwrap(),
         upstream.ca_pem().as_bytes().to_vec(),
     );
     let (broker, key) = configured(TestBroker::with_github_api(api).await).await;
@@ -81,6 +82,7 @@ async fn held_mint(
 async fn mints_are_capped_per_agent_per_hour() {
     let upstream = HttpsUpstream::start().await;
     let api = GithubApi::pinned(
+        upstream.origin().parse().unwrap(),
         upstream.origin().parse().unwrap(),
         upstream.ca_pem().as_bytes().to_vec(),
     );

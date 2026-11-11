@@ -18,6 +18,7 @@ async fn upstream() -> (HttpsUpstream, GithubApi) {
     let upstream = HttpsUpstream::start().await;
     let api = GithubApi::pinned(
         upstream.origin().parse().unwrap(),
+        upstream.origin().parse().unwrap(),
         upstream.ca_pem().as_bytes().to_vec(),
     );
     (upstream, api)
@@ -201,6 +202,7 @@ async fn mint_fails_closed_when_upstream_is_untrusted() {
     let upstream = HttpsUpstream::start().await;
     let other = HttpsUpstream::start().await;
     let api = GithubApi::pinned(
+        upstream.origin().parse().unwrap(),
         upstream.origin().parse().unwrap(),
         other.ca_pem().as_bytes().to_vec(),
     );

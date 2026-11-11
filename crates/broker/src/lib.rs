@@ -24,6 +24,8 @@ pub mod config;
 pub mod doctor;
 pub mod enrollment;
 pub mod github_app;
+mod github_http;
+pub mod github_release;
 pub mod health;
 pub mod identity;
 pub mod notify;

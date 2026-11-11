@@ -25,6 +25,7 @@ use tokio_rustls::rustls::crypto::aws_lc_rs;
 use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use url::Url;
 
+use super::github_release::GithubReleaseFake;
 use crate::policy::{ApiSecretPolicy, ValueFormat};
 
 /// Body length served by `/huge` and `/huge-chunked`: twice the default
@@ -157,6 +158,8 @@ impl Default for Gate {
 /// - `POST /app/installations/<id>/access_tokens`: the next response queued with
 ///   [`HttpsUpstream::script_github_token`] (`500` when none is), held until its
 ///   [`Gate`] opens when it has one;
+/// - the routes of [`GithubReleaseFake`], which [`HttpsUpstream::github_release`]
+///   scripts and records;
 /// - `/gzip`: a body labelled `Content-Encoding: gzip`;
 /// - `/status/<code>`: that status, body `status <code>`;
 /// - `/binary`: [`BINARY_BODY`], which is not UTF-8;
@@ -169,6 +172,7 @@ pub struct HttpsUpstream {
     released: Arc<watch::Sender<bool>>,
     scripts: Arc<Mutex<VecDeque<Scripted>>>,
     token_calls: Arc<watch::Sender<u64>>,
+    github_release: GithubReleaseFake,
     server: AbortHandle,
 }
 
@@ -192,6 +196,8 @@ struct Shared {
     scripts: Arc<Mutex<VecDeque<Scripted>>>,
     /// How many calls the GitHub token route has received.
     token_calls: Arc<watch::Sender<u64>>,
+    /// The fake GitHub of the release client.
+    github_release: GithubReleaseFake,
 }
 
 /// Counts one abandoned call when dropped, which is what happens to a handler
@@ -227,12 +233,14 @@ impl HttpsUpstream {
         let released = Arc::new(watch::Sender::new(false));
         let scripts: Arc<Mutex<VecDeque<Scripted>>> = Arc::default();
         let token_calls = Arc::new(watch::Sender::new(0));
+        let github_release = GithubReleaseFake::default();
         let router = Router::new().fallback(handle).with_state(Shared {
             log: received.clone(),
             abandoned: abandoned.clone(),
             released: released.clone(),
             scripts: scripts.clone(),
             token_calls: token_calls.clone(),
+            github_release: github_release.clone(),
         });
         let server = tokio::spawn(serve(listener, acceptor, router)).abort_handle();
         Self {
@@ -243,6 +251,7 @@ impl HttpsUpstream {
             released,
             scripts,
             token_calls,
+            github_release,
             server,
         }
     }
@@ -336,6 +345,13 @@ impl HttpsUpstream {
             .expect("the upstream holds the sender");
     }
 
+    /// The fake GitHub the release client talks to: install repositories on it,
+    /// read what it was asked, make it fail.
+    #[must_use]
+    pub const fn github_release(&self) -> &GithubReleaseFake {
+        &self.github_release
+    }
+
     /// How many calls to `/hang` or `/drip` have lost their caller so far.
     #[must_use]
     pub fn abandoned(&self) -> u64 {
@@ -404,10 +420,17 @@ async fn handle(State(shared): State<Shared>, req: Request) -> Response {
         .expect("upstream log poisoned")
         .push(Received {
             method: parts.method.to_string(),
-            path_and_query,
+            path_and_query: path_and_query.clone(),
             headers: parts.headers.clone(),
             body: body.clone(),
         });
+    if let Some(response) = shared
+        .github_release
+        .route(&parts.method, &path_and_query, &parts.headers, &body)
+        .await
+    {
+        return response;
+    }
     if parts.method == http::Method::POST && is_github_token_route(parts.uri.path()) {
         return github_token(&shared).await;
     }
@@ -476,9 +499,14 @@ async fn github_token(shared: &Shared) -> Response {
         .lock()
         .expect("upstream script poisoned")
         .pop_front();
-    let Some(scripted) = scripted else {
-        return respond(StatusCode::INTERNAL_SERVER_ERROR, &[], Body::empty());
-    };
+    match scripted {
+        Some(scripted) => answer_scripted(scripted).await,
+        None => respond(StatusCode::INTERNAL_SERVER_ERROR, &[], Body::empty()),
+    }
+}
+
+/// `scripted` as a response, after its gate opens.
+pub(super) async fn answer_scripted(scripted: Scripted) -> Response {
     if let Some(Gate(gate)) = &scripted.gate {
         // The sender lives in the gate this response holds, so this cannot fail.
         let _ = gate.subscribe().wait_for(|open| *open).await;
