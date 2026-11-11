@@ -6,7 +6,8 @@ use axum::response::Response;
 use warden_broker_proto::release::ReleaseGrant;
 use warden_broker_proto::{Access, GrantAccess, GrantView, Id, Window};
 
-use super::{AppState, GrantFailure, json_error, request_error, validity};
+use super::grant::{GrantFailure, validity};
+use super::{AppState, json_error, request_error};
 use crate::requests::{Destination, PendingView, ReleasePolicy, RequestError};
 
 /// Ask GitHub again about a release request, as the owner decides. Anything but the

@@ -45,6 +45,7 @@ pub(super) fn release_facts(changelog: Option<&str>) -> ReleaseFacts {
         commit_date: "2026-11-07T10:30:00Z".to_owned(),
         on_default_branch: true,
         changelog: changelog.map(str::to_owned),
+        changelog_cut: false,
         tag_in_place: false,
         previous_tag: Some(ReleaseTag::try_from("v1.2.2".to_owned()).unwrap()),
     }
@@ -108,6 +109,7 @@ pub(super) fn release_pages() -> Vec<(&'static str, Markup)> {
     let mut hostile = release_facts(Some(
         "<script>alert(1)</script> & \u{1b}[31mred\u{1b}[0m\n\u{202e}gnp.exe\n\u{2026}(cut)",
     ));
+    hostile.changelog_cut = true;
     hostile.commit_title = "<b>Fix</b> \u{1b}[2J the build".to_owned();
     vec![
         (

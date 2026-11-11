@@ -65,17 +65,18 @@ pub fn approve(view: &PendingView, hosts: &LinkHosts, now: i64) -> Markup {
                 div.actions {
                     fieldset {
                         legend.label { "Grant for" }
-                        @if view.request.window > max {
+                        // A release has one lifetime, said once below, so no cap to explain.
+                        @let capped_by = match view.destination {
+                            Destination::Ssh(_) => Some("target"),
+                            Destination::Api(_) => Some("secret"),
+                            Destination::CommitSigning(_) => Some("signing key"),
+                            Destination::GithubToken(_) => Some("GitHub App"),
+                            Destination::Release(_) => None,
+                        };
+                        @if let (true, Some(noun)) = (view.request.window > max, capped_by) {
                             p.detail.capped {
                                 "Asked for " (window_words(view.request.window)) "; at most "
-                                (window_words(max)) " for this "
-                                (match view.destination {
-                                    Destination::Ssh(_) => "target",
-                                    Destination::Api(_) => "secret",
-                                    Destination::CommitSigning(_) => "signing key",
-                                    Destination::GithubToken(_) => "GitHub App",
-                                    Destination::Release(_) => "release key",
-                                }) "."
+                                (window_words(max)) " for this " (noun) "."
                             }
                         }
                         @if matches!(view.destination, Destination::Release(_)) {

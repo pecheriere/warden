@@ -100,10 +100,14 @@ WCAG AA contrast in both modes.
   worded the same way and placed in the details.
 - **Release facts**: the commit, the changelog section and the steps are read from
   GitHub by the broker and labelled so. The changelog is a `<pre>` that wraps and
-  scrolls inside the card, with every character escaped; control and
-  direction-changing characters other than the line feed and the tab are written out
-  as `\u{..}`. A section cut at 16 KiB says so. A release has one window (1 day), so
-  the page states it in words and offers nothing to choose.
+  scrolls inside the card, with every character escaped; control, direction-changing
+  and invisible characters (zero-width, soft hyphen, line and paragraph separators,
+  tag characters) other than the line feed and the tab are written out as `\u{..}`.
+  A section cut at 16 KiB says so. A release has one window (1 day), so the page
+  states it once, beside the decision, in words, and offers nothing to choose. On the
+  grants page a release card lists its steps as "used" or "not yet": a step is used
+  once warden has started it, even if it then failed, and the card points to the
+  audit log for the result of each.
 - **Live indicator**: `--accent` dot with a 2 px `--accent-edge` ring, plus
   `--soft-ink` text ("1 session open"). Under it, the live area of a grant
   card lists what is open, across the card below a `--line` divider.

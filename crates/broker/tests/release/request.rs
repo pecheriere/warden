@@ -110,6 +110,7 @@ async fn creates_a_pending_release_request() {
     assert_eq!(facts.commit_date, "2026-11-07T10:30:00Z");
     assert!(facts.on_default_branch);
     assert!(!facts.tag_in_place);
+    assert!(!facts.changelog_cut);
     assert_eq!(
         facts.changelog.as_deref().map(str::trim),
         Some("- Added a thing.")
@@ -270,6 +271,13 @@ async fn accepts_tag_in_place_and_drops_tag_step() {
         .get("facts");
     let facts: ReleaseFacts = serde_json::from_str(&stored).unwrap();
     assert!(facts.tag_in_place);
+}
+
+#[test]
+fn facts_stored_before_the_cut_flag_read_as_not_cut() {
+    let stored = r#"{"commit_title":"t","commit_date":"2026-11-07T10:30:00Z","on_default_branch":true,"changelog":"- x","tag_in_place":false,"previous_tag":null}"#;
+    let facts: ReleaseFacts = serde_json::from_str(stored).unwrap();
+    assert!(!facts.changelog_cut);
 }
 
 #[tokio::test]

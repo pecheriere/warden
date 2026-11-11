@@ -585,7 +585,6 @@ fn longest_fingerprint_pages() -> Vec<(&'static str, Markup)> {
     ]
 }
 
-/// Every page with fixture data, named for the screenshot script.
 /// The pages of each kind of access added after the first three.
 fn kind_pages() -> impl Iterator<Item = (&'static str, Markup)> {
     commit_signing_pages()
@@ -595,6 +594,7 @@ fn kind_pages() -> impl Iterator<Item = (&'static str, Markup)> {
         .chain(longest_fingerprint_pages())
 }
 
+/// Every page with fixture data, named for the screenshot script.
 fn pages() -> Vec<(&'static str, Markup)> {
     let long = long_goal();
     // Asks for 4 h of a secret allowed at most 1 h: the capped note shows.

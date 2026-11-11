@@ -6,6 +6,7 @@ use super::release_fixtures::{
 };
 use super::{NOW, idle};
 use crate::requests::{LinkHosts, ReleaseProgress};
+use warden_broker_proto::Window;
 
 fn page(facts: crate::requests::ReleaseFacts) -> String {
     approve(&release_view(facts), &LinkHosts::default(), NOW).into_string()
@@ -59,8 +60,7 @@ fn approve_page_shows_release_facts() {
 
 #[test]
 fn approve_page_escapes_changelog() {
-    let hostile =
-        "<script>alert(1)</script>\n\u{1b}[31mred & \"quoted\"\u{7}\tkept\r\u{202e}\u{200b}";
+    let hostile = "<script>alert(1)</script>\n\u{1b}[31mred & \"quoted\"\u{7}\tkept\r\u{202e}\u{200b}\u{e0041}\u{2062}\u{ad}\u{2028}\u{2029}";
     let mut facts = release_facts(Some(hostile));
     facts.commit_title = "<img src=x onerror=1> \u{1b}[2J".to_owned();
     let html = page(facts);
@@ -76,12 +76,27 @@ fn approve_page_escapes_changelog() {
     assert!(html.contains(r"\u{d}"), "{html}");
     assert!(html.contains(r"\u{202e}\u{200b}"), "{html}");
     assert!(
+        html.contains(r"\u{e0041}\u{2062}\u{ad}\u{2028}\u{2029}"),
+        "{html}"
+    );
+    assert!(
         html.contains("&lt;img src=x onerror=1&gt; \\u{1b}[2J"),
         "{html}"
     );
     assert!(!html.contains("<script>"), "{html}");
     assert!(!html.contains("<img"), "{html}");
-    for raw in ['\u{1b}', '\u{7}', '\r', '\u{202e}', '\u{200b}'] {
+    for raw in [
+        '\u{1b}',
+        '\u{7}',
+        '\r',
+        '\u{202e}',
+        '\u{200b}',
+        '\u{e0041}',
+        '\u{2062}',
+        '\u{ad}',
+        '\u{2028}',
+        '\u{2029}',
+    ] {
         assert!(!html.contains(raw), "{raw:?} reached the page");
     }
 }
@@ -89,9 +104,33 @@ fn approve_page_escapes_changelog() {
 #[test]
 fn approve_page_cut_changelog_note() {
     let cut = format!("- {}\n\u{2026}(cut)", "x".repeat(100));
-    let html = page(release_facts(Some(&cut)));
+    let mut facts = release_facts(Some(&cut));
+    facts.changelog_cut = true;
+    let html = page(facts);
     assert!(html.contains("Cut at 16 KiB"), "{html}");
     assert!(html.contains("\u{2026}(cut)"), "{html}");
+}
+
+#[test]
+fn approve_page_cut_note_follows_the_flag_not_the_text() {
+    // A section that really ends in the marker was not cut.
+    let text = format!("- {}\n\u{2026}(cut)", "x".repeat(100));
+    let html = page(release_facts(Some(&text)));
+    assert!(!html.contains("Cut at 16 KiB"), "{html}");
+    // A cut section is announced whatever its last characters are.
+    let mut facts = release_facts(Some("- a section that was cut"));
+    facts.changelog_cut = true;
+    let html = page(facts);
+    assert!(html.contains("Cut at 16 KiB"), "{html}");
+}
+
+#[test]
+fn approve_page_says_the_lifetime_once() {
+    let mut view = release_view(release_facts(Some(CHANGELOG)));
+    view.request.window = Window::D7;
+    let html = approve(&view, &LinkHosts::default(), NOW).into_string();
+    assert_eq!(html.matches("at most 1 day").count(), 1, "{html}");
+    assert!(!html.contains("Asked for"), "{html}");
 }
 
 #[test]
@@ -114,7 +153,7 @@ fn grants_page_lists_steps() {
     let html = grants(&list, &idle(&list), &LinkHosts::default(), NOW, 0).into_string();
     assert!(
         html.contains(
-            "sign and create tag v1.2.3: <strong class=\"step-state complete\">done</strong>"
+            "sign and create tag v1.2.3: <strong class=\"step-state complete\">used</strong>"
         ),
         "{html}"
     );
@@ -124,6 +163,11 @@ fn grants_page_lists_steps() {
     );
     assert!(
         html.contains("publish the draft: <span class=\"step-state\">not yet</span>"),
+        "{html}"
+    );
+    assert!(!html.contains(">done</strong>"), "{html}");
+    assert!(
+        html.contains("The result of each step is in the audit log."),
         "{html}"
     );
     assert!(html.contains("example-owner/example-repo"), "{html}");
@@ -136,7 +180,7 @@ fn grants_page_lists_steps() {
     };
     let list = release_grants(all);
     let html = grants(&list, &idle(&list), &LinkHosts::default(), NOW, 0).into_string();
-    assert_eq!(html.matches(">done</strong>").count(), 3, "{html}");
+    assert_eq!(html.matches(">used</strong>").count(), 3, "{html}");
     assert!(!html.contains("not yet"), "{html}");
 }
 

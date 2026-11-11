@@ -39,6 +39,10 @@ pub struct ReleaseFacts {
     pub on_default_branch: bool,
     /// The changelog section for the version, if the commit has one.
     pub changelog: Option<String>,
+    /// Whether `changelog` was cut short, and ends in a marker saying so. Absent
+    /// from requests stored before it existed, which were never cut.
+    #[serde(default)]
+    pub changelog_cut: bool,
     /// Whether the tag was already in place, signed by the repository's key.
     pub tag_in_place: bool,
     /// The highest release tag below this one, for a link to compare them.
@@ -292,12 +296,14 @@ async fn read_facts(
         .changelog_section(commit, tag.version())
         .await
         .map_err(|e| github_failed(&e))?;
+    let changelog_cut = changelog.as_ref().is_some_and(|section| section.cut);
     let tags = client.release_tags().await.map_err(|e| github_failed(&e))?;
     Ok(ReleaseFacts {
         commit_title: info.title,
         commit_date: info.date,
         on_default_branch: true,
-        changelog,
+        changelog: changelog.map(|section| section.text),
+        changelog_cut,
         tag_in_place,
         previous_tag: release_version::previous(tag, &tags).cloned(),
     })

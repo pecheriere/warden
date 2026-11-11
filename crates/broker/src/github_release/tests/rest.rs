@@ -5,7 +5,7 @@ use warden_broker_proto::release::{CommitId, ReleaseTag, RepoName};
 
 use super::{NOW, app, github, repo};
 use crate::github_app::GithubApi;
-use crate::github_release::{GithubError, ReleaseClient};
+use crate::github_release::{ChangelogSection, GithubError, ReleaseClient};
 use crate::testkit::upstream::{HttpsUpstream, Scripted};
 
 pub(super) const TAGGED_AT: i64 = 1_794_139_200;
@@ -226,8 +226,11 @@ async fn changelog_section_is_what_is_under_the_version_heading() {
     let client = connect(&api).await;
     let section = client.changelog_section(&id('1'), "1.2.3").await.unwrap();
     assert_eq!(
-        section.as_deref(),
-        Some("### Added\n\n- The thing.\n- Another.")
+        section,
+        Some(ChangelogSection {
+            text: "### Added\n\n- The thing.\n- Another.".to_owned(),
+            cut: false,
+        })
     );
     let calls = upstream.github_release().record();
     assert_eq!(calls[2].method, "GET");
@@ -307,8 +310,9 @@ async fn changelog_section_cut_at_16k() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(cut, format!("a{}\n…(cut)", "é".repeat(8191)));
-    let body = cut.strip_suffix("\n…(cut)").expect("the cut marker");
+    assert!(cut.cut);
+    assert_eq!(cut.text, format!("a{}\n…(cut)", "é".repeat(8191)));
+    let body = cut.text.strip_suffix("\n…(cut)").expect("the cut marker");
     assert!(body.len() <= 16 * 1024);
 
     // Exactly 16 KiB is kept whole.
@@ -317,7 +321,27 @@ async fn changelog_section_cut_at_16k() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(kept, "x".repeat(16 * 1024));
+    assert!(!kept.cut);
+    assert_eq!(kept.text, "x".repeat(16 * 1024));
+}
+
+#[tokio::test]
+async fn a_section_that_ends_in_the_cut_marker_was_not_cut() {
+    let (upstream, api, repo) = fixture().await;
+    upstream.github_release().add_file(
+        &repo,
+        &sha('1'),
+        "CHANGELOG.md",
+        "## [1.2.3]\n- Short.\n…(cut)\n".as_bytes(),
+    );
+    let client = connect(&api).await;
+    let section = client
+        .changelog_section(&id('1'), "1.2.3")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(section.text, "- Short.\n…(cut)");
+    assert!(!section.cut);
 }
 
 #[tokio::test]

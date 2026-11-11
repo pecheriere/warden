@@ -8,7 +8,6 @@ use warden_broker_proto::release::{ReleaseGrant, ReleaseSteps};
 use warden_broker_proto::{Access, CreateRequest};
 
 use super::{icon, warning_icon};
-use crate::github_release::CHANGELOG_CUT;
 use crate::requests::{ReleaseFacts, ReleasePolicy, ReleaseProgress};
 
 /// No step claimed yet.
@@ -38,14 +37,16 @@ pub(super) fn visible(text: &str) -> String {
 }
 
 /// Whether `c` is a control character other than `\n` and `\t`, or one that
-/// reorders text (the bidirectional controls) or has no width (zero-width
-/// characters and the byte order mark).
+/// reorders text (the bidirectional controls), has no width (zero-width
+/// characters, the invisible operators, the soft hyphen, the tag characters and
+/// the byte order mark) or breaks the line (the line and paragraph separators).
 fn hides(c: char) -> bool {
     (c.is_control() && c != '\n' && c != '\t')
         || matches!(
             c,
-            '\u{61c}' | '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'
-                | '\u{2066}'..='\u{2069}' | '\u{feff}'
+            '\u{ad}' | '\u{61c}' | '\u{200b}'..='\u{200f}' | '\u{2028}'..='\u{202e}'
+                | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{2069}' | '\u{feff}'
+                | '\u{e0000}'..='\u{e007f}'
         )
 }
 
@@ -62,7 +63,7 @@ fn target(request: &CreateRequest) -> Option<(&str, &str, &str)> {
 }
 
 /// The steps of a release in the owner's words, each with whether `progress`
-/// says it is done.
+/// says it is used: a claimed step stays used even when it then failed.
 fn step_words(steps: &ReleaseSteps, tag: &str, progress: ReleaseProgress) -> Vec<(String, bool)> {
     let mut words = Vec::new();
     if steps.tag {
@@ -131,7 +132,7 @@ pub(super) fn facts(
             @match &facts.changelog {
                 Some(text) => {
                     pre.changelog tabindex="0" aria-label="Changelog" { (visible(text)) }
-                    @if text.ends_with(CHANGELOG_CUT) {
+                    @if facts.changelog_cut {
                         span.detail { "Cut at 16 KiB: the rest is in the repository." }
                     }
                 }
@@ -146,12 +147,11 @@ pub(super) fn facts(
             @if facts.tag_in_place {
                 span.detail { "The tag is already in place on this commit." }
             }
-            span.detail { (LIFETIME) }
         }
     }
 }
 
-/// What an active release grant gives and how far it has come, for the grants page.
+/// What an active release grant gives and which steps it has used, for the grants page.
 pub(super) fn grant_access(grant: &ReleaseGrant, progress: Option<ReleaseProgress>) -> Markup {
     let progress = progress.unwrap_or(NOTHING_DONE);
     html! {
@@ -164,11 +164,12 @@ pub(super) fn grant_access(grant: &ReleaseGrant, progress: Option<ReleaseProgres
             @for (words, done) in step_words(&grant.steps, grant.tag.as_str(), progress) {
                 li {
                     (words) ": "
-                    @if done { strong.step-state.complete { "done" } }
+                    @if done { strong.step-state.complete { "used" } }
                     @else { span.step-state { "not yet" } }
                 }
             }
         }
+        span.detail { "The result of each step is in the audit log." }
     }
 }
 
@@ -177,7 +178,7 @@ pub(super) fn live_note() -> Markup {
     html! {
         p.detail {
             "Every step is in the audit log. Revoking stops the steps that are left at once, \
-             and does not undo those already done."
+             and does not undo those already used."
         }
     }
 }

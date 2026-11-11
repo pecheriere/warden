@@ -241,4 +241,35 @@ async fn approve_refuses_when_github_cannot_be_asked() {
     );
     assert!(!done.body.contains("marker"), "{}", done.body);
     assert_eq!(count(&h, "grants").await, 0);
+    assert_eq!(count(&h, "release_steps").await, 0);
+    // Still pending: nothing was decided.
+    let page = h.broker.get(&format!("/approve/{token}")).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+}
+
+#[tokio::test]
+async fn the_grant_is_not_kept_when_its_steps_cannot_be_stored() {
+    let h = harness(Shape::Everything).await;
+    let (_, token) = h.broker.create_request("build-agent", release()).await;
+    let mut auth = h.broker.enroll_soft_passkey().await;
+    let begin = h.broker.begin_approval(&token, Window::D1).await;
+    let (ceremony, credential) = warden_broker::testkit::TestBroker::sign(&mut auth, &begin);
+    // The database refuses the steps row, as a full disk or a lost file might.
+    sqlx::query(
+        "CREATE TRIGGER refuse_steps BEFORE INSERT ON release_steps \
+         BEGIN SELECT RAISE(ABORT, 'refused'); END",
+    )
+    .execute(&h.broker.state().pool)
+    .await
+    .unwrap();
+    let done = h
+        .broker
+        .finish_approval(&token, &ceremony, &credential)
+        .await;
+    assert!(!done.status.is_success(), "{}", done.body);
+    assert_eq!(count(&h, "grants").await, 0);
+    assert_eq!(count(&h, "release_steps").await, 0);
+    // Still pending: the owner can try again.
+    let page = h.broker.get(&format!("/approve/{token}")).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
 }
