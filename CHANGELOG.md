@@ -37,6 +37,7 @@ All notable changes to this project are recorded here. The format follows
 
 ### Fixed
 
+- `rustix` is updated to 1.1.6, which clears RUSTSEC-2026-0486 from the dependency tree (#222).
 - `warden setup git` and `warden setup github` record the path warden was started from
   (`argv[0]`, looked up in `PATH` for a bare name), such as `/opt/homebrew/bin/warden` on
   macOS or Linux, instead of the versioned directory it links to, so git's signing program,
