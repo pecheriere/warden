@@ -10,7 +10,10 @@ The accepted gap is that the agent's routine GitHub token can still publish a dr
 which costs that version its manifest and not the integrity of a release (see
 [Phone-approved releases](threat-model.md#phone-approved-releases)). The release is also
 the first with the token renewal notice, a dependency update for RUSTSEC-2026-0486, and the
-`warden setup` path fix, which move no risk. It did not repeat the full reading of the
+`warden setup` path fix, which move no risk. It ships OpenSSL 3.5.9, which five Low
+advisories of 2026-11-10 affect, fixed in a 3.5.10 not yet released; they concern AES-GCM-SIV,
+CMS and QUIC, which warden does not reach (it links OpenSSL only through webauthn-rs), and the
+pin moves when 3.5.10 is out (#228). It did not repeat the full reading of the
 documents against the code.**
 
 **This is the project's own assessment. It is not an independent review, audit
