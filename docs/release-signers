@@ -1,8 +1,9 @@
 # Keys that sign warden's release tags and release manifests, in the format of
 # ssh-keygen -Y verify -f (see "ALLOWED SIGNERS" in ssh-keygen(1)).
-# docs/verifying-releases.md says how to use this file. Keep a replaced key listed,
-# so that older releases still verify, unless it was compromised. A key added for
-# releases made through the broker uses the identity warden-release, which is what
-# scripts/sign-release.sh and docs/verifying-releases.md check against. The older
-# line below keeps its own identity and verifies the releases signed before that.
+# docs/verifying-releases.md says how to use this file. A retired key is removed;
+# an older release verifies against this file as it was at that release's tag.
+# A key added for releases made through the broker uses the identity
+# warden-release, which is what scripts/sign-release.sh and
+# docs/verifying-releases.md check against. The older line below keeps its own
+# identity and verifies the releases signed before that.
 pecheriere@users.noreply.github.com namespaces="git,warden-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIN5zA+J2lBK+qWdhVBz+3WiucLhgDfWn3Yw0JHZyIhBJ

@@ -193,8 +193,8 @@ issue: an advisory with no fixed release yet fails no check.
    binaries start after v0.8.1 stay as they are. A minor release also reviews
    `docs/security-assessment.md` and updates its date.
 2. After it merges, the agent asks for the release grant:
-   `warden request release pecheriere/warden vx.y.z --commit <sha>`, with the
-   merge commit on `main`. The owner approves it on the phone, which is the yes
+   `warden request release pecheriere/warden vx.y.z --commit <sha> --goal "Release x.y.z: ..."`,
+   with the merge commit on `main`. The owner approves it on the phone, which is the yes
    for that version and commit. The agent then runs
    `warden release tag pecheriere/warden vx.y.z`, and the broker creates the signed
    annotated tag with its release key, which `docs/release-signers` lists for
@@ -208,19 +208,26 @@ issue: an advisory with no fixed release yet fails no check.
    failed jobs. A refusal that the archives are not the ones attested is a possible
    compromise: investigate before rerunning.
 3. When the workflow has finished, the agent runs
-   `GH_TOKEN=$(warden github token) scripts/sign-release.sh vx.y.z`. It checks the
-   tag's signature and the attestations of the draft's archives and of the image,
-   builds `warden-x.y.z-SHA256SUMS` and has `warden release sign-manifest` sign it
-   and attach it, with its `.sig`, to the draft. It then downloads both and
-   verifies them against `docs/release-signers` before it prints Signed. The key
-   is the broker's and never on GitHub or on the agent's machine, so the workflow
-   cannot do this step. Nothing enforces it, so do not skip it: a release
-   published without a manifest can never gain one. Rerunning the workflow
-   removes the manifest, so sign again after a rerun.
-4. The agent checks the draft and publishes it: `warden release publish
-   pecheriere/warden vx.y.z`. Do not use `gh release create` or `gh release edit`
-   here: releases are immutable, so a release published without the files can never
-   gain them, including the signed manifest.
+   `token=$(warden github token) && GH_TOKEN=$token scripts/sign-release.sh vx.y.z`
+   (the script refuses to run without `GH_TOKEN`, so that `gh` never falls back to a
+   stored login). It checks the tag's signature and the attestations of the draft's
+   archives and of the image, builds `warden-x.y.z-SHA256SUMS` and has
+   `warden release sign-manifest` sign it and attach it, with its `.sig`, to the
+   draft. It then downloads both and verifies them against `docs/release-signers`,
+   with the same key as the tag, before it prints Signed. The key is the broker's and
+   never on GitHub or on the agent's machine, so the workflow cannot do this step.
+   The broker signs once per release grant. The script can be rerun until
+   `sign-manifest` has succeeded; after that, if the workflow is rerun (it removes the
+   manifest) or the script fails, ask for a new release grant for the same tag and
+   commit, which covers only the steps left, and run the script again.
+4. Only after the script printed Signed for this tag, the agent checks the draft and
+   publishes it: `warden release publish pecheriere/warden vx.y.z`. Never publish
+   after a failure, whatever the script failed on: `publish` only checks that the
+   draft holds the files the broker signed, not what the script checks. `publish`
+   refuses a draft without the manifest, but a publish outside warden, from the GitHub
+   page or with `gh release edit` or `gh release create` and admin rights, can skip it,
+   so never publish that way: releases are immutable, so a release published without
+   the files can never gain them, including the signed manifest.
 5. Within about an hour, a scheduled workflow in
    [pecheriere/homebrew-tap](https://github.com/pecheriere/homebrew-tap) opens a
    pull request that bumps the formula, rendered from the signed manifest, with

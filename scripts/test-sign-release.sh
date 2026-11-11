@@ -25,12 +25,16 @@ image_digest=$(printf 'image' | shasum -a 256 | cut -d' ' -f1)
 ssh-keygen -q -t ed25519 -N '' -C test-release -f "$work/release-key"
 ssh-keygen -q -t ed25519 -N '' -C test-other -f "$work/other-key"
 ssh-keygen -q -t ed25519 -N '' -C test-old -f "$work/old-key"
+# A second key listed as warden-release, as after a rotation while both are listed.
+ssh-keygen -q -t ed25519 -N '' -C test-rotated -f "$work/rotated-key"
+export GH_TOKEN=test-token
 
 repo=$work/repo
 mkdir -p "$repo/scripts" "$repo/docs"
 cp "$root/scripts/sign-release.sh" "$repo/scripts/"
 printf '%s namespaces="git,warden-release" %s\n' "$old_identity" "$(cat "$work/old-key.pub")" > "$repo/docs/release-signers"
 printf '%s namespaces="git,warden-release" %s\n' "$identity" "$(cat "$work/release-key.pub")" >> "$repo/docs/release-signers"
+printf '%s namespaces="git,warden-release" %s\n' "$identity" "$(cat "$work/rotated-key.pub")" >> "$repo/docs/release-signers"
 git -C "$repo" init -q
 git -C "$repo" add .
 git -C "$repo" config user.name test
@@ -104,11 +108,11 @@ key=$STUB/signing-key
 if [ -e "$STUB/signs-with" ]; then key=$(cat "$STUB/signs-with"); fi
 dir=$(mktemp -d)
 cp "$file" "$dir/"
-ssh-keygen -q -Y sign -n warden-release -f "$key" "$dir/$(basename "$file")"
 if [ -e "$STUB/alters-manifest" ]; then
-  # What was signed is not what the script built.
+  # What is signed is a list other than the one the script built, validly signed.
   printf '%s  extra.tar.gz\n' "$(printf 'x' | shasum -a 256 | cut -d' ' -f1)" >> "$dir/$(basename "$file")"
 fi
+ssh-keygen -q -Y sign -n warden-release -f "$key" "$dir/$(basename "$file")"
 cp "$dir/$(basename "$file")" "$dir/$(basename "$file").sig" "$STUB/uploaded/"
 rm -rf "$dir"
 echo "manifest $(basename "$file")"
@@ -287,6 +291,31 @@ grep -Fq 'does not verify' <<< "$output" \
   || { echo "FAIL: refuses_when_returned_signature_does_not_verify: wrong reason: $output" >&2; exit 1; }
 grep -Fq 'Signed' <<< "$output" && { echo "FAIL: refuses_when_returned_signature_does_not_verify: said Signed" >&2; exit 1; }
 echo 'ok: refuses_when_returned_signature_does_not_verify'
+
+# The tag and the manifest are signed by two different keys that are both listed.
+reset_stub
+echo "$work/rotated-key" > "$STUB/signs-with"
+output=$(sign "$tag" 2>&1) && { echo "FAIL: tag and manifest signed by different keys: it signed" >&2; exit 1; }
+grep -Fq 'not signed by the key that signed the tag' <<< "$output" \
+  || { echo "FAIL: tag and manifest signed by different keys: wrong reason: $output" >&2; exit 1; }
+grep -Fq 'do not publish' <<< "$output" \
+  || { echo "FAIL: tag and manifest signed by different keys: no warning not to publish: $output" >&2; exit 1; }
+echo 'ok: tag and manifest signed by different keys'
+
+# No token from warden: gh would fall back to a stored login.
+reset_stub
+for empty in unset empty; do
+  if [ "$empty" = unset ]; then
+    output=$(env -u GH_TOKEN "$repo/scripts/sign-release.sh" "$tag" 2>&1) && status=0 || status=$?
+  else
+    output=$(GH_TOKEN='' "$repo/scripts/sign-release.sh" "$tag" 2>&1) && status=0 || status=$?
+  fi
+  if [ "$status" -eq 0 ] || ! grep -Fq 'GH_TOKEN' <<< "$output"; then
+    echo "FAIL: $empty GH_TOKEN was accepted: $output" >&2
+    exit 1
+  fi
+done
+echo 'ok: an unset or empty GH_TOKEN is refused'
 
 # The draft's manifest is not the one the script built and sent.
 reset_stub

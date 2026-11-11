@@ -15,9 +15,16 @@
 # its own name, and the image have a build attestation from the release workflow at
 # that tag and commit. It then fetches the draft's manifest and signature and checks
 # them against docs/release-signers before it says Signed. It never publishes. It
-# needs gh (with a token from `warden github token`), warden, git, ssh-keygen and
-# shasum, and is safe to rerun. A rerun of the workflow replaces the archives and
-# removes the manifest, so sign again.
+# needs gh (with a token from `warden github token`, in GH_TOKEN: it refuses to run
+# without one, so that gh never falls back to a stored login), warden, git,
+# ssh-keygen and shasum.
+#
+# A rerun is safe only until `warden release sign-manifest` has succeeded: the broker
+# signs once per release grant, even when the check afterwards fails. If the workflow
+# is rerun after signing (it replaces the archives and removes the manifest), or the
+# script fails after signing, ask for a new release grant for the same tag and
+# commit, which covers only the steps left, and run the script again. Never publish
+# unless the script printed Signed for this tag.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -45,6 +52,7 @@ if [ "$#" -ne 1 ]; then
   exit 2
 fi
 tag=$1
+[ -n "${GH_TOKEN:-}" ] || fail "GH_TOKEN is not set: token=\$(warden github token) && GH_TOKEN=\$token $0 $tag"
 [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "not a release tag: $tag"
 version=${tag#v}
 
@@ -56,8 +64,11 @@ trap 'rm -rf "$work"' EXIT
 git cat-file tag "refs/tags/$tag" > "$work/tag" 2> /dev/null || fail "$tag is not an annotated tag here: git fetch --tags"
 sed -n '/^-----BEGIN SSH SIGNATURE-----$/,$p' "$work/tag" > "$work/tag.sig"
 sed '/^-----BEGIN SSH SIGNATURE-----$/,$d' "$work/tag" > "$work/tag.payload"
-ssh-keygen -Y verify -f "$signers" -I "$identity" -n git -s "$work/tag.sig" < "$work/tag.payload" > /dev/null 2>&1 \
+tag_verdict=$(ssh-keygen -Y verify -f "$signers" -I "$identity" -n git -s "$work/tag.sig" < "$work/tag.payload" 2> /dev/null) \
   || fail "$tag has no good signature from a key in $signers"
+# ssh-keygen ends its verdict with the key's fingerprint.
+tag_key=${tag_verdict##* }
+[[ "$tag_key" =~ ^SHA256: ]] || fail "unexpected verdict for the signature on $tag: $tag_verdict"
 # A signed tag object can be moved to another ref, so its signed name must match.
 signed_name=$(sed -n 's/^tag //p' "$work/tag.payload" | head -n 1)
 [ "$signed_name" = "$tag" ] || fail "the tag at $tag was signed as $signed_name"
@@ -123,18 +134,28 @@ image_digest=$(gh attestation verify "oci://$image_ref" "${attestation_args[@]}"
 [[ "$image_digest" =~ ^[0-9a-f]{64}$ ]] || fail "unexpected digest for $image_ref: $image_digest"
 printf '%s  %s\n' "$image_digest" "$image_ref" >> "$manifest"
 
+# From here on warden has signed, and signs once per grant: a failure below means
+# do not publish, and a new release grant is needed before running this again.
+after_signing() {
+  fail "$* (do not publish; ask for a new release grant for $tag and run this again)"
+}
+
 # warden signs and attaches the manifest; it never leaves this machine's hands unchecked.
-warden release sign-manifest "$repo" "$tag" "$manifest"
+warden release sign-manifest "$repo" "$tag" "$manifest" || after_signing "warden could not sign the manifest"
 
 # What the draft now holds is what counts, so it is fetched back and checked against
 # the list in this repository, and against the manifest that was sent.
 mkdir "$work/draft"
 gh release download "$tag" --repo "$repo" --dir "$work/draft" \
-  --pattern "warden-$version-SHA256SUMS" --pattern "warden-$version-SHA256SUMS.sig"
+  --pattern "warden-$version-SHA256SUMS" --pattern "warden-$version-SHA256SUMS.sig" \
+  || after_signing "could not fetch the draft's manifest and signature"
 drafted=$work/draft/warden-$version-SHA256SUMS
-cmp -s "$manifest" "$drafted" || fail "the draft's manifest is not the one that was sent"
-ssh-keygen -Y verify -f "$signers" -I "$identity" -n "$namespace" -s "$drafted.sig" < "$drafted" > /dev/null \
-  || fail "the signature on the draft does not verify against $signers"
+cmp -s "$manifest" "$drafted" || after_signing "the draft's manifest is not the one that was sent"
+manifest_verdict=$(ssh-keygen -Y verify -f "$signers" -I "$identity" -n "$namespace" -s "$drafted.sig" < "$drafted" 2> /dev/null) \
+  || after_signing "the signature on the draft does not verify against $signers"
+# One key must stand behind both, so a retired key's tag cannot pass with a new key's manifest.
+[ "${manifest_verdict##* }" = "$tag_key" ] \
+  || after_signing "the manifest is not signed by the key that signed the tag"
 
 cat "$manifest"
 echo "Signed. Check the draft, then publish it: warden release publish $repo $tag"
