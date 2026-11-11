@@ -1,13 +1,20 @@
 # Security assessment
 
-**Date: 2026-11-11. Covers release 0.11.0, reviewed at `main` commit `cb82e2d`. Since then,
-the release steps (a tag, a manifest and a publish made by the broker under a phone-approved
-grant) moved risks 1, 2 and 12, below. The review for this release checked the ranked risks and findings against the changes
-since 0.10.0: GitHub tokens for agents (risks 1, 2, 9 and 13, F20 to F22, checked
-against real GitHub on 2026-11-09), the Homebrew tap (risk 12), `warden ssh-config`,
-which prints an `ssh_config` block and moves no risk, the file splits, which moved
-code without changing it, and an advisory exemption (F23). It did not repeat the full
-reading of the documents against the code.**
+**Date: 2026-11-11. Covers release 0.12.0, reviewed at `main` commit `daeb708`. The
+review for this release checked the ranked risks and findings against the changes
+since 0.11.0: phone-approved releases (risks 1, 2 and 12). An agent can ask the owner to
+approve one release, bound to a repository, a tag and a commit and checked against what
+GitHub says; the broker then makes the tag, signs and attaches the manifest and publishes
+the draft with release keys and a release App that it alone holds, one grant per release.
+The accepted gap is that the agent's routine GitHub token can still publish a draft early,
+which costs that version its manifest and not the integrity of a release (see
+[Phone-approved releases](threat-model.md#phone-approved-releases)). The release is also
+the first with the token renewal notice, a dependency update for RUSTSEC-2026-0486, and the
+`warden setup` path fix, which move no risk. It ships OpenSSL 3.5.9, which five Low
+advisories of 2026-11-10 affect, fixed in a 3.5.10 not yet released; they concern AES-GCM-SIV,
+CMS and QUIC, which warden does not reach (it links OpenSSL only through webauthn-rs), and the
+pin moves when 3.5.10 is out (#228). It did not repeat the full reading of the
+documents against the code.**
 
 **This is the project's own assessment. It is not an independent review, audit
 or penetration test.** warden has not had one. The people and tools that wrote
@@ -73,7 +80,7 @@ decision by the maintainer, and stay open until then.
 | F9 | **The protocol said the owner may approve a *shorter* window.** The page offers any window up to the item's maximum, including one longer than asked. This is the owner's choice and is limited by the item, but an agent should not assume `not_after` is no later than it asked. | Document corrected. |
 | F10 | **Open alerts at this date**, checked again on 2026-11-07. Five Scorecard alerts about project practices (CII badge, code review, maintained, vulnerabilities and branch protection), tracked under [#93](https://github.com/pecheriere/warden/issues/93). No CodeQL or Dependabot alert is open. | Open under #93. |
 | F11 | **The reason on `deny.toml`'s `RUSTSEC-2026-0387` exemption is out of date.** It says "only Ed25519 is used", but P-256 signatures are verified through that code. Verification handles no secret, so the exemption still seems right. | Resolved by [#118](https://github.com/pecheriere/warden/pull/118), which removed `crypto-bigint` 0.5 and that exemption. |
-| F12 | **`subtle` is listed in `[workspace.dependencies]`, and no crate uses it directly.** Still true at 0.11.0. | Harmless. For a code change. |
+| F12 | **`subtle` is listed in `[workspace.dependencies]`, and no crate uses it directly.** Still true at 0.12.0. | Harmless. For a code change. |
 | F13 | **The documents said a copied bearer key can only create requests.** `proxy_call`, `list_grants` and `revoke_grant` in [`api.rs`](../crates/broker/src/api.rs) take the same `AuthedAgent` as creating a request, so any copied agent key can use the agent's live API grants and manage its grants. | Documents corrected, and the risk re-rated (risk 9). The code does what it should: a key is the agent. |
 | F14 | **The documents treated a certificate's expiry as the end of access.** `sshd` checks a certificate when it authenticates, and not afterwards. On a throwaway OpenSSH 10.3 server on 2026-11-01, a session outlived its certificate's expiry, and outlived removing the CA with a reload, while new logins were refused in both cases. On OpenSSH 9.2 in a Debian 12 container, `usermod --expiredate 1` refused new logins and did not end an open session, and with `UsePAM yes`, `passwd -l` and `usermod -L` did not stop certificate logins at all. warden sees none of it. | Documents corrected, and risk 5 re-rated. [#35](https://github.com/pecheriere/warden/issues/35) covers what to do about it. |
 | F15 | **Certificate logins are not in the audit log.** They go straight to the target, so warden records the issue and not the use. The target's `sshd` logs each login with the certificate's key id, `warden:<agent>:<grant id>`. Interactive input to a relay session is not recorded either. | Documents corrected. Ship the targets' logs if you need this trail. |
@@ -99,7 +106,7 @@ decision by the maintainer, and stay open until then.
 - Check what dependencies log above the default level.
 - Check every line of the relay's flow control and teardown against the design.
   The claims there were spot-checked, and rest on the relay's tests.
-- For 0.10.0, and still not done at 0.11.0: sign a commit through a live broker and
+- For 0.10.0, and still not done at 0.12.0: sign a commit through a live broker and
   check it on a real GitHub account, install the `.deb` and `.rpm` on a clean host, or test the release binary's
   name resolution on a tailnet. The commit signing, label, link, pending list and
   fingerprint changes were checked against their threat model sections and tests, not
