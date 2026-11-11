@@ -5,7 +5,7 @@
 //! that fails after its claim stays used: the agent asks the owner again.
 
 use sqlx::Row as _;
-use warden_broker_proto::release::{ReleaseGrant, ReleaseTag, RepoName};
+use warden_broker_proto::release::{ReleaseGrant, ReleaseSteps, ReleaseTag, RepoName};
 use warden_broker_proto::{AgentName, GrantAccess, GrantView, Id};
 
 use super::{RequestError, Requests, parse};
@@ -27,17 +27,34 @@ impl ReleaseStep {
     const fn claim_sql(self) -> &'static str {
         match self {
             Self::Tag => {
-                "UPDATE release_steps SET tag_claimed_at = ? \
-                 WHERE grant_id = ? AND tag_claimed_at IS NULL"
+                "UPDATE release_steps SET tag_claimed_at = ?1 \
+                 WHERE grant_id = ?2 AND tag_claimed_at IS NULL \
+                 AND EXISTS (SELECT 1 FROM grants g WHERE g.id = ?2 \
+                   AND g.revoked_at IS NULL AND g.not_after > ?3)"
             }
             Self::Manifest => {
-                "UPDATE release_steps SET manifest_claimed_at = ? \
-                 WHERE grant_id = ? AND manifest_claimed_at IS NULL"
+                "UPDATE release_steps SET manifest_claimed_at = ?1 \
+                 WHERE grant_id = ?2 AND manifest_claimed_at IS NULL \
+                 AND EXISTS (SELECT 1 FROM grants g WHERE g.id = ?2 \
+                   AND g.revoked_at IS NULL AND g.not_after > ?3)"
             }
             Self::Publish => {
-                "UPDATE release_steps SET publish_claimed_at = ? \
-                 WHERE grant_id = ? AND publish_claimed_at IS NULL"
+                "UPDATE release_steps SET publish_claimed_at = ?1 \
+                 WHERE grant_id = ?2 AND publish_claimed_at IS NULL \
+                 AND EXISTS (SELECT 1 FROM grants g WHERE g.id = ?2 \
+                   AND g.revoked_at IS NULL AND g.not_after > ?3)"
             }
+        }
+    }
+}
+
+impl ReleaseStep {
+    /// Whether the owner approved this step in `steps`.
+    const fn covered_by(self, steps: &ReleaseSteps) -> bool {
+        match self {
+            Self::Tag => steps.tag,
+            Self::Manifest => steps.manifest.is_some(),
+            Self::Publish => steps.publish,
         }
     }
 }
@@ -90,22 +107,33 @@ impl Requests {
         }
     }
 
-    /// Claim `step` of release grant `grant` at `now`. True for exactly one caller,
-    /// ever: in one statement, so that two at once cannot both claim, and in the
-    /// database, so that a restart does not forget it. False when the step was
-    /// claimed before, whatever became of it, or when the grant has no such row.
+    /// Claim `step` of `release` at `now`. True for exactly one caller, ever: in one
+    /// statement, so that two at once cannot both claim, and in the database, so
+    /// that a restart does not forget it.
+    ///
+    /// The claim is the check that the step may run, so a caller makes it after its
+    /// own preparation and before the step's effect, and does the step only on true.
+    /// False when the grant does not cover the step (the owner did not approve it),
+    /// when the grant was revoked or its window has ended at `now`, when the step was
+    /// claimed before whatever became of it, or when the grant has no such row. A
+    /// revocation between [`Requests::active_release`] and the claim therefore still
+    /// stops the step.
     ///
     /// # Errors
     /// Storage failures: the caller refuses.
     pub async fn claim_step(
         &self,
-        grant: &Id,
+        release: &ActiveRelease,
         step: ReleaseStep,
         now: i64,
     ) -> Result<bool, RequestError> {
+        if !step.covered_by(&release.grant.steps) {
+            return Ok(false);
+        }
         let claimed = sqlx::query(step.claim_sql())
             .bind(now)
-            .bind(grant.as_str())
+            .bind(release.grant_id.as_str())
+            .bind(now)
             .execute(&self.pool)
             .await?
             .rows_affected();

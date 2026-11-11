@@ -1015,12 +1015,14 @@ they are added.
   key, is refused before it is made. Nothing GitHub said is quoted in an error, a log line or an
   audit entry.
 - **The grant is bound to the key and the App.** It holds a digest of the facts and the key; a
-  step is refused once what the broker reads no longer matches it.
+  step will be refused once what the broker reads no longer matches it (the steps are not
+  reachable yet).
 - **One day, not renewable, passkey only.** An agent cannot approve its own request, and a new
   request is a new approval.
 - **A step is claimed once.** Each step is claimed in one database statement before it is done,
   and a claim is never given back, so a repeat, a concurrent call or a retry after a failure does
-  not do it twice, and a step that fails stays used.
+  not do it twice, and a step that fails stays used. The claim also checks that the grant is not
+  revoked or ended and covers the step, so a revocation while the broker prepares a step stops it.
 - **The approve-finish re-check calls GitHub before the passkey assertion.** It mints a release
   App token and reads the commit and the tag. Only someone holding the approval token who has
   started a ceremony reaches it. It is not rate-limited. Accepted: the approval token is the

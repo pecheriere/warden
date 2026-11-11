@@ -524,7 +524,7 @@ changelog and sign off. The repository, the tag (`v1.2.3`, or `v1.2.3-rc.1`) and
 lowercase hex characters, not a branch name) are checked on your machine first, and the broker
 checks them against GitHub before the owner is asked, so a refusal comes at once and says what is
 wrong: the commit is not on the default branch, the tag already exists on another commit or under
-another key, there is nothing left to do, or releases are not configured for this repository.
+another key, there is nothing left to do, or `releases are not configured on this broker`.
 The grant lasts one day, is not renewable, and ends sooner when its last step is done. The owner
 sees the steps it covers; the signing key and the GitHub App stay on the broker. Steps that the
 broker takes for the release are not part of this command: a later release adds them.

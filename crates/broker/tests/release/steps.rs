@@ -2,7 +2,7 @@
 //! done. Steps are not reachable over HTTP yet, so these call the store directly.
 
 use sqlx::Row as _;
-use warden_broker::requests::ReleaseStep;
+use warden_broker::requests::{ActiveRelease, ReleaseStep};
 use warden_broker_proto::release::{ReleaseTag, RepoName};
 use warden_broker_proto::{AgentName, Id, Window};
 
@@ -18,8 +18,8 @@ fn tag() -> ReleaseTag {
     ReleaseTag::try_from(TAG.to_owned()).unwrap()
 }
 
-/// Request and approve a release of [`TAG`] in [`REPO`]; the id of its grant.
-async fn approved(h: &Harness) -> Id {
+/// Request and approve a release of [`TAG`] in [`REPO`]; its active grant.
+async fn approved(h: &Harness) -> ActiveRelease {
     let request = warden_broker_proto::CreateRequest {
         goal: "Release 1.2.3".to_owned().try_into().unwrap(),
         access: warden_broker_proto::Access::Release {
@@ -41,7 +41,6 @@ async fn approved(h: &Harness) -> Id {
         .await
         .unwrap()
         .expect("the grant is active")
-        .grant_id
 }
 
 async fn not_after(h: &Harness, grant: &Id) -> i64 {
@@ -56,24 +55,24 @@ async fn not_after(h: &Harness, grant: &Id) -> i64 {
 #[tokio::test]
 async fn claim_step_once() {
     let h = harness(Shape::Everything).await;
-    let grant = approved(&h).await;
+    let release = approved(&h).await;
     let requests = &h.broker.state().requests;
     let (first, second) = tokio::join!(
-        requests.claim_step(&grant, ReleaseStep::Tag, NOW),
-        requests.claim_step(&grant, ReleaseStep::Tag, NOW),
+        requests.claim_step(&release, ReleaseStep::Tag, NOW),
+        requests.claim_step(&release, ReleaseStep::Tag, NOW),
     );
     let (first, second) = (first.unwrap(), second.unwrap());
     assert!(first ^ second, "exactly one claims: {first} {second}");
     assert!(
         !requests
-            .claim_step(&grant, ReleaseStep::Tag, NOW)
+            .claim_step(&release, ReleaseStep::Tag, NOW)
             .await
             .unwrap(),
         "a retry after the claim is refused, whatever became of the step"
     );
     assert!(
         requests
-            .claim_step(&grant, ReleaseStep::Publish, NOW)
+            .claim_step(&release, ReleaseStep::Publish, NOW)
             .await
             .unwrap(),
         "another step is claimed on its own"
@@ -83,12 +82,12 @@ async fn claim_step_once() {
 #[tokio::test]
 async fn claim_step_survives_restart() {
     let h = harness(Shape::Everything).await;
-    let grant = approved(&h).await;
+    let release = approved(&h).await;
     assert!(
         h.broker
             .state()
             .requests
-            .claim_step(&grant, ReleaseStep::Manifest, NOW)
+            .claim_step(&release, ReleaseStep::Manifest, NOW)
             .await
             .unwrap()
     );
@@ -107,7 +106,7 @@ async fn claim_step_survives_restart() {
         !h.broker
             .state()
             .requests
-            .claim_step(&grant, ReleaseStep::Manifest, NOW)
+            .claim_step(&release, ReleaseStep::Manifest, NOW)
             .await
             .unwrap()
     );
@@ -116,21 +115,103 @@ async fn claim_step_survives_restart() {
 #[tokio::test]
 async fn claim_step_refuses_an_unknown_grant() {
     let h = harness(Shape::Everything).await;
-    let unknown = Id::random();
+    let mut release = approved(&h).await;
+    release.grant_id = Id::random();
     assert!(
         !h.broker
             .state()
             .requests
-            .claim_step(&unknown, ReleaseStep::Tag, NOW)
+            .claim_step(&release, ReleaseStep::Tag, NOW)
+            .await
+            .unwrap()
+    );
+}
+
+async fn revoke(h: &Harness, grant: &Id) {
+    sqlx::query("UPDATE grants SET revoked_at = ? WHERE id = ?")
+        .bind(NOW)
+        .bind(grant.as_str())
+        .execute(&h.broker.state().pool)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn claim_step_refuses_a_revoked_grant() {
+    let h = harness(Shape::Everything).await;
+    let release = approved(&h).await;
+    let grant = release.grant_id.clone();
+    revoke(&h, &grant).await;
+    assert!(
+        !h.broker
+            .state()
+            .requests
+            .claim_step(&release, ReleaseStep::Tag, NOW)
             .await
             .unwrap()
     );
 }
 
 #[tokio::test]
+async fn claim_step_refuses_an_ended_grant() {
+    let h = harness(Shape::Everything).await;
+    let release = approved(&h).await;
+    let grant = release.grant_id.clone();
+    let requests = &h.broker.state().requests;
+    let end = not_after(&h, &grant).await;
+    assert!(
+        !requests
+            .claim_step(&release, ReleaseStep::Tag, end)
+            .await
+            .unwrap(),
+        "a grant ends at not_after"
+    );
+    assert!(
+        requests
+            .claim_step(&release, ReleaseStep::Tag, end - 1)
+            .await
+            .unwrap(),
+        "and is live until then"
+    );
+}
+
+#[tokio::test]
+async fn claim_step_refuses_a_step_the_grant_does_not_cover() {
+    let h = harness(Shape::TagOnly).await;
+    let release = approved(&h).await;
+    let requests = &h.broker.state().requests;
+    for step in [ReleaseStep::Manifest, ReleaseStep::Publish] {
+        assert!(!requests.claim_step(&release, step, NOW).await.unwrap());
+    }
+    assert!(
+        requests
+            .claim_step(&release, ReleaseStep::Tag, NOW)
+            .await
+            .unwrap()
+    );
+}
+
+#[tokio::test]
+async fn claim_step_refuses_a_tag_the_grant_does_not_create() {
+    let h = harness(Shape::Everything).await;
+    let mut release = approved(&h).await;
+    release.grant.steps.tag = false;
+    assert!(
+        !h.broker
+            .state()
+            .requests
+            .claim_step(&release, ReleaseStep::Tag, NOW)
+            .await
+            .unwrap(),
+        "the tag was already in place"
+    );
+}
+
+#[tokio::test]
 async fn record_manifest_keeps_the_digests_once() {
     let h = harness(Shape::Everything).await;
-    let grant = approved(&h).await;
+    let release = approved(&h).await;
+    let grant = release.grant_id.clone();
     let requests = &h.broker.state().requests;
     let (manifest, signature) = ("a".repeat(64), "b".repeat(64));
     requests
@@ -139,7 +220,7 @@ async fn record_manifest_keeps_the_digests_once() {
         .expect_err("a manifest that was not claimed has no digests to keep");
     assert!(
         requests
-            .claim_step(&grant, ReleaseStep::Manifest, NOW)
+            .claim_step(&release, ReleaseStep::Manifest, NOW)
             .await
             .unwrap()
     );
@@ -162,7 +243,8 @@ async fn record_manifest_keeps_the_digests_once() {
 #[tokio::test]
 async fn end_if_done_ends_grant_after_last_step() {
     let h = harness(Shape::Everything).await;
-    let grant = approved(&h).await;
+    let release = approved(&h).await;
+    let grant = release.grant_id.clone();
     let requests = &h.broker.state().requests;
     let window_end = not_after(&h, &grant).await;
     for step in [
@@ -171,7 +253,7 @@ async fn end_if_done_ends_grant_after_last_step() {
         ReleaseStep::Publish,
     ] {
         assert_eq!(not_after(&h, &grant).await, window_end);
-        assert!(requests.claim_step(&grant, step, NOW).await.unwrap());
+        assert!(requests.claim_step(&release, step, NOW).await.unwrap());
         requests.end_if_done(&grant, NOW + 5).await.unwrap();
     }
     assert_eq!(not_after(&h, &grant).await, NOW + 5);
@@ -188,13 +270,14 @@ async fn end_if_done_ends_grant_after_last_step() {
 #[tokio::test]
 async fn end_if_done_counts_only_the_approved_steps() {
     let h = harness(Shape::TagOnly).await;
-    let grant = approved(&h).await;
+    let release = approved(&h).await;
+    let grant = release.grant_id.clone();
     let requests = &h.broker.state().requests;
     requests.end_if_done(&grant, NOW + 1).await.unwrap();
     assert!(not_after(&h, &grant).await > NOW + 1, "nothing is done yet");
     assert!(
         requests
-            .claim_step(&grant, ReleaseStep::Tag, NOW)
+            .claim_step(&release, ReleaseStep::Tag, NOW)
             .await
             .unwrap()
     );
@@ -205,11 +288,12 @@ async fn end_if_done_counts_only_the_approved_steps() {
 #[tokio::test]
 async fn end_if_done_waits_for_all_steps() {
     let h = harness(Shape::Everything).await;
-    let grant = approved(&h).await;
+    let release = approved(&h).await;
+    let grant = release.grant_id.clone();
     let requests = &h.broker.state().requests;
     let window_end = not_after(&h, &grant).await;
     for step in [ReleaseStep::Tag, ReleaseStep::Publish] {
-        assert!(requests.claim_step(&grant, step, NOW).await.unwrap());
+        assert!(requests.claim_step(&release, step, NOW).await.unwrap());
     }
     requests.end_if_done(&grant, NOW + 1).await.unwrap();
     assert_eq!(
@@ -229,7 +313,8 @@ async fn end_if_done_waits_for_all_steps() {
 #[tokio::test]
 async fn active_release_matches_case_insensitively() {
     let h = harness(Shape::Everything).await;
-    let grant = approved(&h).await;
+    let release = approved(&h).await;
+    let grant = release.grant_id.clone();
     let requests = &h.broker.state().requests;
     let upper: RepoName = REPO.to_uppercase().try_into().unwrap();
     let active = requests
@@ -260,12 +345,14 @@ async fn active_release_matches_case_insensitively() {
 #[tokio::test]
 async fn active_release_refuses_two_active_grants() {
     let h = harness(Shape::Everything).await;
-    let grant = approved(&h).await;
+    let grant = approved(&h).await.grant_id;
     // A second row for the same release; only the foreign key stands in the way of
     // writing it, and no code path makes one, so it is written around the checks.
-    let mut conn = h.broker.state().pool.acquire().await.unwrap();
+    // The connection is detached, so that the pragma does not outlive the test's
+    // write in the pool.
+    let mut conn = h.broker.state().pool.acquire().await.unwrap().detach();
     sqlx::query("PRAGMA foreign_keys = OFF")
-        .execute(&mut *conn)
+        .execute(&mut conn)
         .await
         .unwrap();
     sqlx::query(
@@ -274,7 +361,7 @@ async fn active_release_refuses_two_active_grants() {
          FROM grants WHERE id = ?",
     )
     .bind(grant.as_str())
-    .execute(&mut *conn)
+    .execute(&mut conn)
     .await
     .unwrap();
     drop(conn);
