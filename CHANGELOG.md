@@ -8,13 +8,16 @@ All notable changes to this project are recorded here. The format follows
 
 ### Upgrading
 
-- New audit entries: `release_tag_created`, `release_manifest_signed`, `release_refused`,
-  `release_refusals_held` and `github_token_renewal_notified`. An older `warden-server audit verify` refuses a log holding
-  one, and an older `warden-server` does not start on one, because it verifies the log when it
-  opens it. So once warden has told you a GitHub token grant ends soon, or an agent has called a
-  release route (any call can write `release_refused`, not only one that created a tag or
-  signed a manifest), rolling back also means restoring the audit log from the backup. The
-  publish step will add its own entry to the same rule.
+- New audit entries: `release_tag_created`, `release_manifest_signed`, `release_published`,
+  `release_refused`, `release_refusals_held` and `github_token_renewal_notified`. An older
+  `warden-server audit verify` refuses a log holding one, and an older `warden-server` does not
+  start on one, because it verifies the log when it opens it. So once warden has told you a
+  GitHub token grant ends soon, or an agent has called a release route (any call can write
+  `release_refused`, not only one that created a tag, signed a manifest or published), rolling
+  back also means restoring the audit log from the backup.
+- Releases need the broker to reach `uploads.github.com` as well as `api.github.com`, to attach
+  the manifest to the draft release. If you limit its egress, allow both
+  ([The release App](docs/github-app.md#the-release-app)).
 
 ### Added
 
@@ -44,10 +47,18 @@ All notable changes to this project are recorded here. The format follows
   per grant. When the grant has a manifest step, the manifest must have been signed and the draft
   must still hold the manifest and its `.sig` with the digests the broker recorded; a missing
   file, a different digest or no digest from GitHub refuses the call, as does a tag with no draft
-  or a release already published, and so does a tag that is not in place: the grant's tag step not
-  done, or the tag missing, lightweight, on another commit or not signed by the release key. All of these are checked before the step is claimed, so a refusal
-  leaves it unused. The grant ends when its last step is done. New audit entry:
-  `release_published` (#213).
+  or a release already published, and so does a tag that is not in place: the grant's tag step
+  not done, or the tag missing, lightweight, on another commit or not signed by the release
+  key. All of these are checked before the step is claimed, so a refusal leaves it unused. The
+  grant ends when its last step is done. New audit entry: `release_published` (#213).
+- `warden release tag`, `warden release sign-manifest` and `warden release publish` take the
+  three steps under a release grant. `sign-manifest` reads the manifest file, refuses one over
+  64 KiB before sending, and sends its base name as the manifest's name. Each prints what was
+  done and exits non-zero with the broker's fixed message when refused. The docs now cover the
+  release App's setup (permissions, installation per repository, the tag ruleset's bypass
+  actor, egress to `uploads.github.com`), the accepted gap that the agent's routine GitHub token
+  can still publish a draft early, and the risk that stays open until agents run as a separate
+  user (#186, #213).
 - `warden-server doctor` has two new checks, `release-signing` and `release-app`. The 1Password
   backend now loads items tagged `warden:release-signing` (one per repository) and
   `warden:github-release-app` (at most one), refuses release keys that are shared with each other,

@@ -1055,6 +1055,37 @@ This section covers the request, the approval and the tag, manifest and publish 
   token and makes a few GitHub reads before it is refused (a tag that exists, a commit that
   moved, no draft, a swapped file). Only an agent holding an active release grant reaches them, so they cost
   calls on the owner's App and nothing else. Accepted, as for the approve-finish re-check.
+- **The broker holds the release App's token and never hands it out.** It creates the tag,
+  attaches the manifest and publishes the draft itself, so an agent that cannot hold the token
+  cannot create a second tag with it. The token is narrowed to the one repository, with
+  `contents` write and `metadata` read only. The agent names only the repository and the tag;
+  the broker finds the agent's active grant for them, and a call that matches none is refused.
+  The tag ruleset should list this App as its only bypass actor (see
+  [the release App](github-app.md#the-release-app)); warden does not check the ruleset.
+- **Accepted: the agent's routine token can publish a draft early.** The broker's publish step
+  refuses until the manifest it signed is on the draft, but that guards the broker's step only.
+  The agent's [GitHub token](#github-tokens) has `contents` write, so the agent can publish or
+  edit a draft release itself, and so lose that version's manifest: GitHub releases are
+  immutable, so a published release can never gain one. This costs a version, not the integrity
+  of a release, because the Homebrew tap refuses a release without a valid manifest and release
+  integrity rests on the signed manifest, not on who can press publish. Decided by the owner
+  on 2026-11-10 and accepted.
+- **Residual risk until agents run as a separate user (#186): open.** Agents run as the owner
+  and can read the owner's `gh` token, which has administrator rights on the repositories. With
+  it an agent can edit the tag ruleset, or create a tag through the administrator role,
+  without a phone approval. What holds against that: the release key lives only in the broker,
+  so once the key that signed releases before warden did is retired from `docs/release-signers`
+  and from the tap's copy, no signature that verifiers trust can be made without an approval, and
+  a tag or release made through the administrator role fails verification. Until that key is
+  retired, its holder can still sign. The risk is recorded in the
+  [security assessment](security-assessment.md#ranked-risks).
+- **The broker signs a manifest of whatever the agent hashed.** It does not check build
+  attestations. What catches a manifest of someone else's archives is the attestation check
+  that [Verifying a release](verifying-releases.md) describes, and the same check in the
+  Homebrew tap, which is to be in place before the first release signed through warden.
+- **Reruns.** A rerun of a release workflow removes the manifest from the draft, and the grant
+  has used its manifest step. The agent asks for a new release grant for the same tag and
+  commit, which covers the steps left. Nothing weakens the one-claim rule to avoid this.
 
 ## The local secret backend
 

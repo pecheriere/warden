@@ -1067,7 +1067,8 @@ Asked for with the `release` access above and a `window` of `1d`:
 is the file name of the manifest the broker signs (absent when it signs none) and `publish` is
 whether it publishes the draft release. `digest` binds the grant to the facts and the key the
 owner saw. There is nothing to install. The grant lasts one day from approval, is not renewable,
-and ends when every step it covers is done.
+and ends when every step it covers is done. `warden release tag`, `sign-manifest` and `publish` make
+the three calls below.
 
 #### `POST /v1/release/tag`
 
@@ -1127,14 +1128,15 @@ uses nothing, so the agent may fix the manifest or create the draft and call aga
 
 Signed like every agent call, with the body `{"repository":"example-owner/example-repo","tag":"v1.2.3"}`.
 The broker makes the draft release of the tag public and answers `200` with `{"grant_id","tag"}`.
-Before it claims the step it checks that the tag has a release and that it is still a draft, and that
-the tag is in place: when the grant has a tag step, that step was done, and in every case the tag
-on GitHub is an annotated tag on the approved commit whose signature verifies with the release key
-(publishing a draft whose tag is missing would make GitHub create an unsigned tag at any commit the
-draft names). When the grant has a manifest step, it also checks that the step finished and that the draft holds the
-manifest and its `.sig`, each once, with the SHA-256 the broker recorded when it attached them. A
-file someone replaced, a missing file, or digests GitHub does not report refuse the call. A refusal
-before the claim uses nothing. The grant ends when its last step is done.
+Before it claims the step it checks that the tag has a release and that it is still a draft, and
+that the tag is in place: when the grant has a tag step, that step was done, and in every case the
+tag on GitHub is an annotated tag on the approved commit whose signature verifies with the release
+key (publishing a draft whose tag is missing would make GitHub create an unsigned tag at any
+commit the draft names). When the grant has a manifest step, it also checks that the step
+finished and that the draft holds the manifest and its `.sig`, each once, with the SHA-256 the
+broker recorded when it attached them. A file someone replaced, a missing file, or digests GitHub
+does not report refuse the call. A refusal before the claim uses nothing. The grant ends when its
+last step is done.
 
 | Status | Body | Meaning |
 |---|---|---|

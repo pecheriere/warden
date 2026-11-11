@@ -331,6 +331,27 @@ minted**. What an agent can do with it is decided on GitHub, by where you instal
 and the rules you set there. See [GitHub tokens for agents](docs/github-app.md) and the
 [threat model](docs/threat-model.md#github-tokens).
 
+## Releases
+
+An agent can ask you to approve one release: one tag, at one commit, of one repository. You read
+the commit, its date and the changelog section on your phone, which the broker fetched from
+GitHub and not from the agent, and approve with your passkey. The grant lasts a day and cannot
+be renewed. The broker then takes the steps itself, each once, with a signing key and a GitHub
+App it holds and the agent never sees:
+
+```sh
+warden request release example-owner/example-repo v1.2.3 --commit <sha> --goal "Release 1.2.3"
+warden release tag example-owner/example-repo v1.2.3          # signs the tag and creates it
+warden release sign-manifest example-owner/example-repo v1.2.3 warden-1.2.3-SHA256SUMS
+warden release publish example-owner/example-repo v1.2.3      # makes the draft public
+```
+
+The release key lives only in the broker. Two risks stay: the agent's routine GitHub token can still
+publish a draft early, and until agents run as a separate user (#186) they can read your own `gh`
+token. See [Agent usage](docs/agent-usage.md#releases),
+[GitHub tokens for agents](docs/github-app.md#the-release-app) and the
+[threat model](docs/threat-model.md#phone-approved-releases).
+
 ## Documentation
 
 | Document | For |
@@ -340,7 +361,7 @@ and the rules you set there. See [GitHub tokens for agents](docs/github-app.md) 
 | [Configuration](docs/configuration.md) | Every environment variable and command of the server and the CLI. |
 | [SSH targets](docs/ssh-targets.md) | Setting up hosts: one user per agent, certificate-only logins, relay targets. |
 | [1Password items](docs/1password-items.md) | The exact tags and fields of targets, API secrets, the CA, the signing key and the GitHub App. |
-| [GitHub tokens](docs/github-app.md) | Creating the GitHub App for agents, its limits, and what to set up on GitHub. |
+| [GitHub tokens](docs/github-app.md) | Creating the GitHub App for agents, its limits, and what to set up on GitHub; and the separate release App. |
 | [Local files](docs/local-backend.md) | The weaker backend without 1Password: its policy file, secret files and what it gives up. |
 | [Notifications](docs/notifications.md) | Home Assistant and ntfy. |
 | [Agent usage](docs/agent-usage.md) | Setting up an agent and how it should ask for access. |

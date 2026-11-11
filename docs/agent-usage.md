@@ -526,8 +526,68 @@ checks them against GitHub before the owner is asked, so a refusal comes at once
 wrong: the commit is not on the default branch, the tag already exists on another commit or under
 another key, there is nothing left to do, or `releases are not configured on this broker`.
 The grant lasts one day, is not renewable, and ends sooner when its last step is done. The owner
-sees the steps it covers; the signing key and the GitHub App stay on the broker. Steps that the
-broker takes for the release are not part of this command: a later release adds them.
+sees the steps it covers; the signing key and the GitHub App stay on the broker. When the
+request is approved, the command prints the steps: `approved steps: create the tag, sign the
+manifest warden-1.2.3-SHA256SUMS, publish the release`. A tag that is already in place, on that
+commit and signed by the repository's release key, leaves out the first.
+
+#### The steps
+
+The broker takes each step itself, under the grant, when you ask. Each runs **once**: it is
+recorded as used before the broker acts, and a repeat is refused even when the first attempt
+failed, so ask the owner again. Each names the repository and tag, and fails closed with the
+broker's fixed message and a non-zero exit. With no active grant the message says to run
+`warden request release`.
+
+```sh
+warden release tag example-owner/example-repo v1.2.3
+# tag v1.2.3 object 0f1e2d3c4b5a69788796a5b4c3d2e1f001122334
+
+warden release sign-manifest example-owner/example-repo v1.2.3 warden-1.2.3-SHA256SUMS
+# manifest warden-1.2.3-SHA256SUMS
+# signature warden-1.2.3-SHA256SUMS.sig
+# sha256 <digest of the manifest>
+
+warden release publish example-owner/example-repo v1.2.3
+# published v1.2.3
+```
+
+- **`tag`** signs the tag with the repository's release key and creates it at the approved
+  commit. It refuses when the tag exists, or the commit is no longer on the default branch.
+- **`sign-manifest`** sends the file you built. Its base name must be the file name the owner
+  approved. The manifest is lines of `<64 lowercase hex digits>  <name>`, each ending in a line
+  feed, at most 64 KiB (a larger file is refused on your machine, and nothing is sent), with no
+  name twice. A name is a plain file name, or an image reference tagged with the release's
+  version, such as `ghcr.io/example-owner/example-repo:1.2.3`. The broker signs what you sent and
+  cannot know whether a digest is that of the right artifact, so run your own checks on the
+  artifacts first. It attaches the manifest and its `.sig` to the **draft** release of the tag,
+  so create the draft first (your release workflow does). A manifest that breaks a rule, or a
+  tag with no draft, is refused and the step stays unused: fix it and call again.
+- **`publish`** makes the draft public, once. It refuses, with the step unused, when the tag is
+  not in place as the owner approved it (an annotated tag on that commit, signed by the release
+  key), when the draft no longer holds the manifest and signature the broker attached, or when
+  the release is not a draft. Releases are immutable on GitHub: a release published without its
+  manifest can never gain one.
+
+An example session for a repository that only needs a signed tag (no `manifest` in its release
+item, and its own workflow publishes):
+
+```sh
+warden request release example-owner/example-repo v1.2.3 \
+  --commit 0123456789abcdef0123456789abcdef01234567 --goal "Release 1.2.3"
+# approved steps: create the tag
+warden release tag example-owner/example-repo v1.2.3
+```
+
+The grant ends with that step. For a repository that releases with a manifest, the order is:
+request, `tag`, wait for the workflow to build the draft, build the manifest from its files,
+`sign-manifest`, then `publish`. If the workflow runs again and removes the manifest, the
+grant has used that step: ask for a new release for the same tag and commit, and it covers
+only the steps left.
+
+A step refused for `policy changed; request access again` means the release key or the release
+App changed since the owner approved: ask again. `this step is not part of the approved release`
+means the owner's approval did not include it, such as the tag when it was already in place.
 
 ### Telling sessions apart
 
