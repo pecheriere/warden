@@ -100,8 +100,36 @@ fn release_grant_round_trips() {
     };
     let access = GrantAccess::Release(grant);
     let json = serde_json::to_string(&access).unwrap();
-    assert!(json.starts_with(r#"{"kind":"release","repository":"example-owner/example-repo""#));
+    assert_eq!(
+        json,
+        concat!(
+            r#"{"kind":"release","repository":"example-owner/example-repo","#,
+            r#""tag":"v1.2.3","commit":"0123456789abcdef0123456789abcdef01234567","#,
+            r#""key_fingerprint":"SHA256:example","#,
+            r#""steps":{"tag":true,"manifest":"warden-1.2.3-SHA256SUMS","publish":true},"#,
+            r#""digest":"abababababababababababababababababababababababababababababababab"}"#,
+        )
+    );
     assert_eq!(serde_json::from_str::<GrantAccess>(&json).unwrap(), access);
     let bad = json.replace("v1.2.3", "1.2.3");
     assert!(serde_json::from_str::<GrantAccess>(&bad).is_err());
+}
+
+#[test]
+fn release_steps_without_a_manifest_omit_the_field() {
+    use super::ReleaseSteps;
+
+    let steps = ReleaseSteps {
+        tag: false,
+        manifest: None,
+        publish: true,
+    };
+    let json = serde_json::to_string(&steps).unwrap();
+    assert_eq!(json, r#"{"tag":false,"publish":true}"#);
+    assert_eq!(serde_json::from_str::<ReleaseSteps>(&json).unwrap(), steps);
+    let explicit_null = r#"{"tag":false,"manifest":null,"publish":true}"#;
+    assert_eq!(
+        serde_json::from_str::<ReleaseSteps>(explicit_null).unwrap(),
+        steps
+    );
 }

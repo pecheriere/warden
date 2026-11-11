@@ -43,7 +43,7 @@ pub fn history(entries: &[HistoryEntry], hosts: &LinkHosts) -> Markup {
                             Access::CommitSigning {} => "commit signing".to_owned(),
                             Access::GithubToken {} => "github token".to_owned(),
                             Access::Release {
-                repository, tag, ..
+                                repository, tag, ..
                             } => format!("release {tag} of {repository}"),
                         };
                         // On a phone each row is a card; `data-label` names

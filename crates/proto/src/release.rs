@@ -189,6 +189,7 @@ pub struct ReleaseSteps {
     /// place when the request was made.
     pub tag: bool,
     /// The name of the manifest file the broker signs, if it signs one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manifest: Option<String>,
     /// Whether the broker publishes the draft release.
     pub publish: bool,
