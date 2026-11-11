@@ -55,7 +55,7 @@ tailnet.
 Each warden server has one owner, who approves every request. One owner can
 have many agents, but there are no teams, roles or shared approvals.
 
-**Status: early.** The current release is **0.11.0**. warden has a single
+**Status: early.** The current release is **0.12.0**. warden has a single
 maintainer and has not had an independent security review. Before 1.0,
 expect this to change:
 
@@ -236,7 +236,7 @@ it; follow it for a real setup.
    published ports, Connect on its own network. Verify the image first:
 
    ```sh
-   gh attestation verify oci://ghcr.io/pecheriere/warden:0.11.0 --owner pecheriere
+   gh attestation verify oci://ghcr.io/pecheriere/warden:0.12.0 --owner pecheriere
    ```
 
    [The Compose file](docs/deployment.md#5-run-warden),

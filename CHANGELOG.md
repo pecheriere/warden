@@ -6,17 +6,27 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-11-11
+
 ### Upgrading
 
-- New audit entries: `release_tag_created`, `release_manifest_signed`, `release_published`,
-  `release_refused`, `release_refusals_held` and `github_token_renewal_notified`. An older
+Back up warden's data first, with warden stopped, as
+[docs/upgrading.md](https://github.com/pecheriere/warden/blob/v0.12.0/docs/upgrading.md)
+says. No setting has to change: release items are optional, and nothing in this release
+needs them.
+
+- New migration `0010_release`, applied at startup. As with every migration, rolling back
+  means restoring the backup together with the old version.
+- New audit entries: `release_tag_created`, `release_manifest_signed`,
+  `release_published`, `release_refused`, `release_refusals_held` and
+  `github_token_renewal_notified`. An older
   `warden-server audit verify` refuses a log holding one, and an older `warden-server` does not
   start on one, because it verifies the log when it opens it. So once warden has told you a
   GitHub token grant ends soon, or an agent has called a release route (any call can write
   `release_refused`, not only one that created a tag, signed a manifest or published), rolling
   back also means restoring the audit log from the backup.
-- Releases need the broker to reach `uploads.github.com` as well as `api.github.com`, to attach
-  the manifest to the draft release. If you limit its egress, allow both
+- Only if you set up releases: the broker needs to reach `uploads.github.com` as well as
+  `api.github.com`, to attach the manifest to the draft release. If you limit its egress, allow both
   ([The release App](docs/github-app.md#the-release-app)).
 
 ### Added
