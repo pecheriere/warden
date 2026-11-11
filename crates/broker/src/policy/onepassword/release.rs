@@ -36,6 +36,11 @@ impl OnePasswordConnect {
                     .map_err(PolicyError::ReleaseKey)?,
             );
         }
+        // No release key, nothing that could collide with another key: the commit
+        // signing key and the CA have their own checks.
+        if keys.is_empty() {
+            return Ok(keys);
+        }
         let commit_signing = match self.commit_signing_key().await {
             Ok(key) => Some(key),
             Err(PolicyError::NoCommitSigningKey) => None,

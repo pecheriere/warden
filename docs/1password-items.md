@@ -174,8 +174,8 @@ concealed for the key, text for the rest. The item's category does not matter.
 |---|---|
 | `private_key` | Required. An unencrypted `ssh-ed25519` key, as OpenSSH or PKCS#8 PEM. It must be a key of its own: warden refuses one that is also the commit signing key, the SSH CA key or another repository's release key. |
 | `repository` | Required. `owner/name`: the owner is letters, digits and dashes (at most 39 characters, starting with a letter or digit), the name is letters, digits, dots, underscores and dashes (at most 100, not `.` or `..`). Compared ignoring case. Two items for the same repository are an error. |
-| `tagger_name` | Required. The name on the tags this key signs: 1 to 100 characters on one line, without `<` or `>`. |
-| `tagger_email` | Required. The email on those tags: an address without spaces, `<` or `>`, at most 254 characters. |
+| `tagger_name` | Required. The name on the tags this key signs: 1 to 100 characters on one line, without `<` or `>`, control characters, or leading or trailing whitespace. |
+| `tagger_email` | Required. The email on those tags: an address that contains an `@`, with no whitespace, `<`, `>` or control characters, no leading or trailing whitespace, and at most 254 characters. |
 | `manifest` | Optional. The file name of the signed checksums file the repository publishes, with `{version}` exactly once, such as `example-repo-{version}-SHA256SUMS`: letters, digits, dots, underscores, plus signs and dashes around it, no path separator, at most 200 characters. |
 | `manifest_namespace` | Required with `manifest`, and an error without it: the `ssh-keygen -Y` namespace the manifest is signed in, `^[a-z0-9][a-z0-9-]{0,63}$`. |
 | `publish` | Optional: `true` or `false` (the default). Whether warden may publish the draft release itself. |
@@ -196,7 +196,9 @@ publish              false
 
 One unusable item fails every release key, because which repository it was meant for cannot be
 trusted. The same goes for a commit signing key or SSH CA key that exists but cannot be read,
-since nothing then says the release keys are different keys. warden never gives the private
+since nothing then says the release keys are different keys; with no release item at all
+there is nothing to compare, so neither is checked here (the `commit-signing` and `ssh-ca`
+doctor checks cover them). warden never gives the private
 key out. `warden-server doctor` shows the result in its `release-signing` check.
 
 ## Release GitHub App
@@ -209,7 +211,7 @@ installation is found when the App is used. Two fields, matched by label like th
 
 | Field | Rule |
 |---|---|
-| `app_id` | Required. The App's id: letters, digits, dots, underscores and dashes. |
+| `app_id` | Required. The App's id: 1 to 64 letters, digits, dots, underscores and dashes. |
 | `private_key` | Required. The App's RSA private key as PEM, PKCS#1 or PKCS#8, unencrypted, at least 2048 bits. |
 
 Example (tag `warden:github-release-app`, title `release-app`):

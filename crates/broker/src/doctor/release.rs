@@ -49,6 +49,8 @@ impl Backend {
 const NOT_CHECKED: &str = "Not checked: Connect or the vault is not usable.";
 const FIX_CONNECT: &str = "Fix Connect first, then run doctor again.";
 const FIX_NAMED: &str = "Fix what the message names, then run doctor again.";
+const FIX_ITEMS: &str = "Fix what the message names (the item, or the key it shares), then run doctor \
+     again. The rules for each field are in docs/1password-items.md.";
 
 /// The release signing check; `None` when the backend could not be asked.
 pub(super) fn signing_check(probe: Option<ReleaseSigningProbe>, backend: Backend) -> Check {
@@ -70,9 +72,7 @@ pub(super) fn signing_check(probe: Option<ReleaseSigningProbe>, backend: Backend
                 backend.how_to_add_keys()
             ),
         ),
-        Some(ReleaseSigningProbe::Invalid(reason)) => {
-            Check::fail(SIGNING, reason, backend.how_to_add_keys())
-        }
+        Some(ReleaseSigningProbe::Invalid(reason)) => Check::fail(SIGNING, reason, FIX_ITEMS),
         Some(ReleaseSigningProbe::Unknown(reason)) => {
             Check::could_not_check(SIGNING, reason, FIX_NAMED)
         }
@@ -97,9 +97,7 @@ pub(super) fn app_check(probe: Option<ReleaseAppProbe>, backend: Backend) -> Che
                 backend.how_to_add_app()
             ),
         ),
-        Some(ReleaseAppProbe::Invalid(reason)) => {
-            Check::fail(APP, reason, backend.how_to_add_app())
-        }
+        Some(ReleaseAppProbe::Invalid(reason)) => Check::fail(APP, reason, FIX_ITEMS),
         Some(ReleaseAppProbe::Unknown(reason)) => Check::could_not_check(APP, reason, FIX_NAMED),
     }
 }
@@ -136,12 +134,31 @@ mod tests {
     }
 
     #[test]
+    fn release_signing_text_holds_the_repositories_and_nothing_else() {
+        let probe = ReleaseSigningProbe::Loaded {
+            repositories: vec!["example-owner/one".to_owned()],
+        };
+        let check = signing_check(Some(probe), Backend::OnePassword);
+        let text = format!("{} {}", check.detail, check.action.unwrap_or_default());
+        assert!(text.contains("example-owner/one"), "{text}");
+        for value in [
+            "Release Bot",
+            "release@example.com",
+            "SHA256:",
+            "ssh-ed25519",
+        ] {
+            assert!(!text.contains(value), "{text}");
+        }
+    }
+
+    #[test]
     fn release_signing_fails_on_shared_key() {
         let probe = ReleaseSigningProbe::Invalid("two items share a key".to_owned());
         let check = signing_check(Some(probe), Backend::OnePassword);
         assert_eq!(check.status, Status::Fail);
         assert!(check.detail.contains("share a key"), "{check:?}");
-        assert!(check.action.is_some());
+        let action = check.action.unwrap_or_default();
+        assert!(action.contains("docs/1password-items.md"), "{action}");
     }
 
     #[test]
@@ -157,7 +174,7 @@ mod tests {
     }
 
     #[test]
-    fn release_app_fails_on_two_items() {
+    fn release_app_fails_when_invalid() {
         let probe = ReleaseAppProbe::Invalid("exactly one item".to_owned());
         let check = app_check(Some(probe), Backend::OnePassword);
         assert_eq!(check.status, Status::Fail);

@@ -527,6 +527,10 @@ impl SecretBackend for FakeBackend {
             .lock()
             .map_err(|_| PolicyError::Unavailable("fake backend lock poisoned".to_owned()))?
             .clone();
+        // As the real backend: with no release key there is nothing to collide.
+        if keys.is_empty() {
+            return Err(PolicyError::NoReleaseKey);
+        }
         let commit_signing = match self.commit_signing_key().await {
             Ok(key) => Some(key),
             Err(PolicyError::NoCommitSigningKey) => None,

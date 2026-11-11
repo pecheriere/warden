@@ -378,3 +378,20 @@ async fn fake_backend_refuses_when_the_commit_signing_key_cannot_be_read() {
     fake.set_commit_signing_key(None);
     fake.release_signing(&repo).await.unwrap();
 }
+
+/// With no release key the fake, like the 1Password backend, does not look at the
+/// CA: nothing could collide with it.
+#[cfg(feature = "testkit")]
+#[tokio::test]
+async fn fake_backend_with_no_release_key_ignores_an_unreadable_ca() {
+    use crate::policy::{PolicyError, SecretBackend as _};
+    use crate::testkit::CaState;
+    use crate::testkit::FakeBackend;
+    use warden_broker_proto::release::RepoName;
+
+    let repo = RepoName::try_from("example-owner/one".to_owned()).unwrap();
+    let fake = FakeBackend::new();
+    fake.set_ca_state(CaState::Unusable);
+    let err = fake.release_signing(&repo).await.unwrap_err();
+    assert!(matches!(err, PolicyError::NoReleaseKey), "{err:?}");
+}

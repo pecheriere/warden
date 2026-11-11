@@ -254,6 +254,15 @@ async fn the_probe_passes_with_no_items() {
 }
 
 #[tokio::test]
+async fn no_release_items_pass_even_when_the_commit_signing_key_is_unreadable() {
+    let server = with_signing_items_and_commit_key(&[], "not a key").await;
+    assert_eq!(
+        backend(&server).probe_release_signing().await,
+        ReleaseSigningProbe::NotConfigured
+    );
+}
+
+#[tokio::test]
 async fn the_probe_lists_repositories_and_never_a_key() {
     let (one, two) = (ed25519_openssh(), ed25519_openssh());
     let server = with_signing_items(&[
@@ -266,7 +275,13 @@ async fn the_probe_lists_repositories_and_never_a_key() {
         panic!("{probe:?}");
     };
     assert_eq!(repositories, &["example-owner/one", "example-owner/two"]);
-    assert!(!format!("{probe:?}").contains(one.lines().nth(1).unwrap()));
+    let shown = format!("{probe:?}");
+    for line in one.lines().filter(|line| line.len() > 8) {
+        assert!(!shown.contains(line), "a key line is in {shown}");
+    }
+    for value in ["Release Bot", "release@example.com", "SHA256:", "item-rs1"] {
+        assert!(!shown.contains(value), "{value} is in {shown}");
+    }
 }
 
 #[tokio::test]
