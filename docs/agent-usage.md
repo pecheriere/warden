@@ -510,6 +510,25 @@ server allows. Ask once, not per push. You do not have to ask ahead: with none, 
 Unlike every other grant, this one hands you a credential: revoking the grant stops new
 tokens, and does not recall one already minted. Do not copy the token anywhere.
 
+### Releases
+
+```sh
+warden request release example-owner/example-repo v1.2.3 \
+  --commit 0123456789abcdef0123456789abcdef01234567 \
+  --goal "Release 1.2.3: the fixes merged since 1.2.2"
+```
+
+Asks the owner to approve one release: one tag, at one commit, of one repository. Ask for it
+when the commit is on the repository's default branch and you are ready for the owner to read the
+changelog and sign off. The repository, the tag (`v1.2.3`, or `v1.2.3-rc.1`) and the commit (all 40
+lowercase hex characters, not a branch name) are checked on your machine first, and the broker
+checks them against GitHub before the owner is asked, so a refusal comes at once and says what is
+wrong: the commit is not on the default branch, the tag already exists on another commit or under
+another key, there is nothing left to do, or releases are not configured for this repository.
+The grant lasts one day, is not renewable, and ends sooner when its last step is done. The owner
+sees the steps it covers; the signing key and the GitHub App stay on the broker. Steps that the
+broker takes for the release are not part of this command: a later release adds them.
+
 ### Telling sessions apart
 
 When several sessions of a coding agent run under one enrolled agent, the owner

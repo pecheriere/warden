@@ -1000,6 +1000,32 @@ What holds:
 **If GitHub is unavailable**, minting fails with a 503 and the agent's `git` or `gh` call
 fails, saying so. Nothing falls back to another credential.
 
+## Phone-approved releases
+
+An agent can ask the owner to approve one release: a tag at a commit of a repository. The
+broker holds the repository's signing key and a GitHub App, so the agent never holds either.
+This section covers the request and the approval; the steps that act on GitHub are covered when
+they are added.
+
+- **The owner approves what GitHub says, not what the agent says.** The broker asks GitHub for
+  the commit, its place on the default branch, the tag and the changelog before the owner is
+  asked, and again as the owner decides. The page shows those facts, with the agent's text
+  escaped, control characters as escapes and the changelog cut at 16 KiB with a note. A request
+  for a commit off the default branch, or a tag that exists on another commit or under another
+  key, is refused before it is made. Nothing GitHub said is quoted in an error, a log line or an
+  audit entry.
+- **The grant is bound to the key and the App.** It holds a digest of the facts and the key; a
+  step is refused once what the broker reads no longer matches it.
+- **One day, not renewable, passkey only.** An agent cannot approve its own request, and a new
+  request is a new approval.
+- **A step is claimed once.** Each step is claimed in one database statement before it is done,
+  and a claim is never given back, so a repeat, a concurrent call or a retry after a failure does
+  not do it twice, and a step that fails stays used.
+- **The approve-finish re-check calls GitHub before the passkey assertion.** It mints a release
+  App token and reads the commit and the tag. Only someone holding the approval token who has
+  started a ceremony reaches it. It is not rate-limited. Accepted: the approval token is the
+  owner's, and what it costs is calls on the owner's App.
+
 ## The local secret backend
 
 `WARDEN_SECRET_BACKEND=local` reads targets, API secrets and the SSH CA key from
