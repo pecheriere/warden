@@ -691,7 +691,7 @@ targets are refused. For relay targets, use
 
 | Component | Inbound | Outbound |
 |-----------|---------|----------|
-| warden | Only from Tailscale Serve (or the reverse proxy Serve targets), to the listeners on `front`. | `connect-api`; the notification endpoints (Home Assistant, ntfy); the origins of your API secrets; the addresses of your relay targets; `api.github.com` on 443 if you set up [GitHub tokens](github-app.md). Nothing else. |
+| warden | Only from Tailscale Serve (or the reverse proxy Serve targets), to the listeners on `front`. | `connect-api`; the notification endpoints (Home Assistant, ntfy); the origins of your API secrets; the addresses of your relay targets; `api.github.com` on 443 if you set up [GitHub tokens](github-app.md), and with it `uploads.github.com` on 443 if you set up [releases](github-app.md#the-release-app). Nothing else. |
 | connect-api | From warden, on `connect`; from `connect-sync` on its bus port. | `connect-sync` (the bus); your 1Password servers on 443. |
 | connect-sync | From `connect-api` on its bus port. | `connect-api` (the bus); your 1Password servers on 443. |
 
@@ -783,7 +783,11 @@ script again (or `systemctl restart warden-firewall`) after you edit it.
   `503` "GitHub could not issue a token", and the broker logs "GitHub could not
   be reached". GitHub changes those ranges. warden's GitHub client uses no
   HTTP proxy, so the alternative is a transparent relay that passes TLS
-  through and allows `api.github.com` by its server name (SNI). Name resolution needs no rule: Docker's embedded
+  through and allows `api.github.com` by its server name (SNI).
+  [Releases](github-app.md#the-release-app) also need `uploads.github.com`, where the broker
+  attaches the manifest to the draft release. Allow its addresses too (resolve them, or
+  use the relay by name). Without them the manifest step fails with `503` "GitHub could
+  not complete the step; try again later", and the step stays used. Name resolution needs no rule: Docker's embedded
   DNS resolver answers inside the container and queries upstream from the
   host.
 - An address rule pins an IP, not a name. If an origin's addresses change

@@ -11,8 +11,11 @@ use warden_broker::testkit::{HttpsUpstream, TestBroker};
 use warden_broker_proto::release::RepoName;
 
 mod approve;
+mod manifest;
+mod publish;
 mod request;
 mod steps;
+mod tag;
 
 const REPO: &str = "example-owner/example-repo";
 /// The head of the default branch.
@@ -36,6 +39,8 @@ enum Shape {
     Everything,
     /// Tag only.
     TagOnly,
+    /// Publish the draft, with no manifest.
+    PublishOnly,
 }
 
 /// A broker with the release App and a release key for [`REPO`], a fake GitHub
@@ -45,6 +50,8 @@ struct Harness {
     broker: TestBroker,
     upstream: HttpsUpstream,
     key: PrivateKey,
+    /// The API key of agent `build-agent`.
+    agent_key: String,
 }
 
 async fn harness(shape: Shape) -> Harness {
@@ -52,7 +59,9 @@ async fn harness(shape: Shape) -> Harness {
     let origin: url::Url = upstream.origin().parse().unwrap();
     let api = GithubApi::pinned(
         origin.clone(),
-        origin,
+        // The fake takes asset uploads on this path only, as GitHub's uploads host
+        // is another host.
+        origin.join("uploads").unwrap(),
         upstream.ca_pem().as_bytes().to_vec(),
     );
     let broker = TestBroker::with_github_api(api).await;
@@ -61,6 +70,7 @@ async fn harness(shape: Shape) -> Harness {
     let (manifest, publish) = match shape {
         Shape::Everything => (Some(MANIFEST), true),
         Shape::TagOnly => (None, false),
+        Shape::PublishOnly => (None, true),
     };
     broker.backend.add_release_key(ReleaseSigningKey::for_tests(
         REPO,
@@ -75,7 +85,7 @@ async fn harness(shape: Shape) -> Harness {
         )
         .unwrap(),
     ));
-    broker.add_agent("build-agent").await;
+    let agent_key = broker.add_agent("build-agent").await;
 
     let github = upstream.github_release();
     let repository = repo(REPO);
@@ -106,6 +116,7 @@ async fn harness(shape: Shape) -> Harness {
         broker,
         upstream,
         key,
+        agent_key,
     }
 }
 
@@ -117,4 +128,40 @@ impl Harness {
             .github_release()
             .add_annotated_tag(&repo(REPO), tag, raw);
     }
+}
+
+/// The tag the tests release.
+const TAG: &str = "v1.2.3";
+
+/// Request and approve a release of [`TAG`] in [`REPO`] at [`HEAD`] as
+/// `build-agent`; its active grant.
+async fn approved(h: &Harness) -> warden_broker::requests::ActiveRelease {
+    let request = warden_broker_proto::CreateRequest {
+        goal: "Release 1.2.3".to_owned().try_into().unwrap(),
+        access: warden_broker_proto::Access::Release {
+            repository: repo(REPO),
+            tag: TAG.to_owned().try_into().unwrap(),
+            commit: HEAD.to_owned().try_into().unwrap(),
+        },
+        window: warden_broker_proto::Window::D1,
+        session: None,
+        link: None,
+    };
+    let (_, token) = h.broker.create_request("build-agent", request).await;
+    let done = h
+        .broker
+        .approve(&token, warden_broker_proto::Window::D1)
+        .await;
+    assert_eq!(done.status, axum::http::StatusCode::OK, "{}", done.body);
+    h.broker
+        .state()
+        .requests
+        .active_release(
+            &"build-agent".parse().unwrap(),
+            &repo(REPO),
+            &TAG.to_owned().try_into().unwrap(),
+        )
+        .await
+        .unwrap()
+        .expect("the grant is active")
 }

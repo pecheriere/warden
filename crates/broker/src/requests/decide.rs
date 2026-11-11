@@ -281,22 +281,9 @@ impl Requests {
         let agent: AgentName = parse(&row, "agent")?;
         let view = serde_json::to_string(&grant)?;
         let renews = renewal::replaced_kind(&grant.access);
-        let mut events = vec![AuditEvent::Approved {
-            id: id.clone(),
-            grant_id: grant.grant_id.clone(),
-            window_secs,
-            passkey_id: passkey_id.to_owned(),
-        }];
-        if matches!(grant.access, GrantAccess::Ssh(_)) {
-            events.push(AuditEvent::CertIssued {
-                key_id: ssh_ca::key_id(&agent, &grant.grant_id),
-                grant_id: grant.grant_id.clone(),
-                not_after: grant.not_after,
-            });
-        }
-        if let Some(kind) = renews {
-            events.extend(self.renewal_events(&agent, kind).await?);
-        }
+        let events = self
+            .approval_events(&id, &agent, &grant, renews, passkey_id, window_secs)
+            .await?;
         let transition = format!("approval of request {id}");
         record(&self.audit, events, &transition).await?;
         let applied = async {
@@ -332,17 +319,26 @@ impl Requests {
             .bind(&view)
             .execute(&mut *tx)
             .await?;
-            if matches!(grant.access, GrantAccess::Release(_)) {
+            let mut ended = Vec::new();
+            if let GrantAccess::Release(new) = &grant.access {
                 release_approval::insert_steps(&mut tx, &grant.grant_id).await?;
+                ended = release_approval::end_replaced(
+                    &mut tx,
+                    &agent,
+                    &grant.grant_id,
+                    new,
+                    self.clock.now(),
+                )
+                .await?;
             }
-            let renewed = if let Some(kind) = renews {
-                renewal::end_renewed(&mut tx, &agent, &grant.grant_id, kind, self.clock.now())
-                    .await?
-            } else {
-                Vec::new()
-            };
+            if let Some(kind) = renews {
+                ended.extend(
+                    renewal::end_renewed(&mut tx, &agent, &grant.grant_id, kind, self.clock.now())
+                        .await?,
+                );
+            }
             tx.commit().await?;
-            Ok(renewed)
+            Ok(ended)
         }
         .await;
         note_if_not_applied(&self.audit, &applied, &transition).await;
@@ -351,6 +347,37 @@ impl Requests {
         }
         self.bus.publish(&id);
         Ok(())
+    }
+
+    /// The entries written with an approval.
+    async fn approval_events(
+        &self,
+        id: &Id,
+        agent: &AgentName,
+        grant: &GrantView,
+        renews: Option<&'static str>,
+        passkey_id: &str,
+        window_secs: u32,
+    ) -> Result<Vec<AuditEvent>, RequestError> {
+        let mut events = vec![AuditEvent::Approved {
+            id: id.clone(),
+            grant_id: grant.grant_id.clone(),
+            window_secs,
+            passkey_id: passkey_id.to_owned(),
+        }];
+        if matches!(grant.access, GrantAccess::Ssh(_)) {
+            events.push(AuditEvent::CertIssued {
+                key_id: ssh_ca::key_id(agent, &grant.grant_id),
+                grant_id: grant.grant_id.clone(),
+                not_after: grant.not_after,
+            });
+        }
+        if let Some(kind) = renews {
+            events.extend(self.renewal_events(agent, kind).await?);
+        }
+        // A rerun's grant replaces the earlier one for the same release.
+        events.extend(self.release_replaced_events(agent, &grant.access).await?);
+        Ok(events)
     }
 
     /// Why a token matched no pending request.

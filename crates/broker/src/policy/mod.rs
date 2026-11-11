@@ -29,6 +29,7 @@ pub use github_app::{GithubAppKey, GithubAppProbe, GithubTokenPolicy};
 pub use local::{LocalBackend, LocalProbe};
 pub use onepassword::{CaProbe, OnePasswordConnect, VaultProbe};
 pub use release_app::{ReleaseAppKey, ReleaseAppProbe};
+pub(crate) use release_signing::TAG_NAMESPACE;
 pub use release_signing::{ManifestSpec, ReleaseSigningKey, ReleaseSigningProbe, check_distinct};
 
 /// How warden grants access to an SSH target.

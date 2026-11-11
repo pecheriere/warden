@@ -48,6 +48,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "release_manifest"
+path = "fuzz_targets/release_manifest.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "signature_blob"
 path = "fuzz_targets/signature_blob.rs"
 test = false

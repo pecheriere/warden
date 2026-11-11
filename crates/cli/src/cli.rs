@@ -110,6 +110,13 @@ pub(crate) enum Cmd {
         #[command(subcommand)]
         what: GithubCmd,
     },
+    /// Take the steps of a release the owner approved with `warden request
+    /// release`: the broker creates the signed tag, signs the manifest of the
+    /// release's files and publishes the draft, each once.
+    Release {
+        #[command(subcommand)]
+        what: ReleaseCmd,
+    },
     /// Show local grants, and the broker's view of this agent's grants and
     /// pending requests.
     Status,
@@ -117,6 +124,38 @@ pub(crate) enum Cmd {
     Revoke {
         /// Grant identifier.
         grant: Id,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum ReleaseCmd {
+    /// Have the broker sign the tag and create it at the approved commit. Prints
+    /// the tag and the id of the tag object.
+    Tag {
+        /// The repository, `owner/name`.
+        repository: RepoName,
+        /// The tag, as approved.
+        tag: ReleaseTag,
+    },
+    /// Have the broker sign the manifest of the release's files and attach it,
+    /// with its signature, to the draft release. Prints the manifest's name, its
+    /// signature's name and the manifest's SHA-256. The manifest is a file of
+    /// lines `<sha256>  <name>`, at most 64 KiB; its base name is the name the
+    /// owner approved.
+    SignManifest {
+        /// The repository, `owner/name`.
+        repository: RepoName,
+        /// The tag, as approved.
+        tag: ReleaseTag,
+        /// The manifest file.
+        file: PathBuf,
+    },
+    /// Have the broker publish the draft release. Prints the tag.
+    Publish {
+        /// The repository, `owner/name`.
+        repository: RepoName,
+        /// The tag, as approved.
+        tag: ReleaseTag,
     },
 }
 

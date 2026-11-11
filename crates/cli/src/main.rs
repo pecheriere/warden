@@ -32,7 +32,7 @@ use anyhow::{Result, ensure};
 use clap::Parser;
 use warden_broker_proto::doctor::EXIT_NOTHING_FAILED;
 
-use crate::cli::{Cli, Cmd, GithubCmd, RequestKind, SetupWhat};
+use crate::cli::{Cli, Cmd, GithubCmd, ReleaseCmd, RequestKind, SetupWhat};
 use crate::client::Client;
 use crate::commands::{HttpCall, revoke, run_http, run_setup_git, run_ssh, status};
 use crate::config::Config;
@@ -219,6 +219,15 @@ async fn run(cmd: Cmd) -> Result<()> {
             );
             Ok(())
         }
+        Cmd::Release { what } => match what {
+            ReleaseCmd::Tag { repository, tag } => release::run_tag(repository, tag).await,
+            ReleaseCmd::SignManifest {
+                repository,
+                tag,
+                file,
+            } => release::run_sign_manifest(repository, tag, &file).await,
+            ReleaseCmd::Publish { repository, tag } => release::run_publish(repository, tag).await,
+        },
         Cmd::Status => status().await,
         Cmd::Revoke { grant } => revoke(&grant).await,
     }

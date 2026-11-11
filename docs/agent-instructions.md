@@ -154,6 +154,27 @@ The token covers every repository the person installed the App on, and can also 
 and comment on any public repository. Revoking does not recall one already minted, so keep to
 the repository your task is about, and post nowhere else.
 
+### Releases, if the person asked you to make one
+
+Ask for the one release you were told to make, with `<sha>` the full 40-character commit id,
+on the default branch:
+
+```sh
+warden request release <owner/name> <tag> --commit <sha> --goal "<what this release is>"
+```
+
+Then take only the steps it prints, each once, one command per line:
+
+```sh
+warden release tag <owner/name> <tag>
+warden release sign-manifest <owner/name> <tag> <manifest-file>
+warden release publish <owner/name> <tag>
+```
+
+Run `sign-manifest` once the draft release exists. A refusal is final for that step: tell the
+person what it said instead of trying another way, and never publish the draft
+yourself with another credential.
+
 ### When you are finished
 
 Revoke the grant as soon as the task is done, also when it failed. Do not let

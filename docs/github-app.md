@@ -159,6 +159,42 @@ request itself, and waits for you. See [Agent usage](agent-usage.md#github-token
 in `~/.local/bin`. It changes nothing on GitHub. See
 [Agent usage](agent-usage.md#github-tokens) for what it writes and checks.
 
+## The release App
+
+[Releases](agent-usage.md#releases) use a second GitHub App, apart from the one above. The
+agent never holds its token: the broker mints it, creates the tag, attaches the manifest and
+publishes the draft with it, and drops it. So this App has none of the risks of
+[the agent's token](#what-the-agent-holds), but it can do more than that one, and the broker
+is the only thing that holds its key.
+
+- **Permissions**: `contents` write and `metadata` read, and no webhooks. warden asks GitHub for
+  a token with exactly those two permissions, narrowed to the one repository of the release.
+  No `workflows`, no `administration`, no `pull_requests`.
+- **Install it on each repository you release from**, and on no other. The broker looks the
+  installation up for the repository when it is needed, so the item holds only `app_id` and
+  `private_key` ([1Password items](1password-items.md#release-github-app)). A repository
+  without it is refused when the release is asked for.
+- **Tag ruleset.** The tag step creates `refs/tags/<tag>` as the App. If you protect release
+  tags with a [ruleset](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/about-rulesets)
+  that restricts creating, updating and deleting `v*` tags (you should), the release App must be
+  that ruleset's only bypass actor, in place of a repository administrator. Then the broker
+  creates a release's tags, and so can an administrator only by changing the ruleset. GitHub
+  lets an App be a bypass actor on a repository owned by a user as well as on one owned by an
+  organization (confirmed on a user-owned repository). warden does not check your ruleset.
+- **Egress.** The broker needs outbound HTTPS to `api.github.com` and to
+  `uploads.github.com`, where it attaches the manifest to the draft release. If you limit its
+  egress as [the deployment guide](deployment.md#lock-wardens-egress) does, allow both.
+- **Rotation** works as for the agent's App: add a key on GitHub, put it in the item, delete
+  the old key. Changing the App or the release key while a grant is open makes its remaining steps
+  fail with `policy changed; request access again`: ask again.
+
+What the broker will and will not do with it, and what stays open, is in
+[the threat model](threat-model.md#phone-approved-releases). In short: it creates the tag you
+approved at the commit you approved, and publishes the draft of that tag, and nothing else. It
+cannot publish a draft early for the agent, but **the agent's own token can**, because it has
+`contents` write (see [the accepted gap](threat-model.md#phone-approved-releases)). That costs a
+version, not the integrity of a release.
+
 ## Revoking
 
 - **Revoke the grant** in the approval UI (or `warden revoke <grant>` on the agent machine).

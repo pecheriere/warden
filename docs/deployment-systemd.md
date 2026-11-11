@@ -374,7 +374,11 @@ until the drop-in allows what they need:**
   them all;
 - with [GitHub tokens](github-app.md), the ranges GitHub publishes for its API (the
   `api` list of `https://api.github.com/meta`). Without them every mint fails with
-  `503` "GitHub could not issue a token".
+  `503` "GitHub could not issue a token";
+- with [releases](github-app.md#the-release-app), also the addresses of
+  `uploads.github.com`, where the manifest is attached to the draft release. Without
+  them the manifest step fails with `503` "GitHub could not complete the step; try again
+  later", and the step stays used.
 
 This differs from the Docker rules in three ways:
 

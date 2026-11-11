@@ -18,6 +18,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
+use warden_broker_proto::release::{CommitId, ReleaseTag, RepoName};
 use warden_broker_proto::{AgentName, Fingerprint, Id, TargetName, UnixUser};
 
 use crate::proxy::CallEnd;
@@ -294,6 +295,73 @@ pub enum AuditEvent {
     /// Refusals to mint for an agent beyond those recorded one by one in a minute,
     /// counted so that refused calls cannot fill the log.
     GithubTokenRefusalsHeld {
+        /// The agent.
+        agent: AgentName,
+        /// How many.
+        count: u64,
+    },
+    /// The broker created and pushed the signed tag of a release under a release
+    /// grant. Written once the tag exists; the claim of the step was made before.
+    ReleaseTagCreated {
+        /// The grant it was done under.
+        grant_id: Id,
+        /// The agent.
+        agent: AgentName,
+        /// The repository.
+        repository: RepoName,
+        /// The tag.
+        tag: ReleaseTag,
+        /// The commit the tag points at.
+        commit: CommitId,
+        /// The id of the tag object, which the broker computed before GitHub
+        /// created it.
+        object: String,
+    },
+    /// The broker signed the manifest of a release under a release grant and
+    /// attached it, with its signature, to the draft release. Written once both
+    /// files are uploaded; the claim of the step was made before.
+    ReleaseManifestSigned {
+        /// The grant it was done under.
+        grant_id: Id,
+        /// The agent.
+        agent: AgentName,
+        /// The repository.
+        repository: RepoName,
+        /// The tag.
+        tag: ReleaseTag,
+        /// The manifest's file name.
+        name: String,
+        /// Lowercase hex SHA-256 of the manifest signed.
+        sha256: String,
+    },
+    /// The broker published the draft release under a release grant. Written
+    /// after GitHub confirmed the release is no longer a draft; the claim of the
+    /// step was made before.
+    ReleasePublished {
+        /// The grant it was done under.
+        grant_id: Id,
+        /// The agent.
+        agent: AgentName,
+        /// The repository.
+        repository: RepoName,
+        /// The tag of the release.
+        tag: ReleaseTag,
+    },
+    /// The broker refused a step of a release, or could not finish one it had
+    /// claimed.
+    ReleaseRefused {
+        /// The agent.
+        agent: AgentName,
+        /// The active grant it had, if any.
+        grant_id: Option<Id>,
+        /// The step: `tag`, `manifest` or `publish`.
+        step: String,
+        /// Why (a fixed phrase, never secrets or anything GitHub said).
+        reason: String,
+    },
+    /// Refusals of release steps for an agent beyond those recorded one by one in
+    /// a minute, counted so that refused calls cannot fill the log.
+    ReleaseRefusalsHeld {
         /// The agent.
         agent: AgentName,
         /// How many.

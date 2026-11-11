@@ -21,6 +21,8 @@ use warden_broker_proto::{
     InfoResponse, PendingRequest, ProxyRequest, ProxyResponse, RequestStatus, signing,
 };
 
+use warden_broker_proto::release::MAX_MANIFEST_BYTES;
+
 use crate::AppState;
 use crate::audit::AuditEvent;
 use crate::identity::{AuthedAgent, refuse_funnel};
@@ -31,9 +33,14 @@ use crate::signed;
 
 mod commit_signing;
 mod github_token;
+mod release;
 
 /// Largest accepted request body, in bytes.
 const BODY_LIMIT: usize = 16 * 1024;
+
+/// The manifest step's body: a manifest of at most `MAX_MANIFEST_BYTES`, as base64
+/// (a third larger) in JSON.
+const MANIFEST_BODY_LIMIT: usize = MAX_MANIFEST_BYTES * 2;
 
 /// Largest accepted body of a proxied call: a 1 MiB request body, base64
 /// encoded inside JSON with its headers.
@@ -88,6 +95,15 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/v1/github-token",
             agent(post(github_token::mint), BODY_LIMIT),
+        )
+        .route("/v1/release/tag", agent(post(release::tag), BODY_LIMIT))
+        .route(
+            "/v1/release/manifest",
+            agent(post(release::manifest), MANIFEST_BODY_LIMIT),
+        )
+        .route(
+            "/v1/release/publish",
+            agent(post(release::publish), BODY_LIMIT),
         )
         .route(
             "/v1/grants/{id}/revoke",

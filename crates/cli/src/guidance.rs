@@ -362,6 +362,10 @@ mod tests {
             "<prefix>" => "/api/".to_owned(),
             "<grant-id>" | "<request-id>" => Id::random().to_string(),
             "<command>" => "uptime".to_owned(),
+            "<owner/name>" => "example-owner/example-repo".to_owned(),
+            "<tag>" => "v1.2.3".to_owned(),
+            "<sha>" => "0123456789abcdef0123456789abcdef01234567".to_owned(),
+            "<manifest-file>" => "warden-1.2.3-SHA256SUMS".to_owned(),
             other => {
                 assert!(
                     !other.starts_with('<') || other.contains(' '),
@@ -374,8 +378,8 @@ mod tests {
 
     /// Every `warden` command line in `doc`, with its continuation lines.
     fn commands(doc: &str) -> Vec<String> {
-        const SUBCOMMANDS: [&str; 7] = [
-            "login", "request", "ssh", "http", "status", "revoke", "doctor",
+        const SUBCOMMANDS: [&str; 8] = [
+            "login", "request", "ssh", "http", "status", "revoke", "doctor", "release",
         ];
         let mut found = Vec::new();
         let mut lines = doc.lines();

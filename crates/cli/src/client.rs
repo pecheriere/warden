@@ -116,6 +116,8 @@ fn json_body<T: Serialize>(value: &T) -> Result<Vec<u8>, CallError> {
         .map_err(|e| CallError::Refused(format!("cannot encode the request: {e}")))
 }
 
+mod release;
+
 impl Client {
     /// A client for the API at `base`, authenticating with `auth`.
     ///

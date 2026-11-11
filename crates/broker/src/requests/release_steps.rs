@@ -8,6 +8,8 @@ use sqlx::Row as _;
 use warden_broker_proto::release::{ReleaseGrant, ReleaseSteps, ReleaseTag, RepoName};
 use warden_broker_proto::{AgentName, GrantAccess, GrantView, Id};
 
+use crate::audit::AuditEvent;
+
 use super::{RequestError, Requests, parse};
 
 /// One of the steps of a release.
@@ -46,11 +48,20 @@ impl ReleaseStep {
             }
         }
     }
-}
 
-impl ReleaseStep {
+    /// The step's name in the audit log and in refusals.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Tag => "tag",
+            Self::Manifest => "manifest",
+            Self::Publish => "publish",
+        }
+    }
+
     /// Whether the owner approved this step in `steps`.
-    const fn covered_by(self, steps: &ReleaseSteps) -> bool {
+    #[must_use]
+    pub const fn covered_by(self, steps: &ReleaseSteps) -> bool {
         match self {
             Self::Tag => steps.tag,
             Self::Manifest => steps.manifest.is_some(),
@@ -59,13 +70,36 @@ impl ReleaseStep {
     }
 }
 
-/// A usable release grant.
+/// A usable release grant. Only [`Requests::active_release`] makes one, so that
+/// holding it means the grant was read from the store for this release: its
+/// fields cannot be changed to claim a step the owner did not approve.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActiveRelease {
-    /// The grant.
-    pub grant_id: Id,
+    grant_id: Id,
+    grant: ReleaseGrant,
+}
+
+impl ActiveRelease {
+    /// The grant's id.
+    #[must_use]
+    pub const fn grant_id(&self) -> &Id {
+        &self.grant_id
+    }
+
     /// What was approved.
-    pub grant: ReleaseGrant,
+    #[must_use]
+    pub const fn grant(&self) -> &ReleaseGrant {
+        &self.grant
+    }
+}
+
+/// The digests the manifest step kept: the files it attached to the draft.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordedManifest {
+    /// Lowercase hex SHA-256 of the manifest.
+    pub manifest_sha256: String,
+    /// Lowercase hex SHA-256 of the manifest's signature file.
+    pub signature_sha256: String,
 }
 
 impl Requests {
@@ -75,7 +109,7 @@ impl Requests {
     ///
     /// # Errors
     /// Storage failures, an unreadable stored grant, or more than one active grant
-    /// for the same release (which no code path makes): the caller refuses.
+    /// for the same release (which approving a release grant never leaves): the caller refuses.
     pub async fn active_release(
         &self,
         agent: &AgentName,
@@ -105,6 +139,35 @@ impl Requests {
                 "more than one active grant for one release".to_owned(),
             )),
         }
+    }
+
+    /// Whether `step` of `release` was claimed already. A read, for the caller to
+    /// say so before it asks GitHub anything; only [`Requests::claim_step`] decides
+    /// whether a step may run.
+    ///
+    /// # Errors
+    /// Storage failures: the caller refuses.
+    pub async fn step_claimed(
+        &self,
+        release: &ActiveRelease,
+        step: ReleaseStep,
+    ) -> Result<bool, RequestError> {
+        let row = sqlx::query(
+            "SELECT tag_claimed_at, manifest_claimed_at, publish_claimed_at \
+             FROM release_steps WHERE grant_id = ?",
+        )
+        .bind(release.grant_id.as_str())
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(row) = row else {
+            return Ok(false);
+        };
+        let column = match step {
+            ReleaseStep::Tag => "tag_claimed_at",
+            ReleaseStep::Manifest => "manifest_claimed_at",
+            ReleaseStep::Publish => "publish_claimed_at",
+        };
+        Ok(row.try_get::<Option<i64>, _>(column)?.is_some())
     }
 
     /// Claim `step` of `release` at `now`. True for exactly one caller, ever: in one
@@ -171,6 +234,35 @@ impl Requests {
         Ok(())
     }
 
+    /// The digests [`Requests::record_manifest`] kept for `release`, or `None` when
+    /// the manifest step has not finished: it was not run, or it failed after its
+    /// claim, which leaves nothing recorded.
+    ///
+    /// # Errors
+    /// Storage failures: the caller refuses.
+    pub async fn recorded_manifest(
+        &self,
+        release: &ActiveRelease,
+    ) -> Result<Option<RecordedManifest>, RequestError> {
+        let row = sqlx::query(
+            "SELECT manifest_sha256, signature_sha256 FROM release_steps WHERE grant_id = ?",
+        )
+        .bind(release.grant_id.as_str())
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let manifest: Option<String> = row.try_get("manifest_sha256")?;
+        let signature: Option<String> = row.try_get("signature_sha256")?;
+        Ok(manifest
+            .zip(signature)
+            .map(|(manifest_sha256, signature_sha256)| RecordedManifest {
+                manifest_sha256,
+                signature_sha256,
+            }))
+    }
+
     /// End release grant `grant` at `now` when every step it covers is claimed: the
     /// tag if the grant creates it, the manifest if it signs one, the publish if it
     /// publishes. The window only ever gets shorter.
@@ -206,5 +298,43 @@ impl Requests {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+}
+
+impl Requests {
+    /// Record that `agent` was refused `step` of a release, for `reason` (a fixed
+    /// phrase). Past a few a minute only a count is kept, written later as one
+    /// entry.
+    pub(crate) async fn record_release_refusal(
+        &self,
+        agent: &AgentName,
+        grant_id: Option<Id>,
+        step: &str,
+        reason: String,
+    ) {
+        let event = AuditEvent::ReleaseRefused {
+            agent: agent.clone(),
+            grant_id,
+            step: step.to_owned(),
+            reason,
+        };
+        self.release_refusals
+            .record(
+                &self.audit,
+                agent,
+                self.clock.now(),
+                event,
+                "a refusal of a release step",
+            )
+            .await;
+    }
+
+    /// Write the refusals of release steps held back since the last time.
+    pub(super) async fn flush_release_refusals(&self) {
+        self.release_refusals
+            .flush(&self.audit, "refusals of release steps", |agent, count| {
+                AuditEvent::ReleaseRefusalsHeld { agent, count }
+            })
+            .await;
     }
 }

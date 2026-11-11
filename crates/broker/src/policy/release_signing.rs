@@ -35,7 +35,7 @@ const LABELS: [&str; 7] = [
 /// The line that starts an armored SSH signature.
 const SIGNATURE_BEGIN: &str = "-----BEGIN SSH SIGNATURE-----";
 /// The namespace Git signs tags in.
-const TAG_NAMESPACE: &str = "git";
+pub(crate) const TAG_NAMESPACE: &str = "git";
 
 /// Where the version goes in a manifest's file name.
 const VERSION_PLACEHOLDER: &str = "{version}";
@@ -105,6 +105,11 @@ impl ReleaseSigningKey {
     #[must_use]
     pub fn tagger_email(&self) -> &str {
         &self.tagger_email
+    }
+
+    /// The private key, for [`crate::release_signing`] to sign with.
+    pub(crate) const fn private_key(&self) -> &PrivateKey {
+        &self.key
     }
 
     /// The manifest the repository signs, if it has one.

@@ -165,8 +165,9 @@ does not.
 ## Release signing key
 
 Tag: `warden:release-signing`. Optional: with no such item, there are no release keys. One
-item per repository; the local backend cannot hold one. warden loads and checks these items
-for the release process to come, and does not use them for anything else yet. Fields are
+item per repository; the local backend cannot hold one. warden loads these items to sign the
+tags and manifests of [releases](agent-usage.md#releases) that you approve, and uses them for
+nothing else. Fields are
 matched by label (case-sensitive, each label once); add them in 1Password as custom fields,
 concealed for the key, text for the rest. The item's category does not matter.
 
@@ -178,7 +179,7 @@ concealed for the key, text for the rest. The item's category does not matter.
 | `tagger_email` | Required. The email on those tags: an address that contains an `@`, with no whitespace, `<`, `>` or control characters, no leading or trailing whitespace, and at most 254 characters. |
 | `manifest` | Optional. The file name of the signed checksums file the repository publishes, with `{version}` exactly once, such as `example-repo-{version}-SHA256SUMS`: letters, digits, dots, underscores, plus signs and dashes around it, no path separator, at most 200 characters. |
 | `manifest_namespace` | Required with `manifest`, and an error without it: the `ssh-keygen -Y` namespace the manifest is signed in, `^[a-z0-9][a-z0-9-]{0,63}$`, except `git`, which is reserved for tag signatures so that a manifest's signature can never be taken for a tag's. |
-| `publish` | Optional: `true` or `false` (the default). Whether warden may publish the draft release itself. |
+| `publish` | Optional: `true` or `false` (the default). Whether warden may publish the draft release itself. Set it to `false` for a repository whose own workflow publishes. |
 
 Example (tag `warden:release-signing`, title `release-example-repo`):
 
@@ -205,9 +206,10 @@ key out. `warden-server doctor` shows the result in its `release-signing` check.
 
 Tag: `warden:github-release-app`. Optional: with no such item, there is no release App. More
 than one is an error, and the local backend cannot hold one. A second GitHub App, apart from
-the one in [GitHub App](#github-app), for the release process to come. warden loads and
-checks the item and does not use it for anything else yet. It has no installation: the
-installation is found when the App is used. Two fields, matched by label like the others:
+the one in [GitHub App](#github-app), for [releases](agent-usage.md#releases). warden mints
+its tokens only inside the broker and hands them to no one. It has no installation in the item:
+the broker finds the App's installation on the repository when it needs it. The App's setup on
+GitHub is in [The release App](github-app.md#the-release-app). Two fields, matched by label like the others:
 
 | Field | Rule |
 |---|---|
