@@ -331,11 +331,30 @@ impl FakeBackend {
     /// If the lock is poisoned.
     #[must_use]
     pub fn with_release_key(self, key: ReleaseSigningKey) -> Self {
+        self.add_release_key(key);
+        self
+    }
+
+    /// Add a release signing key to a backend a broker already holds.
+    ///
+    /// # Panics
+    /// If the lock is poisoned.
+    pub fn add_release_key(&self, key: ReleaseSigningKey) {
         self.release_keys
             .lock()
             .expect("keys lock poisoned")
             .push(key);
-        self
+    }
+
+    /// Replace every release signing key with `key`, as when the owner rotates a
+    /// repository's key in 1Password.
+    ///
+    /// # Panics
+    /// If the lock is poisoned.
+    pub fn replace_release_keys(&self, key: ReleaseSigningKey) {
+        let mut keys = self.release_keys.lock().expect("keys lock poisoned");
+        keys.clear();
+        keys.push(key);
     }
 
     /// Set the release GitHub App.
@@ -344,8 +363,16 @@ impl FakeBackend {
     /// If the lock is poisoned.
     #[must_use]
     pub fn with_release_app(self, app: ReleaseAppKey) -> Self {
-        *self.release_app.lock().expect("app lock poisoned") = Some(app);
+        self.set_release_app(Some(app));
         self
+    }
+
+    /// Set or clear the release GitHub App on a backend a broker already holds.
+    ///
+    /// # Panics
+    /// If the lock is poisoned.
+    pub fn set_release_app(&self, app: Option<ReleaseAppKey>) {
+        *self.release_app.lock().expect("app lock poisoned") = app;
     }
 
     /// How many times the GitHub App has been read.

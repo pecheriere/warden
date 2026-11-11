@@ -15,6 +15,15 @@ All notable changes to this project are recorded here. The format follows
 
 ### Added
 
+- Release grants, the request half. An agent runs `warden request release <owner/name> <tag>
+  --commit <sha> --goal "..."` for a repository that has a `warden:release-signing` item. The
+  broker asks GitHub first, and refuses a commit that is not on the default branch or a tag that
+  exists under another key or on another commit. The owner's page then shows the commit, its
+  date, the changelog section for the version, the steps and the key, and a link to compare with
+  the previous tag, and approves with a passkey. The grant lasts one day, cannot be renewed, and
+  Active grants lists its steps as open or used. New migration `0010_release`. The steps
+  themselves (tag, manifest and publish) come in a later release; this one grants nothing that
+  acts on GitHub yet (#212).
 - `warden-server doctor` has two new checks, `release-signing` and `release-app`. The 1Password
   backend now loads items tagged `warden:release-signing` (one per repository) and
   `warden:github-release-app` (at most one), refuses release keys that are shared with each other,

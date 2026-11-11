@@ -8,7 +8,7 @@
 use std::fmt;
 
 use sha2::{Digest as _, Sha256};
-use ssh_key::{Algorithm, HashAlg, PrivateKey, PublicKey};
+use ssh_key::{Algorithm, HashAlg, PrivateKey, PublicKey, SshSig};
 use warden_broker_proto::release::RepoName;
 
 use super::onepassword::{SecretField, parse_private_key, values_by_label};
@@ -31,6 +31,11 @@ const LABELS: [&str; 7] = [
     NAMESPACE_FIELD,
     PUBLISH_FIELD,
 ];
+
+/// The line that starts an armored SSH signature.
+const SIGNATURE_BEGIN: &str = "-----BEGIN SSH SIGNATURE-----";
+/// The namespace Git signs tags in.
+const TAG_NAMESPACE: &str = "git";
 
 /// Where the version goes in a manifest's file name.
 const VERSION_PLACEHOLDER: &str = "{version}";
@@ -123,6 +128,31 @@ impl ReleaseSigningKey {
             .to_string()
     }
 
+    /// Whether `raw`, the bytes of a tag object, ends in an SSH signature by this
+    /// key in Git's namespace over everything before it. A tag that is not
+    /// signed, is signed by another key or in another namespace, or whose
+    /// signature does not verify, gives false.
+    #[must_use]
+    pub fn verifies_tag(&self, raw: &[u8]) -> bool {
+        let Ok(text) = std::str::from_utf8(raw) else {
+            return false;
+        };
+        let Some(start) = text.rfind(SIGNATURE_BEGIN) else {
+            return false;
+        };
+        let (payload, armored) = text.split_at(start);
+        if !payload.is_empty() && !payload.ends_with('\n') {
+            return false;
+        }
+        let Ok(signature) = SshSig::from_pem(armored) else {
+            return false;
+        };
+        signature.namespace() == TAG_NAMESPACE
+            && matches!(signature.hash_alg(), HashAlg::Sha512 | HashAlg::Sha256)
+            && signature.public_key() == self.key.public_key().key_data()
+            && crate::signed::sshsig_verifies(self.key.public_key(), &signature, payload.as_bytes())
+    }
+
     /// Lowercase hex digest of what a release grant is bound to: the repository
     /// (lowercased), the key, the tagger, the manifest and whether the broker
     /// publishes. Changing any of them ends every grant made for the old item.
@@ -152,6 +182,39 @@ impl ReleaseSigningKey {
             b"keep draft"
         });
         hex::encode(hasher.finalize())
+    }
+}
+
+#[cfg(feature = "testkit")]
+impl ReleaseSigningKey {
+    /// A key for tests, without going through an item: `manifest` is the file
+    /// name pattern and namespace.
+    ///
+    /// # Panics
+    /// If `repository` is not `owner/name` or the pattern is not a valid one.
+    #[must_use]
+    pub fn for_tests(
+        repository: &str,
+        key: PrivateKey,
+        manifest: Option<(&str, &str)>,
+        publish: bool,
+    ) -> Self {
+        let manifest = manifest.map(|(pattern, namespace)| {
+            assert!(manifest_pattern_error(pattern).is_none(), "a valid pattern");
+            assert!(is_namespace(namespace), "a valid namespace");
+            ManifestSpec {
+                pattern: pattern.to_owned(),
+                namespace: namespace.to_owned(),
+            }
+        });
+        Self {
+            repository: RepoName::try_from(repository.to_owned()).expect("owner/name"),
+            key,
+            tagger_name: "Release Bot".to_owned(),
+            tagger_email: "release@example.com".to_owned(),
+            manifest,
+            publish,
+        }
     }
 }
 
@@ -315,6 +378,13 @@ or control characters",
             }
             if !is_namespace(namespace) {
                 return Err(bad(NAMESPACE_FIELD, "must match ^[a-z0-9][a-z0-9-]{0,63}$"));
+            }
+            // Git's own, so that a signature over a manifest can never be a tag's.
+            if namespace == TAG_NAMESPACE {
+                return Err(bad(
+                    NAMESPACE_FIELD,
+                    "must not be \"git\", which is reserved for tag signatures",
+                ));
             }
             Some(ManifestSpec {
                 pattern: pattern.to_owned(),

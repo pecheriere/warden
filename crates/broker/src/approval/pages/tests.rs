@@ -11,6 +11,8 @@ mod format;
 mod grants_page;
 mod history_page;
 mod layout;
+mod release_fixtures;
+mod release_page;
 mod self_contained;
 
 use http::{HeaderName, Method};
@@ -166,6 +168,7 @@ fn pending(agent: AgentName, request: CreateRequest, destination: Destination) -
         request,
         destination,
         expires_at: NOW + 240,
+        release: None,
     }
 }
 
@@ -189,6 +192,7 @@ fn active(n: u8, request: CreateRequest, access: GrantAccess) -> ActiveGrant {
         access,
         not_before: NOW - 300,
         not_after: NOW + 1800,
+        release: None,
     }
 }
 
@@ -581,6 +585,15 @@ fn longest_fingerprint_pages() -> Vec<(&'static str, Markup)> {
     ]
 }
 
+/// The pages of each kind of access added after the first three.
+fn kind_pages() -> impl Iterator<Item = (&'static str, Markup)> {
+    commit_signing_pages()
+        .into_iter()
+        .chain(github_token_pages())
+        .chain(release_fixtures::release_pages())
+        .chain(longest_fingerprint_pages())
+}
+
 /// Every page with fixture data, named for the screenshot script.
 fn pages() -> Vec<(&'static str, Markup)> {
     let long = long_goal();
@@ -681,9 +694,7 @@ fn pages() -> Vec<(&'static str, Markup)> {
     ]
     .into_iter()
     .chain(stated_pages())
-    .chain(commit_signing_pages())
-    .chain(github_token_pages())
-    .chain(longest_fingerprint_pages())
+    .chain(kind_pages())
     .collect()
 }
 

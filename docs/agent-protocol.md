@@ -567,6 +567,22 @@ target's policy decides which, and the agent does not need to know):
   approval is bound to this exact key, and one key can back only one live
   request or grant at a time (`409`, see below).
 
+`access` for a release (the broker makes the release with its own key and GitHub App):
+
+```json
+{"kind":"release","repository":"example-owner/example-repo","tag":"v1.2.3","commit":"0123456789abcdef0123456789abcdef01234567"}
+```
+
+- `repository`: `owner/name`. The owner matches `^[A-Za-z0-9][A-Za-z0-9-]{0,38}$`, the name
+  `^[A-Za-z0-9._-]{1,100}$` and is not `.` or `..`. Compared ignoring ASCII case.
+- `tag`: `^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$`, at most 64 characters.
+- `commit`: exactly 40 lowercase hex characters.
+- `window` must be `1d`. The broker asks GitHub before the owner is asked, and refuses with a
+  `400` (a fixed message, quoting nothing GitHub said) when the commit is not on the default
+  branch, the tag exists on another commit or under another key, there is nothing left to do,
+  GitHub has no such commit or the App is not installed on the repository, GitHub cannot be asked, or
+  releases are not configured (`releases are not configured on this broker`).
+
 `access` for an HTTPS API (calls the broker makes with a stored secret):
 
 ```json
@@ -701,7 +717,7 @@ not a client is still waiting. To take over from a client that died:
 
 What the grant needs depends on its kind:
 
-- `api`, `commit_signing` and `github_token`: nothing but the agent's own signature or key.
+- `api`, `commit_signing`, `github_token` and `release`: nothing but the agent's own signature or key.
   The new client can use it.
 - `ssh` and `relay`: the private half of the `public_key` in the request. The
   certificate is for that key, and the relay admits only that key. A client that
@@ -865,7 +881,7 @@ A grant is:
 |-------|------|---------|
 | `grant_id` | string | Grant id (32 hex). |
 | `not_before`, `not_after` | integer | Validity, Unix seconds. |
-| `access` | object | What the grant allows, tagged by `kind`: `ssh`, `relay`, `api`, `commit_signing` or `github_token`. |
+| `access` | object | What the grant allows, tagged by `kind`: `ssh`, `relay`, `api`, `commit_signing`, `github_token` or `release`. |
 
 Keep a record of each grant (id, kind, `not_after`) so you can use and
 revoke it. Drop it when it expires; `GET /v1/grants` is the broker's view.
@@ -1038,6 +1054,21 @@ the payload: its SHA-256 only. Beyond 30 refusals a minute per agent, they are c
 
 `warden` is a client of this: [Signing commits](agent-usage.md#signing-commits). Git runs it
 as `warden -Y sign -n git -f <public key> [-U] <file>` and reads `<file>.sig`.
+
+### Release grants (`"kind":"release"`)
+
+Asked for with the `release` access above and a `window` of `1d`:
+
+```json
+{"grant_id":"5e1c…","not_before":1793091612,"not_after":1793178012,"access":{"kind":"release","repository":"example-owner/example-repo","tag":"v1.2.3","commit":"0123456789abcdef0123456789abcdef01234567","key_fingerprint":"SHA256:…","steps":{"tag":true,"manifest":"warden-1.2.3-SHA256SUMS","publish":true},"digest":"…"}}
+```
+
+`steps` is what the owner approved: `tag` is false when the tag was already in place, `manifest`
+is the file name of the manifest the broker signs (absent when it signs none) and `publish` is
+whether it publishes the draft release. `digest` binds the grant to the facts and the key the
+owner saw. There is nothing to install. The grant lasts one day from approval, is not renewable,
+and ends when every step it covers is done. The routes for the steps are not part of this
+version of the protocol.
 
 ### GitHub token grants (`"kind":"github_token"`)
 

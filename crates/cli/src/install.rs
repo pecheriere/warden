@@ -66,7 +66,10 @@ fn ssh_setup<'a>(
                 &relay.user,
             )
         }
-        GrantAccess::Api(_) | GrantAccess::CommitSigning(_) | GrantAccess::GithubToken(_) => {
+        GrantAccess::Api(_)
+        | GrantAccess::CommitSigning(_)
+        | GrantAccess::GithubToken(_)
+        | GrantAccess::Release(_) => {
             bail!("the broker returned a non-ssh grant for an ssh request")
         }
     };

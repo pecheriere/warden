@@ -7,9 +7,10 @@ use serde::{Deserialize, Serialize};
 use crate::ParseError;
 
 /// Access window length. The windows up to 4 hours are for SSH and API access;
-/// the windows in days are for commit signing only, and neither parsing a
-/// policy's `max_window` nor a target's or secret's limit can ever admit one
-/// (see [`Window::commit_signing`]).
+/// the windows in days are for commit signing, GitHub tokens and releases
+/// (see [`Window::COMMIT_SIGNING`], [`Window::GITHUB_TOKEN`] and
+/// [`Window::RELEASE`]), and neither parsing a policy's `max_window` nor a
+/// target's or secret's limit can ever admit one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum Window {
     /// 15 minutes.
@@ -24,13 +25,13 @@ pub enum Window {
     /// 4 hours.
     #[serde(rename = "4h")]
     H4,
-    /// 1 day: commit signing only.
+    /// 1 day: commit signing, GitHub tokens and releases.
     #[serde(rename = "1d")]
     D1,
-    /// 7 days: commit signing only.
+    /// 7 days: commit signing and GitHub tokens.
     #[serde(rename = "7d")]
     D7,
-    /// 30 days: commit signing only.
+    /// 30 days: commit signing and GitHub tokens.
     #[serde(rename = "30d")]
     D30,
     /// 90 days: commit signing only.
@@ -92,6 +93,15 @@ impl Window {
     #[must_use]
     pub const fn is_github_token(self) -> bool {
         matches!(self, Self::D1 | Self::D7 | Self::D30)
+    }
+
+    /// The windows a release grant may have: one day.
+    pub const RELEASE: [Self; 1] = [Self::D1];
+
+    /// Whether this is the window of a release grant.
+    #[must_use]
+    pub const fn is_release(self) -> bool {
+        matches!(self, Self::D1)
     }
 
     /// Parse a GitHub token window: `1d`, `7d` or `30d`. Kept apart from

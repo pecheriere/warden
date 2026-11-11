@@ -662,7 +662,7 @@ mod tests {
         let req = TestBroker::api_request("github", "triage issue 42", Window::M15);
         let create = state
             .requests
-            .insert(&bot, &req, "subject", "slot", "token");
+            .insert(&bot, &req, "subject", "slot", "token", None);
         tokio::pin!(create);
         poll_fn(|cx| {
             assert!(create.as_mut().poll(cx).is_pending());

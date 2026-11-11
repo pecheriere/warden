@@ -1,0 +1,210 @@
+//! The steps of a release grant: finding the grant an agent holds for a release,
+//! claiming a step so that it is done once, and ending the grant when the last one is.
+//!
+//! A step is claimed before it is done and a claim is never given back, so a step
+//! that fails after its claim stays used: the agent asks the owner again.
+
+use sqlx::Row as _;
+use warden_broker_proto::release::{ReleaseGrant, ReleaseSteps, ReleaseTag, RepoName};
+use warden_broker_proto::{AgentName, GrantAccess, GrantView, Id};
+
+use super::{RequestError, Requests, parse};
+
+/// One of the steps of a release.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReleaseStep {
+    /// Create the tag.
+    Tag,
+    /// Sign the manifest.
+    Manifest,
+    /// Publish the draft release.
+    Publish,
+}
+
+impl ReleaseStep {
+    /// The statement that claims the step. One literal each, so that nothing a
+    /// caller sends reaches the SQL.
+    const fn claim_sql(self) -> &'static str {
+        match self {
+            Self::Tag => {
+                "UPDATE release_steps SET tag_claimed_at = ?1 \
+                 WHERE grant_id = ?2 AND tag_claimed_at IS NULL \
+                 AND EXISTS (SELECT 1 FROM grants g WHERE g.id = ?2 \
+                   AND g.revoked_at IS NULL AND g.not_after > ?3)"
+            }
+            Self::Manifest => {
+                "UPDATE release_steps SET manifest_claimed_at = ?1 \
+                 WHERE grant_id = ?2 AND manifest_claimed_at IS NULL \
+                 AND EXISTS (SELECT 1 FROM grants g WHERE g.id = ?2 \
+                   AND g.revoked_at IS NULL AND g.not_after > ?3)"
+            }
+            Self::Publish => {
+                "UPDATE release_steps SET publish_claimed_at = ?1 \
+                 WHERE grant_id = ?2 AND publish_claimed_at IS NULL \
+                 AND EXISTS (SELECT 1 FROM grants g WHERE g.id = ?2 \
+                   AND g.revoked_at IS NULL AND g.not_after > ?3)"
+            }
+        }
+    }
+}
+
+impl ReleaseStep {
+    /// Whether the owner approved this step in `steps`.
+    const fn covered_by(self, steps: &ReleaseSteps) -> bool {
+        match self {
+            Self::Tag => steps.tag,
+            Self::Manifest => steps.manifest.is_some(),
+            Self::Publish => steps.publish,
+        }
+    }
+}
+
+/// A usable release grant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveRelease {
+    /// The grant.
+    pub grant_id: Id,
+    /// What was approved.
+    pub grant: ReleaseGrant,
+}
+
+impl Requests {
+    /// The release grant `agent` may act on for `tag` in `repo`, if any. The
+    /// repository is matched ignoring ASCII case, as GitHub does. Read for every
+    /// step, so that a revocation or the end of the grant stops the next one.
+    ///
+    /// # Errors
+    /// Storage failures, an unreadable stored grant, or more than one active grant
+    /// for the same release (which no code path makes): the caller refuses.
+    pub async fn active_release(
+        &self,
+        agent: &AgentName,
+        repo: &RepoName,
+        tag: &ReleaseTag,
+    ) -> Result<Option<ActiveRelease>, RequestError> {
+        let mut found = Vec::new();
+        for row in self.active_rows(agent, "release").await? {
+            let view: String = row.try_get("view")?;
+            let view: GrantView = serde_json::from_str(&view)?;
+            let GrantAccess::Release(grant) = view.access else {
+                return Err(RequestError::Corrupt(
+                    "release grant changed kind".to_owned(),
+                ));
+            };
+            if grant.repository.matches(repo) && grant.tag == *tag {
+                found.push(ActiveRelease {
+                    grant_id: parse(&row, "id")?,
+                    grant,
+                });
+            }
+        }
+        match found.len() {
+            0 => Ok(None),
+            1 => Ok(found.pop()),
+            _ => Err(RequestError::Corrupt(
+                "more than one active grant for one release".to_owned(),
+            )),
+        }
+    }
+
+    /// Claim `step` of `release` at `now`. True for exactly one caller, ever: in one
+    /// statement, so that two at once cannot both claim, and in the database, so
+    /// that a restart does not forget it.
+    ///
+    /// The claim is the check that the step may run, so a caller makes it after its
+    /// own preparation and before the step's effect, and does the step only on true.
+    /// False when the grant does not cover the step (the owner did not approve it),
+    /// when the grant was revoked or its window has ended at `now`, when the step was
+    /// claimed before whatever became of it, or when the grant has no such row. A
+    /// revocation between [`Requests::active_release`] and the claim therefore still
+    /// stops the step.
+    ///
+    /// # Errors
+    /// Storage failures: the caller refuses.
+    pub async fn claim_step(
+        &self,
+        release: &ActiveRelease,
+        step: ReleaseStep,
+        now: i64,
+    ) -> Result<bool, RequestError> {
+        if !step.covered_by(&release.grant.steps) {
+            return Ok(false);
+        }
+        let claimed = sqlx::query(step.claim_sql())
+            .bind(now)
+            .bind(release.grant_id.as_str())
+            .bind(now)
+            .execute(&self.pool)
+            .await?
+            .rows_affected();
+        Ok(claimed > 0)
+    }
+
+    /// Keep the digests of the manifest that was signed and of its signature, for
+    /// the grants page and the audit trail. Once, and only after the manifest step
+    /// was claimed.
+    ///
+    /// # Errors
+    /// [`RequestError::Corrupt`] when the step was not claimed or the digests are
+    /// already kept; storage failures.
+    pub async fn record_manifest(
+        &self,
+        grant: &Id,
+        manifest_sha256: &str,
+        signature_sha256: &str,
+    ) -> Result<(), RequestError> {
+        let kept = sqlx::query(
+            "UPDATE release_steps SET manifest_sha256 = ?, signature_sha256 = ? \
+             WHERE grant_id = ? AND manifest_claimed_at IS NOT NULL AND manifest_sha256 IS NULL",
+        )
+        .bind(manifest_sha256)
+        .bind(signature_sha256)
+        .bind(grant.as_str())
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+        if kept == 0 {
+            return Err(RequestError::Corrupt(
+                "the manifest step was not claimed, or its digests are kept already".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// End release grant `grant` at `now` when every step it covers is claimed: the
+    /// tag if the grant creates it, the manifest if it signs one, the publish if it
+    /// publishes. The window only ever gets shorter.
+    ///
+    /// # Errors
+    /// Storage failures or an unreadable stored grant: the caller refuses.
+    pub async fn end_if_done(&self, grant: &Id, now: i64) -> Result<(), RequestError> {
+        let row = sqlx::query("SELECT view FROM grants WHERE id = ?")
+            .bind(grant.as_str())
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or(RequestError::NotFound)?;
+        let view: String = row.try_get("view")?;
+        let view: GrantView = serde_json::from_str(&view)?;
+        let GrantAccess::Release(release) = view.access else {
+            return Err(RequestError::Corrupt(
+                "release grant changed kind".to_owned(),
+            ));
+        };
+        let steps = release.steps;
+        sqlx::query(
+            "UPDATE grants SET not_after = ?1 WHERE id = ?2 AND not_after > ?1 \
+             AND EXISTS (SELECT 1 FROM release_steps s WHERE s.grant_id = ?2 \
+               AND (?3 = 0 OR s.tag_claimed_at IS NOT NULL) \
+               AND (?4 = 0 OR s.manifest_claimed_at IS NOT NULL) \
+               AND (?5 = 0 OR s.publish_claimed_at IS NOT NULL))",
+        )
+        .bind(now)
+        .bind(grant.as_str())
+        .bind(i64::from(steps.tag))
+        .bind(i64::from(steps.manifest.is_some()))
+        .bind(i64::from(steps.publish))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+}

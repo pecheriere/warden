@@ -42,7 +42,9 @@ pub fn elsewhere_note(grant: &GrantView, local: &[Id]) -> String {
              warden revoke {id})"
         ),
         // The broker signs under the grant: there is nothing to have on a machine.
-        GrantAccess::CommitSigning(_) | GrantAccess::GithubToken(_) => String::new(),
+        GrantAccess::CommitSigning(_) | GrantAccess::GithubToken(_) | GrantAccess::Release(_) => {
+            String::new()
+        }
     }
 }
 
@@ -70,6 +72,9 @@ pub fn broker_grant_line(grant: &GrantView, local: &[Id]) -> String {
             format!("commit signing with {}", signing.key_fingerprint)
         }
         GrantAccess::GithubToken(_) => "github token".to_owned(),
+        GrantAccess::Release(release) => {
+            format!("release {} of {}", release.tag, release.repository)
+        }
     };
     sanitize(&format!(
         "  {subject}  grant {}  until {}{}",
@@ -99,6 +104,11 @@ fn access_summary(access: &Access) -> String {
         }
         Access::CommitSigning {} => "commit signing".to_owned(),
         Access::GithubToken {} => "github token".to_owned(),
+        Access::Release {
+            repository,
+            tag,
+            commit,
+        } => format!("release {tag} of {repository} --commit {commit}"),
     }
 }
 
@@ -185,6 +195,10 @@ fn plan(grant_id: &Id, live: Vec<GrantView>, local: &[Id]) -> Result<Collected, 
             "grant {grant_id} has nothing to collect: it is live, and the broker mints GitHub \
              tokens under it, so it needs nothing on this machine. Once `warden setup github` has \
              run here, git and gh use it"
+        ))),
+        GrantAccess::Release(_) => Ok(Collected::NothingToCollect(format!(
+            "grant {grant_id} has nothing to collect: it is live, and the broker makes the \
+             release under it, so it needs nothing on this machine"
         ))),
     }
 }
@@ -324,6 +338,23 @@ mod tests {
         assert!(message.contains(&id.to_string()), "{message}");
         assert!(message.contains("warden setup github"), "{message}");
         assert_eq!(access_summary(&Access::GithubToken {}), "github token");
+    }
+
+    #[test]
+    fn a_pending_release_line_holds_the_commit() {
+        let summary = access_summary(&Access::Release {
+            repository: "example-owner/example-repo".to_owned().try_into().unwrap(),
+            tag: "v1.2.3".to_owned().try_into().unwrap(),
+            commit: "0123456789abcdef0123456789abcdef01234567"
+                .to_owned()
+                .try_into()
+                .unwrap(),
+        });
+        assert_eq!(
+            summary,
+            "release v1.2.3 of example-owner/example-repo \
+             --commit 0123456789abcdef0123456789abcdef01234567"
+        );
     }
 
     #[test]

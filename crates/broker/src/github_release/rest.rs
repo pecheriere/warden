@@ -28,6 +28,8 @@ const MAX_CHANGELOG_BYTES: usize = 16 * 1024;
 const MAX_LARGE_BYTES: usize = 1024 * 1024;
 /// The marker after a changelog section that was cut.
 const CUT: &str = "\n…(cut)";
+/// How many tags `release_tags` asks for.
+const TAGS_PER_PAGE: &str = "100";
 /// The most releases asked for in one page; see [`ReleaseClient::release_for_tag`].
 const RELEASES_PER_PAGE: &str = "20";
 
@@ -115,6 +117,11 @@ struct RepositoryAnswer {
 #[derive(Deserialize)]
 struct CompareAnswer {
     status: String,
+}
+
+#[derive(Deserialize)]
+struct TagName {
+    name: String,
 }
 
 #[derive(Deserialize)]
@@ -239,10 +246,19 @@ fn is_plain_branch(name: &str) -> bool {
             .all(|c| !c.is_control() && !" ~^:?*[\\".contains(c))
 }
 
+/// A section of the changelog.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChangelogSection {
+    /// The section's text, followed by a marker when it was cut.
+    pub text: String,
+    /// Whether the section was longer than 16 KiB and was cut.
+    pub cut: bool,
+}
+
 /// The lines of `changelog` after the `## [<version>]` heading and before the
 /// next `## ` heading, at most 16 KiB, or `None` when there is no such heading
 /// or nothing under it.
-fn section(changelog: &str, version: &str) -> Option<String> {
+fn section(changelog: &str, version: &str) -> Option<ChangelogSection> {
     let heading = format!("## [{version}]");
     let mut lines = changelog.lines();
     lines.find(|line| line.starts_with(&heading))?;
@@ -253,13 +269,19 @@ fn section(changelog: &str, version: &str) -> Option<String> {
         return None;
     }
     if text.len() <= MAX_CHANGELOG_BYTES {
-        return Some(text.to_owned());
+        return Some(ChangelogSection {
+            text: text.to_owned(),
+            cut: false,
+        });
     }
     let mut end = MAX_CHANGELOG_BYTES;
     while !text.is_char_boundary(end) {
         end -= 1;
     }
-    Some(format!("{}{CUT}", &text[..end]))
+    Some(ChangelogSection {
+        text: format!("{}{CUT}", &text[..end]),
+        cut: true,
+    })
 }
 
 impl ReleaseClient<'_> {
@@ -385,6 +407,20 @@ impl ReleaseClient<'_> {
         }
     }
 
+    /// The release tags among the first 100 tags GitHub lists, in the order it
+    /// lists them. A name that is not a [`ReleaseTag`] is left out: only names
+    /// that pass their pattern are returned.
+    ///
+    /// # Errors
+    /// A [`GithubError`] when the list cannot be read.
+    pub async fn release_tags(&self) -> Result<Vec<ReleaseTag>, GithubError> {
+        let names: Vec<TagName> = self.get(&["tags"], &[("per_page", TAGS_PER_PAGE)]).await?;
+        Ok(names
+            .into_iter()
+            .filter_map(|tag| ReleaseTag::try_from(tag.name).ok())
+            .collect())
+    }
+
     /// The annotated tag object `sha`.
     async fn annotated(&self, tag: &ReleaseTag, sha: String) -> Result<ExistingTag, GithubError> {
         let object: GitTagResponse = match self.get(&["git", "tags", &sha], &[]).await {
@@ -417,7 +453,7 @@ impl ReleaseClient<'_> {
         &self,
         id: &CommitId,
         version: &str,
-    ) -> Result<Option<String>, GithubError> {
+    ) -> Result<Option<ChangelogSection>, GithubError> {
         let url = self.api_url(&["contents", "CHANGELOG.md"], &[("ref", id.as_str())])?;
         let request = Call {
             accept: github_http::RAW,

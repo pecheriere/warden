@@ -16,7 +16,7 @@
 //!   belong to the plain token route of the upstream;
 //! - on an installed repository `/repos/<owner>/<name>`: `GET` of the repository,
 //!   `git/commits/<sha>`, `compare/<base>...<branch>`, `git/ref/tags/<tag>`,
-//!   `git/tags/<sha>`, `contents/<path>?ref=<sha>`, `releases`; `POST` of
+//!   `git/tags/<sha>`, `contents/<path>?ref=<sha>`, `tags`, `releases`; `POST` of
 //!   `git/tags` and `git/refs`; `PATCH` of `releases/<id>`; `DELETE` of
 //!   `releases/assets/<id>`;
 //! - `POST /uploads/repos/<owner>/<name>/releases/<id>/assets?name=<name>`: an
@@ -34,9 +34,11 @@ use warden_broker_proto::release::RepoName;
 use super::upstream::{Received, Scripted, answer_scripted};
 
 mod repository;
+mod signed_tag;
 
 pub use repository::ReleaseView;
 use repository::{Call, Repository};
+pub use signed_tag::{signed_tag_object, unsigned_tag_object};
 
 /// The installation id the fake gives every installed repository.
 pub const INSTALLATION_ID: u64 = 424_242;
@@ -58,6 +60,8 @@ struct State {
     calls: Vec<Received>,
     /// When set, every route answers this instead.
     answer_with: Option<Scripted>,
+    /// Routes that answer something else, as `(path suffix, answer)`.
+    path_answers: Vec<(String, Scripted)>,
 }
 
 /// The fake's state. Cloning shares it.
@@ -167,9 +171,17 @@ impl GithubReleaseFake {
         self.state().answer_with = Some(answer);
     }
 
+    /// Answer every call whose path (without the query) ends with `suffix` with
+    /// `answer`, until [`Self::answer_normally`]. Other routes answer as GitHub would.
+    pub fn answer_path_with(&self, suffix: &str, answer: Scripted) {
+        self.state().path_answers.push((suffix.to_owned(), answer));
+    }
+
     /// Go back to answering as GitHub would.
     pub fn answer_normally(&self) {
-        self.state().answer_with = None;
+        let mut state = self.state();
+        state.answer_with = None;
+        state.path_answers.clear();
     }
 
     /// The answer to a call, or `None` when it is not one of the fake's routes.
@@ -222,7 +234,14 @@ impl GithubReleaseFake {
                 headers: headers.clone(),
                 body: body.to_vec(),
             });
-            match (&state.answer_with, answer) {
+            let fixed = state.answer_with.clone().or_else(|| {
+                state
+                    .path_answers
+                    .iter()
+                    .find(|(suffix, _)| path.ends_with(suffix.as_str()))
+                    .map(|(_, scripted)| scripted.clone())
+            });
+            match (&fixed, answer) {
                 (Some(scripted), _) => scripted.clone(),
                 (None, Answer::Installation(repo)) => {
                     if state.installed.contains(&repo) {

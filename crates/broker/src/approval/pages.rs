@@ -22,6 +22,7 @@ mod github_token;
 mod grants;
 mod history;
 mod pending;
+mod release;
 mod stated;
 #[cfg(test)]
 mod stated_tests;
@@ -145,6 +146,9 @@ fn access_line(request: &CreateRequest, host: &str, port: u16) -> String {
         Access::Api { secret, .. } => format!("api {secret}"),
         Access::CommitSigning {} => "commit signing".to_owned(),
         Access::GithubToken {} => "github token".to_owned(),
+        Access::Release {
+            repository, tag, ..
+        } => format!("release {tag} of {repository}"),
     }
 }
 
@@ -237,6 +241,7 @@ fn destination_access(request: &CreateRequest, destination: &Destination) -> Mar
         Destination::GithubToken(policy) => {
             github_token::access(&policy.app_id, policy.installation_id)
         }
+        Destination::Release(policy) => release::access(request, policy),
     }
 }
 
@@ -267,6 +272,7 @@ fn grant_access(grant: &ActiveGrant) -> Markup {
         GrantAccess::GithubToken(token) => {
             github_token::grant_access(&token.app_id, token.installation_id)
         }
+        GrantAccess::Release(release) => release::grant_access(release, grant.release),
     }
 }
 
@@ -289,6 +295,7 @@ const fn windows_for(destination: &Destination) -> &'static [Window] {
     match destination {
         Destination::CommitSigning(_) => &Window::COMMIT_SIGNING,
         Destination::GithubToken(_) => &Window::GITHUB_TOKEN,
+        Destination::Release(_) => &Window::RELEASE,
         Destination::Ssh(_) | Destination::Api(_) => &WINDOWS,
     }
 }

@@ -9,8 +9,8 @@ use warden_broker_proto::{
 use super::revocation::commit_with_entries;
 use super::transition::detached;
 use super::{
-    ActiveGrant, AuditOutcome, GrantEnd, HistoryEntry, RelayGrantRecord, RequestError, Requests,
-    begin, parse,
+    ActiveGrant, AuditOutcome, GrantEnd, HistoryEntry, RelayGrantRecord, ReleaseProgress,
+    RequestError, Requests, begin, parse,
 };
 use crate::agents::{self, AgentError};
 use crate::audit::AuditEvent;
@@ -191,8 +191,10 @@ impl Requests {
     /// Storage failures or unreadable stored rows.
     pub async fn active_grants(&self) -> Result<Vec<ActiveGrant>, RequestError> {
         let rows = sqlx::query(
-            "SELECT g.id, g.agent, g.not_before, g.not_after, g.view, r.body, r.fingerprint \
+            "SELECT g.id, g.agent, g.not_before, g.not_after, g.view, r.body, r.fingerprint, \
+             s.tag_claimed_at, s.manifest_claimed_at, s.publish_claimed_at \
              FROM grants g JOIN requests r ON r.id = g.request_id \
+             LEFT JOIN release_steps s ON s.grant_id = g.id \
              WHERE g.revoked_at IS NULL AND g.not_after > ? ORDER BY g.not_after, g.id",
         )
         .bind(self.clock.now())
@@ -208,6 +210,9 @@ impl Requests {
                     agent: parse(row, "agent")?,
                     fingerprint: parse(row, "fingerprint")?,
                     request: serde_json::from_str(&body)?,
+                    release: matches!(view.access, GrantAccess::Release(_))
+                        .then(|| ReleaseProgress::of(row))
+                        .transpose()?,
                     access: view.access,
                     not_before: row.try_get("not_before")?,
                     not_after: row.try_get("not_after")?,

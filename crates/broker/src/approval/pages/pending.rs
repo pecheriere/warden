@@ -19,6 +19,9 @@ fn stored_access(entry: &PendingEntry) -> Markup {
         Access::Api { secret, .. } => format!("api {secret}"),
         Access::CommitSigning {} => "commit signing".to_owned(),
         Access::GithubToken {} => "github token".to_owned(),
+        Access::Release {
+            repository, tag, ..
+        } => format!("release {tag} of {repository}"),
     };
     html! {
         code { bdi { (subject) } }

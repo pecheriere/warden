@@ -290,7 +290,7 @@ impl std::fmt::Debug for ReleaseClient<'_> {
     }
 }
 
-pub use rest::{Asset, CommitInfo, CreateTag, ExistingTag, Release};
+pub use rest::{Asset, ChangelogSection, CommitInfo, CreateTag, ExistingTag, Release};
 
 #[cfg(test)]
 mod tests;

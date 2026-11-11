@@ -15,6 +15,7 @@ mod http;
 mod install;
 mod login;
 mod recover;
+mod release;
 mod request;
 mod request_context;
 mod setup_git;
@@ -36,7 +37,9 @@ use crate::client::Client;
 use crate::commands::{HttpCall, revoke, run_http, run_setup_git, run_ssh, status};
 use crate::config::Config;
 use crate::login::{KeyLogin, login, login_with_key};
-use crate::request::{cancel, request_api, request_github, request_signing, request_ssh};
+use crate::request::{
+    cancel, request_api, request_github, request_release, request_signing, request_ssh,
+};
 
 /// Exit code: any other failure.
 const EXIT_ERROR: u8 = 1;
@@ -248,6 +251,13 @@ async fn run_request(kind: RequestKind) -> Result<()> {
             goal,
             context,
         } => request_github(window, goal, context).await,
+        RequestKind::Release {
+            repository,
+            tag,
+            commit,
+            goal,
+            context,
+        } => request_release(repository, tag, commit, goal, context).await,
         RequestKind::Cancel { id } => cancel(&id).await,
         RequestKind::Collect { grant } => recover::collect(&grant).await,
     }

@@ -295,6 +295,21 @@ impl Repository {
                 }),
             ("POST", false, ["git", "tags"]) => self.create_tag(call.body),
             ("POST", false, ["git", "refs"]) => self.create_ref(call.body),
+            ("GET", false, ["tags"]) => {
+                let wanted = query("per_page").and_then(|n| n.parse().ok()).unwrap_or(30);
+                let mut names: Vec<&str> = self
+                    .refs
+                    .keys()
+                    .filter_map(|name| name.strip_prefix("refs/tags/"))
+                    .collect();
+                names.sort_unstable();
+                let all: Vec<Value> = names
+                    .into_iter()
+                    .take(wanted)
+                    .map(|name| json!({"name": name}))
+                    .collect();
+                json_answer(200, &Value::Array(all))
+            }
             ("GET", false, ["releases"]) => {
                 let wanted = query("per_page").and_then(|n| n.parse().ok()).unwrap_or(30);
                 let all: Vec<Value> = self

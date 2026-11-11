@@ -2,7 +2,9 @@
 
 use maud::{Markup, html};
 
-use super::{destination_access, icon, key_icon, layout, stated_fields, window_words, windows_for};
+use super::{
+    destination_access, icon, key_icon, layout, release, stated_fields, window_words, windows_for,
+};
 use crate::requests::{Destination, LinkHosts, PendingView, window_label};
 
 /// The approval page for a pending request: the details on one side, the
@@ -49,6 +51,9 @@ pub fn approve(view: &PendingView, hosts: &LinkHosts, now: i64) -> Markup {
                         span { bdi { (view.request.goal) } }
                     }
                     (stated_fields(&view.request, hosts))
+                    @if let (Destination::Release(policy), Some(facts)) = (&view.destination, &view.release) {
+                        (release::facts(&view.request, policy, facts))
+                    }
                 }
             }
             div.col {
@@ -60,17 +65,22 @@ pub fn approve(view: &PendingView, hosts: &LinkHosts, now: i64) -> Markup {
                 div.actions {
                     fieldset {
                         legend.label { "Grant for" }
-                        @if view.request.window > max {
+                        // A release has one lifetime, said once below, so no cap to explain.
+                        @let capped_by = match view.destination {
+                            Destination::Ssh(_) => Some("target"),
+                            Destination::Api(_) => Some("secret"),
+                            Destination::CommitSigning(_) => Some("signing key"),
+                            Destination::GithubToken(_) => Some("GitHub App"),
+                            Destination::Release(_) => None,
+                        };
+                        @if let (true, Some(noun)) = (view.request.window > max, capped_by) {
                             p.detail.capped {
                                 "Asked for " (window_words(view.request.window)) "; at most "
-                                (window_words(max)) " for this "
-                                (match view.destination {
-                                    Destination::Ssh(_) => "target",
-                                    Destination::Api(_) => "secret",
-                                    Destination::CommitSigning(_) => "signing key",
-                                    Destination::GithubToken(_) => "GitHub App",
-                                }) "."
+                                (window_words(max)) " for this " (noun) "."
                             }
+                        }
+                        @if matches!(view.destination, Destination::Release(_)) {
+                            p.detail { (release::LIFETIME) }
                         }
                         div.seg {
                             @for window in windows_for(&view.destination).iter().copied().filter(|w| *w <= max) {

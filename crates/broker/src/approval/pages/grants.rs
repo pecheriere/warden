@@ -9,7 +9,7 @@ use super::format::{bytes, idle_label};
 use super::stated::stated_lines;
 use super::{
     Chip, Nav, clock, commit_signing, empty_icon, ends, fingerprint_forms, github_token,
-    grant_access, layout,
+    grant_access, layout, release,
 };
 use crate::requests::{ActiveGrant, LinkHosts, renewable};
 
@@ -26,6 +26,8 @@ enum LiveKind {
     CommitSigning,
     /// GitHub token: each mint is one quick call, recorded in the log.
     GithubToken,
+    /// Release: each step is one quick call, recorded in the log.
+    Release,
 }
 
 impl LiveKind {
@@ -36,6 +38,7 @@ impl LiveKind {
             GrantAccess::Api(_) => Self::Api,
             GrantAccess::CommitSigning(_) => Self::CommitSigning,
             GrantAccess::GithubToken(_) => Self::GithubToken,
+            GrantAccess::Release(_) => Self::Release,
         }
     }
 
@@ -47,6 +50,7 @@ impl LiveKind {
             Self::Api => "api",
             Self::CommitSigning => "commit-signing",
             Self::GithubToken => "github-token",
+            Self::Release => "release",
         }
     }
 }
@@ -85,6 +89,8 @@ fn live_area(grant: &ActiveGrant, live: Option<&LiveGrant<'_>>) -> Markup {
                 (commit_signing::live_note())
             } @else if kind == LiveKind::GithubToken {
                 (github_token::live_note())
+            } @else if kind == LiveKind::Release {
+                (release::live_note())
             } @else if summary.is_empty() {
                 p.detail { (if kind == LiveKind::Relay { "No sessions open" } else { "No calls in flight" }) }
             } @else {
@@ -169,7 +175,9 @@ pub fn grants(
                             span { "Fingerprint " (fingerprint_forms(&grant.fingerprint)) }
                             @if matches!(
                                 grant.access,
-                                GrantAccess::CommitSigning(_) | GrantAccess::GithubToken(_)
+                                GrantAccess::CommitSigning(_)
+                                    | GrantAccess::GithubToken(_)
+                                    | GrantAccess::Release(_)
                             ) {
                                 (ends(grant.not_after, now))
                             } @else {

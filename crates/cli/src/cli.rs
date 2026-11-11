@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 use url::Url;
+use warden_broker_proto::release::{CommitId, ReleaseTag, RepoName};
 use warden_broker_proto::signing::Audience;
 use warden_broker_proto::{AgentName, Goal, Id, SecretName, TargetName, UnixUser, Window};
 
@@ -205,6 +206,24 @@ pub(crate) enum RequestKind {
         /// Window length: 1d, 7d or 30d, up to what the server allows.
         #[arg(long = "for", default_value = "30d", value_parser = Window::github_token)]
         window: Window,
+        /// What the access is for, shown to the owner.
+        #[arg(long)]
+        goal: Goal,
+        #[command(flatten)]
+        context: RequestContext,
+    },
+    /// A release made by the broker: the owner approves one tag at one commit of
+    /// one repository on their phone, and the grant lasts a day. The broker holds
+    /// the signing key and the GitHub App; the agent never sees either.
+    Release {
+        /// The repository, `owner/name`.
+        repository: RepoName,
+        /// The tag to release, such as v1.2.3.
+        tag: ReleaseTag,
+        /// The commit the tag points at: 40 lowercase hex characters, on the
+        /// repository's default branch.
+        #[arg(long)]
+        commit: CommitId,
         /// What the access is for, shown to the owner.
         #[arg(long)]
         goal: Goal,

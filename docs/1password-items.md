@@ -177,7 +177,7 @@ concealed for the key, text for the rest. The item's category does not matter.
 | `tagger_name` | Required. The name on the tags this key signs: 1 to 100 characters on one line, without `<` or `>`, control characters, or leading or trailing whitespace. |
 | `tagger_email` | Required. The email on those tags: an address that contains an `@`, with no whitespace, `<`, `>` or control characters, no leading or trailing whitespace, and at most 254 characters. |
 | `manifest` | Optional. The file name of the signed checksums file the repository publishes, with `{version}` exactly once, such as `example-repo-{version}-SHA256SUMS`: letters, digits, dots, underscores, plus signs and dashes around it, no path separator, at most 200 characters. |
-| `manifest_namespace` | Required with `manifest`, and an error without it: the `ssh-keygen -Y` namespace the manifest is signed in, `^[a-z0-9][a-z0-9-]{0,63}$`. |
+| `manifest_namespace` | Required with `manifest`, and an error without it: the `ssh-keygen -Y` namespace the manifest is signed in, `^[a-z0-9][a-z0-9-]{0,63}$`, except `git`, which is reserved for tag signatures so that a manifest's signature can never be taken for a tag's. |
 | `publish` | Optional: `true` or `false` (the default). Whether warden may publish the draft release itself. |
 
 Example (tag `warden:release-signing`, title `release-example-repo`):

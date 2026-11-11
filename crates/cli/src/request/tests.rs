@@ -223,3 +223,131 @@ fn only_a_request_made_here_is_withdrawn() {
     assert!(made_here(&answer(None), Answered::WithoutContext));
     assert!(!made_here(&answer(None), Answered::Other));
 }
+
+/// What `warden request release ...` parses to, or the usage error.
+fn parse_release(args: &[&str]) -> Result<crate::cli::RequestKind, clap::Error> {
+    use clap::Parser as _;
+
+    let mut line = vec!["warden", "request", "release"];
+    line.extend_from_slice(args);
+    match crate::cli::Cli::try_parse_from(line)?.command {
+        crate::cli::Cmd::Request { kind } => Ok(kind),
+        other => panic!("not a request: {other:?}"),
+    }
+}
+
+const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
+
+#[test]
+fn request_release_validates_arguments() {
+    let good = ["example-owner/example-repo", "v1.2.3"];
+    let with = |repo: &'static str, tag: &'static str, commit: &'static str| {
+        parse_release(&[repo, tag, "--commit", commit, "--goal", "Release 1.2.3"])
+    };
+    with(good[0], good[1], COMMIT).unwrap();
+    for (repo, tag, commit, what) in [
+        ("example-repo", "v1.2.3", COMMIT, "no owner"),
+        ("example-owner/..", "v1.2.3", COMMIT, "a dot name"),
+        ("bad_owner/example-repo", "v1.2.3", COMMIT, "a bad owner"),
+        ("example-owner/example-repo", "1.2.3", COMMIT, "no v"),
+        ("example-owner/example-repo", "v1.2", COMMIT, "two parts"),
+        (
+            "example-owner/example-repo",
+            "v1.2.3",
+            "0123abc",
+            "short commit",
+        ),
+        (
+            "example-owner/example-repo",
+            "v1.2.3",
+            "0123456789ABCDEF0123456789abcdef01234567",
+            "upper case commit",
+        ),
+        (
+            "example-owner/example-repo",
+            "v1.2.3",
+            "main",
+            "a branch name",
+        ),
+    ] {
+        let refused = with(repo, tag, commit).expect_err(what);
+        assert_eq!(
+            refused.kind(),
+            clap::error::ErrorKind::ValueValidation,
+            "{what}"
+        );
+    }
+    // The commit and the goal are not optional, and the window is not chosen.
+    parse_release(&[good[0], good[1], "--goal", "Release 1.2.3"]).expect_err("no commit");
+    parse_release(&[good[0], good[1], "--commit", COMMIT]).expect_err("no goal");
+    parse_release(&[
+        good[0],
+        good[1],
+        "--commit",
+        COMMIT,
+        "--goal",
+        "Release 1.2.3",
+        "--for",
+        "4h",
+    ])
+    .expect_err("a release lasts a day");
+}
+
+#[test]
+fn request_release_sends_access() {
+    use warden_broker_proto::release::{CommitId, ReleaseTag, RepoName};
+    use warden_broker_proto::{Access, SessionLabel, Window};
+
+    let crate::cli::RequestKind::Release {
+        repository,
+        tag,
+        commit,
+        goal,
+        context,
+    } = parse_release(&[
+        "example-owner/example-repo",
+        "v1.2.3",
+        "--commit",
+        COMMIT,
+        "--goal",
+        "Release 1.2.3",
+        "--session",
+        "release run",
+    ])
+    .unwrap()
+    else {
+        panic!("not a release request");
+    };
+    let request = crate::release::release_request(
+        repository,
+        tag,
+        commit,
+        goal,
+        context.session.clone(),
+        None,
+    );
+    assert_eq!(
+        request.access,
+        Access::Release {
+            repository: RepoName::try_from("example-owner/example-repo".to_owned()).unwrap(),
+            tag: ReleaseTag::try_from("v1.2.3".to_owned()).unwrap(),
+            commit: CommitId::try_from(COMMIT.to_owned()).unwrap(),
+        }
+    );
+    assert_eq!(request.window, Window::D1);
+    assert_eq!(request.goal.as_str(), "Release 1.2.3");
+    assert_eq!(
+        request.session.as_ref().map(SessionLabel::as_str),
+        Some("release run")
+    );
+    let json = serde_json::to_value(&request.access).unwrap();
+    assert_eq!(
+        json,
+        serde_json::json!({
+            "kind": "release",
+            "repository": "example-owner/example-repo",
+            "tag": "v1.2.3",
+            "commit": COMMIT,
+        })
+    );
+}
