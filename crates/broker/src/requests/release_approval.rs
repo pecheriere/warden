@@ -5,9 +5,14 @@
 //! Nothing GitHub said is quoted in an error here either.
 
 use sqlx::{Row as _, Sqlite, Transaction};
-use warden_broker_proto::{Access, Id, Window};
+use warden_broker_proto::release::{ReleaseGrant, ReleaseTag, RepoName};
+use warden_broker_proto::{Access, AgentName, GrantAccess, GrantView, Id, Window};
 
-use super::{PendingView, ReleaseFacts, RequestError, Requests};
+use super::{PendingView, ReleaseFacts, RequestError, Requests, parse};
+use crate::audit::AuditEvent;
+
+/// Recorded as `by` for a release grant ended by approving the grant that replaces it.
+const REPLACED: &str = "replaced by a new release grant";
 
 /// What the owner is told when GitHub no longer says what the page showed. Fixed:
 /// it quotes nothing from GitHub.
@@ -53,7 +58,66 @@ pub(super) async fn insert_steps(
     Ok(())
 }
 
+/// End the grants `ended` in `tx` at `now`, which also stores the grant replacing
+/// them, and mark their requests revoked, as revoking one on the owner's screen does.
+pub(super) async fn end_replaced(
+    tx: &mut Transaction<'static, Sqlite>,
+    ended: &[Id],
+    now: i64,
+) -> Result<(), sqlx::Error> {
+    for grant in ended {
+        sqlx::query("UPDATE grants SET revoked_at = ?1 WHERE id = ?2 AND revoked_at IS NULL")
+            .bind(now)
+            .bind(grant.as_str())
+            .execute(&mut **tx)
+            .await?;
+        sqlx::query(
+            "UPDATE requests SET status = 'revoked' \
+             WHERE status = 'approved' \
+             AND id = (SELECT request_id FROM grants WHERE id = ?)",
+        )
+        .bind(grant.as_str())
+        .execute(&mut **tx)
+        .await?;
+    }
+    Ok(())
+}
+
 impl Requests {
+    /// The active release grants of `agent` that a new grant of `access` for the same
+    /// repository (matched ignoring ASCII case, as [`Requests::active_release`] does)
+    /// and tag replaces, with the entries for ending them. Empty for any other kind.
+    pub(super) async fn release_replaced(
+        &self,
+        agent: &AgentName,
+        access: &GrantAccess,
+    ) -> Result<(Vec<Id>, Vec<AuditEvent>), RequestError> {
+        let GrantAccess::Release(new) = access else {
+            return Ok((Vec::new(), Vec::new()));
+        };
+        let mut ids: Vec<Id> = Vec::new();
+        for row in self.active_rows(agent, "release").await? {
+            let view: String = row.try_get("view")?;
+            let view: GrantView = serde_json::from_str(&view)?;
+            let GrantAccess::Release(grant) = view.access else {
+                return Err(RequestError::Corrupt(
+                    "release grant changed kind".to_owned(),
+                ));
+            };
+            if same_release(&grant.repository, &grant.tag, new) {
+                ids.push(parse(&row, "id")?);
+            }
+        }
+        let events = ids
+            .iter()
+            .map(|grant_id| AuditEvent::GrantRevoked {
+                grant_id: grant_id.clone(),
+                by: REPLACED.to_owned(),
+            })
+            .collect();
+        Ok((ids, events))
+    }
+
     /// What GitHub said when release request `id` was made.
     ///
     /// # Errors
@@ -93,4 +157,8 @@ impl Requests {
         }
         Ok(())
     }
+}
+
+fn same_release(repository: &RepoName, tag: &ReleaseTag, new: &ReleaseGrant) -> bool {
+    repository.matches(&new.repository) && *tag == new.tag
 }

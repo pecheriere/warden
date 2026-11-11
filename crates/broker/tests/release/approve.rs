@@ -273,3 +273,107 @@ async fn the_grant_is_not_kept_when_its_steps_cannot_be_stored() {
     let page = h.broker.get(&format!("/approve/{token}")).await;
     assert_eq!(page.status, StatusCode::OK, "{}", page.body);
 }
+
+/// A request for `tag` at [`HEAD`] as `agent`, approved.
+async fn approve_for(h: &Harness, agent: &str, tag: &str) {
+    let mut request = release();
+    if let warden_broker_proto::Access::Release { tag: wanted, .. } = &mut request.access {
+        *wanted = ReleaseTag::try_from(tag.to_owned()).unwrap();
+    }
+    let (_, token) = h.broker.create_request(agent, request).await;
+    let done = h.broker.approve(&token, Window::D1).await;
+    assert_eq!(done.status, StatusCode::OK, "{}", done.body);
+}
+
+/// Whether grant `id` is still active: not revoked, and its request still approved.
+async fn is_active(h: &Harness, id: &str) -> bool {
+    let row = sqlx::query(
+        "SELECT g.revoked_at AS revoked_at, r.status AS status \
+         FROM grants g JOIN requests r ON r.id = g.request_id WHERE g.id = ?",
+    )
+    .bind(id)
+    .fetch_one(&h.broker.state().pool)
+    .await
+    .unwrap();
+    row.get::<Option<i64>, _>("revoked_at").is_none()
+        && row.get::<String, _>("status") == "approved"
+}
+
+fn revocations(h: &Harness) -> usize {
+    h.broker
+        .audit_types()
+        .iter()
+        .filter(|t| *t == "grant_revoked")
+        .count()
+}
+
+#[tokio::test]
+async fn approving_a_rerun_ends_the_earlier_grant() {
+    let h = harness(Shape::Everything).await;
+    let first = super::approved(&h).await;
+    let requests = &h.broker.state().requests;
+    // The first grant did its tag and manifest steps; the publish step is unused.
+    for step in [
+        warden_broker::requests::ReleaseStep::Tag,
+        warden_broker::requests::ReleaseStep::Manifest,
+    ] {
+        assert!(requests.claim_step(&first, step, super::NOW).await.unwrap());
+    }
+    h.annotate(
+        TAG,
+        &signed_tag_object(&h.key, "git", TAG, HEAD, 1_794_000_000),
+    );
+    assert_eq!(revocations(&h), 0);
+
+    approve_for(&h, "build-agent", TAG).await;
+
+    assert!(!is_active(&h, first.grant_id().as_str()).await);
+    assert_eq!(revocations(&h), 1, "the ended grant is audited");
+    assert_eq!(count(&h, "grants").await, 2);
+    let agent: warden_broker_proto::AgentName = "build-agent".parse().unwrap();
+    let second = requests
+        .active_release(
+            &agent,
+            &repo(REPO),
+            &ReleaseTag::try_from(TAG.to_owned()).unwrap(),
+        )
+        .await
+        .unwrap()
+        .expect("the new grant is the one active");
+    assert_ne!(second.grant_id(), first.grant_id());
+    assert!(!second.grant().steps.tag);
+    assert!(second.grant().steps.manifest.is_some());
+    assert!(second.grant().steps.publish);
+    assert!(
+        requests
+            .claim_step(
+                &second,
+                warden_broker::requests::ReleaseStep::Manifest,
+                super::NOW
+            )
+            .await
+            .unwrap(),
+        "the manifest step under the new grant is not refused as corrupt"
+    );
+}
+
+#[tokio::test]
+async fn approving_does_not_end_a_grant_for_another_tag_or_agent() {
+    let h = harness(Shape::Everything).await;
+    let _other_agent_key = h.broker.add_agent("other-agent").await;
+    approve_for(&h, "build-agent", TAG).await;
+    approve_for(&h, "other-agent", TAG).await;
+    approve_for(&h, "build-agent", "v1.2.4").await;
+    assert_eq!(count(&h, "grants").await, 3);
+    let ids: Vec<String> = sqlx::query("SELECT id FROM grants")
+        .fetch_all(&h.broker.state().pool)
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| row.get("id"))
+        .collect();
+    for id in &ids {
+        assert!(is_active(&h, id).await, "{id}");
+    }
+    assert_eq!(revocations(&h), 0);
+}

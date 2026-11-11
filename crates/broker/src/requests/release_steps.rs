@@ -109,7 +109,7 @@ impl Requests {
     ///
     /// # Errors
     /// Storage failures, an unreadable stored grant, or more than one active grant
-    /// for the same release (which no code path makes): the caller refuses.
+    /// for the same release (which approving a release grant never leaves): the caller refuses.
     pub async fn active_release(
         &self,
         agent: &AgentName,
