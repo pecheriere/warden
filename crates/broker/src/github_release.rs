@@ -13,7 +13,7 @@
 //! number. A key or token appears only in a request's `Authorization` header.
 
 mod rest;
-mod tag_object;
+pub(crate) mod tag_object;
 
 use http::{Method, StatusCode};
 use secrecy::ExposeSecret as _;

@@ -33,6 +33,7 @@ pub mod policy;
 pub mod private_files;
 pub mod proxy;
 pub mod relay;
+pub mod release_signing;
 pub mod requests;
 pub mod signed;
 pub mod ssh_ca;

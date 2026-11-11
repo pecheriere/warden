@@ -431,6 +431,8 @@ pub struct Requests {
     signing_refusals: Arc<RefusalThrottle>,
     /// What has been recorded of refusals to mint GitHub tokens.
     github_refusals: Arc<RefusalThrottle>,
+    /// What has been recorded of refusals of release steps.
+    release_refusals: Arc<RefusalThrottle>,
     /// Hosts a request may link to.
     link_hosts: LinkHosts,
     /// Where release requests are checked against GitHub.
@@ -482,6 +484,7 @@ impl Requests {
             github_token_per_hour: MINTS_PER_HOUR,
             signing_refusals: Arc::default(),
             github_refusals: Arc::default(),
+            release_refusals: Arc::default(),
             link_hosts: LinkHosts::default(),
             github: GithubApi::public(),
         }

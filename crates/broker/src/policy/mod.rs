@@ -29,7 +29,9 @@ pub use github_app::{GithubAppKey, GithubAppProbe, GithubTokenPolicy};
 pub use local::{LocalBackend, LocalProbe};
 pub use onepassword::{CaProbe, OnePasswordConnect, VaultProbe};
 pub use release_app::{ReleaseAppKey, ReleaseAppProbe};
-pub use release_signing::{ManifestSpec, ReleaseSigningKey, ReleaseSigningProbe, check_distinct};
+pub use release_signing::{
+    ManifestSpec, ReleaseSigningKey, ReleaseSigningProbe, TAG_NAMESPACE, check_distinct,
+};
 
 /// How warden grants access to an SSH target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

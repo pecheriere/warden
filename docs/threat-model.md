@@ -1004,8 +1004,8 @@ fails, saying so. Nothing falls back to another credential.
 
 An agent can ask the owner to approve one release: a tag at a commit of a repository. The
 broker holds the repository's signing key and a GitHub App, so the agent never holds either.
-This section covers the request and the approval; the steps that act on GitHub are covered when
-they are added.
+This section covers the request, the approval and the tag step; the other steps that act on
+GitHub are covered when they are added.
 
 - **The owner approves what GitHub says, not what the agent says.** The broker asks GitHub for
   the commit, its place on the default branch, the tag and the changelog before the owner is
@@ -1015,8 +1015,13 @@ they are added.
   key, is refused before it is made. Nothing GitHub said is quoted in an error, a log line or an
   audit entry.
 - **The grant is bound to the key and the App.** It holds a digest of the facts and the key; a
-  step will be refused once what the broker reads no longer matches it (the steps are not
-  reachable yet).
+  step is refused once what the broker reads no longer matches it.
+- **The tag is the one that was signed.** The broker builds the tag object, signs it in the `git`
+  namespace and computes the id Git will give it, before GitHub is asked. It creates the ref
+  only if GitHub made an object with that id; any other answer is refused with no ref, and the
+  step stays used. The read-only checks (the tag does not exist, the commit is still on the
+  default branch) run before the claim, so a refusal there costs the owner nothing. The signing
+  code is kept apart from commit signing: they share no key and no code but a unit error.
 - **One day, not renewable, passkey only.** An agent cannot approve its own request, and a new
   request is a new approval.
 - **A step is claimed once.** Each step is claimed in one database statement before it is done,

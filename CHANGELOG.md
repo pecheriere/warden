@@ -8,10 +8,11 @@ All notable changes to this project are recorded here. The format follows
 
 ### Upgrading
 
-- New audit entry: `github_token_renewal_notified`. An older `warden-server audit verify`
-  refuses a log holding one, and an older `warden-server` does not start on one, because it
-  verifies the log when it opens it. So once warden has told you a GitHub token grant ends
-  soon, rolling back also means restoring the audit log from the backup.
+- New audit entries: `release_tag_created`, `release_refused`, `release_refusals_held` and
+  `github_token_renewal_notified`. An older `warden-server audit verify` refuses a log holding
+  one, and an older `warden-server` does not start on one, because it verifies the log when it
+  opens it. So once warden has told you a GitHub token grant ends soon, or has created a release
+  tag, rolling back also means restoring the audit log from the backup.
 
 ### Added
 
@@ -24,6 +25,12 @@ All notable changes to this project are recorded here. The format follows
   Active grants lists its steps as open or used. New migration `0010_release`. The steps
   themselves (tag, manifest and publish) come in a later release; this one grants nothing that
   acts on GitHub yet (#212).
+- Release grants, the tag step. `POST /v1/release/tag` signs the tag with the repository's release
+  key and creates it on the approved commit, once per grant. The broker computes the tag object's
+  id before GitHub makes it and creates the ref only if GitHub made that object. It refuses when
+  the key or the release App changed since the owner approved, the tag exists, or the commit left
+  the default branch. New audit entries: `release_tag_created`, `release_refused` and
+  `release_refusals_held` (#213).
 - `warden-server doctor` has two new checks, `release-signing` and `release-app`. The 1Password
   backend now loads items tagged `warden:release-signing` (one per repository) and
   `warden:github-release-app` (at most one), refuses release keys that are shared with each other,

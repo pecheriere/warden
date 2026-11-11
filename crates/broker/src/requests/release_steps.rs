@@ -8,6 +8,8 @@ use sqlx::Row as _;
 use warden_broker_proto::release::{ReleaseGrant, ReleaseSteps, ReleaseTag, RepoName};
 use warden_broker_proto::{AgentName, GrantAccess, GrantView, Id};
 
+use crate::audit::AuditEvent;
+
 use super::{RequestError, Requests, parse};
 
 /// One of the steps of a release.
@@ -47,8 +49,19 @@ impl ReleaseStep {
         }
     }
 
+    /// The step's name in the audit log and in refusals.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Tag => "tag",
+            Self::Manifest => "manifest",
+            Self::Publish => "publish",
+        }
+    }
+
     /// Whether the owner approved this step in `steps`.
-    const fn covered_by(self, steps: &ReleaseSteps) -> bool {
+    #[must_use]
+    pub const fn covered_by(self, steps: &ReleaseSteps) -> bool {
         match self {
             Self::Tag => steps.tag,
             Self::Manifest => steps.manifest.is_some(),
@@ -117,6 +130,35 @@ impl Requests {
                 "more than one active grant for one release".to_owned(),
             )),
         }
+    }
+
+    /// Whether `step` of `release` was claimed already. A read, for the caller to
+    /// say so before it asks GitHub anything; only [`Requests::claim_step`] decides
+    /// whether a step may run.
+    ///
+    /// # Errors
+    /// Storage failures: the caller refuses.
+    pub async fn step_claimed(
+        &self,
+        release: &ActiveRelease,
+        step: ReleaseStep,
+    ) -> Result<bool, RequestError> {
+        let row = sqlx::query(
+            "SELECT tag_claimed_at, manifest_claimed_at, publish_claimed_at \
+             FROM release_steps WHERE grant_id = ?",
+        )
+        .bind(release.grant_id.as_str())
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(row) = row else {
+            return Ok(false);
+        };
+        let column = match step {
+            ReleaseStep::Tag => "tag_claimed_at",
+            ReleaseStep::Manifest => "manifest_claimed_at",
+            ReleaseStep::Publish => "publish_claimed_at",
+        };
+        Ok(row.try_get::<Option<i64>, _>(column)?.is_some())
     }
 
     /// Claim `step` of `release` at `now`. True for exactly one caller, ever: in one
@@ -218,5 +260,43 @@ impl Requests {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+}
+
+impl Requests {
+    /// Record that `agent` was refused `step` of a release, for `reason` (a fixed
+    /// phrase). Past a few a minute only a count is kept, written later as one
+    /// entry.
+    pub(crate) async fn record_release_refusal(
+        &self,
+        agent: &AgentName,
+        grant_id: Option<Id>,
+        step: &str,
+        reason: String,
+    ) {
+        let event = AuditEvent::ReleaseRefused {
+            agent: agent.clone(),
+            grant_id,
+            step: step.to_owned(),
+            reason,
+        };
+        self.release_refusals
+            .record(
+                &self.audit,
+                agent,
+                self.clock.now(),
+                event,
+                "a refusal of a release step",
+            )
+            .await;
+    }
+
+    /// Write the refusals of release steps held back since the last time.
+    pub(super) async fn flush_release_refusals(&self) {
+        self.release_refusals
+            .flush(&self.audit, "refusals of release steps", |agent, count| {
+                AuditEvent::ReleaseRefusalsHeld { agent, count }
+            })
+            .await;
     }
 }

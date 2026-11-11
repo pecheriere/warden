@@ -2,14 +2,12 @@
 //! done. Steps are not reachable over HTTP yet, so these call the store directly.
 
 use sqlx::Row as _;
-use warden_broker::requests::{ActiveRelease, ReleaseStep};
+use warden_broker::requests::ReleaseStep;
 use warden_broker::testkit::github_release::signed_tag_object;
 use warden_broker_proto::release::{ReleaseTag, RepoName};
-use warden_broker_proto::{AgentName, Id, Window};
+use warden_broker_proto::{AgentName, Id};
 
-use super::{HEAD, Harness, NOW, REPO, Shape, harness, repo};
-
-const TAG: &str = "v1.2.3";
+use super::{HEAD, Harness, NOW, REPO, Shape, TAG, approved, harness, repo};
 
 fn agent() -> AgentName {
     "build-agent".parse().unwrap()
@@ -17,31 +15,6 @@ fn agent() -> AgentName {
 
 fn tag() -> ReleaseTag {
     ReleaseTag::try_from(TAG.to_owned()).unwrap()
-}
-
-/// Request and approve a release of [`TAG`] in [`REPO`]; its active grant.
-async fn approved(h: &Harness) -> ActiveRelease {
-    let request = warden_broker_proto::CreateRequest {
-        goal: "Release 1.2.3".to_owned().try_into().unwrap(),
-        access: warden_broker_proto::Access::Release {
-            repository: repo(REPO),
-            tag: tag(),
-            commit: HEAD.to_owned().try_into().unwrap(),
-        },
-        window: Window::D1,
-        session: None,
-        link: None,
-    };
-    let (_, token) = h.broker.create_request("build-agent", request).await;
-    let done = h.broker.approve(&token, Window::D1).await;
-    assert_eq!(done.status, axum::http::StatusCode::OK, "{}", done.body);
-    h.broker
-        .state()
-        .requests
-        .active_release(&agent(), &repo(REPO), &tag())
-        .await
-        .unwrap()
-        .expect("the grant is active")
 }
 
 async fn not_after(h: &Harness, grant: &Id) -> i64 {
@@ -96,12 +69,14 @@ async fn claim_step_survives_restart() {
         broker,
         upstream,
         key,
+        agent_key,
     } = h;
     let broker = broker.restart().await;
     let h = Harness {
         broker,
         upstream,
         key,
+        agent_key,
     };
     assert!(
         !h.broker

@@ -1067,8 +1067,28 @@ Asked for with the `release` access above and a `window` of `1d`:
 is the file name of the manifest the broker signs (absent when it signs none) and `publish` is
 whether it publishes the draft release. `digest` binds the grant to the facts and the key the
 owner saw. There is nothing to install. The grant lasts one day from approval, is not renewable,
-and ends when every step it covers is done. The routes for the steps are not part of this
-version of the protocol.
+and ends when every step it covers is done.
+
+#### `POST /v1/release/tag`
+
+Signed like every agent call, with the body `{"repository":"example-owner/example-repo","tag":"v1.2.3"}`.
+The broker signs the tag with the release key and creates it on the approved commit, then
+answers `200` with `{"grant_id","tag","object","commit"}`, where `object` is the id of the tag
+object. Each step is done once: the broker records it as used before it acts, and a repeat is
+refused even when the first attempt failed, so the agent asks the owner again.
+
+| Status | Body | Meaning |
+|---|---|---|
+| `403` | `no active release grant for this agent` | No grant for this release, or it ended or was revoked |
+| `409` | `this step of the release was already done` | The tag step was used |
+| `409` | `this step is not part of the approved release` | The tag was already in place when the owner approved |
+| `409` | `policy changed; request access again` | The release key or the release App is no longer the one the owner approved |
+| `409` | `the tag already exists`, `the approved commit is not on the repository's default branch` | GitHub no longer matches what the owner approved; nothing was used |
+| `400` | `releases are not configured on this broker` | No release key for the repository, or no release App |
+| `502` | `GitHub did not create the tag that was signed` | The tag object GitHub made had another id than the one signed; no ref was created |
+| `503` | `GitHub could not complete the step; try again later` | GitHub failed; if it failed after the claim, the step stays used |
+
+The routes for the manifest and publish steps are not part of this version of the protocol.
 
 ### GitHub token grants (`"kind":"github_token"`)
 

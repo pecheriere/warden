@@ -18,6 +18,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
+use warden_broker_proto::release::{CommitId, ReleaseTag, RepoName};
 use warden_broker_proto::{AgentName, Fingerprint, Id, TargetName, UnixUser};
 
 use crate::proxy::CallEnd;
@@ -294,6 +295,43 @@ pub enum AuditEvent {
     /// Refusals to mint for an agent beyond those recorded one by one in a minute,
     /// counted so that refused calls cannot fill the log.
     GithubTokenRefusalsHeld {
+        /// The agent.
+        agent: AgentName,
+        /// How many.
+        count: u64,
+    },
+    /// The broker created and pushed the signed tag of a release under a release
+    /// grant. Written once the tag exists; the claim of the step was made before.
+    ReleaseTagCreated {
+        /// The grant it was done under.
+        grant_id: Id,
+        /// The agent.
+        agent: AgentName,
+        /// The repository.
+        repository: RepoName,
+        /// The tag.
+        tag: ReleaseTag,
+        /// The commit the tag points at.
+        commit: CommitId,
+        /// The id of the tag object, which the broker computed before GitHub
+        /// created it.
+        object: String,
+    },
+    /// The broker refused a step of a release, or could not finish one it had
+    /// claimed.
+    ReleaseRefused {
+        /// The agent.
+        agent: AgentName,
+        /// The active grant it had, if any.
+        grant_id: Option<Id>,
+        /// The step: `tag`, `manifest` or `publish`.
+        step: String,
+        /// Why (a fixed phrase, never secrets or anything GitHub said).
+        reason: String,
+    },
+    /// Refusals of release steps for an agent beyond those recorded one by one in
+    /// a minute, counted so that refused calls cannot fill the log.
+    ReleaseRefusalsHeld {
         /// The agent.
         agent: AgentName,
         /// How many.

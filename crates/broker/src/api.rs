@@ -31,6 +31,7 @@ use crate::signed;
 
 mod commit_signing;
 mod github_token;
+mod release;
 
 /// Largest accepted request body, in bytes.
 const BODY_LIMIT: usize = 16 * 1024;
@@ -89,6 +90,7 @@ pub fn router(state: AppState) -> Router {
             "/v1/github-token",
             agent(post(github_token::mint), BODY_LIMIT),
         )
+        .route("/v1/release/tag", agent(post(release::tag), BODY_LIMIT))
         .route(
             "/v1/grants/{id}/revoke",
             agent(post(revoke_grant), BODY_LIMIT),
