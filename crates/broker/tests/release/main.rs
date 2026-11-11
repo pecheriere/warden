@@ -12,6 +12,7 @@ use warden_broker_proto::release::RepoName;
 
 mod approve;
 mod request;
+mod steps;
 
 const REPO: &str = "example-owner/example-repo";
 /// The head of the default branch.

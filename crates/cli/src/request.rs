@@ -7,6 +7,7 @@ use anyhow::{Context as _, Result, anyhow, bail, ensure};
 use ssh_key::rand_core::OsRng;
 use ssh_key::{Algorithm, PrivateKey};
 use warden_broker_proto::doctor::sanitize;
+use warden_broker_proto::release::{CommitId, ReleaseTag, RepoName};
 use warden_broker_proto::{
     Access, ApiGrant, CreateRequest, CreatedResponse, Goal, GrantAccess, GrantView, Id,
     RequestStatus, SecretName, SessionLabel, SessionLink, TargetName, UnixUser, Window,
@@ -16,6 +17,7 @@ use warden_broker_proto::{
 use crate::client::{CallError, Client, MAX_WAIT_SECS, fetch_info};
 use crate::config::Config;
 use crate::install::install_grant;
+use crate::release;
 use crate::request_context::{self, Answered, RequestContext, compare};
 use crate::{
     EXIT_CANCELLED, EXIT_DENIED, EXIT_ERROR, EXIT_EXPIRED, EXIT_INTERRUPTED, EXIT_NO_GRANT,
@@ -210,6 +212,25 @@ pub(crate) async fn request_github(
         "git and gh get GitHub tokens under it until then. Set them up with `warden setup \
          github` if they are not yet set up."
     );
+    Ok(())
+}
+
+pub(crate) async fn request_release(
+    repository: RepoName,
+    tag: ReleaseTag,
+    commit: CommitId,
+    goal: Goal,
+    context: RequestContext,
+) -> Result<()> {
+    let (session, link) = resolve_context(context)?;
+    let (config, client) = client()?;
+    let req = release::release_request(repository, tag, commit, goal, session, link);
+    let grant = request_grant(&config, &client, &req, release::SUBJECT, Pending::Same).await?;
+    release::check_release_grant(&grant)?;
+    announce(&grant);
+    if let GrantAccess::Release(release) = &grant.access {
+        println!("{}", release::steps_line(&release.steps));
+    }
     Ok(())
 }
 

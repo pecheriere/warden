@@ -105,8 +105,10 @@ fn access_summary(access: &Access) -> String {
         Access::CommitSigning {} => "commit signing".to_owned(),
         Access::GithubToken {} => "github token".to_owned(),
         Access::Release {
-            repository, tag, ..
-        } => format!("release {tag} of {repository}"),
+            repository,
+            tag,
+            commit,
+        } => format!("release {tag} of {repository} --commit {commit}"),
     }
 }
 
@@ -336,6 +338,23 @@ mod tests {
         assert!(message.contains(&id.to_string()), "{message}");
         assert!(message.contains("warden setup github"), "{message}");
         assert_eq!(access_summary(&Access::GithubToken {}), "github token");
+    }
+
+    #[test]
+    fn a_pending_release_line_holds_the_commit() {
+        let summary = access_summary(&Access::Release {
+            repository: "example-owner/example-repo".to_owned().try_into().unwrap(),
+            tag: "v1.2.3".to_owned().try_into().unwrap(),
+            commit: "0123456789abcdef0123456789abcdef01234567"
+                .to_owned()
+                .try_into()
+                .unwrap(),
+        });
+        assert_eq!(
+            summary,
+            "release v1.2.3 of example-owner/example-repo \
+             --commit 0123456789abcdef0123456789abcdef01234567"
+        );
     }
 
     #[test]
