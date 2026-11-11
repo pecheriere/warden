@@ -1127,8 +1127,11 @@ uses nothing, so the agent may fix the manifest or create the draft and call aga
 
 Signed like every agent call, with the body `{"repository":"example-owner/example-repo","tag":"v1.2.3"}`.
 The broker makes the draft release of the tag public and answers `200` with `{"grant_id","tag"}`.
-Before it claims the step it checks that the tag has a release and that it is still a draft. When the
-grant has a manifest step, it also checks that the step finished and that the draft holds the
+Before it claims the step it checks that the tag has a release and that it is still a draft, and that
+the tag is in place: when the grant has a tag step, that step was done, and in every case the tag
+on GitHub is an annotated tag on the approved commit whose signature verifies with the release key
+(publishing a draft whose tag is missing would make GitHub create an unsigned tag at any commit the
+draft names). When the grant has a manifest step, it also checks that the step finished and that the draft holds the
 manifest and its `.sig`, each once, with the SHA-256 the broker recorded when it attached them. A
 file someone replaced, a missing file, or digests GitHub does not report refuse the call. A refusal
 before the claim uses nothing. The grant ends when its last step is done.
@@ -1140,6 +1143,7 @@ before the claim uses nothing. The grant ends when its last step is done.
 | `409` | `this step is not part of the approved release` | The grant does not publish |
 | `409` | `policy changed; request access again` | The release key or the release App is no longer the one the owner approved |
 | `409` | `the tag has no draft release`, `the release is already published` | Nothing was used |
+| `409` | `the tag is not in place on the approved commit` | The grant's tag step was not done, or the tag is missing, lightweight, on another commit or not signed by the release key; nothing was used |
 | `409` | `the manifest has not been signed` | The grant has a manifest step that did not finish; nothing was used |
 | `409` | `the draft's files are not the ones signed` | The manifest or its signature is missing from the draft or differs from what the broker attached; nothing was used |
 | `409` | `GitHub did not report the files' digests` | The files cannot be compared; nothing was used |

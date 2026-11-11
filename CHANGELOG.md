@@ -44,7 +44,8 @@ All notable changes to this project are recorded here. The format follows
   per grant. When the grant has a manifest step, the manifest must have been signed and the draft
   must still hold the manifest and its `.sig` with the digests the broker recorded; a missing
   file, a different digest or no digest from GitHub refuses the call, as does a tag with no draft
-  or a release already published. All of these are checked before the step is claimed, so a refusal
+  or a release already published, and so does a tag that is not in place: the grant's tag step not
+  done, or the tag missing, lightweight, on another commit or not signed by the release key. All of these are checked before the step is claimed, so a refusal
   leaves it unused. The grant ends when its last step is done. New audit entry:
   `release_published` (#213).
 - `warden-server doctor` has two new checks, `release-signing` and `release-app`. The 1Password

@@ -1,8 +1,11 @@
 //! `POST /v1/release/publish`: make the draft release public.
 //!
 //! Every check is read-only and runs before the step is claimed: the release is a
-//! draft, and when the grant has a manifest step, the manifest was signed and the
-//! draft still holds exactly the two files that step attached. A refusal for any of
+//! draft, the tag is in place on the approved commit and signed by the release key
+//! (publishing a draft whose tag is missing would make GitHub create an unsigned
+//! one at whatever commit the draft names), and when the grant has a manifest step,
+//! the manifest was signed and the draft still holds exactly the two files that step
+//! attached. A refusal for any of
 //! them costs the owner nothing. Nothing GitHub said appears in an error or the
 //! audit log.
 
@@ -19,8 +22,12 @@ use crate::api::{ApiJson, Failure};
 use crate::audit::AuditEvent;
 use crate::github_release::{Asset, ReleaseClient};
 use crate::identity::AuthedAgent;
-use crate::requests::{RecordedManifest, ReleaseStep, RequestError};
+use crate::policy::ReleaseSigningKey;
+use crate::requests::{ActiveRelease, RecordedManifest, ReleaseStep, RequestError};
 
+/// The tag is missing, is on another commit, or is not the release key's signed
+/// annotated tag.
+const TAG_NOT_IN_PLACE: &str = "the tag is not in place on the approved commit";
 /// The grant has a manifest step and it has not finished.
 const MANIFEST_NOT_SIGNED: &str = "the manifest has not been signed";
 /// The draft lacks one of the two files the manifest step attached, or one is not
@@ -84,6 +91,39 @@ fn check_files(assets: &[Asset], name: &str, recorded: &RecordedManifest) -> Res
     }
 }
 
+/// Refuse unless the tag is in place: made by the tag step when the grant has one,
+/// and an annotated tag on the approved commit that the release key signed.
+async fn check_tag(
+    state: &AppState,
+    agent: &AgentName,
+    github: &ReleaseClient<'_>,
+    release: &ActiveRelease,
+    key: &ReleaseSigningKey,
+) -> Result<(), Failure> {
+    let grant = release.grant();
+    if grant.steps.tag
+        && !state
+            .requests
+            .step_claimed(release, ReleaseStep::Tag)
+            .await?
+    {
+        return Err(refused(StatusCode::CONFLICT, TAG_NOT_IN_PLACE));
+    }
+    let existing = github
+        .tag_target(&grant.tag)
+        .await
+        .map_err(|e| github_failed(agent, ReleaseStep::Publish, &e))?;
+    let in_place = existing.is_some_and(|tag| {
+        tag.commit.as_ref() == Some(&grant.commit)
+            && tag.raw.as_deref().is_some_and(|raw| key.verifies_tag(raw))
+    });
+    if in_place {
+        Ok(())
+    } else {
+        Err(refused(StatusCode::CONFLICT, TAG_NOT_IN_PLACE))
+    }
+}
+
 async fn run(
     state: &AppState,
     agent: &AgentName,
@@ -94,8 +134,6 @@ async fn run(
     let (target, Ready { release, key, app }) = prepare(state, agent, body, step, seen).await?;
     let grant = release.grant();
     let now = state.clock.now();
-    // The key is not needed to publish; the App token is.
-    drop(key);
 
     // Read-only checks, before the step is claimed.
     let github = ReleaseClient::connect(&state.github, &app, &grant.repository, now)
@@ -110,6 +148,9 @@ async fn run(
     if !draft.draft {
         return Err(refused(StatusCode::CONFLICT, PUBLISHED));
     }
+    // The key checks the tag below and is not needed after that.
+    check_tag(state, agent, &github, &release, &key).await?;
+    drop(key);
     if let Some(name) = &grant.steps.manifest {
         let recorded = state
             .requests

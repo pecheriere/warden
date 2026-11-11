@@ -1039,6 +1039,11 @@ This section covers the request, the approval and the tag, manifest and publish 
   whether a digest is the digest of the right artifact: the owner approved the release, and the
   verifier trusts the key, so the digests are the agent's claim, as with any build the agent runs.
   Error messages name the rule and never quote the manifest.
+- **Publish needs the signed tag in place.** GitHub lets a draft exist for a tag that does not,
+  and publishing it makes GitHub create an unsigned lightweight tag at whatever commit the draft
+  names. So before the claim the broker requires the tag step to have been done (when the grant has
+  one) and reads the tag from GitHub: it must be an annotated tag on the approved commit whose
+  signature verifies with the release key. Anything else refuses the call.
 - **Publish releases what the broker attached.** When the grant has a manifest step, the broker
   publishes only if the draft still holds the manifest and its signature with the digests it
   recorded when it uploaded them, so a file replaced after signing (by anyone with write access to
