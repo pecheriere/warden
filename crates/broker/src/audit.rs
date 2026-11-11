@@ -317,6 +317,23 @@ pub enum AuditEvent {
         /// created it.
         object: String,
     },
+    /// The broker signed the manifest of a release under a release grant and
+    /// attached it, with its signature, to the draft release. Written once both
+    /// files are uploaded; the claim of the step was made before.
+    ReleaseManifestSigned {
+        /// The grant it was done under.
+        grant_id: Id,
+        /// The agent.
+        agent: AgentName,
+        /// The repository.
+        repository: RepoName,
+        /// The tag.
+        tag: ReleaseTag,
+        /// The manifest's file name.
+        name: String,
+        /// Lowercase hex SHA-256 of the manifest signed.
+        sha256: String,
+    },
     /// The broker refused a step of a release, or could not finish one it had
     /// claimed.
     ReleaseRefused {

@@ -13,8 +13,10 @@
 //! [`crate::policy::ManifestSpec`], live in `policy::release_signing`, next to
 //! how they are read from the vault.
 
+mod manifest;
 mod tag;
 
+pub use self::manifest::{ManifestError, check as check_manifest, sign_manifest};
 pub use self::tag::{sign_tag, tag_object_id, tag_payload};
 
 #[cfg(test)]

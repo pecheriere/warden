@@ -5,6 +5,8 @@ use ssh_key::rand_core::OsRng;
 use ssh_key::{Algorithm, PrivateKey};
 use warden_broker_proto::release::{CommitId, ReleaseTag};
 
+mod manifest;
+
 use super::{sign_tag, tag_object_id, tag_payload};
 use crate::policy::ReleaseSigningKey;
 

@@ -8,13 +8,13 @@ All notable changes to this project are recorded here. The format follows
 
 ### Upgrading
 
-- New audit entries: `release_tag_created`, `release_refused`, `release_refusals_held` and
-  `github_token_renewal_notified`. An older `warden-server audit verify` refuses a log holding
+- New audit entries: `release_tag_created`, `release_manifest_signed`, `release_refused`,
+  `release_refusals_held` and `github_token_renewal_notified`. An older `warden-server audit verify` refuses a log holding
   one, and an older `warden-server` does not start on one, because it verifies the log when it
   opens it. So once warden has told you a GitHub token grant ends soon, or an agent has called a
-  release route (any call can write `release_refused`, not only one that created a tag),
-  rolling back also means restoring the audit log from the backup. The manifest and publish
-  steps add their own entries to the same rule.
+  release route (any call can write `release_refused`, not only one that created a tag or
+  signed a manifest), rolling back also means restoring the audit log from the backup. The
+  publish step will add its own entry to the same rule.
 
 ### Added
 
@@ -33,6 +33,14 @@ All notable changes to this project are recorded here. The format follows
   the key or the release App changed since the owner approved, the tag exists, or the commit left
   the default branch. New audit entries: `release_tag_created`, `release_refused` and
   `release_refusals_held` (#213).
+- Release grants, the manifest step. `POST /v1/release/manifest` takes the manifest the agent built
+  (base64), checks it, signs it with the repository's release key in the namespace its item names,
+  and attaches it and its `.sig` to the draft release, replacing files of those names. A manifest is
+  at most 64 KiB of lines `<64 lowercase hex digits>  <name>`, each ending in a line feed, with no
+  name twice; a name is a plain file name or an image reference tagged with the release's version.
+  It is refused, and the step stays unused, when the manifest fails these rules or the tag has no
+  draft release; any other failure after the claim leaves the step used. New audit entry:
+  `release_manifest_signed` (#213).
 - `warden-server doctor` has two new checks, `release-signing` and `release-app`. The 1Password
   backend now loads items tagged `warden:release-signing` (one per repository) and
   `warden:github-release-app` (at most one), refuses release keys that are shared with each other,

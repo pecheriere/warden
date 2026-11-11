@@ -484,6 +484,7 @@ pub mod fuzzing {
     use warden_broker_proto::signing::Nonce;
 
     use super::{SignatureHeaders, check_signature, decode_signature};
+    use crate::release_signing::check_manifest;
 
     /// Step 1: the agent, timestamp and nonce of well-formed headers, or
     /// `None` if they are refused.
@@ -491,6 +492,14 @@ pub mod fuzzing {
     pub fn parse_headers(headers: &HeaderMap) -> Option<(AgentName, i64, Nonce)> {
         let parsed = SignatureHeaders::parse(headers).ok()?;
         Some((parsed.agent, parsed.timestamp, parsed.nonce))
+    }
+
+    /// Whether a release manifest passes the rules the broker signs under: the
+    /// manifest `bytes` of release `version`, asked for under the file name `name`
+    /// when the grant covers `expected_name`.
+    #[must_use]
+    pub fn manifest_accepted(expected_name: &str, version: &str, name: &str, bytes: &[u8]) -> bool {
+        check_manifest(expected_name, version, name, bytes).is_ok()
     }
 
     /// Step 5 for a `Warden-Signature` value: whether it decodes and is a

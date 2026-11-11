@@ -1004,8 +1004,8 @@ fails, saying so. Nothing falls back to another credential.
 
 An agent can ask the owner to approve one release: a tag at a commit of a repository. The
 broker holds the repository's signing key and a GitHub App, so the agent never holds either.
-This section covers the request, the approval and the tag step; the other steps that act on
-GitHub are covered when they are added.
+This section covers the request, the approval and the tag and manifest steps; the other step that
+acts on GitHub is covered when it is added.
 
 - **The owner approves what GitHub says, not what the agent says.** The broker asks GitHub for
   the commit, its place on the default branch, the tag and the changelog before the owner is
@@ -1032,6 +1032,14 @@ GitHub are covered when they are added.
   App token and reads the commit and the tag. Only someone holding the approval token who has
   started a ceremony reaches it. It is not rate-limited. Accepted: the approval token is the
   owner's, and what it costs is calls on the owner's App.
+- **The broker signs only a manifest that passes fixed rules.** The agent builds the manifest and
+  the broker signs what it sent, so the rules are the guard: the grant's file name, lines of a
+  lowercase SHA-256 digest and a name, plain file names or image references at the approved
+  version only, no duplicates, 64 KiB at most. The signature is in the namespace the owner's item
+  names, which tag signatures (`git`) and commit signatures never share. The broker cannot know
+  whether a digest is the digest of the right artifact: the owner approved the release, and the
+  verifier trusts the key, so the digests are the agent's claim, as with any build the agent runs.
+  Error messages name the rule and never quote the manifest.
 - **Step calls refused before the claim are not rate-limited.** Each one mints a release App
   token and makes a few GitHub reads before it is refused (a tag that exists, a commit that
   moved, no draft). Only an agent holding an active release grant reaches them, so they cost

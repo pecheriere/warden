@@ -1,4 +1,5 @@
-//! The steps of a release: `POST /v1/release/tag`.
+//! The steps of a release: `POST /v1/release/tag` here, and `POST
+//! /v1/release/manifest` in [`manifest`].
 //!
 //! Each step runs only under the release grant the agent holds for that release,
 //! looked up for every call. The order is the same for every step: find the grant
@@ -8,6 +9,9 @@
 //! that fails after its claim stays used. Nothing GitHub said, and nothing about
 //! the keys, appears in an error, a log line or the audit log.
 
+mod manifest;
+
+pub(super) use self::manifest::manifest;
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -35,18 +39,18 @@ const COMMIT_MOVED: &str = "the approved commit is not on the repository's defau
 /// GitHub made a tag object other than the one the broker signed.
 const TAG_DIFFERS: &str = "GitHub did not create the tag that was signed";
 /// What the body of a step must be.
-const BAD_BODY: &str = "the request body is not valid";
+pub(super) const BAD_BODY: &str = "the request body is not valid";
 
-fn refused(status: StatusCode, message: impl Into<String>) -> Failure {
+pub(super) fn refused(status: StatusCode, message: impl Into<String>) -> Failure {
     Failure::Client(status, message.into())
 }
 
 /// A grant, the key and the App as they are now, once they agree with what the
 /// owner approved.
-struct Ready {
-    release: ActiveRelease,
-    key: ReleaseSigningKey,
-    app: ReleaseAppKey,
+pub(super) struct Ready {
+    pub(super) release: ActiveRelease,
+    pub(super) key: ReleaseSigningKey,
+    pub(super) app: ReleaseAppKey,
 }
 
 /// `POST /v1/release/tag`: sign the tag and create it. Runs on its own task, so that
@@ -72,19 +76,30 @@ async fn audited(
     let mut grant_id = None;
     let result = create_tag(&state, &agent, body, &mut grant_id).await;
     if let Err(failure) = &result {
-        let reason = failure.outcome();
-        tracing::info!(agent = %agent, step = "tag", reason = %reason, "release step refused");
-        state
-            .requests
-            .record_release_refusal(&agent, grant_id, ReleaseStep::Tag.name(), reason)
-            .await;
+        record_refusal(&state, &agent, ReleaseStep::Tag, grant_id, failure).await;
     }
     result
 }
 
+/// Log and audit (throttled) that `failure` refused `step`.
+pub(super) async fn record_refusal(
+    state: &AppState,
+    agent: &AgentName,
+    step: ReleaseStep,
+    grant_id: Option<Id>,
+    failure: &Failure,
+) {
+    let reason = failure.outcome();
+    tracing::info!(agent = %agent, step = step.name(), reason = %reason, "release step refused");
+    state
+        .requests
+        .record_release_refusal(agent, grant_id, step.name(), reason)
+        .await;
+}
+
 /// Find the grant `agent` holds for `target` and check that `step` may run under
 /// what is configured now. Sets `seen` as soon as a grant is found.
-async fn prepare(
+pub(super) async fn prepare(
     state: &AppState,
     agent: &AgentName,
     target: Result<ReleaseTarget, Failure>,
@@ -134,7 +149,7 @@ fn not_configured(e: PolicyError) -> Failure {
 
 /// Claim `step` of `release`. A revocation since the grant was read gives the same
 /// refusal as no grant; any other reason the claim fails is that the step was used.
-async fn claim(
+pub(super) async fn claim(
     state: &AppState,
     agent: &AgentName,
     target: &ReleaseTarget,
@@ -160,7 +175,7 @@ async fn claim(
     })
 }
 
-fn github_failed(agent: &AgentName, step: ReleaseStep, e: &GithubError) -> Failure {
+pub(super) fn github_failed(agent: &AgentName, step: ReleaseStep, e: &GithubError) -> Failure {
     // The error's text is fixed and carries nothing GitHub said.
     tracing::warn!(agent = %agent, step = step.name(), error = %e, "a release call to GitHub failed");
     refused(StatusCode::SERVICE_UNAVAILABLE, GITHUB_UNAVAILABLE)

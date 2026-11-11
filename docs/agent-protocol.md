@@ -1088,7 +1088,41 @@ refused even when the first attempt failed, so the agent asks the owner again.
 | `502` | `GitHub did not create the tag that was signed` | The tag object GitHub made had another id than the one signed; no ref was created |
 | `503` | `GitHub could not complete the step; try again later` | GitHub failed; if it failed after the claim, the step stays used |
 
-The routes for the manifest and publish steps are not part of this version of the protocol.
+#### `POST /v1/release/manifest`
+
+Signed like every agent call, with the body
+`{"repository":"example-owner/example-repo","tag":"v1.2.3","name":"warden-1.2.3-SHA256SUMS","content_b64":"…"}`:
+the manifest, in standard base64 (at most 64 KiB decoded; the request body is limited to 128 KiB).
+`name` must be the file name the owner approved. The broker checks the manifest, signs it with the
+release key in the namespace the key's item names (`ssh-keygen -Y verify -n <namespace>`), deletes
+any asset of the draft release called `name` or `name.sig`, uploads both, and answers `200` with
+`{"grant_id","name","signature_name","sha256"}`, where `sha256` is the manifest's digest.
+
+The manifest is refused unless all of this holds:
+
+- At most 64 KiB, UTF-8, at least one line, every line ending with a line feed (no carriage
+  returns).
+- Each line is 64 lowercase hex digits, two spaces and a name.
+- A name is a file name (`A-Z a-z 0-9 . _ + -`, not `.` or `..`) or an image reference
+  `<registry>/<path>:<version>` of lowercase `a-z 0-9 . _ -` segments whose tag is exactly the
+  release's version.
+- No name appears twice.
+
+The step is claimed once the checks pass and the tag has a draft release; a refusal before that
+uses nothing, so the agent may fix the manifest or create the draft and call again.
+
+| Status | Body | Meaning |
+|---|---|---|
+| `403` | `no active release grant for this agent` | No grant for this release, or it ended or was revoked |
+| `409` | `this step of the release was already done` | The manifest step was used |
+| `409` | `this step is not part of the approved release` | The grant has no manifest step |
+| `409` | `policy changed; request access again` | The release key or the release App is no longer the one the owner approved |
+| `409` | `the tag has no draft release`, `the release is already published` | Nothing was used; create the draft, then call again |
+| `400` | `the request body is not valid`, or a message naming the rule the manifest broke (and a line number) | Nothing was used; the message never quotes the manifest |
+| `400` | `releases are not configured on this broker` | No release key for the repository, or no release App |
+| `503` | `GitHub could not complete the step; try again later` | GitHub failed; if it failed after the claim, the step stays used |
+
+The route for the publish step is not part of this version of the protocol.
 
 ### GitHub token grants (`"kind":"github_token"`)
 

@@ -11,6 +11,7 @@ use warden_broker::testkit::{HttpsUpstream, TestBroker};
 use warden_broker_proto::release::RepoName;
 
 mod approve;
+mod manifest;
 mod request;
 mod steps;
 mod tag;
@@ -55,7 +56,9 @@ async fn harness(shape: Shape) -> Harness {
     let origin: url::Url = upstream.origin().parse().unwrap();
     let api = GithubApi::pinned(
         origin.clone(),
-        origin,
+        // The fake takes asset uploads on this path only, as GitHub's uploads host
+        // is another host.
+        origin.join("uploads").unwrap(),
         upstream.ca_pem().as_bytes().to_vec(),
     );
     let broker = TestBroker::with_github_api(api).await;
