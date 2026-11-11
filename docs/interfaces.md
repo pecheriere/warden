@@ -23,7 +23,7 @@ specified. Interfaces with a reference of their own are linked, not repeated.
 
 | Interface | Why | What it sends | Reference |
 |---|---|---|---|
-| 1Password Connect API | Policy, secrets, the CA key, the commit signing key and the GitHub App | `GET` requests, with the token as a bearer | [Deployment](deployment.md#3-1password) |
+| 1Password Connect API | Policy, secrets, the CA key, the commit signing key, the release signing keys, the GitHub App and the release App | `GET` requests, with the token as a bearer | [Deployment](deployment.md#3-1password) |
 | Home Assistant webhook, ntfy | Notifications | The agent, the access, a stated session label, a shortened goal, a link | [Notifications](notifications.md) |
 | `api.github.com` | Minting GitHub tokens | A JWT signed with the App's key, as a bearer, in a `POST` to the installation's access tokens with the fixed permissions | [GitHub tokens](github-app.md) |
 | `api.github.com`, `uploads.github.com` | [Releases](agent-usage.md#releases) the owner approved: reading the commit, the tag, the changelog and the draft, creating the tag, attaching the manifest and publishing the draft | A JWT signed with the release App's key, then calls with the installation token it got (`contents: write`, `metadata: read`, for the one repository). No call sends a token to the agent. | [The release App](github-app.md#the-release-app) |

@@ -1038,7 +1038,10 @@ This section covers the request, the approval and the tag, manifest and publish 
   names, which tag signatures (`git`) and commit signatures never share. The broker cannot know
   whether a digest is the digest of the right artifact: the owner approved the release, and the
   verifier trusts the key, so the digests are the agent's claim, as with any build the agent runs.
-  Error messages name the rule and never quote the manifest.
+  Error messages name the rule and never quote the manifest. It does not check build
+  attestations: what catches a manifest of someone else's archives is the attestation check that
+  [Verifying a release](verifying-releases.md) describes, and the same check in the Homebrew tap,
+  which is to be in place before the first release signed through warden.
 - **Publish needs the signed tag in place.** GitHub lets a draft exist for a tag that does not,
   and publishing it makes GitHub create an unsigned lightweight tag at whatever commit the draft
   names. So before the claim the broker requires the tag step to have been done (when the grant has
@@ -1079,13 +1082,11 @@ This section covers the request, the approval and the tag, manifest and publish 
   a tag or release made through the administrator role fails verification. Until that key is
   retired, its holder can still sign. The risk is recorded in the
   [security assessment](security-assessment.md#ranked-risks).
-- **The broker signs a manifest of whatever the agent hashed.** It does not check build
-  attestations. What catches a manifest of someone else's archives is the attestation check
-  that [Verifying a release](verifying-releases.md) describes, and the same check in the
-  Homebrew tap, which is to be in place before the first release signed through warden.
 - **Reruns.** A rerun of a release workflow removes the manifest from the draft, and the grant
   has used its manifest step. The agent asks for a new release grant for the same tag and
-  commit, which covers the steps left. Nothing weakens the one-claim rule to avoid this.
+  commit, which covers the steps left. Approving it ends the earlier grant for the same agent,
+  repository and tag in the same transaction, and writes a `grant_revoked` entry for each, so a
+  release never has two active grants. Nothing weakens the one-claim rule to avoid this.
 
 ## The local secret backend
 

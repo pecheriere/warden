@@ -178,10 +178,9 @@ is the only thing that holds its key.
   tags with a [ruleset](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/about-rulesets)
   that restricts creating, updating and deleting `v*` tags (you should), the release App must be
   that ruleset's only bypass actor, in place of a repository administrator. Then the broker
-  creates a release's tags, and so can an administrator only by changing the ruleset. Whether
-  GitHub lets an App be a bypass actor on a repository owned by a user, not an organization,
-  is something to check on a scratch repository before you rely on it: warden does not check
-  your ruleset.
+  creates a release's tags, and so can an administrator only by changing the ruleset. GitHub
+  lets an App be a bypass actor on a repository owned by a user as well as on one owned by an
+  organization (confirmed on a user-owned repository). warden does not check your ruleset.
 - **Egress.** The broker needs outbound HTTPS to `api.github.com` and to
   `uploads.github.com`, where it attaches the manifest to the draft release. If you limit its
   egress as [the deployment guide](deployment.md#lock-wardens-egress) does, allow both.

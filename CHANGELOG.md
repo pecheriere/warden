@@ -29,6 +29,10 @@ All notable changes to this project are recorded here. The format follows
   the previous tag, and approves with a passkey. The grant lasts one day, cannot be renewed, and
   Active grants lists its steps as open or used. New migration `0010_release`. The steps
   themselves (tag, manifest and publish) are the entries below (#212).
+- Release grants, reruns. When the owner approves a new release grant for a tag an agent
+  already holds a grant for (after a workflow rerun removed the manifest), the earlier grant ends
+  in the same transaction and is recorded in the audit log as `grant_revoked`, so a release
+  never has two active grants (#213).
 - Release grants, the tag step. `POST /v1/release/tag` signs the tag with the repository's release
   key and creates it on the approved commit, once per grant. The broker computes the tag object's
   id before GitHub makes it and creates the ref only if GitHub made that object. It refuses when
@@ -62,8 +66,8 @@ All notable changes to this project are recorded here. The format follows
 - `warden-server doctor` has two new checks, `release-signing` and `release-app`. The 1Password
   backend now loads items tagged `warden:release-signing` (one per repository) and
   `warden:github-release-app` (at most one), refuses release keys that are shared with each other,
-  the commit signing key or the SSH CA key, and doctor reports them; they are checked now for the
-  release process to come (#187, #210).
+  the commit signing key or the SSH CA key, and doctor reports them; the release
+  process uses them (#187, #210).
 - GitHub token grants get the end-of-grant notice and the **Renew** button that commit
   signing grants have: warden tells you 3 days before one ends, or a quarter of its window
   if that is less, and Renew on Active grants opens a request for the same window, or as

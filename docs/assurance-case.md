@@ -44,7 +44,7 @@ its guarantees hold only under the
 | R8 | When state cannot be read, warden refuses. | Fail-closed paths are listed under [Fail-safe defaults](#3-secure-design-principles). |
 | R9 | An agent always gets an explicit outcome. | `RequestStatus` in [`proto/src/lib.rs`](../crates/proto/src/lib.rs). |
 | R10 | The demo cannot reach a real deployment. | [`scripts/check-demo-not-shipped.sh`](../scripts/check-demo-not-shipped.sh), run in CI, also against the built image. |
-| R11 | A release is made only as the owner approved it on the phone: the tag, the commit, the repository and the manifest's name. The release key and the release App's token stay on the broker, and each step runs once. Not covered: [the agent's routine token can publish a draft early, and the owner's `gh` token is readable by agents until #186](threat-model.md#phone-approved-releases). | `POST /v1/release/{tag,manifest,publish}` in [`api/release.rs`](../crates/broker/src/api/release.rs), [`api/release/manifest.rs`](../crates/broker/src/api/release/manifest.rs) and [`api/release/publish.rs`](../crates/broker/src/api/release/publish.rs): the grant's digest is checked, then the step is claimed in one statement, then GitHub is called. The tag object is built and signed in [`release_signing/tag.rs`](../crates/broker/src/release_signing/tag.rs), the manifest checked and signed in [`release_signing/manifest.rs`](../crates/broker/src/release_signing/manifest.rs). |
+| R11 | A release is made only as the owner approved it on the phone: the tag, the commit, the repository and the manifest's name. The release key and the release App's token stay on the broker, and each step runs once. Not covered: [the agent's routine token can publish a draft early, and the owner's `gh` token is readable by agents until #186](threat-model.md#phone-approved-releases). | `POST /v1/release/{tag,manifest,publish}` in [`api/release.rs`](../crates/broker/src/api/release.rs), [`api/release/manifest.rs`](../crates/broker/src/api/release/manifest.rs) and [`api/release/publish.rs`](../crates/broker/src/api/release/publish.rs): the grant's digest is checked, GitHub is read, then the step is claimed in one statement, then GitHub is written to. The tag object is built and signed in [`release_signing/tag.rs`](../crates/broker/src/release_signing/tag.rs), the manifest checked and signed in [`release_signing/manifest.rs`](../crates/broker/src/release_signing/manifest.rs). |
 
 **The limit of R2.** The passkey signs a random challenge chosen by the WebAuthn
 library, not a hash of the request. The tie between the signature and the request
@@ -281,7 +281,7 @@ Exceptions you should know about:
 - **A known advisory in the dependency tree.** `deny.toml` carries one exemption:
   RUSTSEC-2023-0071, a timing attack on RSA private-key operations, in the `rsa`
   pre-release that `russh` pins. warden holds two RSA private keys, the GitHub App's and the release App's,
-  and signs with it only through `aws-lc-rs`: that `rsa` code is never given a private
+  and signs with them only through `aws-lc-rs`: that `rsa` code is never given a private
   key, and runs only in the broker, to verify the pinned host keys of targets.
 - **Certificate targets.** The login between the agent's `ssh` and the target is
   OpenSSH on both sides, and their settings decide its algorithms.

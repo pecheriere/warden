@@ -583,10 +583,12 @@ The grant ends with that step. For a repository that releases with a manifest, t
 request, `tag`, wait for the workflow to build the draft, build the manifest from its files,
 `sign-manifest`, then `publish`. If the workflow runs again and removes the manifest, the
 grant has used that step: ask for a new release for the same tag and commit, and it covers
-only the steps left.
+only the steps left. When the owner approves it, the earlier grant for that release ends, so
+only the new one is active.
 
-A step refused for `policy changed; request access again` means the release key or the release
-App changed since the owner approved: ask again. `this step is not part of the approved release`
+A step refused for `policy changed; request access again` means the release item (the key, the
+tagger, the manifest's name and namespace, or the publish setting) or the release App changed
+since the owner approved: ask again. `this step is not part of the approved release`
 means the owner's approval did not include it, such as the tag when it was already in place.
 
 ### Telling sessions apart
