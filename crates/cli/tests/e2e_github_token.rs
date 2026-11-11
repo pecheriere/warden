@@ -171,6 +171,7 @@ async fn setup_with_max(max: Window) -> Setup {
     let upstream = HttpsUpstream::start().await;
     let api = GithubApi::pinned(
         upstream.origin().parse().unwrap(),
+        upstream.origin().parse().unwrap(),
         upstream.ca_pem().as_bytes().to_vec(),
     );
     let broker = TestBroker::with_github(api, max, 60).await;

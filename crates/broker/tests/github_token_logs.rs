@@ -46,6 +46,7 @@ async fn the_token_stays_out_of_the_logs() {
     let upstream = HttpsUpstream::start().await;
     let api = GithubApi::pinned(
         upstream.origin().parse().unwrap(),
+        upstream.origin().parse().unwrap(),
         upstream.ca_pem().as_bytes().to_vec(),
     );
     let broker = TestBroker::with_github_api(api).await;

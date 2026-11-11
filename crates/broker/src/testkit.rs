@@ -7,6 +7,7 @@ mod backend;
 mod broker;
 mod clock;
 pub mod github_app;
+pub mod github_release;
 mod notify;
 pub mod sshd;
 pub mod upstream;
