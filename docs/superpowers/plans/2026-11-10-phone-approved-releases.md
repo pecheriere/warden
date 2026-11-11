@@ -342,6 +342,7 @@ Not a subagent task: it needs the owner's GitHub account, vault and approvals.
 - [ ] **Step 3:** End to end on `warden-app-test` with its own release item (tag-only, `publish` true): request, approve on the phone, tag, publish. Check the tag with `git verify-tag` against the item's public key.
 - [ ] **Step 4:** Add the new warden key to `docs/release-signers` (`warden-release namespaces="git,warden-release" ssh-ed25519 …`) and to the tap's `release-signers` (tap PR, merged first), in PR 5.
 - [ ] **Step 5:** With the owner's OK, change `protect-release-tags` on warden: rules creation, update, deletion, non-fast-forward; the release App as the only bypass actor; save before and after JSON.
+- [ ] **Step 5b:** Change the owner's git guard hook (`~/Code/dotfiles/scripts/git_guard_hook.py`, dotfiles repo): keep denying raw `git tag` writes, tag pushes, `gh release` writes and `gh api` tag and release writes, and change its message to say tags and releases go through `warden release`. Check that `warden release tag|sign-manifest|publish` pass it. Remind the owner to push dotfiles.
 - [ ] **Step 6:** The next warden release runs the new `AGENTS.md` steps. Then open the follow-up issue (retire the old key from `docs/release-signers` and the tap; move landfall) and close #187.
 
 ## PR tap: Task 15: Attestation check for warden in the tap
