@@ -183,6 +183,31 @@ impl TestBroker {
         }
     }
 
+    /// A request to release `tag` of `repository` at `commit`.
+    ///
+    /// # Panics
+    /// If `goal`, `repository`, `tag` or `commit` is not valid.
+    #[must_use]
+    pub fn release_request(
+        goal: &str,
+        repository: &str,
+        tag: &str,
+        commit: &str,
+        window: Window,
+    ) -> CreateRequest {
+        CreateRequest {
+            goal: Goal::try_from(goal.to_owned()).expect("valid goal"),
+            access: Access::Release {
+                repository: repository.to_owned().try_into().expect("valid repository"),
+                tag: tag.to_owned().try_into().expect("valid tag"),
+                commit: commit.to_owned().try_into().expect("valid commit"),
+            },
+            window,
+            session: None,
+            link: None,
+        }
+    }
+
     /// A request to use API secret `secret`.
     ///
     /// # Panics

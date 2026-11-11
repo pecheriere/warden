@@ -507,6 +507,7 @@ impl TestBroker {
         .with_commit_signing_per_day(limits.commit_signing_per_day)
         .with_github_token_max(limits.github_token_max)
         .with_github_token_per_hour(limits.github_token_per_hour)
+        .with_github_api(limits.github_api.clone())
         .with_link_hosts(limits.link_hosts.clone())
         .with_call_limits(config.proxy.max_calls_per_agent, config.proxy.max_calls);
         let passkeys = Passkeys::new(

@@ -69,6 +69,7 @@ pub fn approve(view: &PendingView, hosts: &LinkHosts, now: i64) -> Markup {
                                     Destination::Api(_) => "secret",
                                     Destination::CommitSigning(_) => "signing key",
                                     Destination::GithubToken(_) => "GitHub App",
+                                    Destination::Release(_) => "release key",
                                 }) "."
                             }
                         }

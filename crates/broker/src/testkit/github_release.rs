@@ -16,7 +16,7 @@
 //!   belong to the plain token route of the upstream;
 //! - on an installed repository `/repos/<owner>/<name>`: `GET` of the repository,
 //!   `git/commits/<sha>`, `compare/<base>...<branch>`, `git/ref/tags/<tag>`,
-//!   `git/tags/<sha>`, `contents/<path>?ref=<sha>`, `releases`; `POST` of
+//!   `git/tags/<sha>`, `contents/<path>?ref=<sha>`, `tags`, `releases`; `POST` of
 //!   `git/tags` and `git/refs`; `PATCH` of `releases/<id>`; `DELETE` of
 //!   `releases/assets/<id>`;
 //! - `POST /uploads/repos/<owner>/<name>/releases/<id>/assets?name=<name>`: an
@@ -34,9 +34,11 @@ use warden_broker_proto::release::RepoName;
 use super::upstream::{Received, Scripted, answer_scripted};
 
 mod repository;
+mod signed_tag;
 
 pub use repository::ReleaseView;
 use repository::{Call, Repository};
+pub use signed_tag::{signed_tag_object, unsigned_tag_object};
 
 /// The installation id the fake gives every installed repository.
 pub const INSTALLATION_ID: u64 = 424_242;

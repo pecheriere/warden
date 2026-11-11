@@ -25,6 +25,7 @@ use warden_broker_proto::{
 
 use crate::agents::AgentError;
 use crate::audit::{AuditError, AuditLog};
+use crate::github_app::GithubApi;
 use crate::notify::Notifier;
 use crate::policy::{
     ApiSecretPolicy, CommitSigningPolicy, GithubTokenPolicy, PolicyError, SecretBackend, SshTarget,
@@ -46,6 +47,8 @@ mod limits;
 mod link_hosts;
 mod pending;
 mod refusal_throttle;
+mod release;
+mod release_version;
 mod renewal;
 
 pub use self::bus::StatusBus;
@@ -56,6 +59,7 @@ pub use self::limits::{LimitRefusal, RequestLimits};
 pub use self::link_hosts::LinkHosts;
 pub use self::pending::PendingEntry;
 use self::refusal_throttle::RefusalThrottle;
+pub use self::release::{ReleaseFacts, ReleasePolicy};
 
 mod create;
 mod decide;
@@ -244,6 +248,8 @@ pub enum Destination {
     CommitSigning(CommitSigningPolicy),
     /// GitHub App installation tokens.
     GithubToken(GithubTokenPolicy),
+    /// A release of one repository by its key.
+    Release(ReleasePolicy),
 }
 
 impl Destination {
@@ -258,6 +264,7 @@ impl Destination {
             Self::Api(policy) => policy.destination_digest(),
             Self::CommitSigning(policy) => policy.destination_digest(),
             Self::GithubToken(policy) => policy.destination_digest(),
+            Self::Release(policy) => policy.digest(),
         }
     }
 
@@ -269,6 +276,7 @@ impl Destination {
             Self::Api(policy) => policy.max_window,
             Self::CommitSigning(policy) => policy.max_window,
             Self::GithubToken(policy) => policy.max_window,
+            Self::Release(_) => Window::D1,
         }
     }
 
@@ -286,6 +294,7 @@ impl Destination {
             Self::GithubToken(policy) => {
                 return github_token::check_window(window, policy.max_window);
             }
+            Self::Release(_) => return release::check_window(window),
         };
         check_window(window, self.max_window(), &subject)
     }
@@ -416,6 +425,8 @@ pub struct Requests {
     github_refusals: Arc<RefusalThrottle>,
     /// Hosts a request may link to.
     link_hosts: LinkHosts,
+    /// Where release requests are checked against GitHub.
+    github: GithubApi,
 }
 
 /// Which pending requests an expiry pass looks at.
@@ -464,7 +475,15 @@ impl Requests {
             signing_refusals: Arc::default(),
             github_refusals: Arc::default(),
             link_hosts: LinkHosts::default(),
+            github: GithubApi::public(),
         }
+    }
+
+    /// Check release requests against GitHub at `github`, instead of the public API.
+    #[must_use]
+    pub fn with_github_api(mut self, github: GithubApi) -> Self {
+        self.github = github;
+        self
     }
 
     /// Accept links to `hosts` in requests, instead of no links at all.

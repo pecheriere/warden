@@ -240,6 +240,12 @@ fn destination_access(request: &CreateRequest, destination: &Destination) -> Mar
         Destination::GithubToken(policy) => {
             github_token::access(&policy.app_id, policy.installation_id)
         }
+        Destination::Release(policy) => html! {
+            span {
+                "release key " code { bdi { (policy.key_fingerprint) } }
+                " for " code { bdi { (policy.repository.as_str()) } }
+            }
+        },
     }
 }
 
@@ -295,6 +301,7 @@ const fn windows_for(destination: &Destination) -> &'static [Window] {
     match destination {
         Destination::CommitSigning(_) => &Window::COMMIT_SIGNING,
         Destination::GithubToken(_) => &Window::GITHUB_TOKEN,
+        Destination::Release(_) => &Window::RELEASE,
         Destination::Ssh(_) | Destination::Api(_) => &WINDOWS,
     }
 }

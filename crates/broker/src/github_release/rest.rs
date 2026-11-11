@@ -28,6 +28,8 @@ const MAX_CHANGELOG_BYTES: usize = 16 * 1024;
 const MAX_LARGE_BYTES: usize = 1024 * 1024;
 /// The marker after a changelog section that was cut.
 const CUT: &str = "\n…(cut)";
+/// How many tags `release_tags` asks for.
+const TAGS_PER_PAGE: &str = "100";
 /// The most releases asked for in one page; see [`ReleaseClient::release_for_tag`].
 const RELEASES_PER_PAGE: &str = "20";
 
@@ -115,6 +117,11 @@ struct RepositoryAnswer {
 #[derive(Deserialize)]
 struct CompareAnswer {
     status: String,
+}
+
+#[derive(Deserialize)]
+struct TagName {
+    name: String,
 }
 
 #[derive(Deserialize)]
@@ -383,6 +390,20 @@ impl ReleaseClient<'_> {
             "tag" => self.annotated(tag, sha).await.map(Some),
             _ => Err(GithubError::Unreadable),
         }
+    }
+
+    /// The release tags among the first 100 tags GitHub lists, in the order it
+    /// lists them. A name that is not a [`ReleaseTag`] is left out: only names
+    /// that pass their pattern are returned.
+    ///
+    /// # Errors
+    /// A [`GithubError`] when the list cannot be read.
+    pub async fn release_tags(&self) -> Result<Vec<ReleaseTag>, GithubError> {
+        let names: Vec<TagName> = self.get(&["tags"], &[("per_page", TAGS_PER_PAGE)]).await?;
+        Ok(names
+            .into_iter()
+            .filter_map(|tag| ReleaseTag::try_from(tag.name).ok())
+            .collect())
     }
 
     /// The annotated tag object `sha`.

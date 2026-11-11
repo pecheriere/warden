@@ -294,7 +294,7 @@ impl Requests {
         let link = self.approval_link(&token)?;
         let change = self.recorded_change.lock().await;
         let created = self
-            .insert(agent, &req, kind.subject(), &dedupe_key, &token)
+            .insert(agent, &req, kind.subject(), &dedupe_key, &token, None)
             .await;
         drop(change);
         if let Err(RequestError::Limited(refusal)) = &created {

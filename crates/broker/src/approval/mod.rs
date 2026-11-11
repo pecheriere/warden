@@ -55,6 +55,10 @@ const BODY_LIMIT: usize = 64 * 1024;
 /// Requests shown on the history page.
 const HISTORY_LIMIT: u32 = 100;
 
+/// Why a release request cannot be approved: its approval is not built yet, so it
+/// is refused rather than guessed at.
+const RELEASE_NOT_APPROVABLE: &str = "releases cannot be approved on this broker yet";
+
 /// The destination (SSH host, port, host keys; API origin, path prefix,
 /// methods, header, format, CA) differs from what the owner was shown.
 const DESTINATION_CHANGED: &str = "policy changed; reload and review";
@@ -493,6 +497,7 @@ fn check_policy(
         }
         (Access::CommitSigning {}, Destination::CommitSigning(_))
         | (Access::GithubToken {}, Destination::GithubToken(_)) => Ok(()),
+        (Access::Release { .. }, Destination::Release(_)) => Err(RELEASE_NOT_APPROVABLE.to_owned()),
         _ => Err("the request does not match its policy kind".to_owned()),
     }
 }
@@ -666,6 +671,10 @@ async fn approve_finish(
             },
             Err((context, cause)) => return internal(context, &cause),
         },
+        // `check_policy` refuses a release request until its approval is built.
+        Destination::Release(_) => {
+            return json_error(StatusCode::CONFLICT, RELEASE_NOT_APPROVABLE);
+        }
     };
     let grant_id = grant.grant_id.clone();
     // The certificate stays in `grant` until this commits, with its

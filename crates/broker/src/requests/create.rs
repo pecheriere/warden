@@ -12,13 +12,23 @@ use warden_broker_proto::{
 use super::revocation::commit_with_entries;
 use super::transition::detached;
 use super::{
-    PENDING_TTL_SECS, RELAY_NOT_CONFIGURED, RequestError, Requests, Scope, approval_token, begin,
-    check_ed25519, check_window, commit_signing, github_token, limits, note_if_not_applied, parse,
-    record, sha256_hex, window_label,
+    PENDING_TTL_SECS, RELAY_NOT_CONFIGURED, ReleaseFacts, RequestError, Requests, Scope,
+    approval_token, begin, check_ed25519, check_window, commit_signing, github_token, limits,
+    note_if_not_applied, parse, record, sha256_hex, window_label,
 };
 use crate::audit::AuditEvent;
 use crate::notify::{Doorbell, doorbell};
 use crate::policy::SshMode;
+
+/// What checking a request against policy found.
+struct Checked {
+    /// The slot an agent's pending request for the same thing holds.
+    dedupe_key: String,
+    /// What the request asks for, in the owner's notification.
+    subject: String,
+    /// What GitHub said about a release, to store with the request.
+    release: Option<ReleaseFacts>,
+}
 
 /// Attempts to claim the pending slot when racing other creates.
 const INSERT_ATTEMPTS: usize = 3;
@@ -43,7 +53,11 @@ impl Requests {
         req: CreateRequest,
     ) -> Result<CreatedResponse, RequestError> {
         self.link_hosts.check(req.link.as_ref())?;
-        let (dedupe_key, subject) = self.check_against_policy(agent, &req).await?;
+        let Checked {
+            dedupe_key,
+            subject,
+            release,
+        } = self.check_against_policy(agent, &req).await?;
         for _ in 0..INSERT_ATTEMPTS {
             // A stale pending row past its expiry must not hold the slot.
             self.expire_due(Scope::Dedupe(dedupe_key.clone())).await?;
@@ -65,15 +79,18 @@ impl Requests {
             // Insert and ring as one detached unit: a caller dropped while the
             // insert commits must not leave a pending row nobody was told about.
             let inserted = {
-                let (this, agent, req, key, subject) = (
+                let (this, agent, req, key, subject, release) = (
                     self.clone(),
                     agent.clone(),
                     req.clone(),
                     dedupe_key.clone(),
                     subject.clone(),
+                    release.clone(),
                 );
                 detached(async move {
-                    let created = this.insert(&agent, &req, &subject, &key, &token).await;
+                    let created = this
+                        .insert(&agent, &req, &subject, &key, &token, release.as_ref())
+                        .await;
                     drop(change);
                     if let Err(RequestError::Limited(refusal)) = &created {
                         this.record_refusal(&agent, *refusal).await;
@@ -104,8 +121,8 @@ impl Requests {
         &self,
         agent: &AgentName,
         req: &CreateRequest,
-    ) -> Result<(String, String), RequestError> {
-        Ok(match &req.access {
+    ) -> Result<Checked, RequestError> {
+        let (dedupe_key, subject) = match &req.access {
             Access::Ssh {
                 target,
                 user,
@@ -181,10 +198,19 @@ impl Requests {
                 (format!("{agent}|github_token"), "github token".to_owned())
             }
             Access::Release { .. } => {
-                return Err(RequestError::Rejected(
-                    warden_broker_proto::release::NOT_CONFIGURED.to_owned(),
-                ));
+                let (key, subject, facts) =
+                    self.check_release(req.window, &req.access, agent).await?;
+                return Ok(Checked {
+                    dedupe_key: key,
+                    subject,
+                    release: Some(facts),
+                });
             }
+        };
+        Ok(Checked {
+            dedupe_key,
+            subject,
+            release: None,
         })
     }
 
@@ -195,6 +221,7 @@ impl Requests {
         subject: &str,
         dedupe_key: &str,
         token: &str,
+        release: Option<&ReleaseFacts>,
     ) -> Result<CreatedResponse, RequestError> {
         let id = Id::random();
         let fp = fingerprint(agent, req);
@@ -254,6 +281,15 @@ impl Requests {
             .await?;
             if inserted.rows_affected() == 0 {
                 return Err(RequestError::AgentRevoked);
+            }
+            if let Some(facts) = release {
+                // With the request, so a release request never exists without
+                // what the owner is shown.
+                sqlx::query("INSERT INTO release_facts (request_id, facts) VALUES (?, ?)")
+                    .bind(id.as_str())
+                    .bind(serde_json::to_string(facts)?)
+                    .execute(&mut *tx)
+                    .await?;
             }
             tx.commit().await?;
             Ok(())
