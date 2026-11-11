@@ -35,7 +35,7 @@ const LABELS: [&str; 7] = [
 /// The line that starts an armored SSH signature.
 const SIGNATURE_BEGIN: &str = "-----BEGIN SSH SIGNATURE-----";
 /// The namespace Git signs tags in.
-pub const TAG_NAMESPACE: &str = "git";
+pub(crate) const TAG_NAMESPACE: &str = "git";
 
 /// Where the version goes in a manifest's file name.
 const VERSION_PLACEHOLDER: &str = "{version}";

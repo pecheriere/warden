@@ -1032,6 +1032,10 @@ GitHub are covered when they are added.
   App token and reads the commit and the tag. Only someone holding the approval token who has
   started a ceremony reaches it. It is not rate-limited. Accepted: the approval token is the
   owner's, and what it costs is calls on the owner's App.
+- **Step calls refused before the claim are not rate-limited.** Each one mints a release App
+  token and makes a few GitHub reads before it is refused (a tag that exists, a commit that
+  moved, no draft). Only an agent holding an active release grant reaches them, so they cost
+  calls on the owner's App and nothing else. Accepted, as for the approve-finish re-check.
 
 ## The local secret backend
 

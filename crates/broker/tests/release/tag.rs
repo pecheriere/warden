@@ -3,13 +3,14 @@
 use axum::http::StatusCode;
 use serde_json::{Value, json};
 use sqlx::Row as _;
-use warden_broker::policy::ReleaseSigningKey;
+use warden_broker::policy::{ReleaseAppKey, ReleaseSigningKey};
+use warden_broker::testkit::github_app::RSA2048_PKCS8;
 use warden_broker::testkit::github_release::signed_tag_object;
 use warden_broker::testkit::upstream::Scripted;
 use warden_broker_proto::Id;
 use warden_broker_proto::release::{NO_ACTIVE_GRANT, STEP_DONE, STEP_NOT_IN_GRANT, TagResponse};
 
-use super::{HEAD, Harness, NOW, REPO, Shape, TAG, approved, harness, repo};
+use super::{HEAD, Harness, NOW, PARENT, REPO, Shape, TAG, approved, harness, repo};
 
 const PATH: &str = "/v1/release/tag";
 
@@ -212,6 +213,7 @@ async fn tag_step_refuses_a_tag_that_appeared_meanwhile() {
         .add_lightweight_tag(&repo(REPO), TAG, HEAD);
     let response = call(&h).await;
     assert_eq!(response.status, StatusCode::CONFLICT, "{}", response.body);
+    assert_eq!(error(&response), "the tag already exists");
     assert!(!claimed(&h, release.grant_id()).await);
     assert_eq!(posts(&h, "/git/tags"), 0);
 }
@@ -225,5 +227,62 @@ async fn tag_step_refuses_a_bad_body() {
         .api_post_json(&h.agent_key, PATH, &json!({"repository": REPO}))
         .await;
     assert_eq!(response.status, StatusCode::BAD_REQUEST);
+    assert_eq!(error(&response), "the request body is not valid");
     assert_eq!(posts(&h, "/git/tags"), 0);
+}
+
+#[tokio::test]
+async fn tag_step_refuses_a_commit_that_left_the_default_branch() {
+    let h = harness(Shape::Everything).await;
+    let release = approved(&h).await;
+    h.upstream
+        .github_release()
+        .set_default_branch(&repo(REPO), "main", PARENT);
+    let response = call(&h).await;
+    assert_eq!(response.status, StatusCode::CONFLICT, "{}", response.body);
+    assert_eq!(
+        error(&response),
+        "the approved commit is not on the repository's default branch"
+    );
+    assert!(!claimed(&h, release.grant_id()).await);
+    assert_eq!(posts(&h, "/git/tags"), 0);
+}
+
+#[tokio::test]
+async fn tag_step_refuses_when_the_app_changed() {
+    let h = harness(Shape::Everything).await;
+    let release = approved(&h).await;
+    h.broker.backend.set_release_app(Some(
+        ReleaseAppKey::new(
+            "987655".to_owned(),
+            std::str::from_utf8(RSA2048_PKCS8).unwrap(),
+        )
+        .unwrap(),
+    ));
+    let response = call(&h).await;
+    assert_eq!(response.status, StatusCode::CONFLICT, "{}", response.body);
+    assert!(error(&response).starts_with("policy changed"));
+    assert!(!claimed(&h, release.grant_id()).await);
+    assert_eq!(posts(&h, "/git/tags"), 0);
+}
+
+#[tokio::test]
+async fn tag_step_that_fails_at_github_after_the_claim_stays_used() {
+    let h = harness(Shape::Everything).await;
+    let release = approved(&h).await;
+    let github = h.upstream.github_release();
+    github.answer_path_with("/git/tags", Scripted::with_body(500, "{}".to_owned()));
+    let response = call(&h).await;
+    assert_eq!(
+        response.status,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "{}",
+        response.body
+    );
+    assert!(claimed(&h, release.grant_id()).await, "the step is used");
+    assert!(types(&h).contains(&"release_refused".to_owned()));
+    github.answer_normally();
+    let again = call(&h).await;
+    assert_eq!(again.status, StatusCode::CONFLICT);
+    assert_eq!(error(&again), STEP_DONE);
 }

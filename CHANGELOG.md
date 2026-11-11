@@ -11,8 +11,10 @@ All notable changes to this project are recorded here. The format follows
 - New audit entries: `release_tag_created`, `release_refused`, `release_refusals_held` and
   `github_token_renewal_notified`. An older `warden-server audit verify` refuses a log holding
   one, and an older `warden-server` does not start on one, because it verifies the log when it
-  opens it. So once warden has told you a GitHub token grant ends soon, or has created a release
-  tag, rolling back also means restoring the audit log from the backup.
+  opens it. So once warden has told you a GitHub token grant ends soon, or an agent has called a
+  release route (any call can write `release_refused`, not only one that created a tag),
+  rolling back also means restoring the audit log from the backup. The manifest and publish
+  steps add their own entries to the same rule.
 
 ### Added
 
