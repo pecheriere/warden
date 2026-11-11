@@ -120,6 +120,16 @@ fn refuses_manifest_without_namespace() {
 }
 
 #[test]
+fn refuses_the_git_namespace_for_a_manifest() {
+    let err = refused(&[
+        ("manifest", "warden-{version}-SHA256SUMS"),
+        ("manifest_namespace", "git"),
+    ]);
+    assert!(err.contains("manifest_namespace"), "{err}");
+    assert!(err.contains("reserved"), "{err}");
+}
+
+#[test]
 fn refuses_namespace_outside_pattern() {
     let long = "a".repeat(65);
     // A blank namespace counts as absent, and a pattern needs one.

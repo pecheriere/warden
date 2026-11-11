@@ -379,6 +379,13 @@ or control characters",
             if !is_namespace(namespace) {
                 return Err(bad(NAMESPACE_FIELD, "must match ^[a-z0-9][a-z0-9-]{0,63}$"));
             }
+            // Git's own, so that a signature over a manifest can never be a tag's.
+            if namespace == TAG_NAMESPACE {
+                return Err(bad(
+                    NAMESPACE_FIELD,
+                    "must not be \"git\", which is reserved for tag signatures",
+                ));
+            }
             Some(ManifestSpec {
                 pattern: pattern.to_owned(),
                 namespace: namespace.to_owned(),
