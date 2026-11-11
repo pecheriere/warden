@@ -28,6 +28,8 @@ struct Checked {
     subject: String,
     /// What GitHub said about a release, to store with the request.
     release: Option<ReleaseFacts>,
+    /// The agent's pending request in the slot, found before GitHub was asked.
+    existing: Option<CreatedResponse>,
 }
 
 /// Attempts to claim the pending slot when racing other creates.
@@ -57,7 +59,11 @@ impl Requests {
             dedupe_key,
             subject,
             release,
+            existing,
         } = self.check_against_policy(agent, &req).await?;
+        if let Some(existing) = existing {
+            return Ok(existing);
+        }
         for _ in 0..INSERT_ATTEMPTS {
             // A stale pending row past its expiry must not hold the slot.
             self.expire_due(Scope::Dedupe(dedupe_key.clone())).await?;
@@ -116,7 +122,10 @@ impl Requests {
     }
 
     /// Check `req` of `agent` against the policy as it is now. Returns its dedupe
-    /// slot, and what it asks for in the owner's notification.
+    /// slot, what it asks for in the owner's notification and, for a release,
+    /// what GitHub said about it. For a release, a duplicate of the agent's
+    /// pending request (returned as `existing`) and a request over the agent's
+    /// limits are answered before GitHub is asked.
     async fn check_against_policy(
         &self,
         agent: &AgentName,
@@ -198,12 +207,21 @@ impl Requests {
                 (format!("{agent}|github_token"), "github token".to_owned())
             }
             Access::Release { .. } => {
-                let (key, subject, facts) =
-                    self.check_release(req.window, &req.access, agent).await?;
+                let slot = self.release_slot(req.window, &req.access, agent).await?;
+                // GitHub is asked only for a request that would be stored.
+                let existing = self
+                    .release_answered_locally(agent, &slot.dedupe_key)
+                    .await?;
+                let release = if existing.is_some() {
+                    None
+                } else {
+                    Some(self.check_release(&slot).await?)
+                };
                 return Ok(Checked {
-                    dedupe_key: key,
-                    subject,
-                    release: Some(facts),
+                    dedupe_key: slot.dedupe_key,
+                    subject: slot.subject,
+                    release,
+                    existing,
                 });
             }
         };
@@ -211,6 +229,7 @@ impl Requests {
             dedupe_key,
             subject,
             release: None,
+            existing: None,
         })
     }
 

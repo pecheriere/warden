@@ -318,6 +318,54 @@ async fn refuses_when_github_unreachable() {
     h.broker.create_request("build-agent", release(HEAD)).await;
 }
 
+/// GitHub answers the first calls and then fails: the request is refused with the
+/// fixed message, quoting nothing, and nothing is stored.
+#[tokio::test]
+async fn refuses_when_github_fails_midway() {
+    let h = harness(Shape::Everything).await;
+    for suffix in ["/tags", "/contents/CHANGELOG.md"] {
+        h.upstream.github_release().answer_path_with(
+            suffix,
+            Scripted::with_body(500, r#"{"message":"marker-github-said-this"}"#),
+        );
+        let message = rejected(
+            h.broker
+                .state()
+                .requests
+                .create(&agent(), release(HEAD))
+                .await,
+        );
+        assert_eq!(
+            message, "GitHub could not be asked about this release; try again",
+            "{suffix}"
+        );
+        h.upstream.github_release().answer_normally();
+    }
+    assert_eq!(count(&h, "requests").await, 0);
+    assert_eq!(count(&h, "release_facts").await, 0);
+}
+
+#[tokio::test]
+async fn refuses_a_commit_github_does_not_have() {
+    let h = harness(Shape::Everything).await;
+    let message = rejected(
+        h.broker
+            .state()
+            .requests
+            .create(
+                &agent(),
+                release("3333333333333333333333333333333333333333"),
+            )
+            .await,
+    );
+    assert_eq!(
+        message,
+        "GitHub has no such commit, or the release App is not installed on this repository"
+    );
+    assert_eq!(count(&h, "requests").await, 0);
+    assert_eq!(count(&h, "release_facts").await, 0);
+}
+
 #[tokio::test]
 async fn second_request_for_same_release_is_deduplicated() {
     let h = harness(Shape::Everything).await;
@@ -333,6 +381,77 @@ async fn second_request_for_same_release_is_deduplicated() {
     assert_eq!(second.created, Some(false));
     assert_eq!(count(&h, "requests").await, 1);
     assert_eq!(count(&h, "release_facts").await, 1);
+}
+
+/// A duplicate is answered from the stored request: GitHub is not asked, so an
+/// outage does not turn a retry into a refusal and a looping agent costs the App
+/// nothing.
+#[tokio::test]
+async fn duplicate_release_request_does_not_ask_github() {
+    let h = harness(Shape::Everything).await;
+    let (first, _) = h.broker.create_request("build-agent", release(HEAD)).await;
+    let github = h.upstream.github_release();
+    let asked = github.record().len();
+    github.answer_everything_with(Scripted::with_body(500, "down"));
+    let second = h
+        .broker
+        .state()
+        .requests
+        .create(&agent(), release(HEAD))
+        .await
+        .unwrap();
+    assert_eq!(second.id, first.id);
+    assert_eq!(second.created, Some(false));
+    assert_eq!(github.record().len(), asked);
+}
+
+/// The slot is the same for a repository spelled in another case.
+#[tokio::test]
+async fn release_slot_ignores_the_case_of_the_repository() {
+    let h = harness(Shape::Everything).await;
+    let (first, _) = h.broker.create_request("build-agent", release(HEAD)).await;
+    let second = h
+        .broker
+        .state()
+        .requests
+        .create(
+            &agent(),
+            request("Example-Owner/Example-Repo", TAG, HEAD, Window::D1),
+        )
+        .await
+        .unwrap();
+    assert_eq!(second.id, first.id);
+    assert_eq!(second.created, Some(false));
+    assert_eq!(count(&h, "requests").await, 1);
+}
+
+/// An agent at its pending limit is refused before GitHub is asked.
+#[tokio::test]
+async fn agent_over_its_limit_makes_no_github_call() {
+    let h = harness(Shape::Everything).await;
+    let max = warden_broker::requests::RequestLimits::default().max_pending;
+    for n in 0..max {
+        let tag = format!("v1.2.{}", n + 10);
+        h.broker
+            .state()
+            .requests
+            .create(&agent(), request(REPO, &tag, HEAD, Window::D1))
+            .await
+            .unwrap();
+    }
+    let github = h.upstream.github_release();
+    let asked = github.record().len();
+    let result = h
+        .broker
+        .state()
+        .requests
+        .create(&agent(), request(REPO, "v1.2.99", HEAD, Window::D1))
+        .await;
+    assert!(
+        matches!(result, Err(RequestError::Limited(_))),
+        "{result:?}"
+    );
+    assert_eq!(github.record().len(), asked);
 }
 
 #[tokio::test]
@@ -358,6 +477,18 @@ async fn approving_a_release_request_still_refuses() {
     let (_, token) = h.broker.create_request("build-agent", release(HEAD)).await;
     h.broker.enroll_soft_passkey().await;
     let begun = h.broker.begin_approval(&token, Window::D1).await;
-    assert_ne!(begun.status, axum::http::StatusCode::OK, "{}", begun.body);
+    assert_eq!(
+        begun.status,
+        axum::http::StatusCode::BAD_REQUEST,
+        "{}",
+        begun.body
+    );
+    assert!(
+        begun
+            .body
+            .contains("releases cannot be approved on this broker yet"),
+        "{}",
+        begun.body
+    );
     assert_eq!(count(&h, "grants").await, 0);
 }

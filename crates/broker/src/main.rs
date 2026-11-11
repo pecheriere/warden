@@ -599,6 +599,7 @@ async fn build_app(config: &Arc<Config>) -> Result<App> {
     tracing::info!(%audience, "audience loaded");
     let (relay, relay_key) = relay_endpoint(config).await?.unzip();
     let clock = Arc::new(SystemClock);
+    let github = GithubApi::public();
     let requests = Requests::new(
         pool.clone(),
         audit.clone(),
@@ -613,7 +614,8 @@ async fn build_app(config: &Arc<Config>) -> Result<App> {
     .with_commit_signing_per_day(config.commit_signing_max_per_day)
     .with_github_token_max(config.github_token_max_window)
     .with_link_hosts(config.link_hosts.clone())
-    .with_call_limits(config.proxy.max_calls_per_agent, config.proxy.max_calls);
+    .with_call_limits(config.proxy.max_calls_per_agent, config.proxy.max_calls)
+    .with_github_api(github.clone());
     let passkeys = Passkeys::new(
         pool.clone(),
         audit.clone(),
@@ -631,7 +633,7 @@ async fn build_app(config: &Arc<Config>) -> Result<App> {
         requests: requests.clone(),
         passkeys: Arc::new(passkeys),
         audience,
-        github: GithubApi::public(),
+        github,
     };
     let (api, approval) = build_routers(state);
     Ok(App {

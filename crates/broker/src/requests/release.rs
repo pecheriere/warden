@@ -9,9 +9,9 @@
 
 use sha2::{Digest as _, Sha256};
 use warden_broker_proto::release::{self, CommitId, ReleaseSteps, ReleaseTag, RepoName};
-use warden_broker_proto::{Access, Window};
+use warden_broker_proto::{Access, AgentName, CreatedResponse, Window};
 
-use super::{RequestError, Requests, release_version};
+use super::{RequestError, Requests, Scope, limits, release_version};
 use crate::github_release::{GithubError, ReleaseClient};
 use crate::policy::{PolicyError, ReleaseAppKey, ReleaseSigningKey};
 
@@ -149,18 +149,18 @@ impl Requests {
         Ok(ReleasePolicy::new(&key, &app, tag))
     }
 
-    /// Check a request for `access`, a release, against the key, the App and GitHub.
-    /// Returns its dedupe slot, its subject and what GitHub said.
+    /// What a release request is bound to before GitHub is asked: its window, the
+    /// repository's key, the App, and its dedupe slot and subject.
     ///
     /// # Errors
-    /// [`RequestError::Rejected`] with a message that quotes nothing GitHub said, or
-    /// the backend's errors. Nothing is stored.
-    pub(super) async fn check_release(
+    /// [`RequestError::Rejected`] for a window other than 1d, or
+    /// [`release::NOT_CONFIGURED`], or the backend's errors.
+    pub(super) async fn release_slot(
         &self,
         window: Window,
         access: &Access,
-        agent: &warden_broker_proto::AgentName,
-    ) -> Result<(String, String, ReleaseFacts), RequestError> {
+        agent: &AgentName,
+    ) -> Result<ReleaseSlot, RequestError> {
         let Access::Release {
             repository,
             tag,
@@ -176,23 +176,82 @@ impl Requests {
             .await
             .map_err(not_configured)?;
         let app = self.backend.release_app().await.map_err(not_configured)?;
-        let client = ReleaseClient::connect(&self.github, &app, repository, self.clock.now())
-            .await
-            .map_err(|e| github_failed(&e))?;
-        let facts = read_facts(&client, &key, tag, commit).await?;
-        let policy = ReleasePolicy::new(&key, &app, tag);
-        if facts.tag_in_place && policy.manifest.is_none() && !policy.publish {
-            return Err(RequestError::Rejected(NOTHING_LEFT.to_owned()));
-        }
-        Ok((
-            format!(
+        Ok(ReleaseSlot {
+            dedupe_key: format!(
                 "{agent}|release|{}|{tag}",
                 repository.as_str().to_ascii_lowercase()
             ),
-            format!("release {repository} {tag}"),
-            facts,
-        ))
+            subject: format!("release {repository} {tag}"),
+            repository: repository.clone(),
+            tag: tag.clone(),
+            commit: commit.clone(),
+            key,
+            app,
+        })
     }
+
+    /// What can be answered about a release request without asking GitHub: the
+    /// agent's pending request in the same slot, or the refusal that its limits
+    /// make. A duplicate is not new, so it is let through the limits as `insert`
+    /// lets it; `insert` still enforces them on a request that is stored.
+    ///
+    /// # Errors
+    /// [`RequestError::Limited`], or storage failures.
+    pub(super) async fn release_answered_locally(
+        &self,
+        agent: &AgentName,
+        dedupe_key: &str,
+    ) -> Result<Option<CreatedResponse>, RequestError> {
+        // A stale pending row past its expiry must not hold the slot.
+        self.expire_due(Scope::Dedupe(dedupe_key.to_owned()))
+            .await?;
+        if let Some(existing) = self.pending_in_slot(dedupe_key).await? {
+            return Ok(Some(existing));
+        }
+        let mut conn = self.pool.acquire().await?;
+        let checked =
+            limits::check(&mut conn, &self.limits, agent, dedupe_key, self.clock.now()).await;
+        drop(conn);
+        if let Err(RequestError::Limited(refusal)) = &checked {
+            self.record_refusal(agent, *refusal).await;
+        }
+        checked.map(|()| None)
+    }
+
+    /// Check a release request against GitHub: the commit, the tag and the
+    /// changelog. Returns what GitHub said.
+    ///
+    /// # Errors
+    /// [`RequestError::Rejected`] with a message that quotes nothing GitHub said.
+    /// Nothing is stored.
+    pub(super) async fn check_release(
+        &self,
+        slot: &ReleaseSlot,
+    ) -> Result<ReleaseFacts, RequestError> {
+        let client =
+            ReleaseClient::connect(&self.github, &slot.app, &slot.repository, self.clock.now())
+                .await
+                .map_err(|e| github_failed(&e))?;
+        let facts = read_facts(&client, &slot.key, &slot.tag, &slot.commit).await?;
+        let policy = ReleasePolicy::new(&slot.key, &slot.app, &slot.tag);
+        if facts.tag_in_place && policy.manifest.is_none() && !policy.publish {
+            return Err(RequestError::Rejected(NOTHING_LEFT.to_owned()));
+        }
+        Ok(facts)
+    }
+}
+
+/// A release request as far as it can be checked without GitHub.
+pub(super) struct ReleaseSlot {
+    /// The slot the agent's pending request for this release holds.
+    pub(super) dedupe_key: String,
+    /// What the request asks for, in the owner's notification.
+    pub(super) subject: String,
+    repository: RepoName,
+    tag: ReleaseTag,
+    commit: CommitId,
+    key: ReleaseSigningKey,
+    app: ReleaseAppKey,
 }
 
 /// Read what the owner is shown, and refuse a commit off the default branch and a
