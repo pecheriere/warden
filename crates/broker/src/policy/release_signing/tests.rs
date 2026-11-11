@@ -323,8 +323,8 @@ fn check_distinct_refuses_ca_key() {
 
 /// A simulated CA outage or an unreadable CA makes the fake backend refuse, as the
 /// 1Password backend does, instead of skipping the CA check.
-// The fake backend is only built with the `testkit` feature, which CI turns on for
-// every test run.
+// The fake backend is only built with the `testkit` feature. The crate's own
+// dev-dependency on warden-broker enables it for every test build (see Cargo.toml).
 #[cfg(feature = "testkit")]
 #[tokio::test]
 async fn fake_backend_refuses_when_the_ca_cannot_be_read() {
@@ -351,4 +351,30 @@ async fn fake_backend_refuses_when_the_ca_cannot_be_read() {
     fake.set_ca_outage(Some("down"));
     let err = fake.release_signing(&repo).await.unwrap_err();
     assert!(matches!(err, PolicyError::Unavailable(_)), "{err:?}");
+}
+
+/// An unreadable commit signing key makes the fake backend refuse the release keys,
+/// as the 1Password backend does, instead of skipping the comparison.
+#[cfg(feature = "testkit")]
+#[tokio::test]
+async fn fake_backend_refuses_when_the_commit_signing_key_cannot_be_read() {
+    use crate::policy::{PolicyError, SecretBackend as _};
+    use crate::testkit::FakeBackend;
+    use warden_broker_proto::release::RepoName;
+
+    let repo = RepoName::try_from("example-owner/one".to_owned()).unwrap();
+    let fake = FakeBackend::new().with_release_key(item_for("example-owner/one", &key()));
+    fake.release_signing(&repo).await.unwrap();
+
+    // Only ssh-ed25519 commit signing keys are accepted, so an ECDSA one cannot be read.
+    let ecdsa = crate::test_keys::random_key(crate::test_keys::P256);
+    fake.set_commit_signing_key(Some(ecdsa));
+    let err = fake.release_signing(&repo).await.unwrap_err();
+    assert!(
+        matches!(&err, PolicyError::ReleaseKey(r) if r.contains("commit signing key")),
+        "{err:?}"
+    );
+
+    fake.set_commit_signing_key(None);
+    fake.release_signing(&repo).await.unwrap();
 }

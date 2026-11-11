@@ -15,7 +15,10 @@ use warden_broker_proto::doctor::{
 use super::{Environment, ListenerProbe, PasskeyProbe, PathFacts, examine, invalid_config_report};
 use crate::config::{Config, ConfigError};
 use crate::notify::{ChannelSettings, Doorbell, NotifyError};
-use crate::policy::{CaProbe, CommitSigningProbe, GithubAppProbe, LocalProbe, VaultProbe};
+use crate::policy::{
+    CaProbe, CommitSigningProbe, GithubAppProbe, LocalProbe, ReleaseAppProbe, ReleaseSigningProbe,
+    VaultProbe,
+};
 
 const TOKEN: &str = "connect-token-do-not-leak-0123456789";
 const WEBHOOK_ID: &str = "webhook-id-do-not-leak-0123456789";
@@ -51,6 +54,7 @@ struct Fake {
     vault: VaultProbe,
     ca: CaProbe,
     local: LocalProbe,
+    release_signing: ReleaseSigningProbe,
     ring: fn(&str) -> Result<(), NotifyError>,
     passkeys: PasskeyProbe,
     waiting: Result<i64, String>,
@@ -69,6 +73,7 @@ impl Fake {
                 fingerprint: "SHA256:abc".to_owned(),
             },
             local: LocalProbe::Unreadable("not asked for".to_owned()),
+            release_signing: ReleaseSigningProbe::NotConfigured,
             ring: |_| Ok(()),
             passkeys: PasskeyProbe::Enrolled(1),
             waiting: Ok(0),
@@ -98,6 +103,14 @@ impl Environment for Fake {
 
     async fn github_app(&self) -> GithubAppProbe {
         GithubAppProbe::NotConfigured
+    }
+
+    async fn release_signing(&self) -> ReleaseSigningProbe {
+        self.release_signing.clone()
+    }
+
+    async fn release_app(&self) -> ReleaseAppProbe {
+        ReleaseAppProbe::NotConfigured
     }
 
     async fn ca(&self) -> CaProbe {
@@ -196,6 +209,26 @@ async fn a_healthy_setup_passes_all_but_what_cannot_be_seen() {
     assert_eq!(report.exit_code(false), EXIT_NOTHING_FAILED);
     assert_eq!(report.exit_code(true), EXIT_COULD_NOT_CHECK);
     every_check_not_passing_says_what_to_do(&report);
+}
+
+#[tokio::test]
+async fn the_release_checks_run_after_the_vault_is_found() {
+    let report = run(&Fake::healthy()).await;
+    for name in ["release-signing", "release-app"] {
+        assert_eq!(status(&report, name), Status::Pass, "{name}");
+    }
+    let mut fake = Fake::healthy();
+    fake.release_signing = ReleaseSigningProbe::Invalid("two items share a key".to_owned());
+    let report = run(&fake).await;
+    assert_eq!(status(&report, "release-signing"), Status::Fail);
+    assert_eq!(report.exit_code(false), EXIT_FAILED);
+
+    let mut fake = Fake::healthy();
+    fake.vault = VaultProbe::Missing;
+    let report = run(&fake).await;
+    for name in ["release-signing", "release-app"] {
+        assert_eq!(status(&report, name), Status::CouldNotCheck, "{name}");
+    }
 }
 
 #[tokio::test]

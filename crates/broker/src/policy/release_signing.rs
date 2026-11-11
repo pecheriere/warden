@@ -11,8 +11,8 @@ use sha2::{Digest as _, Sha256};
 use ssh_key::{Algorithm, HashAlg, PrivateKey, PublicKey};
 use warden_broker_proto::release::RepoName;
 
-use super::CommitSigningKey;
 use super::onepassword::{SecretField, parse_private_key, values_by_label};
+use super::{CommitSigningKey, PolicyError};
 
 /// Item fields, by label.
 const PRIVATE_KEY_FIELD: &str = "private_key";
@@ -202,6 +202,41 @@ fn is_namespace(namespace: &str) -> bool {
     bytes.len() <= MAX_NAMESPACE_CHARS
         && bytes.first().is_some_and(|&b| alnum(b))
         && bytes.iter().all(|&b| alnum(b) || b == b'-')
+}
+
+/// Whether the release signing keys load, for doctor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReleaseSigningProbe {
+    /// Every item loads and they are all distinct. Holds the repositories, in the
+    /// order the items were read; never a key or a fingerprint.
+    Loaded {
+        /// One `owner/name` per item.
+        repositories: Vec<String>,
+    },
+    /// There are no release signing items, which is fine unless releases are wanted.
+    NotConfigured,
+    /// An item is unusable or the set is not distinct. Holds the reason, never a key.
+    Invalid(String),
+    /// The backend could not say.
+    Unknown(String),
+}
+
+impl ReleaseSigningProbe {
+    /// The probe for the outcome of reading every release signing key.
+    #[must_use]
+    pub fn of(read: Result<Vec<ReleaseSigningKey>, PolicyError>) -> Self {
+        match read {
+            Ok(keys) if keys.is_empty() => Self::NotConfigured,
+            Ok(keys) => Self::Loaded {
+                repositories: keys
+                    .iter()
+                    .map(|key| key.repository().as_str().to_owned())
+                    .collect(),
+            },
+            Err(PolicyError::ReleaseKey(reason)) => Self::Invalid(reason),
+            Err(e) => Self::Unknown(e.to_string()),
+        }
+    }
 }
 
 /// Read a release signing key from the fields of its item. `title` names the item

@@ -13,6 +13,7 @@ use aws_lc_rs::rsa::KeyPair;
 use aws_lc_rs::signature::RSA_PKCS1_SHA256;
 use sha2::{Digest as _, Sha256};
 
+use super::PolicyError;
 use super::github_app::{check_app_id, parse_rsa_key};
 use super::onepassword::{SecretField, values_by_label};
 
@@ -78,6 +79,35 @@ impl fmt::Debug for ReleaseAppKey {
         f.debug_struct("ReleaseAppKey")
             .field("app_id", &self.app_id)
             .finish_non_exhaustive()
+    }
+}
+
+/// Whether the release App loads, for doctor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReleaseAppProbe {
+    /// It loads.
+    Loaded {
+        /// The App's id.
+        app_id: String,
+    },
+    /// None is configured, which is fine unless releases are wanted.
+    NotConfigured,
+    /// It is there but cannot be used. Holds the reason, never the key.
+    Invalid(String),
+    /// The backend could not say.
+    Unknown(String),
+}
+
+impl ReleaseAppProbe {
+    /// The probe for the outcome of reading the release App.
+    #[must_use]
+    pub fn of(read: Result<ReleaseAppKey, PolicyError>) -> Self {
+        match read {
+            Ok(key) => Self::Loaded { app_id: key.app_id },
+            Err(PolicyError::NoReleaseApp) => Self::NotConfigured,
+            Err(PolicyError::ReleaseApp(reason)) => Self::Invalid(reason),
+            Err(e) => Self::Unknown(e.to_string()),
+        }
     }
 }
 

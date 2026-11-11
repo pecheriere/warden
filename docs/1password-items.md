@@ -162,6 +162,68 @@ reads the item for each approval page and token, and never gives the key out. Ch
 the App or installation ends every grant made for the old one; replacing only the key
 does not.
 
+## Release signing key
+
+Tag: `warden:release-signing`. Optional: with no such item, there are no release keys. One
+item per repository; the local backend cannot hold one. warden loads and checks these items
+for the release process to come, and does not use them for anything else yet. Fields are
+matched by label (case-sensitive, each label once); add them in 1Password as custom fields,
+concealed for the key, text for the rest. The item's category does not matter.
+
+| Field | Rule |
+|---|---|
+| `private_key` | Required. An unencrypted `ssh-ed25519` key, as OpenSSH or PKCS#8 PEM. It must be a key of its own: warden refuses one that is also the commit signing key, the SSH CA key or another repository's release key. |
+| `repository` | Required. `owner/name`: the owner is letters, digits and dashes (at most 39 characters, starting with a letter or digit), the name is letters, digits, dots, underscores and dashes (at most 100, not `.` or `..`). Compared ignoring case. Two items for the same repository are an error. |
+| `tagger_name` | Required. The name on the tags this key signs: 1 to 100 characters on one line, without `<` or `>`. |
+| `tagger_email` | Required. The email on those tags: an address without spaces, `<` or `>`, at most 254 characters. |
+| `manifest` | Optional. The file name of the signed checksums file the repository publishes, with `{version}` exactly once, such as `example-repo-{version}-SHA256SUMS`: letters, digits, dots, underscores, plus signs and dashes around it, no path separator, at most 200 characters. |
+| `manifest_namespace` | Required with `manifest`, and an error without it: the `ssh-keygen -Y` namespace the manifest is signed in, `^[a-z0-9][a-z0-9-]{0,63}$`. |
+| `publish` | Optional: `true` or `false` (the default). Whether warden may publish the draft release itself. |
+
+Example (tag `warden:release-signing`, title `release-example-repo`):
+
+```
+private_key          -----BEGIN OPENSSH PRIVATE KEY-----
+                     ...
+                     -----END OPENSSH PRIVATE KEY-----
+repository           example-owner/example-repo
+tagger_name          Example Release Bot
+tagger_email         releases@example.com
+manifest             example-repo-{version}-SHA256SUMS
+manifest_namespace   example-repo-release
+publish              false
+```
+
+One unusable item fails every release key, because which repository it was meant for cannot be
+trusted. The same goes for a commit signing key or SSH CA key that exists but cannot be read,
+since nothing then says the release keys are different keys. warden never gives the private
+key out. `warden-server doctor` shows the result in its `release-signing` check.
+
+## Release GitHub App
+
+Tag: `warden:github-release-app`. Optional: with no such item, there is no release App. More
+than one is an error, and the local backend cannot hold one. A second GitHub App, apart from
+the one in [GitHub App](#github-app), for the release process to come. warden loads and
+checks the item and does not use it for anything else yet. It has no installation: the
+installation is found when the App is used. Two fields, matched by label like the others:
+
+| Field | Rule |
+|---|---|
+| `app_id` | Required. The App's id: letters, digits, dots, underscores and dashes. |
+| `private_key` | Required. The App's RSA private key as PEM, PKCS#1 or PKCS#8, unencrypted, at least 2048 bits. |
+
+Example (tag `warden:github-release-app`, title `release-app`):
+
+```
+app_id        123456
+private_key   -----BEGIN PRIVATE KEY-----
+              ...
+              -----END PRIVATE KEY-----
+```
+
+warden never gives the key out. `warden-server doctor` shows the result in its `release-app`
+check.
+
 ## SSH CA
 
 Tag: `warden:ssh-ca`. Exactly one item in the vault carries this tag; zero or

@@ -1,7 +1,7 @@
 //! The release signing and release App items, against a wiremock Connect server.
 
 use serde_json::{Value, json};
-use warden_broker::policy::{PolicyError, SecretBackend};
+use warden_broker::policy::{PolicyError, ReleaseAppProbe, ReleaseSigningProbe, SecretBackend};
 use warden_broker::testkit::github_app::{APP_ID, RSA2048_PKCS8};
 use warden_broker_proto::release::RepoName;
 use wiremock::MockServer;
@@ -190,5 +190,156 @@ async fn a_release_key_that_is_the_commit_signing_key_fails() {
     assert!(
         matches!(&err, PolicyError::ReleaseKey(r) if r.contains("commit signing key")),
         "{err:?}"
+    );
+}
+
+/// Mount `release-signing` summaries plus one commit signing item holding `commit`.
+async fn with_signing_items_and_commit_key(
+    items: &[(&str, &str, String)],
+    commit: &str,
+) -> MockServer {
+    let server = connect_mock().await;
+    let mut list = summaries(
+        "warden:release-signing",
+        &items.iter().map(|(id, _, _)| *id).collect::<Vec<_>>(),
+    );
+    list.as_array_mut().unwrap().extend(
+        summaries("warden:commit-signing", &["cs1"])
+            .as_array()
+            .unwrap()
+            .clone(),
+    );
+    mount_items(&server, &list).await;
+    for (id, repository, private) in items {
+        mount_item(&server, id, &signing_item(id, repository, private)).await;
+    }
+    mount_item(
+        &server,
+        "cs1",
+        &json!({
+            "id": "cs1", "title": "commit-signing", "vault": {"id": VAULT_ID},
+            "tags": ["warden:commit-signing"],
+            "fields": [{"id": "private_key", "type": "CONCEALED", "label": "private key", "value": commit}]
+        }),
+    )
+    .await;
+    server
+}
+
+#[tokio::test]
+async fn an_unreadable_commit_signing_key_fails_the_release_keys_closed() {
+    let server = with_signing_items_and_commit_key(
+        &[("rs1", "example-owner/one", ed25519_openssh())],
+        "not a key",
+    )
+    .await;
+    let err = backend(&server)
+        .release_signing(&repo("example-owner/one"))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, PolicyError::ReleaseKey(r) if r.contains("commit signing key")),
+        "{err:?}"
+    );
+}
+
+#[tokio::test]
+async fn the_probe_passes_with_no_items() {
+    let server = connect_mock().await;
+    mount_items(&server, &json!([])).await;
+    assert_eq!(
+        backend(&server).probe_release_signing().await,
+        ReleaseSigningProbe::NotConfigured
+    );
+}
+
+#[tokio::test]
+async fn the_probe_lists_repositories_and_never_a_key() {
+    let (one, two) = (ed25519_openssh(), ed25519_openssh());
+    let server = with_signing_items(&[
+        ("rs1", "example-owner/one", one.clone()),
+        ("rs2", "example-owner/two", two),
+    ])
+    .await;
+    let probe = backend(&server).probe_release_signing().await;
+    let ReleaseSigningProbe::Loaded { repositories } = &probe else {
+        panic!("{probe:?}");
+    };
+    assert_eq!(repositories, &["example-owner/one", "example-owner/two"]);
+    assert!(!format!("{probe:?}").contains(one.lines().nth(1).unwrap()));
+}
+
+#[tokio::test]
+async fn the_probe_fails_on_a_shared_key() {
+    let shared = ed25519_openssh();
+    let server = with_signing_items(&[
+        ("rs1", "example-owner/one", shared.clone()),
+        ("rs2", "example-owner/two", shared),
+    ])
+    .await;
+    let probe = backend(&server).probe_release_signing().await;
+    assert!(
+        matches!(probe, ReleaseSigningProbe::Invalid(_)),
+        "{probe:?}"
+    );
+}
+
+#[tokio::test]
+async fn the_probe_fails_on_the_commit_signing_key() {
+    let shared = ed25519_openssh();
+    let server =
+        with_signing_items_and_commit_key(&[("rs1", "example-owner/one", shared.clone())], &shared)
+            .await;
+    let probe = backend(&server).probe_release_signing().await;
+    let ReleaseSigningProbe::Invalid(reason) = &probe else {
+        panic!("{probe:?}");
+    };
+    assert!(reason.contains("commit signing key"), "{reason}");
+}
+
+#[tokio::test]
+async fn the_release_app_probe_fails_on_two_items() {
+    let server = connect_mock().await;
+    mount_items(
+        &server,
+        &summaries("warden:github-release-app", &["ra1", "ra2"]),
+    )
+    .await;
+    let probe = backend(&server).probe_release_app().await;
+    assert!(matches!(probe, ReleaseAppProbe::Invalid(_)), "{probe:?}");
+}
+
+#[tokio::test]
+async fn the_release_app_probe_reports_none() {
+    let server = connect_mock().await;
+    mount_items(&server, &json!([])).await;
+    assert_eq!(
+        backend(&server).probe_release_app().await,
+        ReleaseAppProbe::NotConfigured
+    );
+}
+
+#[tokio::test]
+async fn the_release_app_probe_reports_the_app_id() {
+    let server = connect_mock().await;
+    mount_items(&server, &summaries("warden:github-release-app", &["ra1"])).await;
+    mount_item(
+        &server,
+        "ra1",
+        &json!({
+            "id": "ra1", "title": "release-app", "vault": {"id": VAULT_ID},
+            "tags": ["warden:github-release-app"],
+            "fields": [
+                field("app_id", APP_ID),
+                field("private_key", std::str::from_utf8(RSA2048_PKCS8).unwrap()),
+            ]
+        }),
+    )
+    .await;
+    assert_eq!(
+        backend(&server).probe_release_app().await,
+        ReleaseAppProbe::Loaded {
+            app_id: APP_ID.to_owned()
+        }
     );
 }

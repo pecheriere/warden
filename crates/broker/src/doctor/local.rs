@@ -2,7 +2,7 @@
 
 use warden_broker_proto::doctor::Check;
 
-use crate::policy::{CaProbe, GithubAppProbe, LocalProbe};
+use crate::policy::{CaProbe, GithubAppProbe, LocalProbe, ReleaseAppProbe, ReleaseSigningProbe};
 
 const POLICY: &str = "local.policy";
 const ENTRIES: &str = "local.entries";
@@ -18,7 +18,14 @@ pub(super) fn checks(probe: LocalProbe, checks: &mut Vec<Check>) {
                 reason,
                 "Fix the policy file and its permissions: see docs/local-backend.md.",
             ));
-            for name in [ENTRIES, CA, "commit-signing", "github-app"] {
+            for name in [
+                ENTRIES,
+                CA,
+                "commit-signing",
+                "github-app",
+                "release-signing",
+                "release-app",
+            ] {
                 checks.push(Check::could_not_check(
                     name,
                     "Not checked: the policy file is not usable.",
@@ -60,6 +67,14 @@ pub(super) fn checks(probe: LocalProbe, checks: &mut Vec<Check>) {
             checks.push(super::github_app::check(
                 Some(GithubAppProbe::NotConfigured),
                 super::github_app::Backend::Local,
+            ));
+            checks.push(super::release::signing_check(
+                Some(ReleaseSigningProbe::NotConfigured),
+                super::release::Backend::Local,
+            ));
+            checks.push(super::release::app_check(
+                Some(ReleaseAppProbe::NotConfigured),
+                super::release::Backend::Local,
             ));
         }
     }
@@ -144,6 +159,18 @@ mod tests {
             status_of(&list, "local.host-boundary"),
             Status::CouldNotCheck
         );
+    }
+
+    #[test]
+    fn local_backend_reports_release_checks_not_configured() {
+        let list = statuses(read(Vec::new(), CaProbe::NotNeeded));
+        for name in ["release-signing", "release-app"] {
+            assert_eq!(status_of(&list, name), Status::Pass, "{name}");
+        }
+        let list = statuses(LocalProbe::Unreadable("bad".to_owned()));
+        for name in ["release-signing", "release-app"] {
+            assert_eq!(status_of(&list, name), Status::CouldNotCheck, "{name}");
+        }
     }
 
     #[test]

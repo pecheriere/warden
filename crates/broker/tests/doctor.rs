@@ -152,6 +152,8 @@ async fn a_working_setup_exits_0_and_lists_what_only_the_owner_can_check() {
         "config",
         "connect.vault",
         "ssh-ca",
+        "release-signing",
+        "release-app",
         "passkey",
         "listener.api",
     ] {
