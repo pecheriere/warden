@@ -110,7 +110,7 @@ impl GithubReleaseFake {
                         json_answer(404, &json!({"message": "Not Found"}))
                     }
                 }
-                (None, Answer::Token) => token_answer(body),
+                (None, Answer::Token) => token_answer(body, &state.installed),
             }
         };
         Some(answer_scripted(scripted).await)
@@ -126,11 +126,28 @@ fn json_answer(status: u16, value: &Value) -> Scripted {
     Scripted::with_body(status, value.to_string()).header("content-type", "application/json")
 }
 
-/// A token limited to the repositories and permissions the request named.
-fn token_answer(body: &[u8]) -> Scripted {
+/// A token limited to the repositories and permissions the request named, with
+/// the repositories echoed as GitHub does: the ones among `installed` of those
+/// names.
+fn token_answer(body: &[u8], installed: &[String]) -> Scripted {
     let Ok(request) = serde_json::from_slice::<Value>(body) else {
         return json_answer(422, &json!({"message": "Invalid request"}));
     };
+    let names = request["repositories"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let repositories: Vec<Value> = names
+        .iter()
+        .filter_map(Value::as_str)
+        .filter_map(|name| {
+            let suffix = format!("/{}", name.to_lowercase());
+            installed
+                .iter()
+                .find(|full| full.ends_with(&suffix))
+                .map(|full| json!({"name": name, "full_name": full}))
+        })
+        .collect();
     json_answer(
         201,
         &json!({
@@ -138,6 +155,7 @@ fn token_answer(body: &[u8]) -> Scripted {
             "expires_at": TOKEN_EXPIRES_AT,
             "permissions": request["permissions"],
             "repository_selection": "selected",
+            "repositories": repositories,
         }),
     )
 }

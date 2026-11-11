@@ -17,8 +17,6 @@ use serde_json::json;
 use url::Url;
 use zeroize::Zeroizing;
 
-use crate::github_app::InstallationToken;
-
 /// Time allowed for connecting (TCP and TLS).
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Time allowed for the whole call.
@@ -33,6 +31,23 @@ const JWT_LIFETIME_SECS: i64 = 540;
 const MAX_TOKEN_LIFETIME_SECS: i64 = 2 * 3600;
 /// The API version the requests and the answers' shapes are written for.
 const API_VERSION: &str = "2022-11-28";
+
+/// An installation token and when GitHub says it stops working.
+pub struct InstallationToken {
+    /// The token. A secret.
+    pub token: SecretString,
+    /// Expiry, in seconds since the Unix epoch.
+    pub expires_at: i64,
+}
+
+impl std::fmt::Debug for InstallationToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InstallationToken")
+            .field("token", &"[REDACTED]")
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
+}
 
 /// Why a call to GitHub did not give a body to read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

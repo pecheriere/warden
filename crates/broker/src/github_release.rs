@@ -12,11 +12,12 @@
 
 use http::{Method, StatusCode};
 use secrecy::ExposeSecret as _;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde_json::json;
 use warden_broker_proto::release::RepoName;
 
-use crate::github_app::{GithubApi, InstallationToken};
-use crate::github_http::{self, Failure};
+use crate::github_app::GithubApi;
+use crate::github_http::{self, Failure, InstallationToken};
 use crate::policy::ReleaseAppKey;
 
 /// Why a call to GitHub gave nothing usable. The messages are fixed and carry
@@ -50,23 +51,8 @@ impl From<Failure> for GithubError {
 }
 
 /// The permissions of a release token: all of them, nothing else.
-#[derive(Serialize)]
-struct Permissions {
-    contents: &'static str,
-    metadata: &'static str,
-}
-
-const PERMISSIONS: Permissions = Permissions {
-    contents: "write",
-    metadata: "read",
-};
-
-/// The body that asks for a token, in this order.
-#[derive(Serialize)]
-struct TokenRequest<'a> {
-    repositories: [&'a str; 1],
-    permissions: Permissions,
-}
+const CONTENTS_PERMISSION: &str = "write";
+const METADATA_PERMISSION: &str = "read";
 
 #[derive(Deserialize)]
 struct InstallationAnswer {
@@ -78,6 +64,37 @@ struct TokenAnswer {
     token: String,
     expires_at: String,
     permissions: std::collections::BTreeMap<String, String>,
+    repository_selection: String,
+    #[serde(default)]
+    repositories: Vec<RepositoryAnswer>,
+}
+
+#[derive(Deserialize)]
+struct RepositoryAnswer {
+    name: String,
+    full_name: Option<String>,
+}
+
+impl TokenAnswer {
+    /// Whether the token is for `repo` alone, as asked: selected repositories,
+    /// exactly one, and it is `repo`, ignoring ASCII case as GitHub does.
+    fn is_limited_to(&self, repo: &RepoName) -> bool {
+        let [only] = self.repositories.as_slice() else {
+            return false;
+        };
+        self.repository_selection == "selected"
+            && only.name.eq_ignore_ascii_case(repo.name())
+            && only.full_name.as_ref().is_none_or(|full| {
+                full.eq_ignore_ascii_case(&format!("{}/{}", repo.owner(), repo.name()))
+            })
+    }
+
+    /// Whether the token has `contents: write` and `metadata: read` only.
+    fn has_exactly_the_permissions_asked(&self) -> bool {
+        self.permissions.len() == 2
+            && self.permissions.get("contents").map(String::as_str) == Some(CONTENTS_PERMISSION)
+            && self.permissions.get("metadata").map(String::as_str) == Some(METADATA_PERMISSION)
+    }
 }
 
 /// The release App's JWT, signed off the async workers (RSA takes milliseconds).
@@ -139,8 +156,8 @@ pub async fn installation_for(
 /// `metadata: read`.
 ///
 /// # Errors
-/// [`GithubError::Unreadable`] when the answer's permissions differ from those
-/// asked for, or its expiry is not after `now` and within two hours of it;
+/// [`GithubError::Unreadable`] when the answer's permissions or repositories
+/// differ from those asked for, or its expiry is not after `now` and within two hours of it;
 /// another [`GithubError`] when the call fails.
 pub async fn release_token(
     api: &GithubApi,
@@ -150,11 +167,11 @@ pub async fn release_token(
     now: i64,
 ) -> Result<InstallationToken, GithubError> {
     let jwt = app_jwt(app, now).await?;
-    let body = serde_json::to_string(&TokenRequest {
-        repositories: [repo.name()],
-        permissions: PERMISSIONS,
+    let body = json!({
+        "repositories": [repo.name()],
+        "permissions": {"contents": CONTENTS_PERMISSION, "metadata": METADATA_PERMISSION},
     })
-    .map_err(|_| GithubError::Unreadable)?;
+    .to_string();
     let path = format!("app/installations/{installation}/access_tokens");
     let raw = call(
         api,
@@ -165,18 +182,11 @@ pub async fn release_token(
         StatusCode::CREATED,
     )
     .await?;
-    let TokenAnswer {
-        token,
-        expires_at,
-        permissions,
-    } = serde_json::from_slice(&raw).map_err(|_| GithubError::Unreadable)?;
-    let exact = permissions.len() == 2
-        && permissions.get("contents").map(String::as_str) == Some(PERMISSIONS.contents)
-        && permissions.get("metadata").map(String::as_str) == Some(PERMISSIONS.metadata);
-    if !exact {
+    let answer: TokenAnswer = serde_json::from_slice(&raw).map_err(|_| GithubError::Unreadable)?;
+    if !answer.has_exactly_the_permissions_asked() || !answer.is_limited_to(repo) {
         return Err(GithubError::Unreadable);
     }
-    github_http::checked_token(token, &expires_at, now).ok_or(GithubError::Unreadable)
+    github_http::checked_token(answer.token, &answer.expires_at, now).ok_or(GithubError::Unreadable)
 }
 
 /// A client for one repository, holding a release token for it.

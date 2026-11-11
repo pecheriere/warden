@@ -48,11 +48,33 @@ fn decode(part: &str) -> Vec<u8> {
     URL_SAFE_NO_PAD.decode(part).unwrap()
 }
 
-/// A token answer with these permissions.
+/// A token answer with these permissions, for the one repository asked for.
 fn token_answer(permissions: &Value, expires_at: &str) -> Scripted {
+    scoped_token_answer(
+        permissions,
+        expires_at,
+        "selected",
+        &json!([{"name": "example-repo", "full_name": "example-owner/example-repo"}]),
+    )
+}
+
+/// A token answer with this repository scope.
+fn scoped_token_answer(
+    permissions: &Value,
+    expires_at: &str,
+    selection: &str,
+    repositories: &Value,
+) -> Scripted {
     Scripted::with_body(
         201,
-        json!({"token": TOKEN, "expires_at": expires_at, "permissions": permissions}).to_string(),
+        json!({
+            "token": TOKEN,
+            "expires_at": expires_at,
+            "permissions": permissions,
+            "repository_selection": selection,
+            "repositories": repositories,
+        })
+        .to_string(),
     )
 }
 
@@ -120,7 +142,7 @@ async fn release_token_is_limited_to_the_repository() {
     );
     assert_eq!(
         String::from_utf8(calls[0].body.clone()).unwrap(),
-        r#"{"repositories":["example-repo"],"permissions":{"contents":"write","metadata":"read"}}"#
+        r#"{"permissions":{"contents":"write","metadata":"read"},"repositories":["example-repo"]}"#
     );
     assert_eq!(calls[0].headers["content-type"], "application/json");
     assert_eq!(calls[0].headers["accept-encoding"], "identity");
@@ -143,6 +165,55 @@ async fn release_token_refuses_wider_permissions() {
             .unwrap_err();
         assert_eq!(err, GithubError::Unreadable, "{permissions}");
     }
+}
+
+#[tokio::test]
+async fn release_token_refuses_a_wider_repository_scope() {
+    let (upstream, api) = github().await;
+    let exact = json!({"contents": "write", "metadata": "read"});
+    let asked = json!({"name": "example-repo", "full_name": "example-owner/example-repo"});
+    let other = json!({"name": "other-repo", "full_name": "example-owner/other-repo"});
+    let elsewhere = json!({"name": "example-repo", "full_name": "other-owner/example-repo"});
+    for (selection, repositories) in [
+        ("selected", json!([other])),
+        ("selected", json!([elsewhere])),
+        ("selected", json!([asked, other])),
+        ("selected", json!([])),
+        ("all", json!([asked])),
+        ("all", json!([])),
+    ] {
+        upstream
+            .github_release()
+            .answer_everything_with(scoped_token_answer(
+                &exact,
+                TOKEN_EXPIRES_AT,
+                selection,
+                &repositories,
+            ));
+        let err = release_token(&api, &app(), INSTALLATION_ID, &repo(), NOW)
+            .await
+            .unwrap_err();
+        assert_eq!(err, GithubError::Unreadable, "{selection} {repositories}");
+    }
+}
+
+#[tokio::test]
+async fn release_token_scope_ignores_ascii_case() {
+    let (upstream, api) = github().await;
+    let exact = json!({"contents": "write", "metadata": "read"});
+    upstream
+        .github_release()
+        .answer_everything_with(scoped_token_answer(
+            &exact,
+            TOKEN_EXPIRES_AT,
+            "selected",
+            &json!([{"name": "Example-Repo", "full_name": "Example-Owner/Example-Repo"}]),
+        ));
+    assert!(
+        release_token(&api, &app(), INSTALLATION_ID, &repo(), NOW)
+            .await
+            .is_ok()
+    );
 }
 
 #[tokio::test]
@@ -197,21 +268,50 @@ async fn refuses_oversized_answers() {
     }
 }
 
+/// Answers that carry [`MARKER`] in a place an error or a log line might copy it
+/// from. Every call that gets one of them must fail.
+fn marked_answers() -> Vec<Scripted> {
+    let exact = json!({"contents": "write", "metadata": "read"});
+    let wider = json!({"contents": "write", "metadata": "read", "administration": MARKER});
+    vec![
+        Scripted::with_body(500, format!("{{\"message\":\"{MARKER}\"}}")),
+        Scripted::with_body(200, format!("{{\"id\": \"{MARKER}\"}}")),
+        Scripted::with_body(201, format!("not json {MARKER}")),
+        Scripted::with_body(
+            201,
+            json!({"token": MARKER, "expires_at": MARKER, "permissions": exact}).to_string(),
+        ),
+        Scripted::with_body(
+            201,
+            json!({
+                "token": MARKER,
+                "expires_at": TOKEN_EXPIRES_AT,
+                "permissions": wider,
+                "repository_selection": "selected",
+                "repositories": [{"name": "example-repo"}],
+            })
+            .to_string(),
+        ),
+    ]
+}
+
 #[tokio::test]
 async fn errors_carry_no_github_text() {
     let (upstream, api) = github().await;
-    upstream
-        .github_release()
-        .answer_everything_with(Scripted::with_body(
-            500,
-            format!("{{\"message\":\"{MARKER}\"}}"),
-        ));
-    let err = installation_for(&api, &app(), &repo(), NOW)
-        .await
-        .unwrap_err();
-    assert_eq!(err, GithubError::Refused(StatusCode::INTERNAL_SERVER_ERROR));
-    assert!(!err.to_string().contains(MARKER));
-    assert!(!format!("{err:?}").contains(MARKER));
+    for scripted in marked_answers() {
+        upstream.github_release().answer_everything_with(scripted);
+        let results = [
+            installation_for(&api, &app(), &repo(), NOW).await.map(drop),
+            release_token(&api, &app(), INSTALLATION_ID, &repo(), NOW)
+                .await
+                .map(drop),
+        ];
+        for result in results {
+            let err = result.unwrap_err();
+            assert!(!err.to_string().contains(MARKER));
+            assert!(!format!("{err:?}").contains(MARKER));
+        }
+    }
 }
 
 #[tokio::test]
