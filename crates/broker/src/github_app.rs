@@ -11,7 +11,7 @@ use url::Url;
 use warden_broker_proto::github_token::PERMISSIONS;
 use zeroize::Zeroizing;
 
-use crate::github_http::{self, Failure};
+use crate::github_http::{self, Failure, Payload};
 use crate::policy::GithubAppKey;
 
 /// Where GitHub's API and its uploads host are, and whom to trust there.
@@ -146,14 +146,20 @@ pub async fn mint(
         .map(|(name, level)| ((*name).to_owned(), json!(level)))
         .collect();
     let body = json!({ "permissions": permissions }).to_string();
-    let request =
-        github_http::request(&api.client()?, Method::POST, url, jwt.as_str(), Some(body))?;
+    let request = github_http::request(
+        &api.client()?,
+        Method::POST,
+        url,
+        jwt.as_str(),
+        github_http::JSON,
+        Payload::Json(body),
+    )?;
     let response = github_http::send(request).await?;
     if response.status() != StatusCode::CREATED {
         // The body is never read: nothing GitHub says is passed on.
         return Err(MintError::Refused(response.status().as_u16()));
     }
-    let raw = github_http::read_body(response).await?;
+    let raw = github_http::read_body(response, github_http::MAX_RESPONSE_BYTES).await?;
     parse(&raw, now)
 }
 

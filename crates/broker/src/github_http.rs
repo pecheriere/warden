@@ -21,14 +21,18 @@ use zeroize::Zeroizing;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Time allowed for the whole call.
 const TIMEOUT: Duration = Duration::from_secs(30);
-/// Largest answer accepted; a real one is a few hundred bytes.
-const MAX_RESPONSE_BYTES: usize = 64 * 1024;
+/// Largest answer accepted by default; a real one is a few hundred bytes.
+pub(crate) const MAX_RESPONSE_BYTES: usize = 64 * 1024;
 /// How far in the past the JWT's `iat` is set, for clock drift (GitHub's advice).
 const JWT_BACKDATE_SECS: i64 = 60;
 /// How long the JWT lives; GitHub allows at most 10 minutes.
 const JWT_LIFETIME_SECS: i64 = 540;
 /// The latest expiry accepted, from now: GitHub's tokens last an hour.
 const MAX_TOKEN_LIFETIME_SECS: i64 = 2 * 3600;
+/// The media type of GitHub's JSON answers.
+pub(crate) const JSON: &str = "application/vnd.github+json";
+/// The media type that asks for a file's bytes.
+pub(crate) const RAW: &str = "application/vnd.github.raw";
 /// The API version the requests and the answers' shapes are written for.
 const API_VERSION: &str = "2022-11-28";
 
@@ -107,14 +111,25 @@ pub(crate) fn app_jwt(
     Ok(token)
 }
 
-/// A request with the GitHub headers and `credential` as a bearer token. A body,
-/// when given, is JSON.
+/// What a request carries.
+pub(crate) enum Payload {
+    /// No body.
+    Empty,
+    /// A JSON body.
+    Json(String),
+    /// A file, as `application/octet-stream`.
+    Octets(Vec<u8>),
+}
+
+/// A request with the GitHub headers, `accept` as the media type asked for and
+/// `credential` as a bearer token.
 pub(crate) fn request(
     client: &Client,
     method: Method,
     url: Url,
     credential: &str,
-    json_body: Option<String>,
+    accept: &'static str,
+    payload: Payload,
 ) -> Result<RequestBuilder, Failure> {
     let mut bearer =
         HeaderValue::from_str(&format!("Bearer {credential}")).map_err(|_| Failure::Key)?;
@@ -122,16 +137,20 @@ pub(crate) fn request(
     let mut request = client
         .request(method, url)
         .header(AUTHORIZATION, bearer)
-        .header(ACCEPT, "application/vnd.github+json")
+        .header(ACCEPT, accept)
         .header("x-github-api-version", API_VERSION)
         .header(
             USER_AGENT,
             concat!("warden-broker/", env!("CARGO_PKG_VERSION")),
         )
         .header(ACCEPT_ENCODING, "identity");
-    if let Some(body) = json_body {
-        request = request.header(CONTENT_TYPE, "application/json").body(body);
-    }
+    request = match payload {
+        Payload::Empty => request,
+        Payload::Json(body) => request.header(CONTENT_TYPE, "application/json").body(body),
+        Payload::Octets(bytes) => request
+            .header(CONTENT_TYPE, "application/octet-stream")
+            .body(bytes),
+    };
     Ok(request)
 }
 
@@ -140,19 +159,22 @@ pub(crate) async fn send(request: RequestBuilder) -> Result<Response, Failure> {
     request.send().await.map_err(failed)
 }
 
-/// The whole body of `response`, which must be unencoded and no larger than the
-/// limit, announced or not.
-pub(crate) async fn read_body(mut response: Response) -> Result<Zeroizing<Vec<u8>>, Failure> {
+/// The whole body of `response`, which must be unencoded and no larger than
+/// `limit` bytes, announced or not.
+pub(crate) async fn read_body(
+    mut response: Response,
+    limit: usize,
+) -> Result<Zeroizing<Vec<u8>>, Failure> {
     refuse_encoded(response.headers())?;
     if response
         .content_length()
-        .is_some_and(|len| usize::try_from(len).map_or(true, |len| len > MAX_RESPONSE_BYTES))
+        .is_some_and(|len| usize::try_from(len).map_or(true, |len| len > limit))
     {
         return Err(Failure::TooLarge);
     }
-    let mut raw = Zeroizing::new(Vec::with_capacity(MAX_RESPONSE_BYTES));
+    let mut raw = Zeroizing::new(Vec::with_capacity(limit.min(MAX_RESPONSE_BYTES)));
     while let Some(chunk) = response.chunk().await.map_err(failed)? {
-        if chunk.len() > MAX_RESPONSE_BYTES - raw.len() {
+        if chunk.len() > limit - raw.len() {
             return Err(Failure::TooLarge);
         }
         raw.extend_from_slice(&chunk);

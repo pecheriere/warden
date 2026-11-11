@@ -3,21 +3,27 @@
 //!
 //! It finds the release App's installation on a repository, then mints a token
 //! for that one repository with `contents: write` and `metadata: read` and
-//! nothing more. Every call goes through [`crate::github_http`]: HTTPS only, no
+//! nothing more. [`ReleaseClient`] then reads commits, tags, the changelog and
+//! releases and creates tags, refs, assets and the publication (see `rest`).
+//! Every call goes through `crate::github_http`: HTTPS only, no
 //! redirects, no retries, no encoded answers, a bounded body.
 //!
 //! No text GitHub sent reaches an error, a log line or an audit entry: a
 //! [`GithubError`] is one of four fixed cases, and the status of a refusal is a
 //! number. A key or token appears only in a request's `Authorization` header.
 
+mod rest;
+mod tag_object;
+
 use http::{Method, StatusCode};
 use secrecy::ExposeSecret as _;
 use serde::Deserialize;
 use serde_json::json;
+use url::Url;
 use warden_broker_proto::release::RepoName;
 
 use crate::github_app::GithubApi;
-use crate::github_http::{self, Failure, InstallationToken};
+use crate::github_http::{self, Failure, InstallationToken, Payload};
 use crate::policy::ReleaseAppKey;
 
 /// Why a call to GitHub gave nothing usable. The messages are fixed and carry
@@ -108,23 +114,61 @@ async fn app_jwt(app: &ReleaseAppKey, now: i64) -> Result<zeroize::Zeroizing<Str
     .map_err(GithubError::from)
 }
 
-/// Send one request as the App and return the body of a `success` answer.
+/// One request to GitHub and what it must answer.
+struct Call {
+    method: Method,
+    url: Url,
+    accept: &'static str,
+    payload: Payload,
+    /// The status of a good answer; its body is the result.
+    success: StatusCode,
+    /// The most bytes of that body accepted.
+    limit: usize,
+}
+
+impl Call {
+    /// A JSON call, with a 64 KiB limit on the answer.
+    fn json(method: Method, url: Url, payload: Payload, success: StatusCode) -> Self {
+        Self {
+            method,
+            url,
+            accept: github_http::JSON,
+            payload,
+            success,
+            limit: github_http::MAX_RESPONSE_BYTES,
+        }
+    }
+}
+
+/// `base` with `segments` appended to its path, each as one segment: a `/` in
+/// one is encoded, so no name can add a segment.
+fn endpoint(base: &Url, segments: &[&str]) -> Result<Url, GithubError> {
+    let mut url = base.clone();
+    url.path_segments_mut()
+        .map_err(|()| GithubError::Unreachable)?
+        .pop_if_empty()
+        .extend(segments);
+    Ok(url)
+}
+
+/// Send `call` with `credential` as the bearer token and return the body of a
+/// good answer.
 async fn call(
     api: &GithubApi,
     credential: &str,
-    method: Method,
-    path: &str,
-    body: Option<String>,
-    success: StatusCode,
+    call: Call,
 ) -> Result<zeroize::Zeroizing<Vec<u8>>, GithubError> {
-    let url = api
-        .base()
-        .join(path)
-        .map_err(|_| GithubError::Unreachable)?;
-    let request = github_http::request(&api.client()?, method, url, credential, body)?;
+    let request = github_http::request(
+        &api.client()?,
+        call.method,
+        call.url,
+        credential,
+        call.accept,
+        call.payload,
+    )?;
     let response = github_http::send(request).await?;
     match response.status() {
-        status if status == success => Ok(github_http::read_body(response).await?),
+        status if status == call.success => Ok(github_http::read_body(response, call.limit).await?),
         // The body is never read: nothing GitHub says is passed on.
         StatusCode::NOT_FOUND => Err(GithubError::NotFound),
         status => Err(GithubError::Refused(status)),
@@ -145,8 +189,12 @@ pub async fn installation_for(
     now: i64,
 ) -> Result<u64, GithubError> {
     let jwt = app_jwt(app, now).await?;
-    let path = format!("repos/{}/{}/installation", repo.owner(), repo.name());
-    let raw = call(api, jwt.as_str(), Method::GET, &path, None, StatusCode::OK).await?;
+    let url = endpoint(
+        api.base(),
+        &["repos", repo.owner(), repo.name(), "installation"],
+    )?;
+    let get = Call::json(Method::GET, url, Payload::Empty, StatusCode::OK);
+    let raw = call(api, jwt.as_str(), get).await?;
     let InstallationAnswer { id } =
         serde_json::from_slice(&raw).map_err(|_| GithubError::Unreadable)?;
     Ok(id)
@@ -172,16 +220,13 @@ pub async fn release_token(
         "permissions": {"contents": CONTENTS_PERMISSION, "metadata": METADATA_PERMISSION},
     })
     .to_string();
-    let path = format!("app/installations/{installation}/access_tokens");
-    let raw = call(
-        api,
-        jwt.as_str(),
-        Method::POST,
-        &path,
-        Some(body),
-        StatusCode::CREATED,
-    )
-    .await?;
+    let installation = installation.to_string();
+    let url = endpoint(
+        api.base(),
+        &["app", "installations", &installation, "access_tokens"],
+    )?;
+    let post = Call::json(Method::POST, url, Payload::Json(body), StatusCode::CREATED);
+    let raw = call(api, jwt.as_str(), post).await?;
     let answer: TokenAnswer = serde_json::from_slice(&raw).map_err(|_| GithubError::Unreadable)?;
     if !answer.has_exactly_the_permissions_asked() || !answer.is_limited_to(repo) {
         return Err(GithubError::Unreadable);
@@ -244,6 +289,9 @@ impl std::fmt::Debug for ReleaseClient<'_> {
             .finish()
     }
 }
+
+pub use rest::{Asset, CommitInfo, CreateTag, ExistingTag, Release};
+pub use tag_object::{GitTagResponse, rebuild};
 
 #[cfg(test)]
 mod tests;

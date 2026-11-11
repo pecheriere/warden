@@ -384,3 +384,7 @@ fn error_messages_are_fixed() {
         assert_eq!(err.to_string(), text);
     }
 }
+
+mod rest;
+mod rest_releases;
+mod rest_tags;
