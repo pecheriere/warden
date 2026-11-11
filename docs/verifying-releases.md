@@ -5,27 +5,33 @@ independent ways. They answer different questions, so check both.
 
 | Check | Signed by | It answers |
 |---|---|---|
-| **Signed manifest** (`warden-<version>-SHA256SUMS` and its `.sig`) | The maintainer's SSH key, off GitHub | Did the maintainer approve exactly these files and this image? |
+| **Signed manifest** (`warden-<version>-SHA256SUMS` and its `.sig`) | An SSH key held off GitHub: the broker's release key from the release made through warden's release steps on, the maintainer's own key before | Was this list of files and this image signed with the release key, after the owner approved the release? |
 | **Build attestation** (`gh attestation verify`) | A short-lived key on the GitHub Actions runner, certified by Sigstore | Did warden's release workflow build this from this tag? |
 
-The attestation alone is not enough if GitHub itself, or an account that can
-change this repository, is compromised: that attacker could run a workflow and
-get a valid attestation. They could not produce the maintainer's signature,
-because that key is never on GitHub. The signature only helps, though, if you got
-the maintainer's public key before the compromise: see step 1. It also does not
-say how the files were built.
+Neither check is enough alone, so do both. The attestation alone is not enough if
+GitHub itself, or an account that can change this repository, is compromised: that
+attacker could run a workflow and get a valid attestation. They could not produce
+the release signature, because that key is never on GitHub. The signature only
+helps, though, if you got the public key before the compromise: see step 1. And the
+signature alone is not enough either: it says the key signed that list, not how the
+files were built, and from the first release made through warden's release steps the
+signer signs whatever list the agent sends it. Before it signs,
+`scripts/sign-release.sh` checks the attestation of every file and of the image under
+its own name, and that check is the only one that ties the list to the workflow's
+build. You can repeat it yourself, as steps 2 and 3 show, which is why the attestation
+check is required and not optional.
 
 Nothing stops a release being published without a manifest, because signing is a
-manual step and the workflow cannot do it. Treat a release after v0.8.1 that has
+separate step and the workflow cannot do it. Treat a release after v0.8.1 that has
 no manifest as unsigned.
 
 GitHub also attests each immutable release (`gh release verify`). GitHub signs
 that with its own key, so it shows that the release has not changed since it was
 published, not who approved it.
 
-## 1. Get the maintainer's key
+## 1. Get the release key
 
-The public key is in [`docs/release-signers`](release-signers), in the format
+The public keys are in [`docs/release-signers`](release-signers), in the format
 `ssh-keygen` reads:
 
 ```sh
@@ -39,10 +45,24 @@ Compare that fingerprint with the signing keys on the maintainer's GitHub accoun
 curl -fsSL https://api.github.com/users/pecheriere/ssh_signing_keys | jq -r '.[].key' | ssh-keygen -lf -
 ```
 
-The first command should print
+For a release signed by the maintainer's own key (every release before the first made
+through warden's release steps), the first command should print
 `SHA256:aF+0knqtnI3TWceyXtxVRGbcfH64yoZfRGJ3HnDbPT4`, and the second should list
 it. The account can hold other signing keys; only the ones in `release-signers`
 sign releases.
+
+**Verify an older release against the file as it was at that release's tag**, not
+today's: a key is removed from `release-signers` once it is retired, and an old
+release still verifies against the list it shipped with.
+
+```sh
+curl -fsSL "https://raw.githubusercontent.com/pecheriere/warden/v$version/docs/release-signers" -o release-signers
+```
+
+The identity differs by release. Releases signed by the maintainer's own key use
+the identity `pecheriere@users.noreply.github.com` in the commands below. Releases
+made through warden's release steps use `warden-release`. The line of the file that
+matches says which; the commands below show the `warden-release` form.
 
 **There is no source for this key off GitHub yet.** The file, the account and this
 page are all on GitHub, so a compromise of GitHub could change them together, and
@@ -81,8 +101,9 @@ curl -fLO "$base/$file"
 curl -fLO "$base/warden-$version-SHA256SUMS"
 curl -fLO "$base/warden-$version-SHA256SUMS.sig"
 
-# The maintainer signed this list of hashes. Expect: Good "warden-release" signature
-ssh-keygen -Y verify -f release-signers -I pecheriere@users.noreply.github.com \
+# The release key signed this list of hashes. Expect: Good "warden-release" signature
+# (for a release signed by the maintainer's own key, use -I pecheriere@users.noreply.github.com)
+ssh-keygen -Y verify -f release-signers -I warden-release \
   -n warden-release -s "warden-$version-SHA256SUMS.sig" < "warden-$version-SHA256SUMS"
 
 # The archive is the one on the list. Expect: <file>: OK
@@ -98,7 +119,7 @@ gh attestation verify "$file" --repo pecheriere/warden \
 
 The attestation step finds an attestation by the file's digest, not its name. The
 signed manifest ties each name to a digest, and `scripts/sign-release.sh` refuses to
-sign a file attested under another name, so check the manifest as well.
+ask for a signature on a file attested under another name, so check the manifest as well.
 
 ### Homebrew
 
@@ -138,7 +159,7 @@ Verify the manifest's signature first, as in step 2. Then pin
 
 ## 4. Verify the source
 
-Release tags are signed with the same key. This checks a tag in a clone, whatever
+Release tags are signed with the same key (the broker's, from the first release made through warden's release steps). This checks a tag in a clone, whatever
 your git configuration says:
 
 ```sh
@@ -146,7 +167,7 @@ tag=vx.y.z
 git cat-file tag "$tag" > tag.txt
 sed -n '/^-----BEGIN SSH SIGNATURE-----$/,$p' tag.txt > tag.sig
 sed '/^-----BEGIN SSH SIGNATURE-----$/,$d' tag.txt > tag.payload
-ssh-keygen -Y verify -f release-signers -I pecheriere@users.noreply.github.com \
+ssh-keygen -Y verify -f release-signers -I warden-release \
   -n git -s tag.sig < tag.payload
 grep -x "tag $tag" tag.payload   # the name it was signed under; expect one line
 ```
@@ -170,12 +191,15 @@ signature covers that image.
 
 ## Where the signing key is
 
-The private key is not on GitHub: the repository has no Actions secret holding it,
-no workflow uses it, and only its public half is listed on the account and in this
-repository. It is a file on the maintainer's machine, so it guards against a
-compromise of GitHub, and not against something running as the maintainer there. The release workflow
-cannot sign the manifest, which is why the maintainer signs it after the workflow
-has finished, with `scripts/sign-release.sh`, before publishing the draft.
+From the first release made through warden's release steps, the private key lives
+only in the broker. It is not on GitHub, in an Actions secret, or on the machine an
+agent runs on. The broker signs the tag and the manifest only for a release grant the
+owner approved on the phone, for that repository, tag and commit, and the grant names
+the manifest's file name. The release workflow cannot sign the manifest, which is why
+the agent signs it after the workflow has finished, with `scripts/sign-release.sh`,
+before publishing the draft with `warden release publish`. The older releases were
+signed with a key in a file on the maintainer's machine, which guarded against a
+compromise of GitHub and not against something running as the maintainer there.
 
 ## Not covered yet
 

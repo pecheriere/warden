@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 # Tests scripts/sign-release.sh, which otherwise only runs during a release. It
 # copies the script into a throwaway repository with a throwaway key and replaces
-# `gh` with a stub, so it touches neither GitHub nor this machine's keys. Each
-# case that must refuse also checks that nothing was uploaded.
+# `gh` and `warden` with stubs, so it touches neither GitHub, the broker nor this
+# machine's keys. The stub `warden` signs with the throwaway key, as the broker
+# signs with its own, and "uploads" to the stub draft. The script reads the
+# signers from docs/release-signers of the repository it sits in, so the test
+# needs no override: its copy of the script sits in a repository with its own list.
+# Each case that must refuse before signing also checks that nothing was uploaded.
 #
 # Usage: scripts/test-sign-release.sh
 set -euo pipefail
@@ -12,7 +16,8 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
-identity=pecheriere@users.noreply.github.com
+identity=warden-release
+old_identity=pecheriere@users.noreply.github.com
 version=1.2.3
 tag=v$version
 image_digest=$(printf 'image' | shasum -a 256 | cut -d' ' -f1)
@@ -24,7 +29,7 @@ ssh-keygen -q -t ed25519 -N '' -C test-old -f "$work/old-key"
 repo=$work/repo
 mkdir -p "$repo/scripts" "$repo/docs"
 cp "$root/scripts/sign-release.sh" "$repo/scripts/"
-printf '%s namespaces="git" %s\n' "$identity" "$(cat "$work/old-key.pub")" > "$repo/docs/release-signers"
+printf '%s namespaces="git,warden-release" %s\n' "$old_identity" "$(cat "$work/old-key.pub")" > "$repo/docs/release-signers"
 printf '%s namespaces="git,warden-release" %s\n' "$identity" "$(cat "$work/release-key.pub")" >> "$repo/docs/release-signers"
 git -C "$repo" init -q
 git -C "$repo" add .
@@ -51,10 +56,11 @@ case "$1 ${2:-}" in
     fi
     ;;
   'release download')
+    from=$STUB/assets
+    case "$*" in *SHA256SUMS*) from=$STUB/uploaded ;; esac
     while [ "$1" != --dir ]; do shift; done
-    cp "$STUB"/assets/* "$2/"
+    cp "$from"/* "$2/"
     ;;
-  'release upload') cp "$4" "$5" "$STUB/uploaded/" ;;
   'attestation verify')
     subject=$3
     if [ -e "$STUB/unattested" ] && [ "$(basename "$subject")" = "$(cat "$STUB/unattested")" ]; then exit 1; fi
@@ -84,10 +90,36 @@ case "$1 ${2:-}" in
 esac
 STUB_GH
 chmod +x "$work/bin/gh"
+
+# The stub warden gets the manifest's path and the tag, as the real one does, signs
+# the manifest as the broker would and puts both on the stub draft.
+cat > "$work/bin/warden" <<'STUB_WARDEN'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "$1 $2" = 'release sign-manifest' ] || { echo "stub warden: unexpected call: $*" >&2; exit 64; }
+printf '%s\n' "$*" > "$STUB/warden-args"
+file=$5
+cp "$file" "$STUB/warden-manifest"
+key=$STUB/signing-key
+if [ -e "$STUB/signs-with" ]; then key=$(cat "$STUB/signs-with"); fi
+dir=$(mktemp -d)
+cp "$file" "$dir/"
+ssh-keygen -q -Y sign -n warden-release -f "$key" "$dir/$(basename "$file")"
+if [ -e "$STUB/alters-manifest" ]; then
+  # What was signed is not what the script built.
+  printf '%s  extra.tar.gz\n' "$(printf 'x' | shasum -a 256 | cut -d' ' -f1)" >> "$dir/$(basename "$file")"
+fi
+cp "$dir/$(basename "$file")" "$dir/$(basename "$file").sig" "$STUB/uploaded/"
+rm -rf "$dir"
+echo "manifest $(basename "$file")"
+STUB_WARDEN
+chmod +x "$work/bin/warden"
 export PATH="$work/bin:$PATH"
 
 reset_stub() {
-  rm -rf "$STUB/uploaded" "$STUB/unattested" "$STUB/assets" "$STUB/attested-as" "$STUB/attested-digest"
+  rm -rf "$STUB/uploaded" "$STUB/unattested" "$STUB/assets" "$STUB/attested-as" "$STUB/attested-digest" \
+    "$STUB/warden-args" "$STUB/warden-manifest" "$STUB/signs-with" "$STUB/alters-manifest"
+  cp "$work/release-key" "$STUB/signing-key"
   mkdir -p "$STUB/uploaded" "$STUB/assets"
   git -C "$repo" rev-parse "$tag^{commit}" > "$STUB/remote-commit"
   cp "$STUB/remote-commit" "$STUB/attested-commit"
@@ -148,9 +180,9 @@ must_refuse 'tag signed by an unlisted key' 'no good signature' v9.9.9
 must_refuse 'unsigned tag' 'no good signature' v8.8.8
 must_refuse 'tag that does not exist' 'not an annotated tag' v7.7.7
 must_refuse 'signed tag moved to another name' 'signed as' v6.6.6
-must_refuse 'signing key that is not listed' 'not listed' "$tag" "$work/other-key.pub"
-must_refuse 'tag signed by an older listed key' 'signed by another key' v5.5.5
-must_refuse 'older key signing a manifest' 'may not sign manifests' v5.5.5 "$work/old-key.pub"
+# The older key stays listed for its own identity, so that old tags verify, but a
+# new release's tag must come from the identity warden-release.
+must_refuse 'tag not signed by a listed warden-release key' 'no good signature' v5.5.5
 
 echo 0000000000000000000000000000000000000000 > "$STUB/remote-commit"
 must_refuse 'tag that differs on GitHub' 'on GitHub' "$tag"
@@ -247,11 +279,35 @@ reset_stub
 echo not-a-digest > "$STUB/image-digest"
 must_refuse 'malformed image digest' 'unexpected digest' "$tag"
 
+# warden returns, and the draft holds, a signature that does not verify.
+reset_stub
+echo "$work/other-key" > "$STUB/signs-with"
+output=$(sign "$tag" 2>&1) && { echo "FAIL: refuses_when_returned_signature_does_not_verify: it signed" >&2; exit 1; }
+grep -Fq 'does not verify' <<< "$output" \
+  || { echo "FAIL: refuses_when_returned_signature_does_not_verify: wrong reason: $output" >&2; exit 1; }
+grep -Fq 'Signed' <<< "$output" && { echo "FAIL: refuses_when_returned_signature_does_not_verify: said Signed" >&2; exit 1; }
+echo 'ok: refuses_when_returned_signature_does_not_verify'
+
+# The draft's manifest is not the one the script built and sent.
+reset_stub
+touch "$STUB/alters-manifest"
+output=$(sign "$tag" 2>&1) && { echo "FAIL: draft manifest that differs: it signed" >&2; exit 1; }
+grep -Fq 'is not the one that was sent' <<< "$output" \
+  || { echo "FAIL: draft manifest that differs: wrong reason: $output" >&2; exit 1; }
+echo 'ok: draft manifest that differs from the one sent'
+
 # The good case, then the steps docs/verifying-releases.md gives to users.
 reset_stub
 printf 'warden-%s-SHA256SUMS\nwarden-%s-SHA256SUMS.sig\n' "$version" "$version" > "$STUB/also-listed"
 sign "$tag" > /dev/null
 manifest=$STUB/uploaded/warden-$version-SHA256SUMS
+[ "$(cut -d' ' -f1-4 "$STUB/warden-args")" = "release sign-manifest pecheriere/warden $tag" ] \
+  || { echo "FAIL: signs_through_warden: warden got: $(cat "$STUB/warden-args")" >&2; exit 1; }
+[ "$(basename "$(cut -d' ' -f5 "$STUB/warden-args")")" = "warden-$version-SHA256SUMS" ] \
+  || { echo "FAIL: signs_through_warden: wrong manifest name: $(cat "$STUB/warden-args")" >&2; exit 1; }
+cmp -s "$STUB/warden-manifest" "$manifest" \
+  || { echo "FAIL: signs_through_warden: the manifest warden got is not the draft's" >&2; exit 1; }
+echo 'ok: signs_through_warden'
 verify_manifest() {
   ssh-keygen -Y verify -f "$repo/docs/release-signers" -I "$identity" -n warden-release \
     -s "$manifest.sig" < "$manifest" > /dev/null 2>&1

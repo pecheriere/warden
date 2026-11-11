@@ -192,9 +192,12 @@ issue: an advisory with no fixed release yet fails no check.
    commands, image tags, attestation examples). The notes saying that
    binaries start after v0.8.1 stay as they are. A minor release also reviews
    `docs/security-assessment.md` and updates its date.
-2. After it merges, the maintainer, or an agent the maintainer has
-   confirmed, creates a signed annotated `vx.y.z` tag (`git tag -s`) on that
-   commit of `main`, with a key `docs/release-signers` allows for
+2. After it merges, the agent asks for the release grant:
+   `warden request release pecheriere/warden vx.y.z --commit <sha>`, with the
+   merge commit on `main`. The owner approves it on the phone, which is the yes
+   for that version and commit. The agent then runs
+   `warden release tag pecheriere/warden vx.y.z`, and the broker creates the signed
+   annotated tag with its release key, which `docs/release-signers` lists for
    `warden-release`. A tag cannot be replaced afterwards, and step 3 refuses one
    from another key. `.github/workflows/release.yml` refuses a tag that
    does not match the version, reruns CI, builds the multi-arch image,
@@ -204,18 +207,20 @@ issue: an advisory with no fixed release yet fails no check.
    exists but no draft does, and the run's summary says so: rerun the
    failed jobs. A refusal that the archives are not the ones attested is a possible
    compromise: investigate before rerunning.
-3. When the workflow has finished, the maintainer signs the manifest with
-   `scripts/sign-release.sh vx.y.z`. It checks the tag's signature and the
-   attestations of the draft's archives and of the image, then uploads
-   `warden-x.y.z-SHA256SUMS` and its `.sig` to the draft. The key must be
-   listed in `docs/release-signers` and is never on GitHub, so the workflow
+3. When the workflow has finished, the agent runs
+   `GH_TOKEN=$(warden github token) scripts/sign-release.sh vx.y.z`. It checks the
+   tag's signature and the attestations of the draft's archives and of the image,
+   builds `warden-x.y.z-SHA256SUMS` and has `warden release sign-manifest` sign it
+   and attach it, with its `.sig`, to the draft. It then downloads both and
+   verifies them against `docs/release-signers` before it prints Signed. The key
+   is the broker's and never on GitHub or on the agent's machine, so the workflow
    cannot do this step. Nothing enforces it, so do not skip it: a release
    published without a manifest can never gain one. Rerunning the workflow
    removes the manifest, so sign again after a rerun.
-4. The maintainer, or an agent the maintainer has confirmed, checks the
-   draft and publishes it: `gh release edit vx.y.z --draft=false`. Do not use
-   `gh release create` here: releases are immutable, so a release published
-   without the files can never gain them, including the signed manifest.
+4. The agent checks the draft and publishes it: `warden release publish
+   pecheriere/warden vx.y.z`. Do not use `gh release create` or `gh release edit`
+   here: releases are immutable, so a release published without the files can never
+   gain them, including the signed manifest.
 5. Within about an hour, a scheduled workflow in
    [pecheriere/homebrew-tap](https://github.com/pecheriere/homebrew-tap) opens a
    pull request that bumps the formula, rendered from the signed manifest, with
@@ -225,6 +230,7 @@ issue: an advisory with no fixed release yet fails no check.
    manifest is a possible compromise.
 
 An agent creates a tag or a release only after asking the maintainer and
-getting a yes for that specific version and commit. A yes for one release
-does not carry over to the next, and being able to run the command is not
-permission to run it.
+getting a yes for that specific version and commit: the owner's phone approval
+of the release grant is that yes, and the broker refuses the steps without it.
+A yes for one release does not carry over to the next, and being able to run the
+command is not permission to run it.
