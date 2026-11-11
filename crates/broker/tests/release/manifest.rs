@@ -10,6 +10,7 @@ use base64::engine::general_purpose::STANDARD;
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use sqlx::Row as _;
+use warden_broker::release_signing::ManifestError;
 use warden_broker::testkit::upstream::Scripted;
 use warden_broker_proto::Id;
 use warden_broker_proto::release::{
@@ -269,6 +270,10 @@ async fn manifest_step_refuses_a_manifest_that_fails_the_check_and_keeps_step() 
         "{}",
         response.body
     );
+    assert_eq!(
+        error(&response),
+        ManifestError::BadName { line: 1 }.to_string()
+    );
     assert!(!response.body.contains(secret));
     assert!(!claimed(&h, release.grant_id()).await);
     assert_eq!(writes(&h), 0);
@@ -276,6 +281,10 @@ async fn manifest_step_refuses_a_manifest_that_fails_the_check_and_keeps_step() 
     let other = format!("{DIGEST}  ghcr.io/example-owner/example-repo:1.2.4\n");
     let response = call_with(&h, &body_with(NAME, other.as_bytes())).await;
     assert_eq!(response.status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        error(&response),
+        ManifestError::BadName { line: 1 }.to_string()
+    );
     assert!(!claimed(&h, release.grant_id()).await);
 }
 
@@ -294,6 +303,7 @@ async fn manifest_step_refuses_another_name() {
         "{}",
         response.body
     );
+    assert_eq!(error(&response), ManifestError::WrongName.to_string());
     assert!(!claimed(&h, release.grant_id()).await);
     assert_eq!(writes(&h), 0);
 }
@@ -339,6 +349,7 @@ async fn manifest_step_refuses_a_manifest_over_the_limit() {
         "{}",
         response.body
     );
+    assert_eq!(error(&response), ManifestError::TooLarge.to_string());
     assert!(!claimed(&h, release.grant_id()).await);
 }
 

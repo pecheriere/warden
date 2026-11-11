@@ -1120,6 +1120,7 @@ uses nothing, so the agent may fix the manifest or create the draft and call aga
 | `409` | `the tag has no draft release`, `the release is already published` | Nothing was used; create the draft, then call again |
 | `400` | `the request body is not valid`, or a message naming the rule the manifest broke (and a line number) | Nothing was used; the message never quotes the manifest |
 | `400` | `releases are not configured on this broker` | No release key for the repository, or no release App |
+| `500` | `signing the manifest failed` | The step was claimed and stays used |
 | `503` | `GitHub could not complete the step; try again later` | GitHub failed; if it failed after the claim, the step stays used |
 
 The route for the publish step is not part of this version of the protocol.

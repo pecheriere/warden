@@ -31,6 +31,9 @@ const NO_DRAFT: &str = "the tag has no draft release";
 /// The release was published already.
 const PUBLISHED: &str = "the release is already published";
 
+/// The broker could not sign the manifest; nothing more is said.
+const SIGNING_FAILED: &str = "signing the manifest failed";
+
 /// `POST /v1/release/manifest`. Runs on its own task, so that a disconnecting
 /// agent can neither stop it halfway nor keep it out of the audit log.
 pub(in crate::api) async fn manifest(
@@ -110,10 +113,7 @@ async fn sign(
 
     let signature = sign_manifest(&key, spec.namespace(), &bytes).map_err(|_| {
         tracing::error!(agent = %agent, "signing the release manifest failed");
-        refused(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "signing the manifest failed",
-        )
+        refused(StatusCode::INTERNAL_SERVER_ERROR, SIGNING_FAILED)
     })?;
     let signature_name = format!("{expected_name}.sig");
     drop(key);

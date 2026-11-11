@@ -119,9 +119,10 @@ fn refuses_path_in_name() {
 #[test]
 fn refuses_dot_names_and_odd_characters() {
     for bad in [".", "..", "a b", "a\tb", "a:b", "é", "a*"] {
-        assert!(
-            check(&format!("{DIGEST_A}  {bad}\n")).is_err(),
-            "{bad:?} was accepted"
+        assert_eq!(
+            check(&format!("{DIGEST_A}  {bad}\n")),
+            Err(ManifestError::BadName { line: 1 }),
+            "{bad:?}"
         );
     }
 }
