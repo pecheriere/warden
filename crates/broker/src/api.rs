@@ -416,7 +416,8 @@ async fn api_grant_status(
             GrantAccess::Ssh(_)
             | GrantAccess::Relay(_)
             | GrantAccess::CommitSigning(_)
-            | GrantAccess::GithubToken(_) => Err(Unusable::NotApi),
+            | GrantAccess::GithubToken(_)
+            | GrantAccess::Release(_) => Err(Unusable::NotApi),
         }
     })
 }

@@ -592,3 +592,62 @@ fn created_flag_is_optional_on_the_wire() {
     );
     assert_eq!(serde_json::from_str::<CreatedResponse>(&json).unwrap(), new);
 }
+
+const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
+
+#[test]
+fn release_access_round_trips() {
+    let json = format!(
+        r#"{{"kind":"release","repository":"example-owner/example-repo","tag":"v1.2.3","commit":"{COMMIT}"}}"#
+    );
+    let access: Access = serde_json::from_str(&json).unwrap();
+    let Access::Release {
+        repository,
+        tag,
+        commit,
+    } = &access
+    else {
+        panic!("not a release: {access:?}");
+    };
+    assert_eq!(repository.as_str(), "example-owner/example-repo");
+    assert_eq!(tag.as_str(), "v1.2.3");
+    assert_eq!(commit.as_str(), COMMIT);
+    assert_eq!(serde_json::to_string(&access).unwrap(), json);
+}
+
+#[test]
+fn release_access_refuses_bad_fields() {
+    let make = |repository: &str, tag: &str, commit: &str| {
+        serde_json::json!({
+            "kind": "release", "repository": repository, "tag": tag, "commit": commit,
+        })
+        .to_string()
+    };
+    assert!(serde_json::from_str::<Access>(&make("example-owner/r", "v1.2.3", COMMIT)).is_ok());
+    for bad in [
+        make("nope", "v1.2.3", COMMIT),
+        make("example-owner/r", "1.2.3", COMMIT),
+        make("example-owner/r", "v1.2.3", "abc"),
+        make("example-owner/r", "v1.2.3", &COMMIT.to_uppercase()),
+        r#"{"kind":"release","repository":"example-owner/r","tag":"v1.2.3"}"#.to_owned(),
+    ] {
+        assert!(serde_json::from_str::<Access>(&bad).is_err(), "{bad}");
+    }
+}
+
+#[test]
+fn release_window_is_one_day_only() {
+    assert_eq!(Window::RELEASE, [Window::D1]);
+    assert!(Window::D1.is_release());
+    for other in [
+        Window::M15,
+        Window::M30,
+        Window::H1,
+        Window::H4,
+        Window::D7,
+        Window::D30,
+        Window::D90,
+    ] {
+        assert!(!other.is_release(), "{other:?}");
+    }
+}

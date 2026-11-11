@@ -148,6 +148,16 @@ pub enum Access {
     /// A short-lived GitHub App installation token, minted by the broker.
     #[serde(rename = "github_token")]
     GithubToken {},
+    /// A release made by the broker: the tag, a signed manifest and the
+    /// publication.
+    Release {
+        /// The repository the release is made in.
+        repository: release::RepoName,
+        /// The tag the release is made at.
+        tag: release::ReleaseTag,
+        /// The commit the tag points at.
+        commit: release::CommitId,
+    },
 }
 
 /// The methods that cannot modify anything on the server.

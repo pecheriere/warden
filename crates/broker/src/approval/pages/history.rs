@@ -42,6 +42,9 @@ pub fn history(entries: &[HistoryEntry], hosts: &LinkHosts) -> Markup {
                             Access::Api { secret, .. } => format!("api:{secret}"),
                             Access::CommitSigning {} => "commit signing".to_owned(),
                             Access::GithubToken {} => "github token".to_owned(),
+                            Access::Release {
+                repository, tag, ..
+                            } => format!("release {tag} of {repository}"),
                         };
                         // On a phone each row is a card; `data-label` names
                         // the cell there, where the header row is hidden.

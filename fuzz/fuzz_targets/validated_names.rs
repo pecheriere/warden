@@ -7,6 +7,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
+use warden_broker_proto::release::{CommitId, ReleaseTag, RepoName};
 use warden_broker_proto::signing::{Audience, Nonce};
 use warden_broker_proto::{
     Access, AgentName, CreateRequest, Fingerprint, Goal, Id, SecretName, TargetName, UnixUser,
@@ -28,6 +29,48 @@ fn is_unix_user(s: &str) -> bool {
         && s.bytes().next().is_some_and(head)
         && s.bytes()
             .all(|b| head(b) || b.is_ascii_digit() || b == b'-')
+}
+
+/// `^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}$`, the name not `.` or `..`
+fn is_repo_name(s: &str) -> bool {
+    let Some((owner, name)) = s.split_once('/') else {
+        return false;
+    };
+    let alnum = |b: u8| b.is_ascii_alphanumeric();
+    (1..=39).contains(&owner.len())
+        && owner.bytes().next().is_some_and(alnum)
+        && owner.bytes().all(|b| alnum(b) || b == b'-')
+        && (1..=100).contains(&name.len())
+        && name != "."
+        && name != ".."
+        && name
+            .bytes()
+            .all(|b| alnum(b) || matches!(b, b'.' | b'_' | b'-'))
+}
+
+/// `^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$`, at most 64 characters
+fn is_release_tag(s: &str) -> bool {
+    let Some(rest) = s.strip_prefix('v') else {
+        return false;
+    };
+    let (core, pre) = rest
+        .split_once('-')
+        .map_or((rest, None), |(c, p)| (c, Some(p)));
+    let parts: Vec<&str> = core.split('.').collect();
+    s.len() <= 64
+        && parts.len() == 3
+        && parts
+            .iter()
+            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+        && pre.is_none_or(|p| {
+            !p.is_empty()
+                && p.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-'))
+        })
+}
+
+fn is_hex40(s: &str) -> bool {
+    s.len() == 40 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 fn is_hex32(s: &str) -> bool {
@@ -124,6 +167,16 @@ fn check_request(data: &[u8]) {
     let digest = fingerprint(&agent, &request);
     assert!(is_fingerprint(digest.as_str()));
     assert_eq!(fingerprint(&agent, &again), digest);
+    if let Access::Release {
+        repository,
+        tag,
+        commit,
+    } = &request.access
+    {
+        assert!(is_repo_name(repository.as_str()));
+        assert!(is_release_tag(tag.as_str()));
+        assert!(is_hex40(commit.as_str()));
+    }
     if let Access::Api {
         methods: Some(methods),
         ..
@@ -142,6 +195,9 @@ fuzz_target!(|data: &[u8]| {
     check_exact!(TargetName, is_resource_name, text);
     check_exact!(SecretName, is_resource_name, text);
     check_exact!(UnixUser, is_unix_user, text);
+    check_exact!(RepoName, is_repo_name, text);
+    check_exact!(ReleaseTag, is_release_tag, text);
+    check_exact!(CommitId, is_hex40, text);
     check_exact!(Id, is_hex32, text);
     check_exact!(Nonce, is_hex32, text);
     check_exact!(Audience, is_hex32, text);

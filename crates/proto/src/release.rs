@@ -5,7 +5,7 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
-use crate::ParseError;
+use crate::{Id, ParseError};
 
 /// The longest tag accepted, in characters.
 const MAX_TAG_CHARS: usize = 64;
@@ -145,6 +145,111 @@ impl TryFrom<String> for CommitId {
     }
 }
 string_newtype!(CommitId);
+
+/// What the broker says when the agent has no active release grant: never had
+/// one, or it ended or was revoked. The CLI recognises it to say how to ask.
+pub const NO_ACTIVE_GRANT: &str = "no active release grant for this agent";
+
+/// What the broker says when a step was already done under the grant. A step
+/// is claimed once: a repeat is refused, whatever became of the first attempt.
+pub const STEP_DONE: &str = "this step of the release was already done";
+
+/// What the broker says when the grant the owner approved does not include the
+/// step asked for, such as the tag when it was already in place.
+pub const STEP_NOT_IN_GRANT: &str = "this step is not part of the approved release";
+
+/// What the broker says when it holds no release signing key or release App.
+pub const NOT_CONFIGURED: &str = "releases are not configured on this broker";
+
+/// The largest manifest the broker signs, in bytes.
+pub const MAX_MANIFEST_BYTES: usize = 65_536;
+
+/// Release grant details. The signing key and the App's key are never part of it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReleaseGrant {
+    /// The repository the release is made in.
+    pub repository: RepoName,
+    /// The tag the release is made at.
+    pub tag: ReleaseTag,
+    /// The commit the tag points at, as the owner approved it.
+    pub commit: CommitId,
+    /// `SHA256:...` fingerprint of the key that signs the manifest.
+    pub key_fingerprint: String,
+    /// The steps the owner approved.
+    pub steps: ReleaseSteps,
+    /// Lowercase hex digest of the approved release facts and key: a step is
+    /// refused once what the broker reads no longer matches it.
+    pub digest: String,
+}
+
+/// The steps of a release a grant covers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReleaseSteps {
+    /// Whether the broker creates the tag. False when the tag was already in
+    /// place when the request was made.
+    pub tag: bool,
+    /// The name of the manifest file the broker signs, if it signs one.
+    pub manifest: Option<String>,
+    /// Whether the broker publishes the draft release.
+    pub publish: bool,
+}
+
+/// Body of the tag and publish steps: which release.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReleaseTarget {
+    /// The repository.
+    pub repository: RepoName,
+    /// The tag.
+    pub tag: ReleaseTag,
+}
+
+/// Body of the manifest step: the manifest to sign.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SignManifestRequest {
+    /// The repository.
+    pub repository: RepoName,
+    /// The tag.
+    pub tag: ReleaseTag,
+    /// The manifest's file name.
+    pub name: String,
+    /// The manifest, standard base64, at most [`MAX_MANIFEST_BYTES`] decoded.
+    pub content_b64: String,
+}
+
+/// What the tag step did.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TagResponse {
+    /// The grant it was done under.
+    pub grant_id: Id,
+    /// The tag.
+    pub tag: ReleaseTag,
+    /// The id of the tag object created.
+    pub object: String,
+    /// The commit the tag points at.
+    pub commit: CommitId,
+}
+
+/// What the manifest step did.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManifestResponse {
+    /// The grant it was done under.
+    pub grant_id: Id,
+    /// The manifest's file name.
+    pub name: String,
+    /// The signature's file name.
+    pub signature_name: String,
+    /// Lowercase hex SHA-256 of the manifest signed.
+    pub sha256: String,
+}
+
+/// What the publish step did.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublishResponse {
+    /// The grant it was done under.
+    pub grant_id: Id,
+    /// The tag of the release published.
+    pub tag: ReleaseTag,
+}
 
 #[cfg(test)]
 mod tests;

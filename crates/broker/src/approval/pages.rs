@@ -145,6 +145,9 @@ fn access_line(request: &CreateRequest, host: &str, port: u16) -> String {
         Access::Api { secret, .. } => format!("api {secret}"),
         Access::CommitSigning {} => "commit signing".to_owned(),
         Access::GithubToken {} => "github token".to_owned(),
+        Access::Release {
+            repository, tag, ..
+        } => format!("release {tag} of {repository}"),
     }
 }
 
@@ -267,6 +270,9 @@ fn grant_access(grant: &ActiveGrant) -> Markup {
         GrantAccess::GithubToken(token) => {
             github_token::grant_access(&token.app_id, token.installation_id)
         }
+        GrantAccess::Release(release) => html! {
+            span { "release " bdi { (release.tag) } " of " bdi { (release.repository) } }
+        },
     }
 }
 

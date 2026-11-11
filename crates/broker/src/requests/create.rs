@@ -180,6 +180,11 @@ impl Requests {
                     .map_err(RequestError::Rejected)?;
                 (format!("{agent}|github_token"), "github token".to_owned())
             }
+            Access::Release { .. } => {
+                return Err(RequestError::Rejected(
+                    warden_broker_proto::release::NOT_CONFIGURED.to_owned(),
+                ));
+            }
         })
     }
 

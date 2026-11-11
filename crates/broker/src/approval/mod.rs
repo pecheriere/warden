@@ -513,9 +513,10 @@ pub(crate) fn api_scope(
             path_prefix,
             ..
         } => policy.scope(methods.as_deref(), path_prefix.as_deref()),
-        Access::Ssh { .. } | Access::CommitSigning {} | Access::GithubToken {} => {
-            Err("the request does not match its policy kind".to_owned())
-        }
+        Access::Ssh { .. }
+        | Access::CommitSigning {}
+        | Access::GithubToken {}
+        | Access::Release { .. } => Err("the request does not match its policy kind".to_owned()),
     }
 }
 

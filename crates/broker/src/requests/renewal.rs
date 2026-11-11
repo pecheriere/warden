@@ -49,7 +49,10 @@ impl OneAtATime {
         match access {
             GrantAccess::CommitSigning(_) => Some(Self::CommitSigning),
             GrantAccess::GithubToken(_) => Some(Self::GithubToken),
-            GrantAccess::Ssh(_) | GrantAccess::Relay(_) | GrantAccess::Api(_) => None,
+            GrantAccess::Ssh(_)
+            | GrantAccess::Relay(_)
+            | GrantAccess::Api(_)
+            | GrantAccess::Release(_) => None,
         }
     }
 

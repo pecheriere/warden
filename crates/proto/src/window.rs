@@ -94,6 +94,15 @@ impl Window {
         matches!(self, Self::D1 | Self::D7 | Self::D30)
     }
 
+    /// The windows a release grant may have: one day.
+    pub const RELEASE: [Self; 1] = [Self::D1];
+
+    /// Whether this is the window of a release grant.
+    #[must_use]
+    pub const fn is_release(self) -> bool {
+        matches!(self, Self::D1)
+    }
+
     /// Parse a GitHub token window: `1d`, `7d` or `30d`. Kept apart from
     /// [`FromStr`] for the same reason as [`Window::commit_signing`].
     ///
