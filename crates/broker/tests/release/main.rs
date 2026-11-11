@@ -12,6 +12,7 @@ use warden_broker_proto::release::RepoName;
 
 mod approve;
 mod manifest;
+mod publish;
 mod request;
 mod steps;
 mod tag;
@@ -38,6 +39,8 @@ enum Shape {
     Everything,
     /// Tag only.
     TagOnly,
+    /// Publish the draft, with no manifest.
+    PublishOnly,
 }
 
 /// A broker with the release App and a release key for [`REPO`], a fake GitHub
@@ -67,6 +70,7 @@ async fn harness(shape: Shape) -> Harness {
     let (manifest, publish) = match shape {
         Shape::Everything => (Some(MANIFEST), true),
         Shape::TagOnly => (None, false),
+        Shape::PublishOnly => (None, true),
     };
     broker.backend.add_release_key(ReleaseSigningKey::for_tests(
         REPO,

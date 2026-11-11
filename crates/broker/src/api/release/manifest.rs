@@ -27,9 +27,9 @@ use crate::release_signing::{check_manifest, sign_manifest};
 use crate::requests::{ReleaseStep, RequestError};
 
 /// The tag has no release.
-const NO_DRAFT: &str = "the tag has no draft release";
+pub(super) const NO_DRAFT: &str = "the tag has no draft release";
 /// The release was published already.
-const PUBLISHED: &str = "the release is already published";
+pub(super) const PUBLISHED: &str = "the release is already published";
 
 /// The broker could not sign the manifest; nothing more is said.
 const SIGNING_FAILED: &str = "signing the manifest failed";

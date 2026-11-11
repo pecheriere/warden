@@ -25,8 +25,7 @@ All notable changes to this project are recorded here. The format follows
   date, the changelog section for the version, the steps and the key, and a link to compare with
   the previous tag, and approves with a passkey. The grant lasts one day, cannot be renewed, and
   Active grants lists its steps as open or used. New migration `0010_release`. The steps
-  themselves (tag, manifest and publish) come in a later release; this one grants nothing that
-  acts on GitHub yet (#212).
+  themselves (tag, manifest and publish) are the entries below (#212).
 - Release grants, the tag step. `POST /v1/release/tag` signs the tag with the repository's release
   key and creates it on the approved commit, once per grant. The broker computes the tag object's
   id before GitHub makes it and creates the ref only if GitHub made that object. It refuses when
@@ -41,6 +40,13 @@ All notable changes to this project are recorded here. The format follows
   It is refused, and the step stays unused, when the manifest fails these rules or the tag has no
   draft release; any other failure after the claim leaves the step used. New audit entry:
   `release_manifest_signed` (#213).
+- Release grants, the publish step. `POST /v1/release/publish` makes the draft release public, once
+  per grant. When the grant has a manifest step, the manifest must have been signed and the draft
+  must still hold the manifest and its `.sig` with the digests the broker recorded; a missing
+  file, a different digest or no digest from GitHub refuses the call, as does a tag with no draft
+  or a release already published. All of these are checked before the step is claimed, so a refusal
+  leaves it unused. The grant ends when its last step is done. New audit entry:
+  `release_published` (#213).
 - `warden-server doctor` has two new checks, `release-signing` and `release-app`. The 1Password
   backend now loads items tagged `warden:release-signing` (one per repository) and
   `warden:github-release-app` (at most one), refuses release keys that are shared with each other,

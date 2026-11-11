@@ -93,6 +93,15 @@ impl ActiveRelease {
     }
 }
 
+/// The digests the manifest step kept: the files it attached to the draft.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordedManifest {
+    /// Lowercase hex SHA-256 of the manifest.
+    pub manifest_sha256: String,
+    /// Lowercase hex SHA-256 of the manifest's signature file.
+    pub signature_sha256: String,
+}
+
 impl Requests {
     /// The release grant `agent` may act on for `tag` in `repo`, if any. The
     /// repository is matched ignoring ASCII case, as GitHub does. Read for every
@@ -223,6 +232,35 @@ impl Requests {
             ));
         }
         Ok(())
+    }
+
+    /// The digests [`Requests::record_manifest`] kept for `release`, or `None` when
+    /// the manifest step has not finished: it was not run, or it failed after its
+    /// claim, which leaves nothing recorded.
+    ///
+    /// # Errors
+    /// Storage failures: the caller refuses.
+    pub async fn recorded_manifest(
+        &self,
+        release: &ActiveRelease,
+    ) -> Result<Option<RecordedManifest>, RequestError> {
+        let row = sqlx::query(
+            "SELECT manifest_sha256, signature_sha256 FROM release_steps WHERE grant_id = ?",
+        )
+        .bind(release.grant_id.as_str())
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let manifest: Option<String> = row.try_get("manifest_sha256")?;
+        let signature: Option<String> = row.try_get("signature_sha256")?;
+        Ok(manifest
+            .zip(signature)
+            .map(|(manifest_sha256, signature_sha256)| RecordedManifest {
+                manifest_sha256,
+                signature_sha256,
+            }))
     }
 
     /// End release grant `grant` at `now` when every step it covers is claimed: the

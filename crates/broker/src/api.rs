@@ -102,6 +102,10 @@ pub fn router(state: AppState) -> Router {
             agent(post(release::manifest), MANIFEST_BODY_LIMIT),
         )
         .route(
+            "/v1/release/publish",
+            agent(post(release::publish), BODY_LIMIT),
+        )
+        .route(
             "/v1/grants/{id}/revoke",
             agent(post(revoke_grant), BODY_LIMIT),
         )

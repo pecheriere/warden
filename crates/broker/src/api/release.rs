@@ -1,5 +1,5 @@
-//! The steps of a release: `POST /v1/release/tag` here, and `POST
-//! /v1/release/manifest` in [`manifest`].
+//! The steps of a release: `POST /v1/release/tag` here, `POST /v1/release/manifest`
+//! in [`manifest`] and `POST /v1/release/publish` in [`publish`].
 //!
 //! Each step runs only under the release grant the agent holds for that release,
 //! looked up for every call. The order is the same for every step: find the grant
@@ -10,8 +10,10 @@
 //! the keys, appears in an error, a log line or the audit log.
 
 mod manifest;
+mod publish;
 
 pub(super) use self::manifest::manifest;
+pub(super) use self::publish::publish;
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;

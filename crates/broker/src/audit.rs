@@ -334,6 +334,19 @@ pub enum AuditEvent {
         /// Lowercase hex SHA-256 of the manifest signed.
         sha256: String,
     },
+    /// The broker published the draft release under a release grant. Written
+    /// after GitHub confirmed the release is no longer a draft; the claim of the
+    /// step was made before.
+    ReleasePublished {
+        /// The grant it was done under.
+        grant_id: Id,
+        /// The agent.
+        agent: AgentName,
+        /// The repository.
+        repository: RepoName,
+        /// The tag of the release.
+        tag: ReleaseTag,
+    },
     /// The broker refused a step of a release, or could not finish one it had
     /// claimed.
     ReleaseRefused {

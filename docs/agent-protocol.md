@@ -1123,7 +1123,29 @@ uses nothing, so the agent may fix the manifest or create the draft and call aga
 | `500` | `signing the manifest failed` | The step was claimed and stays used |
 | `503` | `GitHub could not complete the step; try again later` | GitHub failed; if it failed after the claim, the step stays used |
 
-The route for the publish step is not part of this version of the protocol.
+#### `POST /v1/release/publish`
+
+Signed like every agent call, with the body `{"repository":"example-owner/example-repo","tag":"v1.2.3"}`.
+The broker makes the draft release of the tag public and answers `200` with `{"grant_id","tag"}`.
+Before it claims the step it checks that the tag has a release and that it is still a draft. When the
+grant has a manifest step, it also checks that the step finished and that the draft holds the
+manifest and its `.sig`, each once, with the SHA-256 the broker recorded when it attached them. A
+file someone replaced, a missing file, or digests GitHub does not report refuse the call. A refusal
+before the claim uses nothing. The grant ends when its last step is done.
+
+| Status | Body | Meaning |
+|---|---|---|
+| `403` | `no active release grant for this agent` | No grant for this release, or it ended or was revoked |
+| `409` | `this step of the release was already done` | The publish step was used |
+| `409` | `this step is not part of the approved release` | The grant does not publish |
+| `409` | `policy changed; request access again` | The release key or the release App is no longer the one the owner approved |
+| `409` | `the tag has no draft release`, `the release is already published` | Nothing was used |
+| `409` | `the manifest has not been signed` | The grant has a manifest step that did not finish; nothing was used |
+| `409` | `the draft's files are not the ones signed` | The manifest or its signature is missing from the draft or differs from what the broker attached; nothing was used |
+| `409` | `GitHub did not report the files' digests` | The files cannot be compared; nothing was used |
+| `400` | `the request body is not valid` | Nothing was used |
+| `400` | `releases are not configured on this broker` | No release key for the repository, or no release App |
+| `503` | `GitHub could not complete the step; try again later` | GitHub failed; if it failed after the claim, the step stays used |
 
 ### GitHub token grants (`"kind":"github_token"`)
 

@@ -1004,8 +1004,7 @@ fails, saying so. Nothing falls back to another credential.
 
 An agent can ask the owner to approve one release: a tag at a commit of a repository. The
 broker holds the repository's signing key and a GitHub App, so the agent never holds either.
-This section covers the request, the approval and the tag and manifest steps; the other step that
-acts on GitHub is covered when it is added.
+This section covers the request, the approval and the tag, manifest and publish steps.
 
 - **The owner approves what GitHub says, not what the agent says.** The broker asks GitHub for
   the commit, its place on the default branch, the tag and the changelog before the owner is
@@ -1040,9 +1039,16 @@ acts on GitHub is covered when it is added.
   whether a digest is the digest of the right artifact: the owner approved the release, and the
   verifier trusts the key, so the digests are the agent's claim, as with any build the agent runs.
   Error messages name the rule and never quote the manifest.
+- **Publish releases what the broker attached.** When the grant has a manifest step, the broker
+  publishes only if the draft still holds the manifest and its signature with the digests it
+  recorded when it uploaded them, so a file replaced after signing (by anyone with write access to
+  the draft) is not published under the owner's approval. GitHub's digest is compared as reported;
+  if it reports none the call is refused. These checks, and that the release is a draft, run
+  before the claim. The files other than those two are not checked: the manifest lists them, and
+  the digests in it are the agent's claim, as above.
 - **Step calls refused before the claim are not rate-limited.** Each one mints a release App
   token and makes a few GitHub reads before it is refused (a tag that exists, a commit that
-  moved, no draft). Only an agent holding an active release grant reaches them, so they cost
+  moved, no draft, a swapped file). Only an agent holding an active release grant reaches them, so they cost
   calls on the owner's App and nothing else. Accepted, as for the approve-finish re-check.
 
 ## The local secret backend

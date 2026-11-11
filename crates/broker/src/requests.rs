@@ -63,7 +63,7 @@ pub use self::pending::PendingEntry;
 use self::refusal_throttle::RefusalThrottle;
 pub use self::release::{ReleaseFacts, ReleasePolicy};
 pub use self::release_approval::ReleaseProgress;
-pub use self::release_steps::{ActiveRelease, ReleaseStep};
+pub use self::release_steps::{ActiveRelease, RecordedManifest, ReleaseStep};
 
 mod create;
 mod decide;
