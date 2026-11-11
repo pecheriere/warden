@@ -31,6 +31,13 @@ const INSTALLATION_ID_FIELD: &str = "installation_id";
 const PRIVATE_KEY_FIELD: &str = "private_key";
 const LABELS: [&str; 3] = [APP_ID_FIELD, INSTALLATION_ID_FIELD, PRIVATE_KEY_FIELD];
 
+/// Whether `app_id` is 1 to 64 letters, digits, dots, dashes or underscores. The
+/// release App's id follows the same rule.
+pub(super) fn is_valid_app_id(app_id: &str) -> bool {
+    let plain = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-');
+    !app_id.is_empty() && app_id.chars().count() <= MAX_APP_ID_CHARS && app_id.chars().all(plain)
+}
+
 fn app_error(reason: &str) -> PolicyError {
     PolicyError::GithubApp(reason.to_owned())
 }
@@ -55,11 +62,7 @@ impl GithubAppKey {
     /// [`PolicyError::GithubApp`] with a fixed reason, if an id is not plain text or
     /// the key is not usable. It never quotes the key.
     pub fn new(app_id: String, installation_id: u64, pem: &[u8]) -> Result<Self, PolicyError> {
-        let plain = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-');
-        if app_id.is_empty()
-            || app_id.chars().count() > MAX_APP_ID_CHARS
-            || !app_id.chars().all(plain)
-        {
+        if !is_valid_app_id(&app_id) {
             return Err(app_error(
                 "the App id must be 1 to 64 letters, digits, dots, dashes or underscores",
             ));
@@ -67,10 +70,12 @@ impl GithubAppKey {
         if installation_id == 0 {
             return Err(app_error("the installation id must not be 0"));
         }
+        let pem = std::str::from_utf8(pem)
+            .map_err(|_| app_error("the private key is not a readable PKCS#1 or PKCS#8 PEM key"))?;
         Ok(Self {
             app_id,
             installation_id,
-            key: Arc::new(parse_rsa_key(pem)?),
+            key: parse_rsa_key(pem).map_err(app_error)?,
         })
     }
 
@@ -123,29 +128,29 @@ impl fmt::Debug for GithubAppKey {
     }
 }
 
-/// Decode one unencrypted RSA private key of at least 2048 bits from PEM.
-fn parse_rsa_key(pem: &[u8]) -> Result<KeyPair, PolicyError> {
-    if pem.windows(b"ENCRYPTED".len()).any(|w| w == b"ENCRYPTED") {
-        return Err(app_error(
-            "the private key is passphrase-protected; an unencrypted RSA key is required",
-        ));
+/// Decode one unencrypted RSA private key of at least 2048 bits from PEM, as the
+/// GitHub App and the release App both hold it. The reason is fixed text and never
+/// quotes the key.
+pub(crate) fn parse_rsa_key(pem: &str) -> Result<Arc<KeyPair>, &'static str> {
+    const NOT_RSA: &str =
+        "the private key is not an RSA key of at least 2048 bits (PKCS#1 or PKCS#8)";
+    if pem.contains("ENCRYPTED") {
+        return Err("the private key is passphrase-protected; an unencrypted RSA key is required");
     }
-    let der =
-        Zeroizing::new(PrivateKeyDer::from_pem_slice(pem).map_err(|_| {
-            app_error("the private key is not a readable PKCS#1 or PKCS#8 PEM key")
-        })?);
-    let not_rsa =
-        || app_error("the private key is not an RSA key of at least 2048 bits (PKCS#1 or PKCS#8)");
+    let der = Zeroizing::new(
+        PrivateKeyDer::from_pem_slice(pem.as_bytes())
+            .map_err(|_| "the private key is not a readable PKCS#1 or PKCS#8 PEM key")?,
+    );
     let key = match &*der {
         PrivateKeyDer::Pkcs1(der) => KeyPair::from_der(der.secret_pkcs1_der()),
         PrivateKeyDer::Pkcs8(der) => KeyPair::from_pkcs8(der.secret_pkcs8_der()),
-        _ => return Err(not_rsa()),
+        _ => return Err(NOT_RSA),
     }
-    .map_err(|_| not_rsa())?;
+    .map_err(|_| NOT_RSA)?;
     if key.public_modulus_len() < MIN_MODULUS_BYTES {
-        return Err(not_rsa());
+        return Err(NOT_RSA);
     }
-    Ok(key)
+    Ok(Arc::new(key))
 }
 
 /// Read the GitHub App from the fields of its item, matched by label like every

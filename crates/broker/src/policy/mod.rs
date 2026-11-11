@@ -7,6 +7,7 @@ use std::fmt;
 use async_trait::async_trait;
 use sha2::{Digest as _, Sha256};
 use ssh_key::{Algorithm, HashAlg, PrivateKey, PublicKey};
+use warden_broker_proto::release::RepoName;
 use warden_broker_proto::{SecretName, TargetName, UnixUser, Window};
 use zeroize::Zeroizing;
 
@@ -15,6 +16,8 @@ mod commit_signing_key;
 mod github_app;
 pub mod local;
 pub mod onepassword;
+mod release_app;
+mod release_signing;
 
 pub use api::{ApiScope, ApiSecretPolicy, ValueFormat, is_reserved_header};
 pub(crate) use api::{check_path_prefix, is_header_text, parse_method};
@@ -25,6 +28,8 @@ pub use commit_signing_key::{
 pub use github_app::{GithubAppKey, GithubAppProbe, GithubTokenPolicy};
 pub use local::{LocalBackend, LocalProbe};
 pub use onepassword::{CaProbe, OnePasswordConnect, VaultProbe};
+pub use release_app::ReleaseAppKey;
+pub use release_signing::{ManifestSpec, ReleaseSigningKey, check_distinct};
 
 /// How warden grants access to an SSH target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -195,6 +200,19 @@ pub enum PolicyError {
     /// The GitHub App is ambiguous or unusable. Never quotes the key.
     #[error("GitHub App: {0}")]
     GithubApp(String),
+    /// No release signing key is configured for the repository.
+    #[error("no release signing key is configured for this repository")]
+    NoReleaseKey,
+    /// A release signing item is ambiguous or unusable, which fails every
+    /// repository. Never quotes the key.
+    #[error("release signing key: {0}")]
+    ReleaseKey(String),
+    /// No release GitHub App is configured.
+    #[error("no release GitHub App is configured")]
+    NoReleaseApp,
+    /// The release GitHub App is ambiguous or unusable. Never quotes the key.
+    #[error("release GitHub App: {0}")]
+    ReleaseApp(String),
     /// The secret backend could not be reached or answered with an error.
     #[error("secret backend unavailable: {0}")]
     Unavailable(String),
@@ -314,6 +332,27 @@ pub trait SecretBackend: Send + Sync + 'static {
     /// # Errors
     /// [`PolicyError::Unavailable`].
     async fn has_github_app(&self) -> Result<bool, PolicyError>;
+
+    /// Load the release signing key of `repository`. Every item tagged for release
+    /// signing is read and checked to be kept apart from the others, from the
+    /// commit signing key and from the SSH CA key, so one unusable item fails
+    /// every repository. Only the 1Password backend can hold one.
+    ///
+    /// # Errors
+    /// [`PolicyError::NoReleaseKey`] if the repository has no item,
+    /// [`PolicyError::ReleaseKey`] or [`PolicyError::Unavailable`].
+    async fn release_signing(
+        &self,
+        repository: &RepoName,
+    ) -> Result<ReleaseSigningKey, PolicyError>;
+
+    /// Load the release GitHub App: its id and RSA private key, in one read of its
+    /// item. Only the 1Password backend can hold one.
+    ///
+    /// # Errors
+    /// [`PolicyError::NoReleaseApp`] if none is configured,
+    /// [`PolicyError::ReleaseApp`] or [`PolicyError::Unavailable`].
+    async fn release_app(&self) -> Result<ReleaseAppKey, PolicyError>;
 
     /// Look up an API secret's policy by name. The whole item is validated,
     /// the credential included, but its value is not returned.

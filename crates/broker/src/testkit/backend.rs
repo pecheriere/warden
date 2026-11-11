@@ -8,13 +8,15 @@ use async_trait::async_trait;
 use ssh_key::rand_core::OsRng;
 use ssh_key::{Algorithm, PrivateKey, PublicKey};
 use url::Url;
+use warden_broker_proto::release::RepoName;
 use warden_broker_proto::{SecretName, TargetName, UnixUser, Window};
 use zeroize::Zeroizing;
 
 use super::{NAS_HOST, PI_HOST};
 use crate::policy::{
     ApiSecretPolicy, CaKey, CommitSigningKey, GithubAppKey, PolicyError, RelayCredential,
-    SecretBackend, SecretValue, SshMode, SshTarget, ValueFormat, not_a_relay_target,
+    ReleaseAppKey, ReleaseSigningKey, SecretBackend, SecretValue, SshMode, SshTarget, ValueFormat,
+    check_distinct, not_a_relay_target,
 };
 
 /// An in-memory [`SecretBackend`]: targets (with relay credentials) and API
@@ -31,6 +33,8 @@ pub struct FakeBackend {
     github_app: Mutex<Option<GithubAppKey>>,
     github_app_outage: Mutex<Option<String>>,
     github_app_reads: std::sync::atomic::AtomicUsize,
+    release_keys: Mutex<Vec<ReleaseSigningKey>>,
+    release_app: Mutex<Option<ReleaseAppKey>>,
     target_outage: Mutex<Option<String>>,
     ca_outage: Mutex<Option<String>>,
     ca_state: Mutex<CaState>,
@@ -70,6 +74,8 @@ impl FakeBackend {
             github_app: Mutex::new(None),
             github_app_outage: Mutex::new(None),
             github_app_reads: std::sync::atomic::AtomicUsize::new(0),
+            release_keys: Mutex::new(Vec::new()),
+            release_app: Mutex::new(None),
             target_outage: Mutex::new(None),
             ca_outage: Mutex::new(None),
             ca_state: Mutex::new(CaState::Usable),
@@ -318,6 +324,30 @@ impl FakeBackend {
         *self.github_app.lock().expect("app lock poisoned") = app;
     }
 
+    /// Add a release signing key for its repository. Like the 1Password backend,
+    /// [`SecretBackend::release_signing`] checks all of them together.
+    ///
+    /// # Panics
+    /// If the lock is poisoned.
+    #[must_use]
+    pub fn with_release_key(self, key: ReleaseSigningKey) -> Self {
+        self.release_keys
+            .lock()
+            .expect("keys lock poisoned")
+            .push(key);
+        self
+    }
+
+    /// Set the release GitHub App.
+    ///
+    /// # Panics
+    /// If the lock is poisoned.
+    #[must_use]
+    pub fn with_release_app(self, app: ReleaseAppKey) -> Self {
+        *self.release_app.lock().expect("app lock poisoned") = Some(app);
+        self
+    }
+
     /// How many times the GitHub App has been read.
     #[must_use]
     pub fn github_app_reads(&self) -> usize {
@@ -486,6 +516,40 @@ impl SecretBackend for FakeBackend {
             .map_err(|_| PolicyError::Unavailable("fake backend lock poisoned".to_owned()))?
             .clone()
             .ok_or(PolicyError::NoGithubApp)
+    }
+
+    async fn release_signing(
+        &self,
+        repository: &RepoName,
+    ) -> Result<ReleaseSigningKey, PolicyError> {
+        let keys = self
+            .release_keys
+            .lock()
+            .map_err(|_| PolicyError::Unavailable("fake backend lock poisoned".to_owned()))?
+            .clone();
+        let commit_signing = match self.commit_signing_key().await {
+            Ok(key) => Some(key),
+            Err(PolicyError::NoCommitSigningKey) => None,
+            Err(e) => return Err(e),
+        };
+        let ca = self.ssh_ca().await.ok();
+        check_distinct(
+            &keys,
+            commit_signing.as_ref(),
+            ca.as_ref().map(CaKey::public_key),
+        )
+        .map_err(PolicyError::ReleaseKey)?;
+        keys.into_iter()
+            .find(|key| key.repository().matches(repository))
+            .ok_or(PolicyError::NoReleaseKey)
+    }
+
+    async fn release_app(&self) -> Result<ReleaseAppKey, PolicyError> {
+        self.release_app
+            .lock()
+            .map_err(|_| PolicyError::Unavailable("fake backend lock poisoned".to_owned()))?
+            .clone()
+            .ok_or(PolicyError::NoReleaseApp)
     }
 
     async fn has_commit_signing_key(&self) -> Result<bool, PolicyError> {

@@ -220,6 +220,14 @@ impl From<PolicyError> for RequestError {
                 Self::Rejected(warden_broker_proto::github_token::NOT_CONFIGURED.to_owned())
             }
             PolicyError::GithubApp(m) => Self::Unavailable(format!("GitHub App: {m}")),
+            PolicyError::NoReleaseKey => Self::Rejected(
+                "no release signing key is configured for this repository".to_owned(),
+            ),
+            PolicyError::ReleaseKey(m) => Self::Unavailable(format!("release signing key: {m}")),
+            PolicyError::NoReleaseApp => {
+                Self::Rejected("no release GitHub App is configured".to_owned())
+            }
+            PolicyError::ReleaseApp(m) => Self::Unavailable(format!("release GitHub App: {m}")),
         }
     }
 }

@@ -26,6 +26,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 use ssh_key::HashAlg;
+use warden_broker_proto::release::RepoName;
 use warden_broker_proto::{SecretName, TargetName};
 use zeroize::Zeroizing;
 
@@ -35,8 +36,8 @@ use super::onepassword::{
 };
 use super::{
     ApiSecretPolicy, CaKey, CaProbe, CommitSigningKey, CommitSigningProbe, GithubAppKey,
-    PolicyError, RelayCredential, SecretBackend, SecretValue, SshMode, SshTarget,
-    not_a_relay_target,
+    PolicyError, RelayCredential, ReleaseAppKey, ReleaseSigningKey, SecretBackend, SecretValue,
+    SshMode, SshTarget, not_a_relay_target,
 };
 use crate::audit::{AuditEvent, AuditLog};
 use crate::config::LocalSettings;
@@ -655,6 +656,17 @@ impl SecretBackend for LocalBackend {
 
     async fn has_github_app(&self) -> Result<bool, PolicyError> {
         Ok(false)
+    }
+
+    async fn release_signing(
+        &self,
+        _repository: &RepoName,
+    ) -> Result<ReleaseSigningKey, PolicyError> {
+        Err(PolicyError::NoReleaseKey)
+    }
+
+    async fn release_app(&self) -> Result<ReleaseAppKey, PolicyError> {
+        Err(PolicyError::NoReleaseApp)
     }
 
     async fn has_commit_signing_key(&self) -> Result<bool, PolicyError> {
