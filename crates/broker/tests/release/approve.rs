@@ -324,9 +324,22 @@ async fn approving_a_rerun_ends_the_earlier_grant() {
         &signed_tag_object(&h.key, "git", TAG, HEAD, 1_794_000_000),
     );
     assert_eq!(revocations(&h), 0);
+    let first_request: String = sqlx::query("SELECT request_id FROM grants WHERE id = ?")
+        .bind(first.grant_id().as_str())
+        .fetch_one(&h.broker.state().pool)
+        .await
+        .unwrap()
+        .get("request_id");
+    let mut bus = requests.bus().subscribe();
 
     approve_for(&h, "build-agent", TAG).await;
 
+    // The page showing the earlier grant is told it ended.
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while bus.recv().await.unwrap().as_str() != first_request {}
+    })
+    .await
+    .expect("the ended grant's request was not published on the bus");
     assert!(!is_active(&h, first.grant_id().as_str()).await);
     assert_eq!(revocations(&h), 1, "the ended grant is audited");
     assert_eq!(count(&h, "grants").await, 2);

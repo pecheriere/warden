@@ -281,7 +281,7 @@ impl Requests {
         let agent: AgentName = parse(&row, "agent")?;
         let view = serde_json::to_string(&grant)?;
         let renews = renewal::replaced_kind(&grant.access);
-        let (events, replaced_releases) = self
+        let events = self
             .approval_events(&id, &agent, &grant, renews, passkey_id, window_secs)
             .await?;
         let transition = format!("approval of request {id}");
@@ -319,19 +319,26 @@ impl Requests {
             .bind(&view)
             .execute(&mut *tx)
             .await?;
-            if matches!(grant.access, GrantAccess::Release(_)) {
+            let mut ended = Vec::new();
+            if let GrantAccess::Release(new) = &grant.access {
                 release_approval::insert_steps(&mut tx, &grant.grant_id).await?;
-                release_approval::end_replaced(&mut tx, &replaced_releases, self.clock.now())
-                    .await?;
+                ended = release_approval::end_replaced(
+                    &mut tx,
+                    &agent,
+                    &grant.grant_id,
+                    new,
+                    self.clock.now(),
+                )
+                .await?;
             }
-            let renewed = if let Some(kind) = renews {
-                renewal::end_renewed(&mut tx, &agent, &grant.grant_id, kind, self.clock.now())
-                    .await?
-            } else {
-                Vec::new()
-            };
+            if let Some(kind) = renews {
+                ended.extend(
+                    renewal::end_renewed(&mut tx, &agent, &grant.grant_id, kind, self.clock.now())
+                        .await?,
+                );
+            }
             tx.commit().await?;
-            Ok(renewed)
+            Ok(ended)
         }
         .await;
         note_if_not_applied(&self.audit, &applied, &transition).await;
@@ -342,7 +349,7 @@ impl Requests {
         Ok(())
     }
 
-    /// The entries written with an approval, and the release grants it replaces.
+    /// The entries written with an approval.
     async fn approval_events(
         &self,
         id: &Id,
@@ -351,7 +358,7 @@ impl Requests {
         renews: Option<&'static str>,
         passkey_id: &str,
         window_secs: u32,
-    ) -> Result<(Vec<AuditEvent>, Vec<Id>), RequestError> {
+    ) -> Result<Vec<AuditEvent>, RequestError> {
         let mut events = vec![AuditEvent::Approved {
             id: id.clone(),
             grant_id: grant.grant_id.clone(),
@@ -369,9 +376,8 @@ impl Requests {
             events.extend(self.renewal_events(agent, kind).await?);
         }
         // A rerun's grant replaces the earlier one for the same release.
-        let (replaced, ended) = self.release_replaced(agent, &grant.access).await?;
-        events.extend(ended);
-        Ok((events, replaced))
+        events.extend(self.release_replaced_events(agent, &grant.access).await?);
+        Ok(events)
     }
 
     /// Why a token matched no pending request.

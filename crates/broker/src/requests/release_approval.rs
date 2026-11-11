@@ -58,64 +58,85 @@ pub(super) async fn insert_steps(
     Ok(())
 }
 
-/// End the grants `ended` in `tx` at `now`, which also stores the grant replacing
-/// them, and mark their requests revoked, as revoking one on the owner's screen does.
+/// End the other active release grants of `agent` that `kept`, the grant replacing
+/// them, replaces, at `now`, in `tx`, which also stores it. They are selected here,
+/// inside the transaction, so a grant stored since the audit entries were written is
+/// ended too. Their requests are marked revoked, as revoking one on the owner's
+/// screen does, and returned.
 pub(super) async fn end_replaced(
     tx: &mut Transaction<'static, Sqlite>,
-    ended: &[Id],
+    agent: &AgentName,
+    kept: &Id,
+    new: &ReleaseGrant,
     now: i64,
-) -> Result<(), sqlx::Error> {
-    for grant in ended {
+) -> Result<Vec<Id>, RequestError> {
+    let rows = sqlx::query(
+        "SELECT id, request_id, view FROM grants \
+         WHERE agent = ?1 AND id != ?2 AND revoked_at IS NULL AND not_after > ?3 \
+         AND json_extract(view, '$.access.kind') = 'release'",
+    )
+    .bind(agent.as_str())
+    .bind(kept.as_str())
+    .bind(now)
+    .fetch_all(&mut **tx)
+    .await?;
+    let mut requests = Vec::new();
+    for row in &rows {
+        if !replaces(row, new)? {
+            continue;
+        }
+        let grant: Id = parse(row, "id")?;
+        let request: Id = parse(row, "request_id")?;
         sqlx::query("UPDATE grants SET revoked_at = ?1 WHERE id = ?2 AND revoked_at IS NULL")
             .bind(now)
             .bind(grant.as_str())
             .execute(&mut **tx)
             .await?;
-        sqlx::query(
-            "UPDATE requests SET status = 'revoked' \
-             WHERE status = 'approved' \
-             AND id = (SELECT request_id FROM grants WHERE id = ?)",
-        )
-        .bind(grant.as_str())
-        .execute(&mut **tx)
-        .await?;
+        sqlx::query("UPDATE requests SET status = 'revoked' WHERE id = ? AND status = 'approved'")
+            .bind(request.as_str())
+            .execute(&mut **tx)
+            .await?;
+        requests.push(request);
     }
-    Ok(())
+    Ok(requests)
+}
+
+/// Whether the release grant in `row` (with a `view`) is one `new` replaces.
+fn replaces(row: &sqlx::sqlite::SqliteRow, new: &ReleaseGrant) -> Result<bool, RequestError> {
+    let view: String = row.try_get("view")?;
+    let view: GrantView = serde_json::from_str(&view)?;
+    let GrantAccess::Release(grant) = view.access else {
+        return Err(RequestError::Corrupt(
+            "release grant changed kind".to_owned(),
+        ));
+    };
+    Ok(same_release(&grant.repository, &grant.tag, new))
 }
 
 impl Requests {
-    /// The active release grants of `agent` that a new grant of `access` for the same
-    /// repository (matched ignoring ASCII case, as [`Requests::active_release`] does)
-    /// and tag replaces, with the entries for ending them. Empty for any other kind.
-    pub(super) async fn release_replaced(
+    /// The entries for ending the active release grants of `agent` that a new grant
+    /// of `access` for the same repository (matched ignoring ASCII case, as
+    /// [`Requests::active_release`] does) and tag replaces. Written with the approval,
+    /// before anything changes; [`end_replaced`] ends what is there when it commits.
+    /// Empty for any other kind.
+    pub(super) async fn release_replaced_events(
         &self,
         agent: &AgentName,
         access: &GrantAccess,
-    ) -> Result<(Vec<Id>, Vec<AuditEvent>), RequestError> {
+    ) -> Result<Vec<AuditEvent>, RequestError> {
         let GrantAccess::Release(new) = access else {
-            return Ok((Vec::new(), Vec::new()));
+            return Ok(Vec::new());
         };
-        let mut ids: Vec<Id> = Vec::new();
+        let mut events = Vec::new();
         for row in self.active_rows(agent, "release").await? {
-            let view: String = row.try_get("view")?;
-            let view: GrantView = serde_json::from_str(&view)?;
-            let GrantAccess::Release(grant) = view.access else {
-                return Err(RequestError::Corrupt(
-                    "release grant changed kind".to_owned(),
-                ));
-            };
-            if same_release(&grant.repository, &grant.tag, new) {
-                ids.push(parse(&row, "id")?);
+            if replaces(&row, new)? {
+                events.push(AuditEvent::GrantRevoked {
+                    grant_id: parse(&row, "id")?,
+                    by: REPLACED.to_owned(),
+                });
             }
         }
-        let events = ids
-            .iter()
-            .map(|grant_id| AuditEvent::GrantRevoked {
-                grant_id: grant_id.clone(),
-                by: REPLACED.to_owned(),
-            })
-            .collect();
-        Ok((ids, events))
+        Ok(events)
     }
 
     /// What GitHub said when release request `id` was made.
