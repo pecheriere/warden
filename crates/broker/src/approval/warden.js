@@ -648,7 +648,7 @@
           continue;
         }
         // Nothing live to show on these: the note the server wrote stays.
-        if (['cert', 'commit-signing', 'github-token'].includes(area.dataset.kind)) continue;
+        if (['cert', 'commit-signing', 'github-token', 'release'].includes(area.dataset.kind)) continue;
         const key = liveKey(live);
         if (shown.get(area.dataset.grant) === key) {
           updateIdle(area, live);

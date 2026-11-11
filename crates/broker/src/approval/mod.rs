@@ -37,6 +37,7 @@ use self::passkeys::{ApprovalBinding, PasskeyError};
 pub mod pages;
 pub mod passkeys;
 mod pending;
+mod release;
 mod renew;
 
 /// The browser glue, served as `/static/warden.js`.
@@ -54,10 +55,6 @@ const BODY_LIMIT: usize = 64 * 1024;
 
 /// Requests shown on the history page.
 const HISTORY_LIMIT: u32 = 100;
-
-/// Why a release request cannot be approved: its approval is not built yet, so it
-/// is refused rather than guessed at.
-const RELEASE_NOT_APPROVABLE: &str = "releases cannot be approved on this broker yet";
 
 /// The destination (SSH host, port, host keys; API origin, path prefix,
 /// methods, header, format, CA) differs from what the owner was shown.
@@ -496,8 +493,8 @@ fn check_policy(
             api_scope(&view.request, policy).map(drop)
         }
         (Access::CommitSigning {}, Destination::CommitSigning(_))
-        | (Access::GithubToken {}, Destination::GithubToken(_)) => Ok(()),
-        (Access::Release { .. }, Destination::Release(_)) => Err(RELEASE_NOT_APPROVABLE.to_owned()),
+        | (Access::GithubToken {}, Destination::GithubToken(_))
+        | (Access::Release { .. }, Destination::Release(_)) => Ok(()),
         _ => Err("the request does not match its policy kind".to_owned()),
     }
 }
@@ -620,6 +617,10 @@ async fn approve_finish(
             format!("policy changed since this page loaded: {message}"),
         );
     }
+    // A release is looked up on GitHub again, before the passkey is used.
+    if let Some(refusal) = release::recheck(&state, &view).await {
+        return refusal;
+    }
     let passkey_id = match state
         .passkeys
         .finish_approval(ceremony, &body.credential)
@@ -628,53 +629,9 @@ async fn approve_finish(
         Ok(passkey_id) => passkey_id,
         Err(e) => return passkey_error(&e),
     };
-    let grant = match &view.destination {
-        Destination::Ssh(target) if target.mode == SshMode::Relay => {
-            // `check_policy` already refused a relay target without a relay.
-            let Some(relay) = relay else {
-                return json_error(StatusCode::CONFLICT, RELAY_NOT_CONFIGURED);
-            };
-            match relay_grant(&view, relay, binding.window, now) {
-                Ok(grant) => grant,
-                Err((context, cause)) => return internal(context, &cause),
-            }
-        }
-        Destination::Ssh(target) => {
-            let ca = match state.backend.ssh_ca().await {
-                Ok(ca) => ca,
-                Err(e) => return backend_unavailable(&e),
-            };
-            match ssh_grant(&view, target, &ca, binding.window, now) {
-                Ok(grant) => grant,
-                Err((context, cause)) => return internal(context, &cause),
-            }
-        }
-        Destination::Api(policy) => match api_grant(&view.request, policy, binding.window, now) {
-            Ok(grant) => grant,
-            Err((context, cause)) => return internal(context, &cause),
-        },
-        Destination::CommitSigning(policy) => match validity(binding.window, now) {
-            Ok((not_before, not_after)) => GrantView {
-                grant_id: Id::random(),
-                not_before,
-                not_after,
-                access: GrantAccess::CommitSigning(policy.grant()),
-            },
-            Err((context, cause)) => return internal(context, &cause),
-        },
-        Destination::GithubToken(policy) => match validity(binding.window, now) {
-            Ok((not_before, not_after)) => GrantView {
-                grant_id: Id::random(),
-                not_before,
-                not_after,
-                access: GrantAccess::GithubToken(policy.grant()),
-            },
-            Err((context, cause)) => return internal(context, &cause),
-        },
-        // `check_policy` refuses a release request until its approval is built.
-        Destination::Release(_) => {
-            return json_error(StatusCode::CONFLICT, RELEASE_NOT_APPROVABLE);
-        }
+    let grant = match build_grant(&state, &view, binding.window, now).await {
+        Ok(grant) => grant,
+        Err(refusal) => return *refusal,
     };
     let grant_id = grant.grant_id.clone();
     // The certificate stays in `grant` until this commits, with its
@@ -692,6 +649,69 @@ async fn approve_finish(
     }
     tracing::info!(request = %view.id, grant = %grant_id, "request approved");
     done(format!("Approved for {}.", window_label(binding.window)))
+}
+
+/// The grant that approving `view` with `window` at `now` gives, for the destination it
+/// is bound to; the response that refuses the approval, if it cannot be built. The
+/// response is boxed because it is large.
+async fn build_grant(
+    state: &AppState,
+    view: &PendingView,
+    window: Window,
+    now: i64,
+) -> Result<GrantView, Box<Response>> {
+    let relay = state.requests.relay();
+    Ok(match &view.destination {
+        Destination::Ssh(target) if target.mode == SshMode::Relay => {
+            // `check_policy` already refused a relay target without a relay.
+            let Some(relay) = relay else {
+                return Err(Box::new(json_error(
+                    StatusCode::CONFLICT,
+                    RELAY_NOT_CONFIGURED,
+                )));
+            };
+            match relay_grant(view, relay, window, now) {
+                Ok(grant) => grant,
+                Err((context, cause)) => return Err(Box::new(internal(context, &cause))),
+            }
+        }
+        Destination::Ssh(target) => {
+            let ca = match state.backend.ssh_ca().await {
+                Ok(ca) => ca,
+                Err(e) => return Err(Box::new(backend_unavailable(&e))),
+            };
+            match ssh_grant(view, target, &ca, window, now) {
+                Ok(grant) => grant,
+                Err((context, cause)) => return Err(Box::new(internal(context, &cause))),
+            }
+        }
+        Destination::Api(policy) => match api_grant(&view.request, policy, window, now) {
+            Ok(grant) => grant,
+            Err((context, cause)) => return Err(Box::new(internal(context, &cause))),
+        },
+        Destination::CommitSigning(policy) => match validity(window, now) {
+            Ok((not_before, not_after)) => GrantView {
+                grant_id: Id::random(),
+                not_before,
+                not_after,
+                access: GrantAccess::CommitSigning(policy.grant()),
+            },
+            Err((context, cause)) => return Err(Box::new(internal(context, &cause))),
+        },
+        Destination::GithubToken(policy) => match validity(window, now) {
+            Ok((not_before, not_after)) => GrantView {
+                grant_id: Id::random(),
+                not_before,
+                not_after,
+                access: GrantAccess::GithubToken(policy.grant()),
+            },
+            Err((context, cause)) => return Err(Box::new(internal(context, &cause))),
+        },
+        Destination::Release(policy) => match release::grant(view, policy, window, now) {
+            Ok(grant) => grant,
+            Err((context, cause)) => return Err(Box::new(internal(context, &cause))),
+        },
+    })
 }
 
 /// Why a ceremony bound to `binding` found its request no longer pending at `now`.

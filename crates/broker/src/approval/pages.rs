@@ -22,6 +22,7 @@ mod github_token;
 mod grants;
 mod history;
 mod pending;
+mod release;
 mod stated;
 #[cfg(test)]
 mod stated_tests;
@@ -240,12 +241,7 @@ fn destination_access(request: &CreateRequest, destination: &Destination) -> Mar
         Destination::GithubToken(policy) => {
             github_token::access(&policy.app_id, policy.installation_id)
         }
-        Destination::Release(policy) => html! {
-            span {
-                "release key " code { bdi { (policy.key_fingerprint) } }
-                " for " code { bdi { (policy.repository.as_str()) } }
-            }
-        },
+        Destination::Release(policy) => release::access(request, policy),
     }
 }
 
@@ -276,9 +272,7 @@ fn grant_access(grant: &ActiveGrant) -> Markup {
         GrantAccess::GithubToken(token) => {
             github_token::grant_access(&token.app_id, token.installation_id)
         }
-        GrantAccess::Release(release) => html! {
-            span { "release " bdi { (release.tag) } " of " bdi { (release.repository) } }
-        },
+        GrantAccess::Release(release) => release::grant_access(release, grant.release),
     }
 }
 

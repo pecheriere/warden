@@ -74,6 +74,7 @@ fn pages(link: &str, hosts: &LinkHosts) -> Vec<(&'static str, String)> {
         request: request.clone(),
         destination: destination(),
         expires_at: NOW + 240,
+        release: None,
     };
     let entry = PendingEntry {
         id: id(),
@@ -97,6 +98,7 @@ fn pages(link: &str, hosts: &LinkHosts) -> Vec<(&'static str, String)> {
         }),
         not_before: NOW - 60,
         not_after: NOW + 1800,
+        release: None,
     };
     let past = HistoryEntry {
         id: id(),
@@ -239,6 +241,7 @@ fn a_request_without_them_shows_neither() {
         request: plain,
         destination: destination(),
         expires_at: NOW + 240,
+        release: None,
     };
     let html = approve(&view, &hosts, NOW).into_string();
     assert!(!html.contains("stated"), "{html}");

@@ -48,6 +48,7 @@ mod link_hosts;
 mod pending;
 mod refusal_throttle;
 mod release;
+mod release_approval;
 mod release_version;
 mod renewal;
 
@@ -60,6 +61,7 @@ pub use self::link_hosts::LinkHosts;
 pub use self::pending::PendingEntry;
 use self::refusal_throttle::RefusalThrottle;
 pub use self::release::{ReleaseFacts, ReleasePolicy};
+pub use self::release_approval::ReleaseProgress;
 
 mod create;
 mod decide;
@@ -315,6 +317,8 @@ pub struct PendingView {
     pub destination: Destination,
     /// When the request expires, Unix seconds.
     pub expires_at: i64,
+    /// What GitHub said when a release was requested; `None` for other kinds.
+    pub release: Option<ReleaseFacts>,
 }
 
 /// One row of the owner's request history.
@@ -355,6 +359,8 @@ pub struct ActiveGrant {
     /// End of validity, Unix seconds; also when a certificate grant's
     /// certificate expires.
     pub not_after: i64,
+    /// Which steps have been claimed, for a release grant; `None` for other kinds.
+    pub release: Option<ReleaseProgress>,
 }
 
 /// An active relay grant, as the relay needs it to admit an agent.

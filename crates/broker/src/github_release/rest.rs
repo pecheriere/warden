@@ -27,7 +27,7 @@ const MAX_CHANGELOG_BYTES: usize = 16 * 1024;
 /// The largest changelog and release list read.
 const MAX_LARGE_BYTES: usize = 1024 * 1024;
 /// The marker after a changelog section that was cut.
-const CUT: &str = "\n…(cut)";
+pub(crate) const CUT: &str = "\n…(cut)";
 /// How many tags `release_tags` asks for.
 const TAGS_PER_PAGE: &str = "100";
 /// The most releases asked for in one page; see [`ReleaseClient::release_for_tag`].

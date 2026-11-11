@@ -10,6 +10,7 @@ use warden_broker::testkit::github_app::RSA2048_PKCS8;
 use warden_broker::testkit::{HttpsUpstream, TestBroker};
 use warden_broker_proto::release::RepoName;
 
+mod approve;
 mod request;
 
 const REPO: &str = "example-owner/example-repo";

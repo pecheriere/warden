@@ -2,7 +2,9 @@
 
 use maud::{Markup, html};
 
-use super::{destination_access, icon, key_icon, layout, stated_fields, window_words, windows_for};
+use super::{
+    destination_access, icon, key_icon, layout, release, stated_fields, window_words, windows_for,
+};
 use crate::requests::{Destination, LinkHosts, PendingView, window_label};
 
 /// The approval page for a pending request: the details on one side, the
@@ -49,6 +51,9 @@ pub fn approve(view: &PendingView, hosts: &LinkHosts, now: i64) -> Markup {
                         span { bdi { (view.request.goal) } }
                     }
                     (stated_fields(&view.request, hosts))
+                    @if let (Destination::Release(policy), Some(facts)) = (&view.destination, &view.release) {
+                        (release::facts(&view.request, policy, facts))
+                    }
                 }
             }
             div.col {
@@ -72,6 +77,9 @@ pub fn approve(view: &PendingView, hosts: &LinkHosts, now: i64) -> Markup {
                                     Destination::Release(_) => "release key",
                                 }) "."
                             }
+                        }
+                        @if matches!(view.destination, Destination::Release(_)) {
+                            p.detail { (release::LIFETIME) }
                         }
                         div.seg {
                             @for window in windows_for(&view.destination).iter().copied().filter(|w| *w <= max) {

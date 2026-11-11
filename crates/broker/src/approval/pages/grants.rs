@@ -9,7 +9,7 @@ use super::format::{bytes, idle_label};
 use super::stated::stated_lines;
 use super::{
     Chip, Nav, clock, commit_signing, empty_icon, ends, fingerprint_forms, github_token,
-    grant_access, layout,
+    grant_access, layout, release,
 };
 use crate::requests::{ActiveGrant, LinkHosts, renewable};
 
@@ -89,6 +89,8 @@ fn live_area(grant: &ActiveGrant, live: Option<&LiveGrant<'_>>) -> Markup {
                 (commit_signing::live_note())
             } @else if kind == LiveKind::GithubToken {
                 (github_token::live_note())
+            } @else if kind == LiveKind::Release {
+                (release::live_note())
             } @else if summary.is_empty() {
                 p.detail { (if kind == LiveKind::Relay { "No sessions open" } else { "No calls in flight" }) }
             } @else {
@@ -173,7 +175,9 @@ pub fn grants(
                             span { "Fingerprint " (fingerprint_forms(&grant.fingerprint)) }
                             @if matches!(
                                 grant.access,
-                                GrantAccess::CommitSigning(_) | GrantAccess::GithubToken(_)
+                                GrantAccess::CommitSigning(_)
+                                    | GrantAccess::GithubToken(_)
+                                    | GrantAccess::Release(_)
                             ) {
                                 (ends(grant.not_after, now))
                             } @else {

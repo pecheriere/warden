@@ -6,7 +6,7 @@ use std::time::Duration;
 use sqlx::sqlite::SqliteRow;
 use sqlx::{Row as _, Sqlite, Transaction};
 use warden_broker_proto::{
-    AgentName, CreateRequest, GrantAccess, GrantView, Id, RequestStatus, Window,
+    Access, AgentName, CreateRequest, GrantAccess, GrantView, Id, RequestStatus, Window,
 };
 
 use super::bus::next_change;
@@ -14,7 +14,7 @@ use super::revocation::commit_with_entries;
 use super::transition::detached;
 use super::{
     AuditOutcome, PendingView, RequestError, Requests, Scope, begin, note_if_not_applied, parse,
-    record, renewal, sha256_hex,
+    record, release_approval, renewal, sha256_hex,
 };
 use crate::audit::AuditEvent;
 use crate::ssh_ca;
@@ -92,13 +92,19 @@ impl Requests {
         let body: String = row.try_get("body")?;
         let request: CreateRequest = serde_json::from_str(&body)?;
         let destination = self.destination(&request).await?;
+        let id: Id = parse(&row, "id")?;
+        let release = match request.access {
+            Access::Release { .. } => Some(self.release_facts(&id).await?),
+            _ => None,
+        };
         Ok(PendingView {
-            id: parse(&row, "id")?,
+            id,
             agent: parse(&row, "agent")?,
             fingerprint: parse(&row, "fingerprint")?,
             destination,
             expires_at: row.try_get("expires_at")?,
             request,
+            release,
         })
     }
 
@@ -326,6 +332,9 @@ impl Requests {
             .bind(&view)
             .execute(&mut *tx)
             .await?;
+            if matches!(grant.access, GrantAccess::Release(_)) {
+                release_approval::insert_steps(&mut tx, &grant.grant_id).await?;
+            }
             let renewed = if let Some(kind) = renews {
                 renewal::end_renewed(&mut tx, &agent, &grant.grant_id, kind, self.clock.now())
                     .await?

@@ -346,6 +346,17 @@ impl FakeBackend {
             .push(key);
     }
 
+    /// Replace every release signing key with `key`, as when the owner rotates a
+    /// repository's key in 1Password.
+    ///
+    /// # Panics
+    /// If the lock is poisoned.
+    pub fn replace_release_keys(&self, key: ReleaseSigningKey) {
+        let mut keys = self.release_keys.lock().expect("keys lock poisoned");
+        keys.clear();
+        keys.push(key);
+    }
+
     /// Set the release GitHub App.
     ///
     /// # Panics

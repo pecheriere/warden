@@ -469,26 +469,3 @@ async fn refuses_window_other_than_one_day() {
     }
     assert_eq!(count(&h, "requests").await, 0);
 }
-
-/// The approval side is not built yet: a release request must not be approvable.
-#[tokio::test]
-async fn approving_a_release_request_still_refuses() {
-    let h = harness(Shape::Everything).await;
-    let (_, token) = h.broker.create_request("build-agent", release(HEAD)).await;
-    h.broker.enroll_soft_passkey().await;
-    let begun = h.broker.begin_approval(&token, Window::D1).await;
-    assert_eq!(
-        begun.status,
-        axum::http::StatusCode::BAD_REQUEST,
-        "{}",
-        begun.body
-    );
-    assert!(
-        begun
-            .body
-            .contains("releases cannot be approved on this broker yet"),
-        "{}",
-        begun.body
-    );
-    assert_eq!(count(&h, "grants").await, 0);
-}
