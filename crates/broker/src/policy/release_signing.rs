@@ -286,7 +286,8 @@ pub fn parse_item(title: &str, fields: &[SecretField]) -> Result<ReleaseSigningK
     if !is_tag_text(tagger_name, MAX_TAGGER_NAME_CHARS) {
         return Err(bad(
             TAGGER_NAME_FIELD,
-            "must be 1 to 100 characters on one line, without < or >",
+            "must be 1 to 100 characters on one line, without < or >, control characters, or \
+leading or trailing whitespace",
         ));
     }
     let tagger_email = required(TAGGER_EMAIL_FIELD)?;
@@ -296,7 +297,8 @@ pub fn parse_item(title: &str, fields: &[SecretField]) -> Result<ReleaseSigningK
     {
         return Err(bad(
             TAGGER_EMAIL_FIELD,
-            "must be an email address without spaces, < or >",
+            "must be an address with an @, at most 254 characters, without whitespace, < or >, \
+or control characters",
         ));
     }
     let manifest = match (optional(MANIFEST_FIELD), optional(NAMESPACE_FIELD)) {
