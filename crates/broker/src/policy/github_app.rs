@@ -3,7 +3,6 @@
 //! The App's RSA private key signs the short JWT GitHub exchanges for an installation
 //! token. It is only ever used through `aws-lc-rs`, and never printed.
 
-use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
@@ -17,7 +16,7 @@ use warden_broker_proto::{GithubTokenGrant, Window};
 use zeroize::Zeroizing;
 
 use super::PolicyError;
-use super::onepassword::SecretField;
+use super::onepassword::{SecretField, values_by_label};
 
 /// The shortest RSA modulus accepted, in bytes (2048 bits): GitHub's own minimum.
 const MIN_MODULUS_BYTES: usize = 256;
@@ -31,11 +30,22 @@ const INSTALLATION_ID_FIELD: &str = "installation_id";
 const PRIVATE_KEY_FIELD: &str = "private_key";
 const LABELS: [&str; 3] = [APP_ID_FIELD, INSTALLATION_ID_FIELD, PRIVATE_KEY_FIELD];
 
-/// Whether `app_id` is 1 to 64 letters, digits, dots, dashes or underscores. The
-/// release App's id follows the same rule.
-pub(super) fn is_valid_app_id(app_id: &str) -> bool {
+/// Why an App id is refused. The release App's id follows the same rule.
+const APP_ID_REASON: &str =
+    "the App id must be 1 to 64 letters, digits, dots, dashes or underscores";
+
+/// Check that `app_id` is 1 to 64 letters, digits, dots, dashes or underscores.
+///
+/// # Errors
+/// A fixed reason; it never quotes the id.
+pub(super) fn check_app_id(app_id: &str) -> Result<(), &'static str> {
     let plain = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-');
-    !app_id.is_empty() && app_id.chars().count() <= MAX_APP_ID_CHARS && app_id.chars().all(plain)
+    if !app_id.is_empty() && app_id.chars().count() <= MAX_APP_ID_CHARS && app_id.chars().all(plain)
+    {
+        Ok(())
+    } else {
+        Err(APP_ID_REASON)
+    }
 }
 
 fn app_error(reason: &str) -> PolicyError {
@@ -62,11 +72,7 @@ impl GithubAppKey {
     /// [`PolicyError::GithubApp`] with a fixed reason, if an id is not plain text or
     /// the key is not usable. It never quotes the key.
     pub fn new(app_id: String, installation_id: u64, pem: &[u8]) -> Result<Self, PolicyError> {
-        if !is_valid_app_id(&app_id) {
-            return Err(app_error(
-                "the App id must be 1 to 64 letters, digits, dots, dashes or underscores",
-            ));
-        }
+        check_app_id(&app_id).map_err(app_error)?;
         if installation_id == 0 {
             return Err(app_error("the installation id must not be 0"));
         }
@@ -160,24 +166,11 @@ pub(crate) fn parse_rsa_key(pem: &str) -> Result<Arc<KeyPair>, &'static str> {
 /// # Errors
 /// [`PolicyError::GithubApp`] naming the field that is missing, repeated or unusable.
 pub(super) fn parse_item(title: &str, fields: &[SecretField]) -> Result<GithubAppKey, PolicyError> {
-    let mut by_label: HashMap<&str, &str> = HashMap::new();
-    for field in fields {
-        let Some(label) = field
-            .label
-            .as_deref()
-            .filter(|label| LABELS.contains(label))
-        else {
-            continue;
-        };
-        // A repeated label is refused whether or not either has a value: which one
-        // was meant cannot be told.
-        let value = field.value.as_deref().map_or("", |value| value.as_str());
-        if by_label.insert(label, value).is_some() {
-            return Err(PolicyError::GithubApp(format!(
-                "item \"{title}\": field \"{label}\" appears more than once"
-            )));
-        }
-    }
+    let by_label = values_by_label(fields, &LABELS).map_err(|label| {
+        PolicyError::GithubApp(format!(
+            "item \"{title}\": field \"{label}\" appears more than once"
+        ))
+    })?;
     let field = |label: &str| -> Result<&str, PolicyError> {
         by_label
             .get(label)

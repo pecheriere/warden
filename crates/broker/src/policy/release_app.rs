@@ -13,9 +13,8 @@ use aws_lc_rs::rsa::KeyPair;
 use aws_lc_rs::signature::RSA_PKCS1_SHA256;
 use sha2::{Digest as _, Sha256};
 
-use super::github_app::{is_valid_app_id, parse_rsa_key};
-use super::onepassword::SecretField;
-use super::release_signing::values_by_label;
+use super::github_app::{check_app_id, parse_rsa_key};
+use super::onepassword::{SecretField, values_by_label};
 
 const APP_ID_FIELD: &str = "app_id";
 const PRIVATE_KEY_FIELD: &str = "private_key";
@@ -38,9 +37,7 @@ impl ReleaseAppKey {
     /// A fixed reason, if the id is not plain text or the key is not usable. It
     /// never quotes the key.
     pub fn new(app_id: String, pem: &str) -> Result<Self, &'static str> {
-        if !is_valid_app_id(&app_id) {
-            return Err("the App id must be 1 to 64 letters, digits, dots, dashes or underscores");
-        }
+        check_app_id(&app_id)?;
         Ok(Self {
             app_id,
             key: parse_rsa_key(pem)?,
@@ -101,14 +98,12 @@ pub fn parse_item(title: &str, fields: &[SecretField]) -> Result<ReleaseAppKey, 
     };
     let app_id = required(APP_ID_FIELD)?.to_owned();
     let pem = zeroize::Zeroizing::new(required(PRIVATE_KEY_FIELD)?.to_owned());
-    ReleaseAppKey::new(app_id, &pem).map_err(|reason| {
-        let field = if reason.contains("private key") {
-            PRIVATE_KEY_FIELD
-        } else {
-            APP_ID_FIELD
-        };
-        format!("item \"{title}\": field \"{field}\": {reason}")
-    })
+    // The id is checked here, so that after it passes a refusal from `new` can
+    // only be about the key, whatever the wording of its reason.
+    check_app_id(&app_id)
+        .map_err(|reason| format!("item \"{title}\": field \"{APP_ID_FIELD}\": {reason}"))?;
+    ReleaseAppKey::new(app_id, &pem)
+        .map_err(|reason| format!("item \"{title}\": field \"{PRIVATE_KEY_FIELD}\": {reason}"))
 }
 
 #[cfg(test)]

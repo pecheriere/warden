@@ -122,7 +122,8 @@ fn refuses_manifest_without_namespace() {
 #[test]
 fn refuses_namespace_outside_pattern() {
     let long = "a".repeat(65);
-    for namespace in ["Warden", "-x", "has space", &long] {
+    // A blank namespace counts as absent, and a pattern needs one.
+    for namespace in ["", "Warden", "-x", "has space", &long] {
         let err = refused(&[
             ("manifest", "warden-{version}-SHA256SUMS"),
             ("manifest_namespace", namespace),
@@ -135,8 +136,8 @@ fn refuses_namespace_outside_pattern() {
 
 #[test]
 fn refuses_non_ed25519_key() {
-    let rsa = include_str!("../../../tests/fixtures/throwaway-test-only-ecdsa.key");
-    let err = parse_item("warden", &full_with(rsa, &[])).unwrap_err();
+    let ecdsa = include_str!("../../../tests/fixtures/throwaway-test-only-ecdsa.key");
+    let err = parse_item("warden", &full_with(ecdsa, &[])).unwrap_err();
     assert!(err.contains("private_key"), "{err}");
 }
 
@@ -235,6 +236,18 @@ fn digest_changes_with_every_part() {
         let other = parse_item("w", &full_with(&private, extra)).unwrap();
         assert_ne!(base.destination_digest(), other.destination_digest());
     }
+    // The key and the tagger are part of it too.
+    let other_key = openssh(&key());
+    let mut other_name = full_with(&private, &FULL_EXTRA);
+    other_name.retain(|f| f.label.as_deref() != Some("tagger_name"));
+    other_name.extend(fields(&[("tagger_name", "Other Bot")]));
+    let mut other_email = full_with(&private, &FULL_EXTRA);
+    other_email.retain(|f| f.label.as_deref() != Some("tagger_email"));
+    other_email.extend(fields(&[("tagger_email", "other@example.com")]));
+    for list in [full_with(&other_key, &FULL_EXTRA), other_name, other_email] {
+        let other = parse_item("w", &list).unwrap();
+        assert_ne!(base.destination_digest(), other.destination_digest());
+    }
     let same_other_case = {
         let mut list = full_with(&private, &FULL_EXTRA);
         list.retain(|f| f.label.as_deref() != Some("repository"));
@@ -306,4 +319,36 @@ fn check_distinct_refuses_ca_key() {
     let keys = [item_for("example-owner/one", &shared)];
     let err = check_distinct(&keys, None, Some(shared.public_key())).unwrap_err();
     assert!(err.contains("SSH CA"), "{err}");
+}
+
+/// A simulated CA outage or an unreadable CA makes the fake backend refuse, as the
+/// 1Password backend does, instead of skipping the CA check.
+// The fake backend is only built with the `testkit` feature, which CI turns on for
+// every test run.
+#[cfg(feature = "testkit")]
+#[tokio::test]
+async fn fake_backend_refuses_when_the_ca_cannot_be_read() {
+    use crate::policy::{PolicyError, SecretBackend as _};
+    use crate::testkit::CaState;
+    use crate::testkit::FakeBackend;
+    use warden_broker_proto::release::RepoName;
+
+    let repo = RepoName::try_from("example-owner/one".to_owned()).unwrap();
+    let fake = FakeBackend::new().with_release_key(item_for("example-owner/one", &key()));
+    fake.release_signing(&repo).await.unwrap();
+
+    fake.set_ca_state(CaState::Unusable);
+    let err = fake.release_signing(&repo).await.unwrap_err();
+    assert!(
+        matches!(&err, PolicyError::ReleaseKey(r) if r.contains("SSH CA")),
+        "{err:?}"
+    );
+
+    fake.set_ca_state(CaState::Absent);
+    fake.release_signing(&repo).await.unwrap();
+
+    fake.set_ca_state(CaState::Usable);
+    fake.set_ca_outage(Some("down"));
+    let err = fake.release_signing(&repo).await.unwrap_err();
+    assert!(matches!(err, PolicyError::Unavailable(_)), "{err:?}");
 }

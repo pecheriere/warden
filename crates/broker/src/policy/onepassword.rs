@@ -46,7 +46,7 @@ use items::invalid;
 pub(crate) use items::parse_host_port;
 pub(super) use items::{
     ApiItem, ItemUrl, SecretField, TargetItem, parse_api_secret, parse_private_key, parse_target,
-    required_field,
+    required_field, values_by_label,
 };
 pub use probe::{CaProbe, VaultProbe};
 

@@ -530,9 +530,26 @@ impl SecretBackend for FakeBackend {
         let commit_signing = match self.commit_signing_key().await {
             Ok(key) => Some(key),
             Err(PolicyError::NoCommitSigningKey) => None,
+            Err(PolicyError::CommitSigningKey(_)) => {
+                return Err(PolicyError::ReleaseKey(
+                    "the commit signing key cannot be read, so nothing says the release keys are different keys; fix it first".to_owned(),
+                ));
+            }
             Err(e) => return Err(e),
         };
-        let ca = self.ssh_ca().await.ok();
+        let ca = if self.has_ssh_ca().await? {
+            match self.ssh_ca().await {
+                Ok(ca) => Some(ca),
+                Err(PolicyError::Ca(_)) => {
+                    return Err(PolicyError::ReleaseKey(
+                        "the SSH CA cannot be read, so nothing says the release keys are different keys; fix the CA first".to_owned(),
+                    ));
+                }
+                Err(e) => return Err(e),
+            }
+        } else {
+            None
+        };
         check_distinct(
             &keys,
             commit_signing.as_ref(),

@@ -5,7 +5,6 @@
 //! key and from every other repository's key, so that no grant for one kind of
 //! signature can produce one another kind of verifier trusts.
 
-use std::collections::HashMap;
 use std::fmt;
 
 use sha2::{Digest as _, Sha256};
@@ -13,7 +12,7 @@ use ssh_key::{Algorithm, HashAlg, PrivateKey, PublicKey};
 use warden_broker_proto::release::RepoName;
 
 use super::CommitSigningKey;
-use super::onepassword::{SecretField, parse_private_key};
+use super::onepassword::{SecretField, parse_private_key, values_by_label};
 
 /// Item fields, by label.
 const PRIVATE_KEY_FIELD: &str = "private_key";
@@ -163,27 +162,6 @@ impl fmt::Debug for ReleaseSigningKey {
             .field("key", &"<redacted>")
             .finish_non_exhaustive()
     }
-}
-
-/// The values of the fields of `fields` whose labels are in `labels`, matched by
-/// label like every other policy item (1Password gives fields added in its apps
-/// random ids). A repeated label is refused whether or not either has a value:
-/// which one was meant cannot be told. The error is the label.
-pub(super) fn values_by_label<'a>(
-    fields: &'a [SecretField],
-    labels: &[&str],
-) -> Result<HashMap<&'a str, &'a str>, &'a str> {
-    let mut by_label = HashMap::new();
-    for field in fields {
-        let Some(label) = field.label.as_deref().filter(|l| labels.contains(l)) else {
-            continue;
-        };
-        let value = field.value.as_deref().map_or("", |v| v.as_str());
-        if by_label.insert(label, value).is_some() {
-            return Err(label);
-        }
-    }
-    Ok(by_label)
 }
 
 /// A non-empty single line without control characters or the characters that end
