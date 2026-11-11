@@ -46,9 +46,7 @@ impl ReleaseStep {
             }
         }
     }
-}
 
-impl ReleaseStep {
     /// Whether the owner approved this step in `steps`.
     const fn covered_by(self, steps: &ReleaseSteps) -> bool {
         match self {
@@ -59,13 +57,27 @@ impl ReleaseStep {
     }
 }
 
-/// A usable release grant.
+/// A usable release grant. Only [`Requests::active_release`] makes one, so that
+/// holding it means the grant was read from the store for this release: its
+/// fields cannot be changed to claim a step the owner did not approve.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActiveRelease {
-    /// The grant.
-    pub grant_id: Id,
+    grant_id: Id,
+    grant: ReleaseGrant,
+}
+
+impl ActiveRelease {
+    /// The grant's id.
+    #[must_use]
+    pub const fn grant_id(&self) -> &Id {
+        &self.grant_id
+    }
+
     /// What was approved.
-    pub grant: ReleaseGrant,
+    #[must_use]
+    pub const fn grant(&self) -> &ReleaseGrant {
+        &self.grant
+    }
 }
 
 impl Requests {

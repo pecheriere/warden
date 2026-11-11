@@ -3,6 +3,7 @@
 
 use sqlx::Row as _;
 use warden_broker::requests::{ActiveRelease, ReleaseStep};
+use warden_broker::testkit::github_release::signed_tag_object;
 use warden_broker_proto::release::{ReleaseTag, RepoName};
 use warden_broker_proto::{AgentName, Id, Window};
 
@@ -115,8 +116,12 @@ async fn claim_step_survives_restart() {
 #[tokio::test]
 async fn claim_step_refuses_an_unknown_grant() {
     let h = harness(Shape::Everything).await;
-    let mut release = approved(&h).await;
-    release.grant_id = Id::random();
+    let release = approved(&h).await;
+    sqlx::query("DELETE FROM release_steps WHERE grant_id = ?")
+        .bind(release.grant_id().as_str())
+        .execute(&h.broker.state().pool)
+        .await
+        .unwrap();
     assert!(
         !h.broker
             .state()
@@ -140,7 +145,7 @@ async fn revoke(h: &Harness, grant: &Id) {
 async fn claim_step_refuses_a_revoked_grant() {
     let h = harness(Shape::Everything).await;
     let release = approved(&h).await;
-    let grant = release.grant_id.clone();
+    let grant = release.grant_id().clone();
     revoke(&h, &grant).await;
     assert!(
         !h.broker
@@ -156,7 +161,7 @@ async fn claim_step_refuses_a_revoked_grant() {
 async fn claim_step_refuses_an_ended_grant() {
     let h = harness(Shape::Everything).await;
     let release = approved(&h).await;
-    let grant = release.grant_id.clone();
+    let grant = release.grant_id().clone();
     let requests = &h.broker.state().requests;
     let end = not_after(&h, &grant).await;
     assert!(
@@ -194,8 +199,10 @@ async fn claim_step_refuses_a_step_the_grant_does_not_cover() {
 #[tokio::test]
 async fn claim_step_refuses_a_tag_the_grant_does_not_create() {
     let h = harness(Shape::Everything).await;
-    let mut release = approved(&h).await;
-    release.grant.steps.tag = false;
+    let raw = signed_tag_object(&h.key, "git", TAG, HEAD, 1_794_000_000);
+    h.annotate(TAG, &raw);
+    let release = approved(&h).await;
+    assert!(!release.grant().steps.tag);
     assert!(
         !h.broker
             .state()
@@ -211,7 +218,7 @@ async fn claim_step_refuses_a_tag_the_grant_does_not_create() {
 async fn record_manifest_keeps_the_digests_once() {
     let h = harness(Shape::Everything).await;
     let release = approved(&h).await;
-    let grant = release.grant_id.clone();
+    let grant = release.grant_id().clone();
     let requests = &h.broker.state().requests;
     let (manifest, signature) = ("a".repeat(64), "b".repeat(64));
     requests
@@ -244,7 +251,7 @@ async fn record_manifest_keeps_the_digests_once() {
 async fn end_if_done_ends_grant_after_last_step() {
     let h = harness(Shape::Everything).await;
     let release = approved(&h).await;
-    let grant = release.grant_id.clone();
+    let grant = release.grant_id().clone();
     let requests = &h.broker.state().requests;
     let window_end = not_after(&h, &grant).await;
     for step in [
@@ -271,7 +278,7 @@ async fn end_if_done_ends_grant_after_last_step() {
 async fn end_if_done_counts_only_the_approved_steps() {
     let h = harness(Shape::TagOnly).await;
     let release = approved(&h).await;
-    let grant = release.grant_id.clone();
+    let grant = release.grant_id().clone();
     let requests = &h.broker.state().requests;
     requests.end_if_done(&grant, NOW + 1).await.unwrap();
     assert!(not_after(&h, &grant).await > NOW + 1, "nothing is done yet");
@@ -289,7 +296,7 @@ async fn end_if_done_counts_only_the_approved_steps() {
 async fn end_if_done_waits_for_all_steps() {
     let h = harness(Shape::Everything).await;
     let release = approved(&h).await;
-    let grant = release.grant_id.clone();
+    let grant = release.grant_id().clone();
     let requests = &h.broker.state().requests;
     let window_end = not_after(&h, &grant).await;
     for step in [ReleaseStep::Tag, ReleaseStep::Publish] {
@@ -314,7 +321,7 @@ async fn end_if_done_waits_for_all_steps() {
 async fn active_release_matches_case_insensitively() {
     let h = harness(Shape::Everything).await;
     let release = approved(&h).await;
-    let grant = release.grant_id.clone();
+    let grant = release.grant_id().clone();
     let requests = &h.broker.state().requests;
     let upper: RepoName = REPO.to_uppercase().try_into().unwrap();
     let active = requests
@@ -322,8 +329,8 @@ async fn active_release_matches_case_insensitively() {
         .await
         .unwrap()
         .expect("the same repository in other case");
-    assert_eq!(active.grant_id, grant);
-    assert_eq!(active.grant.repository.as_str(), REPO);
+    assert_eq!(*active.grant_id(), grant);
+    assert_eq!(active.grant().repository.as_str(), REPO);
 
     let other_tag = ReleaseTag::try_from("v1.2.4".to_owned()).unwrap();
     assert!(
@@ -345,7 +352,7 @@ async fn active_release_matches_case_insensitively() {
 #[tokio::test]
 async fn active_release_refuses_two_active_grants() {
     let h = harness(Shape::Everything).await;
-    let grant = approved(&h).await.grant_id;
+    let grant = approved(&h).await.grant_id().clone();
     // A second row for the same release; only the foreign key stands in the way of
     // writing it, and no code path makes one, so it is written around the checks.
     // The connection is detached, so that the pragma does not outlive the test's
