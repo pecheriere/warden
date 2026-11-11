@@ -291,7 +291,6 @@ impl std::fmt::Debug for ReleaseClient<'_> {
 }
 
 pub use rest::{Asset, CommitInfo, CreateTag, ExistingTag, Release};
-pub use tag_object::{GitTagResponse, rebuild};
 
 #[cfg(test)]
 mod tests;

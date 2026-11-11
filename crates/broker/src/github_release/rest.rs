@@ -28,8 +28,8 @@ const MAX_CHANGELOG_BYTES: usize = 16 * 1024;
 const MAX_LARGE_BYTES: usize = 1024 * 1024;
 /// The marker after a changelog section that was cut.
 const CUT: &str = "\n…(cut)";
-/// The most releases asked for in one page.
-const RELEASES_PER_PAGE: &str = "100";
+/// The most releases asked for in one page; see [`ReleaseClient::release_for_tag`].
+const RELEASES_PER_PAGE: &str = "20";
 
 /// A commit's title and date, for the owner to read before approving.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -161,13 +161,7 @@ impl TryFrom<AssetAnswer> for Asset {
     type Error = GithubError;
 
     fn try_from(answer: AssetAnswer) -> Result<Self, GithubError> {
-        let name_ok = (1..=255).contains(&answer.name.len())
-            && answer.name != "."
-            && answer.name != ".."
-            && answer
-                .name
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'+' | b'-'));
+        let name_ok = is_asset_name(&answer.name);
         let digest_ok = answer.digest.as_ref().is_none_or(|digest| {
             digest.strip_prefix("sha256:").is_some_and(|hex| {
                 hex.len() == 64 && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
@@ -183,6 +177,17 @@ impl TryFrom<AssetAnswer> for Asset {
             Err(GithubError::Unreadable)
         }
     }
+}
+
+/// Whether `name` is an asset name warden accepts: 1 to 255 characters from
+/// letters, digits and `. _ + -`, and not `.` or `..`.
+fn is_asset_name(name: &str) -> bool {
+    (1..=255).contains(&name.len())
+        && name != "."
+        && name != ".."
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'+' | b'-'))
 }
 
 fn parse<T: DeserializeOwned>(raw: &[u8]) -> Result<T, GithubError> {
@@ -337,8 +342,11 @@ impl ReleaseClient<'_> {
             return Err(GithubError::Unreadable);
         }
         let range = format!("{id}...{}", repository.default_branch);
-        // One commit and file of the range are enough to learn its status.
-        let compare: CompareAnswer = self.get(&["compare", &range], &[("per_page", "1")]).await?;
+        // The status and the counts are on every page, but the list of changed
+        // files, with their patches, is only on page 1 whatever `per_page` is (931
+        // KB for a real compare). Page 2 of one-commit pages has no files.
+        let query = [("per_page", "1"), ("page", "2")];
+        let compare: CompareAnswer = self.get(&["compare", &range], &query).await?;
         match compare.status.as_str() {
             "identical" | "ahead" => Ok(true),
             "behind" | "diverged" => Ok(false),
@@ -347,6 +355,11 @@ impl ReleaseClient<'_> {
     }
 
     /// What the tag `tag` points at, or `None` when there is no such tag.
+    ///
+    /// `raw` is the tag object's bytes only for a tag written with a `+0000`
+    /// tagger date, as the broker writes them, because GitHub's answer does not
+    /// keep the offset. The release key lives only in warden, so a tag it
+    /// signed was made by the broker; any other tag gets `raw: None`.
     ///
     /// # Errors
     /// A [`GithubError`] when the tag cannot be read, including a tag ref that
@@ -367,20 +380,20 @@ impl ReleaseClient<'_> {
                 object_sha: sha,
                 raw: None,
             })),
-            "tag" => self.annotated(sha).await.map(Some),
+            "tag" => self.annotated(tag, sha).await.map(Some),
             _ => Err(GithubError::Unreadable),
         }
     }
 
     /// The annotated tag object `sha`.
-    async fn annotated(&self, sha: String) -> Result<ExistingTag, GithubError> {
+    async fn annotated(&self, tag: &ReleaseTag, sha: String) -> Result<ExistingTag, GithubError> {
         let object: GitTagResponse = match self.get(&["git", "tags", &sha], &[]).await {
             // The ref names an object GitHub then does not have.
             Err(GithubError::NotFound) => return Err(GithubError::Unreadable),
             other => other?,
         };
         let target = object_id(object.object.sha.clone())?;
-        if object.sha != sha {
+        if object.sha != sha || object.tag != tag.as_str() {
             return Err(GithubError::Unreadable);
         }
         let raw = tag_object::rebuild(&object).filter(|raw| tag_object::object_id(raw) == sha);
@@ -447,6 +460,9 @@ impl ReleaseClient<'_> {
     /// A [`GithubError`], or [`GithubError::Unreadable`] when the ref created is
     /// not the one asked for.
     pub async fn create_ref(&self, tag: &ReleaseTag, sha: &str) -> Result<(), GithubError> {
+        if CommitId::try_from(sha.to_owned()).is_err() {
+            return Err(GithubError::Unreadable);
+        }
         let name = format!("refs/tags/{tag}");
         let body = json!({"ref": name, "sha": sha});
         let created: RefAnswer = self.post(&["git", "refs"], &body).await?;
@@ -457,7 +473,13 @@ impl ReleaseClient<'_> {
         }
     }
 
-    /// The release for `tag`, a draft or not, among the first 100 releases.
+    /// The release for `tag`, a draft or not, among the 20 newest releases.
+    ///
+    /// Only 20 are listed because a real release answer is about 11 KB, so a
+    /// page of 100 could pass the 1 MiB cap and fail every release step. The
+    /// step's draft is fresh and listed first, and a duplicate tag would sit
+    /// beside it. A release not found in the page is `None`, and the caller
+    /// refuses; nothing is assumed from what is not seen.
     ///
     /// # Errors
     /// [`GithubError::Unreadable`] when more than one release has the tag, or
@@ -494,14 +516,17 @@ impl ReleaseClient<'_> {
     /// uploads host.
     ///
     /// # Errors
-    /// A [`GithubError`], or [`GithubError::Unreadable`] when the asset created
-    /// has another name.
+    /// A [`GithubError`], or [`GithubError::Unreadable`] when `name` is not an
+    /// asset name (nothing is sent then) or the asset created has another name.
     pub async fn upload_asset(
         &self,
         release: u64,
         name: &str,
         bytes: &[u8],
     ) -> Result<Asset, GithubError> {
+        if !is_asset_name(name) {
+            return Err(GithubError::Unreadable);
+        }
         let release = release.to_string();
         let mut url = self.url(self.api.uploads(), &["releases", &release, "assets"])?;
         url.query_pairs_mut().append_pair("name", name);

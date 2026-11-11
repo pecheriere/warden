@@ -33,7 +33,7 @@ async fn release_for_tag_finds_draft() {
     );
     assert_eq!(
         requests(&upstream),
-        ["GET /repos/example-owner/example-repo/releases?per_page=100"]
+        ["GET /repos/example-owner/example-repo/releases?per_page=20"]
     );
     assert_eq!(client.release_for_tag(&tag("v9.9.9")).await.unwrap(), None);
 }
@@ -174,20 +174,35 @@ async fn an_asset_name_cannot_add_path_segments_or_query_parameters() {
     let release = upstream.github_release().add_release(&repo, "v1.2.3", true);
     let api = api_with_uploads_apart(&upstream);
     let client = connect(&api).await;
-    // The fake keeps the name it was given; the client then refuses a name that
-    // is not a plain file name.
-    let err = client
-        .upload_asset(release, "a/../b&label=x", b"x")
-        .await
-        .unwrap_err();
-    assert_eq!(err, GithubError::Unreadable);
-    let calls = upstream.github_release().record();
+    // The client refuses a name that is not a plain file name before sending.
+    for name in ["a/../b&label=x", "name with spaces", "", ".", "..", "é"] {
+        let err = client.upload_asset(release, name, b"x").await.unwrap_err();
+        assert_eq!(err, GithubError::Unreadable, "{name}");
+    }
+    assert_eq!(requests(&upstream), Vec::<String>::new());
+}
+
+#[tokio::test]
+async fn release_for_tag_reads_only_the_newest_releases() {
+    let (upstream, api, repo) = fixture().await;
+    let fake = upstream.github_release();
+    let _old = fake.add_release(&repo, "v0.0.1", false);
+    for n in 0..20 {
+        let _ = fake.add_release(&repo, &format!("v1.0.{n}"), false);
+    }
+    let draft = fake.add_release(&repo, "v1.2.3", true);
+    let client = connect(&api).await;
     assert_eq!(
-        calls[2].path_and_query,
-        format!(
-            "/uploads/repos/example-owner/example-repo/releases/{release}/assets?name=a%2F..%2Fb%26label%3Dx"
-        )
+        client
+            .release_for_tag(&tag("v1.2.3"))
+            .await
+            .unwrap()
+            .unwrap()
+            .id,
+        draft
     );
+    // Past the newest 20 is not seen: fail closed by finding nothing.
+    assert_eq!(client.release_for_tag(&tag("v0.0.1")).await.unwrap(), None);
 }
 
 #[tokio::test]

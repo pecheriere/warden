@@ -154,7 +154,7 @@ async fn on_default_branch_true_for_the_head_and_its_ancestors() {
         [
             "GET /repos/example-owner/example-repo".to_owned(),
             format!(
-                "GET /repos/example-owner/example-repo/compare/{}...main?per_page=1",
+                "GET /repos/example-owner/example-repo/compare/{}...main?per_page=1&page=2",
                 sha('3')
             ),
         ]
@@ -179,10 +179,10 @@ async fn a_branch_name_cannot_add_path_segments_or_dots() {
         .set_default_branch(&repo, "release/1.x", &sha('3'));
     let client = connect(&api).await;
     assert!(client.on_default_branch(&id('3')).await.unwrap());
-    assert!(
-        requests(&upstream)[1]
-            .ends_with(&format!("/compare/{}...release%2F1.x?per_page=1", sha('3')))
-    );
+    assert!(requests(&upstream)[1].ends_with(&format!(
+        "/compare/{}...release%2F1.x?per_page=1&page=2",
+        sha('3')
+    )));
     for hostile in ["../../x", "a..b", "", "a b", "x\ny", "/x", "x@{y}"] {
         upstream
             .github_release()
@@ -289,9 +289,9 @@ async fn changelog_section_none_for_an_empty_section_or_a_file_that_is_not_utf8(
 #[tokio::test]
 async fn changelog_section_cut_at_16k() {
     let (upstream, api, repo) = fixture().await;
-    // "é" is two bytes, so 16384 is not a boundary of the line below if the
-    // heading's text is odd; the cut must land on a character.
-    let body = "é".repeat(10_000);
+    // One ASCII byte, then two-byte characters: byte 16384 falls inside one, so
+    // the cut must move back to a character boundary (16383).
+    let body = format!("a{}", "é".repeat(10_000));
     let file = format!("## [1.2.3]\n{body}\n## [1.2.2]\n- Old.\n");
     upstream
         .github_release()
@@ -307,7 +307,9 @@ async fn changelog_section_cut_at_16k() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(cut, format!("{}\n…(cut)", "é".repeat(8192)));
+    assert_eq!(cut, format!("a{}\n…(cut)", "é".repeat(8191)));
+    let body = cut.strip_suffix("\n…(cut)").expect("the cut marker");
+    assert!(body.len() <= 16 * 1024);
 
     // Exactly 16 KiB is kept whole.
     let kept = client

@@ -268,7 +268,7 @@ impl Repository {
                     )
                 })
             }
-            ("GET", false, ["compare", range]) => self.compare(range),
+            ("GET", false, ["compare", range]) => self.compare(range, query("page")),
             ("GET", false, ["git", "ref", "tags", tag]) => self.ref_answer(tag),
             ("GET", false, ["git", "tags", sha]) => {
                 self.tags.get(*sha).map_or_else(not_found, |t| {
@@ -296,7 +296,14 @@ impl Repository {
             ("POST", false, ["git", "tags"]) => self.create_tag(call.body),
             ("POST", false, ["git", "refs"]) => self.create_ref(call.body),
             ("GET", false, ["releases"]) => {
-                let all: Vec<Value> = self.releases.iter().map(Self::release_json).collect();
+                let wanted = query("per_page").and_then(|n| n.parse().ok()).unwrap_or(30);
+                let all: Vec<Value> = self
+                    .releases
+                    .iter()
+                    .rev()
+                    .take(wanted)
+                    .map(Self::release_json)
+                    .collect();
                 json_answer(200, &Value::Array(all))
             }
             ("PATCH", false, ["releases", id]) => self.publish(id, call.body),
@@ -308,7 +315,9 @@ impl Repository {
         }
     }
 
-    fn compare(&self, range: &str) -> Scripted {
+    /// GitHub lists the changed files, with patches, on page 1 only, whatever
+    /// `per_page` is: `page` is the query's page, if any.
+    fn compare(&self, range: &str, page: Option<&str>) -> Scripted {
         let Some((base, head)) = range.split_once("...") else {
             return not_found();
         };
@@ -324,7 +333,14 @@ impl Repository {
         } else {
             "diverged"
         };
-        json_answer(200, &json!({"status": status}))
+        let files: Vec<Value> = if page.is_none_or(|page| page == "1") {
+            (0..64)
+                .map(|n| json!({"filename": format!("file-{n}"), "patch": "+".repeat(2048)}))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        json_answer(200, &json!({"status": status, "files": files}))
     }
 
     fn ref_answer(&self, tag: &str) -> Scripted {

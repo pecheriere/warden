@@ -51,6 +51,11 @@ pub struct TaggedObject {
 /// `None` when a field cannot be written into one: an unknown object type, a
 /// date that is not a timestamp, or a name, email or tag with a line break.
 ///
+/// Only a tag written with a `+0000` tagger date, as the broker writes them,
+/// round-trips: GitHub's answer does not keep the offset. The release key lives
+/// only in warden, so a tag signed by it was made by the broker; any other tag
+/// gets no bytes, and the caller treats it as not ours.
+///
 /// Whether the bytes are the object `tag.sha` names is for the caller to say, by comparing the SHA-1 of the bytes.
 #[must_use]
 pub fn rebuild(tag: &GitTagResponse) -> Option<Vec<u8>> {

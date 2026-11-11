@@ -97,6 +97,22 @@ async fn tag_target_refuses_answers_that_are_not_what_was_asked() {
     }
 }
 
+#[tokio::test]
+async fn tag_target_refuses_a_tag_object_for_another_name() {
+    let (upstream, api, repo) = fixture().await;
+    history(&upstream);
+    // The ref `v1.2.3` points at the broker's tag object for `v1.2.3-rc.1`.
+    let raw = signed_tag_object(&sha('2'), "v1.2.3-rc.1", "+0000");
+    let _ = upstream
+        .github_release()
+        .add_annotated_tag(&repo, "v1.2.3", &raw);
+    let client = connect(&api).await;
+    assert_eq!(
+        client.tag_target(&tag("v1.2.3")).await.unwrap_err(),
+        GithubError::Unreadable
+    );
+}
+
 /// `git <args>` in `dir` with `input` on its standard input.
 fn git(dir: &std::path::Path, args: &[&str], input: &[u8]) -> Vec<u8> {
     use std::io::Write as _;
@@ -296,6 +312,25 @@ async fn create_tag_and_ref_refuse_answers_that_do_not_match() {
     // Back to the real thing: the same client works again.
     fake.answer_normally();
     assert!(client.create_tag(&create_request('2')).await.is_ok());
+}
+
+#[tokio::test]
+async fn create_ref_refuses_what_is_not_an_object_id_without_sending() {
+    let (upstream, api, _repo) = fixture().await;
+    let client = connect(&api).await;
+    for sha in [
+        "",
+        "abc",
+        &sha('a').to_uppercase(),
+        &format!("{}0", sha('2')),
+    ] {
+        assert_eq!(
+            client.create_ref(&tag("v1.2.3"), sha).await.unwrap_err(),
+            GithubError::Unreadable,
+            "{sha}"
+        );
+    }
+    assert_eq!(requests(&upstream), Vec::<String>::new());
 }
 
 #[tokio::test]
