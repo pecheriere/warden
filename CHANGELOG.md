@@ -15,6 +15,11 @@ All notable changes to this project are recorded here. The format follows
 
 ### Added
 
+- `warden-server doctor` has two new checks, `release-signing` and `release-app`. The 1Password
+  backend now loads items tagged `warden:release-signing` (one per repository) and
+  `warden:github-release-app` (at most one), refuses release keys that are shared with each other,
+  the commit signing key or the SSH CA key, and doctor reports them; they are checked now for the
+  release process to come (#187, #210).
 - GitHub token grants get the end-of-grant notice and the **Renew** button that commit
   signing grants have: warden tells you 3 days before one ends, or a quarter of its window
   if that is less, and Renew on Active grants opens a request for the same window, or as

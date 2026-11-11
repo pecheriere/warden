@@ -9,8 +9,9 @@ use warden_broker::identity::IdentitySource;
 use warden_broker::notify::{Doorbell, Notifier, NotifyError};
 use warden_broker::policy::{
     ApiSecretPolicy, CaKey, CommitSigningKey, GithubAppKey, PolicyError, RelayCredential,
-    SecretBackend, SecretValue, SshTarget,
+    ReleaseAppKey, ReleaseSigningKey, SecretBackend, SecretValue, SshTarget,
 };
+use warden_broker_proto::release::RepoName;
 use warden_broker_proto::{SecretName, TargetName};
 use zeroize::Zeroizing;
 
@@ -93,6 +94,17 @@ impl SecretBackend for DemoBackend {
 
     async fn has_github_app(&self) -> Result<bool, PolicyError> {
         Ok(false)
+    }
+
+    async fn release_signing(
+        &self,
+        _repository: &RepoName,
+    ) -> Result<ReleaseSigningKey, PolicyError> {
+        Err(PolicyError::NoReleaseKey)
+    }
+
+    async fn release_app(&self) -> Result<ReleaseAppKey, PolicyError> {
+        Err(PolicyError::NoReleaseApp)
     }
 
     async fn has_commit_signing_key(&self) -> Result<bool, PolicyError> {

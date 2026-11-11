@@ -24,7 +24,10 @@ use warden_broker_proto::doctor::{Check, Report};
 
 use crate::config::{ALLOW_PLAIN_HTTP, BackendSettings, Config, ConfigError, UrlTransport};
 use crate::notify::{ChannelSettings, Doorbell, NotifyError};
-use crate::policy::{CaProbe, CommitSigningProbe, GithubAppProbe, LocalProbe, VaultProbe};
+use crate::policy::{
+    CaProbe, CommitSigningProbe, GithubAppProbe, LocalProbe, ReleaseAppProbe, ReleaseSigningProbe,
+    VaultProbe,
+};
 use crate::private_files;
 use crate::proxy::{Needles, redact};
 
@@ -32,6 +35,7 @@ mod commit_signing;
 mod github_app;
 pub mod live;
 mod local;
+mod release;
 
 /// Where the settings are documented, for the release this binary is from.
 const SETTINGS_DOC: &str = concat!(
@@ -97,6 +101,10 @@ pub trait Environment: Send + Sync {
     async fn commit_signing(&self) -> CommitSigningProbe;
     /// Load the GitHub App and drop it.
     async fn github_app(&self) -> GithubAppProbe;
+    /// Load every release signing key and drop them.
+    async fn release_signing(&self) -> ReleaseSigningProbe;
+    /// Load the release GitHub App and drop it.
+    async fn release_app(&self) -> ReleaseAppProbe;
     /// Read and validate everything the local backend would read.
     async fn local(&self) -> LocalProbe;
     /// Send `doorbell` through one channel, and only that one.
@@ -249,6 +257,22 @@ pub async fn examine(
                     None
                 },
                 github_app::Backend::OnePassword,
+            ));
+            checks.push(release::signing_check(
+                if vault_found {
+                    Some(env.release_signing().await)
+                } else {
+                    None
+                },
+                release::Backend::OnePassword,
+            ));
+            checks.push(release::app_check(
+                if vault_found {
+                    Some(env.release_app().await)
+                } else {
+                    None
+                },
+                release::Backend::OnePassword,
             ));
         }
         BackendSettings::Local(_) => local::checks(env.local().await, &mut checks),

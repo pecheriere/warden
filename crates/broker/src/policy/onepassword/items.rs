@@ -94,6 +94,27 @@ pub(in crate::policy) fn required_field<'a>(
         .filter(|v| !v.trim().is_empty())
 }
 
+/// The values of the fields of `fields` whose labels are in `labels`, matched by
+/// label like every other policy item (1Password gives fields added in its apps
+/// random ids). A repeated label is refused whether or not either has a value:
+/// which one was meant cannot be told. The error is the repeated label.
+pub(in crate::policy) fn values_by_label<'a>(
+    fields: &'a [SecretField],
+    labels: &[&str],
+) -> Result<HashMap<&'a str, &'a str>, &'a str> {
+    let mut by_label = HashMap::new();
+    for field in fields {
+        let Some(label) = field.label.as_deref().filter(|l| labels.contains(l)) else {
+            continue;
+        };
+        let value = field.value.as_deref().map_or("", |v| v.as_str());
+        if by_label.insert(label, value).is_some() {
+            return Err(label);
+        }
+    }
+    Ok(by_label)
+}
+
 pub(super) fn invalid(item: &str, field: &str, reason: &str) -> PolicyError {
     PolicyError::Invalid {
         item: item.to_owned(),

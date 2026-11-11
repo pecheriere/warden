@@ -10,12 +10,13 @@ use serde::de::DeserializeOwned;
 use ssh_key::PrivateKey;
 use tokio::sync::Mutex;
 use url::Url;
+use warden_broker_proto::release::RepoName;
 use warden_broker_proto::{SecretName, TargetName};
 use zeroize::Zeroizing;
 
 use super::{
     ApiSecretPolicy, CaKey, CommitSigningKey, GithubAppKey, PolicyError, RelayCredential,
-    SecretBackend, SecretValue, SshTarget, not_a_relay_target,
+    ReleaseAppKey, ReleaseSigningKey, SecretBackend, SecretValue, SshTarget, not_a_relay_target,
 };
 
 const TARGET_TAG: &str = "warden:ssh-target";
@@ -27,6 +28,10 @@ const COMMIT_SIGNING_TAG: &str = "warden:commit-signing";
 /// Tag of the item holding the GitHub App: its `app_id`, `installation_id` and
 /// `private_key` fields, by label.
 const GITHUB_APP_TAG: &str = "warden:github-app";
+/// Tag of the items holding release signing keys: one per releasing repository.
+const RELEASE_SIGNING_TAG: &str = "warden:release-signing";
+/// Tag of the item holding the release GitHub App.
+const RELEASE_APP_TAG: &str = "warden:github-release-app";
 const API_TAG: &str = "warden:api-secret";
 const MIN_CREDENTIAL_CHARS: usize = 12;
 const CA_FIELD_ID: &str = "private_key";
@@ -34,13 +39,14 @@ const TIMEOUT: Duration = Duration::from_secs(5);
 
 mod items;
 mod probe;
+mod release;
 
 use super::github_app::parse_item as parse_github_app;
 use items::invalid;
 pub(crate) use items::parse_host_port;
 pub(super) use items::{
     ApiItem, ItemUrl, SecretField, TargetItem, parse_api_secret, parse_private_key, parse_target,
-    required_field,
+    required_field, values_by_label,
 };
 pub use probe::{CaProbe, VaultProbe};
 
@@ -500,6 +506,17 @@ impl SecretBackend for OnePasswordConnect {
 
     async fn has_github_app(&self) -> Result<bool, PolicyError> {
         Ok(!self.tagged(GITHUB_APP_TAG).await?.is_empty())
+    }
+
+    async fn release_signing(
+        &self,
+        repository: &RepoName,
+    ) -> Result<ReleaseSigningKey, PolicyError> {
+        self.release_signing_for(repository).await
+    }
+
+    async fn release_app(&self) -> Result<ReleaseAppKey, PolicyError> {
+        self.release_app_key().await
     }
 
     async fn api_secret(&self, name: &SecretName) -> Result<ApiSecretPolicy, PolicyError> {

@@ -15,6 +15,7 @@ mod ca;
 mod connect;
 mod github_app;
 mod relay;
+mod release;
 mod targets;
 
 const TOKEN: &str = "eyJ-test-connect-token-do-not-leak";
