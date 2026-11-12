@@ -13,13 +13,18 @@ const CANNOT_APPROVE: &str =
     "this request cannot be approved: the App cannot reach every repository it names";
 
 /// Whether `view` can be approved: the request names repositories, GitHub
-/// resolved every one of them, and there is at least one.
+/// resolved every one of them, and what was stored makes a valid scope, which `grant`
+/// would otherwise fail to build after the owner's passkey.
 pub(super) fn check(view: &PendingView) -> Result<(), String> {
     let Access::GithubToken(access) = &view.request.access else {
         return Err("the request does not match its policy kind".to_owned());
     };
     match view.github.as_ref().map(|github| &github.resolution) {
-        Some(Resolution::Resolved(list)) if !access.is_legacy() && !list.is_empty() => Ok(()),
+        Some(resolution @ Resolution::Resolved(_))
+            if !access.is_legacy() && resolution.scope().is_some() =>
+        {
+            Ok(())
+        }
         _ => Err(CANNOT_APPROVE.to_owned()),
     }
 }

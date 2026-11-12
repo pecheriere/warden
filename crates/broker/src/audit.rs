@@ -297,6 +297,16 @@ pub enum AuditEvent {
         /// The grant that ended; `None` for a pending request.
         grant_id: Option<Id>,
     },
+    /// Approving a GitHub token grant ended another of the agent's, because the two
+    /// cover a repository in common.
+    GithubTokenGrantReplaced {
+        /// The grant that ended.
+        grant_id: Id,
+        /// The grant approved in its place.
+        by_grant: Id,
+        /// The repositories both cover; empty when the ended grant named none.
+        repository_ids: Vec<u64>,
+    },
     /// The broker asked GitHub which repositories a GitHub token request names,
     /// when the owner opened its approval page, with a token that reads metadata
     /// and is dropped unused.

@@ -42,6 +42,7 @@ pub(crate) use self::transition::{begin, note_if_not_applied, record};
 
 mod bus;
 mod commit_signing;
+mod github_overlap;
 mod github_scope;
 mod github_token;
 mod limits;

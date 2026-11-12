@@ -8,12 +8,12 @@ use warden_broker_proto::github_token::{
     GithubTokenAccess, GrantRepository, GrantScope, OLD_CLIENT,
 };
 use warden_broker_proto::release::RepoName;
-use warden_broker_proto::{AgentName, GrantAccess, GrantView, Id};
+use warden_broker_proto::{AgentName, Id};
 
 use super::revocation::commit_with_entries;
 use super::{RequestError, Requests, begin, parse};
 use crate::audit::AuditEvent;
-use crate::github_app::{self, MintError};
+use crate::github_app::{self, MintError, ResolvedRepository};
 
 /// Why a request naming repositories of more than one account is refused: one
 /// installation is one account.
@@ -133,6 +133,40 @@ impl GithubPending {
     }
 }
 
+/// What GitHub's `answer` means for a request. `renewing` is the grant being renewed,
+/// if any (a legacy scope otherwise): a repository it holds under another name
+/// carries that name as `renamed_from`.
+///
+/// # Errors
+/// [`RequestError::Unavailable`] with a fixed text when the answer is anything but
+/// the repositories or "not accessible": nothing GitHub said is in it.
+pub(super) fn resolution_of(
+    answer: Result<Vec<ResolvedRepository>, MintError>,
+    renewing: &GrantScope,
+) -> Result<Resolution, RequestError> {
+    match answer {
+        Ok(found) => Ok(Resolution::Resolved(
+            found
+                .into_iter()
+                .map(|r| ScopedRepository {
+                    renamed_from: renewing
+                        .list()
+                        .iter()
+                        .find(|held| held.id == r.id && !held.name.matches(&r.name))
+                        .map(|held| held.name.clone()),
+                    id: r.id,
+                    name: r.name,
+                })
+                .collect(),
+        )),
+        Err(MintError::NotAccessible) => Ok(Resolution::NotAccessible),
+        // The text of a `MintError` is fixed: nothing GitHub said is in it.
+        Err(e) => Err(RequestError::Unavailable(format!(
+            "GitHub repositories: {e}"
+        ))),
+    }
+}
+
 impl Requests {
     /// What the repositories of a GitHub token request resolved to, resolving them
     /// on the first call: the broker asks GitHub, writes `github_repositories_resolved`
@@ -186,28 +220,19 @@ impl Requests {
         access: &GithubTokenAccess,
     ) -> Result<Resolution, RequestError> {
         let app = self.backend.github_app().await?;
-        let resolution =
-            match github_app::resolve(&self.github, &app, &access.repositories, self.clock.now())
-                .await
-            {
-                Ok(found) => Resolution::Resolved(
-                    found
-                        .into_iter()
-                        .map(|r| ScopedRepository {
-                            id: r.id,
-                            name: r.name,
-                            renamed_from: None,
-                        })
-                        .collect(),
-                ),
-                Err(MintError::NotAccessible) => Resolution::NotAccessible,
-                // The text of a `MintError` is fixed: nothing GitHub said is in it.
-                Err(e) => {
-                    return Err(RequestError::Unavailable(format!(
-                        "GitHub repositories: {e}"
-                    )));
-                }
-            };
+        let answer =
+            github_app::resolve(&self.github, &app, &access.repositories, self.clock.now()).await;
+        let resolution = resolution_of(answer, &GrantScope::Legacy)?;
+        self.record_resolution(id, resolution).await
+    }
+
+    /// Audit `resolution` of request `id` as `github_repositories_resolved` and keep
+    /// the first answer stored for it; returns what is stored.
+    pub(super) async fn record_resolution(
+        &self,
+        id: &Id,
+        resolution: Resolution,
+    ) -> Result<Resolution, RequestError> {
         let (repository_ids, accessible) = match &resolution {
             Resolution::Resolved(list) => (list.iter().map(|r| r.id).collect(), true),
             Resolution::NotAccessible => (Vec::new(), false),
@@ -239,26 +264,10 @@ impl Requests {
         agent: &AgentName,
         resolution: &Resolution,
     ) -> Result<Vec<ReplacedGrant>, RequestError> {
-        let Some(new) = resolution.scope() else {
-            return Ok(Vec::new());
-        };
-        let mut replaced = Vec::new();
-        for row in self.active_rows(agent, "github_token").await? {
-            let view: String = row.try_get("view")?;
-            let view: GrantView = serde_json::from_str(&view)?;
-            let GrantAccess::GithubToken(grant) = view.access else {
-                return Err(RequestError::Corrupt(
-                    "GitHub token grant changed kind".to_owned(),
-                ));
-            };
-            if grant.repositories.overlaps(&new) {
-                replaced.push(ReplacedGrant {
-                    grant_id: parse(&row, "id")?,
-                    scope: grant.repositories,
-                });
-            }
+        match resolution.scope() {
+            Some(new) => self.overlapping_grants(agent, &new).await,
+            None => Ok(Vec::new()),
         }
-        Ok(replaced)
     }
 
     /// End every active GitHub token grant that names no repository (its request

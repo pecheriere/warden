@@ -9,12 +9,21 @@ use warden_broker_proto::github_token::PERMISSIONS;
 use super::{icon, warning_icon};
 use crate::requests::{PendingView, Resolution};
 
-/// What the approval page says instead of offering Approve, when GitHub says the App
-/// cannot reach a repository the request names; `None` when it can be approved.
+/// What the approval page says instead of offering Approve, when the request names
+/// no repository (a CLI from before grants were scoped) or GitHub says the App cannot
+/// reach one it names; `None` when it can be approved.
 pub(super) fn not_approvable(view: &PendingView) -> Option<Markup> {
     let (Access::GithubToken(access), Some(github)) = (&view.request.access, &view.github) else {
         return None;
     };
+    if access.is_legacy() {
+        return Some(html! {
+            p.detail #cannot-approve role="alert" {
+                "This request cannot be approved: it names no repository. The agent's warden "
+                "CLI predates repository-scoped GitHub grants; it needs an upgrade."
+            }
+        });
+    }
     if github.resolution != Resolution::NotAccessible {
         return None;
     }

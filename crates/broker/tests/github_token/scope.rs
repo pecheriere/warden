@@ -4,6 +4,7 @@
 
 use axum::http::StatusCode;
 use serde_json::{Value, json};
+use sha2::Digest as _;
 use warden_broker::requests::{Resolution, ScopedRepository};
 use warden_broker::testkit::TestBroker;
 use warden_broker::testkit::upstream::Scripted;
@@ -202,5 +203,46 @@ async fn approve_refuses_when_resolution_changed() {
         .unwrap();
     let finish = broker.finish_approval(&token, &ceremony, &credential).await;
     assert_eq!(finish.status, StatusCode::CONFLICT, "{}", finish.body);
-    assert!(finish.body.contains("policy changed"), "{}", finish.body);
+    assert!(
+        finish.body.contains("policy changed; reload and review"),
+        "{}",
+        finish.body
+    );
+}
+
+#[tokio::test]
+async fn owners_differing_in_case_are_one_account() {
+    let (broker, _key, _upstream) = configured_on_fake().await;
+    let (created, _token) = broker
+        .create_request(
+            "bot",
+            request(&["Example-Owner/example-repo", "example-owner/homebrew-tap"]),
+        )
+        .await;
+    assert_eq!(created.created, Some(true));
+}
+
+#[tokio::test]
+async fn page_of_a_legacy_request_offers_no_approve() {
+    let (broker, _key, _upstream) = configured_on_fake().await;
+    let id = broker.insert_legacy_github_request("bot").await;
+    let token = "legacy-approval-token";
+    sqlx::query("UPDATE requests SET approval_token_hash = ? WHERE id = ?")
+        .bind(hex::encode(sha2::Sha256::digest(token.as_bytes())))
+        .bind(id.as_str())
+        .execute(&broker.state().pool)
+        .await
+        .unwrap();
+    let page = broker.get(&format!("/approve/{token}")).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    assert!(
+        page.body
+            .contains("This request cannot be approved: it names no repository"),
+        "{}",
+        page.body
+    );
+    assert!(!page.body.contains("id=\"approve\""), "{}", page.body);
+    // And it is refused when begun.
+    let begin = broker.begin_approval(token, Window::D7).await;
+    assert_eq!(begin.status, StatusCode::BAD_REQUEST, "{}", begin.body);
 }

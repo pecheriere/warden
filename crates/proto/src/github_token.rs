@@ -243,6 +243,25 @@ impl GrantScope {
         matches!(self, Self::Legacy)
     }
 
+    /// The repositories, in the order they were given; none for a legacy scope.
+    #[must_use]
+    pub fn list(&self) -> &[GrantRepository] {
+        match self {
+            Self::Legacy => &[],
+            Self::Repositories(list) => list,
+        }
+    }
+
+    /// The ids of the repositories both scopes cover; none when either is legacy.
+    #[must_use]
+    pub fn shared_ids(&self, other: &Self) -> Vec<u64> {
+        self.list()
+            .iter()
+            .map(|r| r.id)
+            .filter(|id| other.list().iter().any(|o| o.id == *id))
+            .collect()
+    }
+
     /// The entry for this name, ignoring case; `None` for a legacy scope.
     #[must_use]
     pub fn covering(&self, name: &RepoName) -> Option<&GrantRepository> {

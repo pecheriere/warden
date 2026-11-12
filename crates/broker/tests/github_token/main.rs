@@ -13,6 +13,7 @@ use warden_broker_proto::Window;
 
 mod legacy;
 mod mint;
+mod overlap;
 mod pages;
 mod renewal;
 mod scope;
@@ -66,17 +67,32 @@ async fn approve(
     agent: &str,
     window: Window,
 ) -> String {
+    approve_repositories(
+        broker,
+        upstream,
+        agent,
+        window,
+        &[(1001, "example-owner/example-repo")],
+    )
+    .await
+}
+
+/// As [`approve`], for the repositories `(id, name)` that GitHub resolves.
+async fn approve_repositories(
+    broker: &TestBroker,
+    upstream: &HttpsUpstream,
+    agent: &str,
+    window: Window,
+    repositories: &[(u64, &str)],
+) -> String {
+    let names: Vec<&str> = repositories.iter().map(|(_, name)| *name).collect();
     let (created, token) = broker
         .create_request(
             agent,
-            TestBroker::github_token_request(
-                "push the fix",
-                window,
-                &["example-owner/example-repo"],
-            ),
+            TestBroker::github_token_request("push the fix", window, &names),
         )
         .await;
-    upstream.script_github_token(resolved(broker, &[(1001, "example-owner/example-repo")]));
+    upstream.script_github_token(resolved(broker, repositories));
     let approved = broker.approve(&token, window).await;
     assert_eq!(
         approved.status,

@@ -1,6 +1,8 @@
-//! Grants an agent holds one of at a time, commit signing and GitHub tokens:
-//! approving a new one ends the one it replaces, in the same transaction, so that
-//! revoking the grant on the owner's screen really does stop that agent's access.
+//! Grants an agent renews, commit signing and GitHub tokens. Approving a new commit
+//! signing grant ends the one it replaces, in the same transaction, so that revoking
+//! the grant on the owner's screen really does stop that agent's access; a GitHub
+//! token grant replaces only the grants it shares a repository with
+//! (`github_overlap`).
 //!
 //! They last days, so the owner hears before one ends, and renews it from the grants
 //! page with one passkey approval.
@@ -9,13 +11,16 @@ use sqlx::Row as _;
 use sqlx::sqlite::SqliteRow;
 use sqlx::{Sqlite, Transaction};
 use url::Url;
+use warden_broker_proto::github_token::GrantScope;
 use warden_broker_proto::{
-    Access, AgentName, CreateRequest, GithubTokenAccess, Goal, GrantAccess, Id, Window,
+    Access, AgentName, CreateRequest, GithubTokenAccess, Goal, GrantAccess, GrantView, Id, Window,
 };
 
+use super::github_scope::{Resolution, resolution_of};
 use super::transition::detached;
 use super::{Destination, RequestError, Requests, Scope, approval_token, begin, parse};
 use crate::audit::AuditEvent;
+use crate::github_app;
 use crate::notify::Doorbell;
 
 /// Recorded as `by` for a grant ended by approving its replacement.
@@ -100,13 +105,6 @@ impl OneAtATime {
         }
     }
 
-    fn access(self) -> Access {
-        match self {
-            Self::CommitSigning => Access::CommitSigning {},
-            Self::GithubToken => Access::GithubToken(GithubTokenAccess::default()),
-        }
-    }
-
     /// The doorbell telling the owner that `agent`'s grant ends in `left`. It names
     /// the agent and nothing it wrote.
     fn notice(self, agent: &AgentName, left: &str, url: Url) -> Doorbell {
@@ -140,10 +138,14 @@ pub(crate) const fn renewable(access: &GrantAccess) -> bool {
     OneAtATime::of(access).is_some()
 }
 
-/// The stored kind of the grants `access` replaces when approved, or `None` for a
-/// kind an agent may hold any number of.
+/// The stored kind of the grants `access` replaces when approved by kind, or `None`
+/// for a kind an agent may hold any number of. GitHub tokens are not replaced by
+/// kind but by the repositories they share (`github_overlap`).
 pub(super) fn replaced_kind(access: &GrantAccess) -> Option<&'static str> {
-    OneAtATime::of(access).map(OneAtATime::kind)
+    match OneAtATime::of(access) {
+        Some(OneAtATime::CommitSigning) => Some(OneAtATime::CommitSigning.kind()),
+        Some(OneAtATime::GithubToken) | None => None,
+    }
 }
 
 /// End the other active grants of `kind` of `agent` at `now`, in `tx`, which also
@@ -236,7 +238,7 @@ impl Requests {
     /// made.
     pub async fn renew_grant(&self, grant_id: &Id) -> Result<(Id, Url), RequestError> {
         let row = sqlx::query(
-            "SELECT agent, window_secs, json_extract(view, '$.access.kind') AS kind \
+            "SELECT agent, window_secs, view, json_extract(view, '$.access.kind') AS kind \
              FROM grants WHERE id = ?1 AND revoked_at IS NULL AND not_after > ?2 \
              AND (json_extract(view, '$.access.kind') != 'github_token' \
                   OR json_array_length(view, '$.access.repositories') > 0)",
@@ -271,17 +273,23 @@ impl Requests {
         policy
             .check_window(window)
             .map_err(RequestError::Rejected)?;
-        let goal = format!("Renew {}", kind.name());
+        let renewing = renewing_scope(&row, kind)?;
+        let access = match &renewing {
+            Some(scope) => Access::GithubToken(
+                GithubTokenAccess::new(scope.list().iter().map(|r| r.name.clone()).collect(), None)
+                    .map_err(|_| RequestError::Corrupt("a grant's repositories".to_owned()))?,
+            ),
+            None => Access::CommitSigning {},
+        };
         let req = CreateRequest {
-            goal: Goal::try_from(goal)
-                .map_err(|_| RequestError::Internal("the renewal goal is not valid"))?,
-            access: kind.access(),
+            goal: renewal_goal(kind, renewing.as_ref())?,
+            access,
             window,
             session: None,
             link: None,
         };
         let this = self.clone();
-        detached(async move { this.create_renewal(&agent, kind, req).await }).await
+        detached(async move { this.create_renewal(&agent, kind, req, renewing).await }).await
     }
 
     async fn create_renewal(
@@ -289,24 +297,55 @@ impl Requests {
         agent: &AgentName,
         kind: OneAtATime,
         req: CreateRequest,
+        renewing: Option<GrantScope>,
     ) -> Result<(Id, Url), RequestError> {
-        let dedupe_key = format!("{agent}|{}", kind.kind());
+        let dedupe_key = match &req.access {
+            Access::GithubToken(github) => format!("{agent}|{}|{}", kind.kind(), github.slot()),
+            _ => format!("{agent}|{}", kind.kind()),
+        };
         self.expire_due(Scope::Dedupe(dedupe_key.clone())).await?;
         if let Some(existing) = self.pending_in_slot(&dedupe_key).await? {
             let link = self.replace_link(&existing.id).await?;
             return Ok((existing.id, link));
         }
+        // Asked before the request is stored, so that an outage leaves nothing behind.
+        let resolution = match &renewing {
+            Some(scope) => Some(self.current_names(scope).await?),
+            None => None,
+        };
         let token = approval_token()?;
         let link = self.approval_link(&token)?;
         let change = self.recorded_change.lock().await;
         let created = self
-            .insert(agent, &req, kind.subject(), &dedupe_key, &token, None)
+            .insert(
+                agent,
+                &req,
+                &renewal_subject(kind, &req.access),
+                &dedupe_key,
+                &token,
+                None,
+            )
             .await;
         drop(change);
         if let Err(RequestError::Limited(refusal)) = &created {
             self.record_refusal(agent, *refusal).await;
         }
-        Ok((created?.id, link))
+        let created = created?;
+        if let Some(resolution) = resolution {
+            // What the owner sees on the page; the names are the grant's, the ids are
+            // what the grant covers.
+            self.record_resolution(&created.id, resolution).await?;
+        }
+        Ok((created.id, link))
+    }
+
+    /// What the repositories of `scope` are called on GitHub now, with the name the
+    /// grant has for any that changed. Nothing is stored.
+    async fn current_names(&self, scope: &GrantScope) -> Result<Resolution, RequestError> {
+        let app = self.backend.github_app().await?;
+        let ids: Vec<u64> = scope.list().iter().map(|r| r.id).collect();
+        let answer = github_app::current_names(&self.github, &app, &ids, self.clock.now()).await;
+        resolution_of(answer, scope)
     }
 
     /// Tell the owner about every commit signing and GitHub token grant about to end.
@@ -389,6 +428,54 @@ impl Requests {
             }
         }
         Ok(())
+    }
+}
+
+/// The repositories of the GitHub token grant in `row` (with a `view`) being renewed;
+/// `None` for another kind.
+fn renewing_scope(row: &SqliteRow, kind: OneAtATime) -> Result<Option<GrantScope>, RequestError> {
+    if kind != OneAtATime::GithubToken {
+        return Ok(None);
+    }
+    let view: String = row.try_get("view")?;
+    let view: GrantView = serde_json::from_str(&view)?;
+    match view.access {
+        GrantAccess::GithubToken(grant) if !grant.repositories.is_legacy() => {
+            Ok(Some(grant.repositories))
+        }
+        // A grant that names no repository is not renewed: it has ended.
+        GrantAccess::GithubToken(_) => Err(RequestError::NotFound),
+        _ => Err(RequestError::Corrupt(
+            "GitHub token grant changed kind".to_owned(),
+        )),
+    }
+}
+
+/// `Renew GitHub token for <names>`, or for how many when the names do not fit a goal.
+fn renewal_goal(kind: OneAtATime, renewing: Option<&GrantScope>) -> Result<Goal, RequestError> {
+    let mut goal = format!("Renew {}", kind.name());
+    if let Some(scope) = renewing {
+        let names: Vec<&str> = scope.list().iter().map(|r| r.name.as_str()).collect();
+        goal = format!("{goal} for {}", names.join(", "));
+        if Goal::try_from(goal.clone()).is_err() {
+            goal = format!("Renew {} for {} repositories", kind.name(), names.len());
+        }
+    }
+    Goal::try_from(goal).map_err(|_| RequestError::Internal("the renewal goal is not valid"))
+}
+
+/// What a renewal is about in the audit log, as `create` writes it.
+fn renewal_subject(kind: OneAtATime, access: &Access) -> String {
+    match access {
+        Access::GithubToken(github) => {
+            let names: Vec<&str> = github
+                .repositories
+                .iter()
+                .map(warden_broker_proto::release::RepoName::as_str)
+                .collect();
+            format!("{} for {}", kind.subject(), names.join(", "))
+        }
+        _ => kind.subject().to_owned(),
     }
 }
 

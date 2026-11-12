@@ -176,7 +176,12 @@ async fn approving_new_grant_ends_previous() {
     let ended = entries(&broker, "grant_revoked");
     assert_eq!(ended.len(), 1, "{ended:?}");
     assert_eq!(ended[0]["grant_id"], old.as_str());
-    assert_eq!(ended[0]["by"], "renewed");
+    // The new grant covers the same repository, so it replaces the old one.
+    assert_eq!(ended[0]["by"], "replaced");
+    let replaced = entries(&broker, "github_token_grant_replaced");
+    assert_eq!(replaced.len(), 1, "{replaced:?}");
+    assert_eq!(replaced[0]["grant_id"], old.as_str());
+    assert_eq!(replaced[0]["by_grant"], new.as_str());
     let active = broker
         .state()
         .requests
