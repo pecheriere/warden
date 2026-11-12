@@ -9,6 +9,7 @@ mod doctor;
 mod exe_path;
 mod git_credential;
 mod git_signing;
+mod github_repo;
 mod github_token;
 mod guidance;
 mod http;
@@ -185,8 +186,16 @@ async fn run(cmd: Cmd) -> Result<()> {
             what: SetupWhat::Github,
         } => setup_github::run(),
         Cmd::Github {
-            what: GithubCmd::Token,
-        } => github_token::print_token().await,
+            what:
+                GithubCmd::Token {
+                    repo,
+                    gh_args,
+                    args,
+                },
+        } => {
+            let repository = github_token::repository_for(repo, gh_args, &args)?;
+            github_token::print_token(&repository).await
+        }
         Cmd::Http {
             secret,
             method,
@@ -256,10 +265,11 @@ async fn run_request(kind: RequestKind) -> Result<()> {
             context,
         } => request_signing(window, goal, context).await,
         RequestKind::Github {
+            repositories,
             window,
             goal,
             context,
-        } => request_github(window, goal, context).await,
+        } => request_github(repositories, window, goal, context).await,
         RequestKind::Release {
             repository,
             tag,

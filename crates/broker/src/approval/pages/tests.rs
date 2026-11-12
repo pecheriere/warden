@@ -8,6 +8,8 @@
 mod accessibility;
 mod approve_page;
 mod format;
+mod github_fixtures;
+mod github_page;
 mod grants_page;
 mod history_page;
 mod layout;
@@ -28,9 +30,7 @@ use super::{
     approve, cancelled, enroll, grants, history, internal_error, not_found, not_pending,
     unavailable,
 };
-use crate::policy::{
-    ApiSecretPolicy, CommitSigningPolicy, GithubTokenPolicy, SshMode, SshTarget, ValueFormat,
-};
+use crate::policy::{ApiSecretPolicy, CommitSigningPolicy, SshMode, SshTarget, ValueFormat};
 use crate::requests::{
     ActiveGrant, Destination, HistoryEntry, LinkHosts, PendingEntry, PendingView,
 };
@@ -169,6 +169,7 @@ fn pending(agent: AgentName, request: CreateRequest, destination: Destination) -
         destination,
         expires_at: NOW + 240,
         release: None,
+        github: None,
     }
 }
 
@@ -468,86 +469,6 @@ fn commit_signing_pages() -> Vec<(&'static str, Markup)> {
     ]
 }
 
-fn github_token_request() -> CreateRequest {
-    CreateRequest {
-        goal: goal("Push the fix and open a pull request"),
-        access: Access::GithubToken {},
-        window: Window::D30,
-        session: None,
-        link: None,
-    }
-}
-
-fn github_token_policy() -> GithubTokenPolicy {
-    GithubTokenPolicy {
-        app_id: "123456".to_owned(),
-        installation_id: 7_654_321,
-        max_window: Window::D30,
-    }
-}
-
-/// The pages of a GitHub token grant.
-fn github_token_pages() -> Vec<(&'static str, Markup)> {
-    let mut grant = active(
-        10,
-        github_token_request(),
-        GrantAccess::GithubToken(github_token_policy().grant()),
-    );
-    grant.not_after = NOW + 26 * 86_400;
-    let grants_list = vec![grant];
-    let pending_list = vec![PendingEntry {
-        id: id(10),
-        agent: agent("build-agent"),
-        fingerprint: fingerprint(10),
-        request: github_token_request(),
-        destination: Some(Destination::GithubToken(github_token_policy())),
-        expires_at: NOW + 240,
-    }];
-    vec![
-        (
-            "approve-github-token",
-            approve(
-                &pending(
-                    agent("build-agent"),
-                    github_token_request(),
-                    Destination::GithubToken(github_token_policy()),
-                ),
-                &LinkHosts::default(),
-                NOW,
-            ),
-        ),
-        (
-            "pending-github-token",
-            super::pending(&pending_list, &LinkHosts::default(), NOW),
-        ),
-        (
-            "grants-github-token",
-            grants(
-                &grants_list,
-                &idle(&grants_list),
-                &LinkHosts::default(),
-                NOW,
-                0,
-            ),
-        ),
-        (
-            "history-github-token",
-            history(
-                &[HistoryEntry {
-                    id: id(10),
-                    agent: agent("build-agent"),
-                    fingerprint: fingerprint(10),
-                    request: github_token_request(),
-                    status: "approved".to_owned(),
-                    created_at: NOW - 600,
-                    granted_secs: Some(2_592_000),
-                }],
-                &LinkHosts::default(),
-            ),
-        ),
-    ]
-}
-
 /// Pages showing the longest spelling, five of the longest words: what the
 /// layouts must hold without clipping.
 fn longest_fingerprint_pages() -> Vec<(&'static str, Markup)> {
@@ -589,7 +510,7 @@ fn longest_fingerprint_pages() -> Vec<(&'static str, Markup)> {
 fn kind_pages() -> impl Iterator<Item = (&'static str, Markup)> {
     commit_signing_pages()
         .into_iter()
-        .chain(github_token_pages())
+        .chain(github_fixtures::github_token_pages())
         .chain(release_fixtures::release_pages())
         .chain(longest_fingerprint_pages())
 }

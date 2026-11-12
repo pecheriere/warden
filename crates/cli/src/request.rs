@@ -14,7 +14,7 @@ use warden_broker_proto::{
     is_read_only, modifying_methods, under_prefix,
 };
 
-use crate::client::{CallError, Client, MAX_WAIT_SECS, fetch_info};
+use crate::client::{CallError, Client, MAX_WAIT_SECS};
 use crate::config::Config;
 use crate::install::install_grant;
 use crate::release;
@@ -197,24 +197,6 @@ pub(crate) async fn request_signing(
     Ok(())
 }
 
-pub(crate) async fn request_github(
-    window: Window,
-    goal: Goal,
-    context: RequestContext,
-) -> Result<()> {
-    let (session, link) = resolve_context(context)?;
-    let (config, client) = client()?;
-    let req = github_request(goal, window, session, link);
-    let grant = request_grant(&config, &client, &req, GITHUB_SUBJECT, Pending::Same).await?;
-    check_github_grant(&grant)?;
-    announce(&grant);
-    println!(
-        "git and gh get GitHub tokens under it until then. Set them up with `warden setup \
-         github` if they are not yet set up."
-    );
-    Ok(())
-}
-
 pub(crate) async fn request_release(
     repository: RepoName,
     tag: ReleaseTag,
@@ -231,80 +213,6 @@ pub(crate) async fn request_release(
     if let GrantAccess::Release(release) = &grant.access {
         println!("{}", release::steps_line(&release.steps));
     }
-    Ok(())
-}
-
-/// Ask the owner for a GitHub token grant on behalf of git or `gh`, which found
-/// none, and wait for the decision as `warden request` does: the longest window up
-/// to 30 days that the broker allows, the session label from the environment. Writes only to stderr, as git and the `gh`
-/// wrapper read stdout. A pending GitHub token request of this agent made some
-/// other way is waited on instead: the broker keeps one per agent, and any of them
-/// grants the same.
-///
-/// # Errors
-/// [`Exit`] with [`EXIT_NO_GRANT`] when the request ends without a grant (denied,
-/// expired, cancelled, revoked, or no decision in time), saying not to work around
-/// it; a broker that cannot be reached or refuses the request as it is.
-pub(crate) async fn request_github_for_tool(
-    config: &Config,
-    client: &Client,
-    goal: Goal,
-) -> Result<()> {
-    let (session, link) = resolve_context(RequestContext::default())?;
-    let max = fetch_info(&config.server)
-        .await
-        .ok()
-        .and_then(|info| info.github_token_max_window);
-    let req = github_request(goal, tool_window(max), session, link);
-    eprintln!("warden: this agent has no active GitHub token grant; asking the owner for one");
-    let grant = request_grant(config, client, &req, GITHUB_SUBJECT, Pending::AnyOfKind)
-        .await
-        .map_err(not_granted)?;
-    check_github_grant(&grant)?;
-    eprintln!(
-        "warden: approved: grant {} until {}",
-        grant.grant_id,
-        local_time(grant.not_after)
-    );
-    Ok(())
-}
-
-/// The window of a request made for git or `gh`, given the broker's longest: the
-/// longest GitHub token window up to it, and 30 days from a broker that does not
-/// say, as one older than this setting allows that.
-fn tool_window(max: Option<Window>) -> Window {
-    max.map_or(Window::GITHUB_TOKEN_DEFAULT, |max| {
-        Window::GITHUB_TOKEN
-            .into_iter()
-            .filter(|window| *window <= max && *window <= Window::GITHUB_TOKEN_DEFAULT)
-            .max()
-            .unwrap_or(Window::D1)
-    })
-}
-
-/// What completes "a request …" for a GitHub token request.
-const GITHUB_SUBJECT: &str = "for a github token";
-
-fn github_request(
-    goal: Goal,
-    window: Window,
-    session: Option<SessionLabel>,
-    link: Option<SessionLink>,
-) -> CreateRequest {
-    CreateRequest {
-        goal,
-        access: Access::GithubToken {},
-        window,
-        session,
-        link,
-    }
-}
-
-fn check_github_grant(grant: &GrantView) -> Result<()> {
-    ensure!(
-        matches!(grant.access, GrantAccess::GithubToken(_)),
-        "the broker returned another kind of grant for a github token request"
-    );
     Ok(())
 }
 
@@ -394,8 +302,8 @@ enum Pending {
     /// Only one with this request's fingerprint: approving another might not grant
     /// what was asked.
     Same,
-    /// Any: for an access with no parameters, which every request in its slot asks
-    /// for alike.
+    /// Any: for an access whose slot is all of its parameters (a GitHub request's
+    /// repositories), so that every request in the slot asks for alike.
     AnyOfKind,
 }
 
@@ -705,6 +613,10 @@ where
 fn next_retry_delay(delay: Duration) -> Duration {
     delay.saturating_mul(2).min(MAX_RETRY_DELAY)
 }
+
+mod github;
+
+pub(crate) use github::{request_github, request_github_for_tool};
 
 #[cfg(test)]
 mod tests;

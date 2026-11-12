@@ -28,6 +28,7 @@ fn setup(list: &[&str]) -> GithubSetup {
             })
             .collect(),
         this_program: Some(THIS.to_owned()),
+        use_http_path: true,
     }
 }
 
@@ -35,7 +36,7 @@ fn checked(
     list: &[&str],
     grant: Option<Result<bool, CallError>>,
 ) -> warden_broker_proto::doctor::Check {
-    check(&Ok(setup(list)), grant)
+    check(&Ok(setup(list)), Some(true), grant)
 }
 
 #[test]
@@ -137,6 +138,7 @@ fn the_broker_not_answering_is_not_a_verdict() {
 fn git_that_cannot_say_is_not_a_pass() {
     let result = check(
         &Err("git could not read its configuration (exit 3)".to_owned()),
+        None,
         None,
     );
     assert_eq!(result.status, Status::CouldNotCheck);
@@ -241,6 +243,51 @@ fn git_decides_which_urls_match() {
 }
 
 #[test]
+fn doctor_fails_without_use_http_path() {
+    let mut without = setup(&["", OURS]);
+    without.use_http_path = false;
+    for grant in [Some(Ok(true)), Some(Ok(false)), None] {
+        let result = check(&Ok(without.clone()), Some(true), grant);
+        assert_eq!(result.status, Status::Fail);
+        assert_eq!(
+            result.detail,
+            "git does not send the repository to warden \
+             (credential.https://github.com.useHttpPath is not true)"
+        );
+    }
+}
+
+#[test]
+fn doctor_passes_with_use_http_path() {
+    let result = check(&Ok(setup(&["", OURS])), Some(true), Some(Ok(true)));
+    assert_eq!(result.status, Status::Pass);
+}
+
+#[test]
+fn git_says_whether_use_http_path_is_true() {
+    let read = |config: &str| setup_of(config, |_| {}).unwrap().use_http_path;
+    assert!(read(
+        "[credential \"https://github.com\"]\n\tuseHttpPath = true\n"
+    ));
+    assert!(read(
+        "[credential \"https://github.com\"]\n\tuseHttpPath = yes\n"
+    ));
+    assert!(!read(
+        "[credential \"https://github.com\"]\n\tuseHttpPath = false\n"
+    ));
+    // A generic value counts for github.com, and a github.com one wins over it.
+    assert!(read("[credential]\n\tuseHttpPath = true\n"));
+    assert!(!read(
+        "[credential]\n\tuseHttpPath = true\n\
+         [credential \"https://github.com\"]\n\tuseHttpPath = false\n"
+    ));
+    assert!(!read(
+        "[credential \"https://gitlab.com\"]\n\tuseHttpPath = true\n"
+    ));
+    assert!(!read(""));
+}
+
+#[test]
 fn a_repository_or_owner_helper_beside_warden_fails() {
     for section in ["https://github.com/owner/repo", "https://github.com/owner"] {
         let config = format!(
@@ -249,7 +296,7 @@ fn a_repository_or_owner_helper_beside_warden_fails() {
         );
         let mut setup = setup_of(&config, |_| {}).unwrap();
         setup.this_program = Some(THIS.to_owned());
-        let result = check(&Ok(setup), Some(Ok(true)));
+        let result = check(&Ok(setup), Some(true), Some(Ok(true)));
         assert_eq!(result.status, Status::Fail, "{section}");
         assert!(result.detail.contains(section), "{}", result.detail);
     }
@@ -280,7 +327,7 @@ fn a_helper_naming_this_program_through_a_symlink_counts() {
     let with = |this: &std::path::Path, helper: &str| {
         let mut setup = setup(&["", helper]);
         setup.this_program = Some(this.display().to_string());
-        check(&Ok(setup), Some(Ok(true)))
+        check(&Ok(setup), Some(true), Some(Ok(true)))
     };
     // Doctor started through the link, the helper written with the resolved path, and the
     // other way round.
@@ -292,4 +339,42 @@ fn a_helper_naming_this_program_through_a_symlink_counts() {
     let other_warden = other_warden.join("warden");
     std::os::unix::fs::symlink(&other, &other_warden).expect("symlink");
     assert_eq!(with(&link, &value(&other_warden)).status, Status::Fail);
+}
+
+#[test]
+fn github_fails_on_broker_without_scoped_grants() {
+    let result = check(&Ok(setup(&["", OURS])), Some(false), Some(Ok(true)));
+    assert_eq!(result.status, Status::Fail);
+    assert!(
+        result.detail.contains("repository-scoped"),
+        "{}",
+        result.detail
+    );
+    assert!(
+        result
+            .action
+            .as_deref()
+            .unwrap()
+            .contains("Upgrade the broker"),
+        "{:?}",
+        result.action
+    );
+}
+
+#[test]
+fn github_passes_naming_the_scoped_grants_the_broker_supports() {
+    let result = check(&Ok(setup(&["", OURS])), Some(true), Some(Ok(true)));
+    assert_eq!(result.status, Status::Pass);
+    assert!(
+        result.detail.contains("repository-scoped"),
+        "{}",
+        result.detail
+    );
+    // A broker that could not be asked is not a verdict on this check.
+    // and the check then says nothing about scoping, with or without a grant.
+    for grant in [Ok(true), Ok(false)] {
+        let unknown = check(&Ok(setup(&["", OURS])), None, Some(grant));
+        assert_eq!(unknown.status, Status::Pass);
+        assert!(!unknown.detail.contains("scoped"), "{}", unknown.detail);
+    }
 }

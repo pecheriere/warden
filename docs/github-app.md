@@ -14,10 +14,12 @@ set it up.
 
 ## What an agent gets
 
-- A token for **every repository the App is installed on**, not one repository. warden cannot
-  narrow it, and does not ask the agent for a repository. What the agent can push to and edit
-  is what you installed the App on: see [the three levels](#the-three-levels-per-repository).
-  Issues and comments reach further: see below.
+- A token for **one repository**, the one the agent names and you approved. A grant covers
+  one to ten repositories, and the agent asks for a token per repository. GitHub is asked to
+  scope the token to that repository's id, so a token for A cannot push, open a pull request,
+  comment or edit issues on B, even though the App is installed on B. What the agent can do
+  on the repository is what you installed the App on and the rules you set there: see
+  [the three levels](#the-three-levels-per-repository). Issues on public repositories reach further: see below.
 - **Fixed permissions**: `contents` write, `pull_requests` write, `issues` write and
   `metadata` read. warden asks GitHub for these and nothing else, whatever the App itself may
   do. No `workflows`, no `administration`.
@@ -28,33 +30,42 @@ set it up.
   decides whether warden mints more tokens, not how long a token lasts. Like commit signing,
   it is long because the agent is expected to use it on its own: a prompt for every hour would
   be a reflex tap.
-- One grant at a time per agent. Approving a new one ends the one before it.
-- **Issues and comments on public repositories, too.** Opening an issue or commenting on a
-  public repository needs only read access, and GitHub documents that an App's token can read
-  public repositories.
-  So the agent can post as the App on public repositories you did not install it on: tested
-  on one of the owner's own, and to be assumed for anyone's. Choosing repositories limits pushes, pull requests and edits, not that.
-  What it posts shows as the App (`<app name>[bot]`), and GitHub's logs, not warden's, record it.
+- **Several grants at a time per agent**, one for each set of repositories. Approving a grant
+  ends the agent's other grants that share a repository with it, by GitHub's id or by name
+  (ignoring case); the approval page lists them before you approve. A grant that names no
+  repository (made before grants were scoped) ends at upgrade and is replaced by asking
+  again.
+- **Issues on public repositories, too.** Measured on real GitHub: a token scoped to
+  repository A got 403 creating a branch, a pull request or a comment, and editing issues on
+  B, and 404 reading a private B, but it could still open a new issue on a public repository
+  B the App is installed on. Nothing else was possible on that B. That is the only case
+  measured for a scoped token. Opening an issue (and, to be assumed, commenting) takes only
+  read access, and an unscoped token did it on a public repository the App is not installed
+  on (finding F22 in the [security assessment](security-assessment.md#findings-of-this-review)), so assume
+  a scoped token can open issues and comment on public repositories the App is not installed
+  on, anyone's. What it posts shows as the App (`<app name>[bot]`), and GitHub's logs, not
+  warden's, record it.
 
 ## What the agent holds
 
 - **Revoking a grant does not recall a token already minted.** GitHub, not warden, ends it,
-  within the hour. A token is a bearer secret: whoever has it can use it until then.
+  within the hour, for each repository the agent held a token for. A token is a bearer secret: whoever has it can use it until then.
 - **The CLI keeps the token** in `github-token.json` in its state directory, mode 0600, for
-  that agent and broker. It serves that file for the rest of the hour even after you revoke
+  that agent and broker, with one entry per repository. It serves that file for the rest of the hour even after you revoke
   the grant in the approval UI, because nothing tells the CLI. `warden revoke <grant>` on the
   agent's machine deletes it. To be sure, also remove the App's access on GitHub (below).
 - **A compromised agent machine gets the token**, and the agent's key can mint more for as
-  long as the grant lasts. Revoke the grant, then revoke the agent with
+  long as the grant lasts, for the repositories it covers. Revoke the grant, then revoke the agent with
   `warden-server agent revoke` if the machine is lost, and suspend the App or remove its
   installation on GitHub if you must end a token at once.
-- **Everything the token can do is allowed**, within the permissions above: push to any
+- **Everything the token can do is allowed**, on its repository and within the permissions
+  above: push to any
   branch the repository's rules allow, open and edit pull requests and issues, and read and
   write file contents. warden does not see what the agent does with it; GitHub's own logs
   show it, as the App.
 
-The audit log records each token minted (grant, agent, installation, permissions, expiry) and
-each refusal, never the token. See [the threat model](threat-model.md#github-tokens).
+The audit log records each token minted (grant, agent, installation, repository and its id,
+permissions, expiry) and each refusal, never the token. See [the threat model](threat-model.md#github-tokens).
 
 ## Create the App
 
@@ -85,7 +96,9 @@ broker. The App is yours, on your account or organization.
    (`-----BEGIN PRIVATE KEY-----`). It refuses a key protected by a passphrase, and any key
    that is not RSA or is shorter than 2048 bits.
 8. **Install App**, then **Only select repositories**, and choose the repositories the agents
-   may reach. Never **All repositories**. The installation id is the number at the end of the
+   may reach. Never **All repositories**: tokens are scoped to the repository an agent names,
+   but the installation is the outer limit, and a bug in the scoping must not meet an
+   installation that reaches everything. The installation id is the number at the end of the
    installation's settings URL, `https://github.com/settings/installations/<installation id>`,
    or `https://github.com/organizations/<org>/settings/installations/<installation id>` for
    an organization.
@@ -147,11 +160,12 @@ Once the App is in the vault (warden reads the item afresh, so the server needs 
 run this on each agent machine:
 
 ```sh
-warden request github --goal "Push branches and open PRs for build-agent's fixes"
+warden request github example-owner/example-repo --goal "Push branches and open PRs for build-agent's fixes"
 warden setup github
 ```
 
-`warden request github` asks for 30 days (`--for 1d`, `7d` or `30d`) and waits for your
+`warden request github <owner/name>...` takes the repositories (up to ten, and a notice says
+when there is more than one) and asks for 30 days (`--for 1d`, `7d` or `30d`) and waits for your
 passkey. It is optional: with no grant, the first `git` or `gh` call to GitHub files the
 request itself, and waits for you. See [Agent usage](agent-usage.md#github-tokens).
 

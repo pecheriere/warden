@@ -55,7 +55,7 @@ tailnet.
 Each warden server has one owner, who approves every request. One owner can
 have many agents, but there are no teams, roles or shared approvals.
 
-**Status: early.** The current release is **0.11.0**. warden has a single
+**Status: early.** The current release is **0.12.0**. warden has a single
 maintainer and has not had an independent security review. Before 1.0,
 expect this to change:
 
@@ -144,7 +144,7 @@ What warden can grant:
 | **SSH, certificate mode** | A certificate signed by warden's SSH CA, for a key that exists only in memory. It is valid for new logins during the window. A session already open keeps running after it, and warden cannot end it. | A reusable key for the target. |
 | **SSH, relay mode** (appliances, password-only hosts) | A session through warden's SSH relay; warden logs in to the target. warden closes the session when the window ends or the grant is revoked. | The target's key or password. |
 | **HTTP API calls** | warden makes each call, adds the secret, and returns the answer with the secret redacted. Calls are refused once the window ends or the grant is revoked. | The API secret. |
-| **GitHub** | A token from a [GitHub App](docs/github-app.md) you create for your agents, minted by warden for each hour of use under a grant of up to 30 days, for `git` and `gh`. | The App's private key. **The token itself is the exception:** the agent holds it for an hour, it covers every repository the App is installed on (and issues and comments on public repositories), and revoking a grant does not recall one already minted. |
+| **GitHub** | A token from a [GitHub App](docs/github-app.md) you create for your agents, minted by warden for each hour of use under a grant of up to 30 days, for `git` and `gh`. | The App's private key. **The token itself is the exception:** the agent holds it for an hour, it covers one repository of its grant (and can still open issues, and to be assumed comment, on public repositories, installed or not), and revoking a grant does not recall one already minted. |
 
 ## Recommended setup
 
@@ -236,7 +236,7 @@ it; follow it for a real setup.
    published ports, Connect on its own network. Verify the image first:
 
    ```sh
-   gh attestation verify oci://ghcr.io/pecheriere/warden:0.11.0 --owner pecheriere
+   gh attestation verify oci://ghcr.io/pecheriere/warden:0.12.0 --owner pecheriere
    ```
 
    [The Compose file](docs/deployment.md#5-run-warden),
@@ -319,14 +319,14 @@ on the repositories the agent may reach, so that no personal access token or dep
 on its machine:
 
 ```sh
-warden request github --goal "Push branches and open PRs for build-agent's fixes"   # 30 days, after your passkey
+warden request github example-owner/example-repo --goal "Push branches and open PRs for build-agent's fixes"   # 30 days, after your passkey
 warden setup github                                    # git and gh take tokens from warden
 git push                                               # a token for the next hour, with no prompt
 ```
 
 The token is the one credential in warden that the agent holds and can use on its own: it
-lasts an hour, covers every repository the App is installed on, with `contents`, `pull
-requests` and `issues` write, can open issues and comment on public repositories elsewhere, and **revoking a grant does not recall a token already
+lasts an hour, covers one repository of its grant, with `contents`, `pull
+requests` and `issues` write, can still open issues and, to be assumed, comment on public repositories, installed or not, and **revoking a grant does not recall a token already
 minted**. What an agent can do with it is decided on GitHub, by where you install the App
 and the rules you set there. See [GitHub tokens for agents](docs/github-app.md) and the
 [threat model](docs/threat-model.md#github-tokens).

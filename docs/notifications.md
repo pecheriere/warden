@@ -17,7 +17,8 @@ only reachable over the tailnet.
 
 warden also tells you a few days before a commit signing or [GitHub token](github-app.md)
 grant ends: 3 days before, or sooner for a grant of a week or less. That notification names
-only the agent, and links to Active grants, where **Renew** leads to the usual approval page
+the agent and, for a GitHub token, its repositories (`GitHub token for example-owner/example-repo
+ends in 3 days`), and links to Active grants, where **Renew** leads to the usual approval page
 and passkey, for the same length or as long as the server now allows. If that agent already
 has a request of the same kind waiting, Renew opens that one, with the goal and window it
 asked for, which the page shows. The notification is sent once per grant, and tried again

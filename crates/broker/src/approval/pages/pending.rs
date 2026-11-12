@@ -18,7 +18,7 @@ fn stored_access(entry: &PendingEntry) -> Markup {
         Access::Ssh { target, user, .. } => format!("ssh {user}@{target}"),
         Access::Api { secret, .. } => format!("api {secret}"),
         Access::CommitSigning {} => "commit signing".to_owned(),
-        Access::GithubToken {} => "github token".to_owned(),
+        Access::GithubToken(github) => github.summary(),
         Access::Release {
             repository, tag, ..
         } => format!("release {tag} of {repository}"),
@@ -57,7 +57,7 @@ fn card(entry: &PendingEntry, hosts: &LinkHosts, now: i64) -> Markup {
             div.field.tight {
                 span.label { "Access" }
                 @match &entry.destination {
-                    Some(destination) => (destination_access(&entry.request, destination)),
+                    Some(destination) => (destination_access(&entry.agent, &entry.request, destination, None)),
                     None => (stored_access(entry)),
                 }
             }

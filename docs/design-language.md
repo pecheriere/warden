@@ -73,6 +73,12 @@ WCAG AA contrast in both modes.
 - **Card**: `--surface`, label / value fields.
 - **Badges**: read-only (lock icon, `--soft` with a `--primary` border) and
   can modify (warning icon, `--warn-*`), always with text, never colour alone.
+- **Repository count notice** (`.notice-count`): a pill on `--soft` / `--soft-ink`,
+  without border or icon, saying how many repositories a GitHub token request
+  covers. It informs and is never a warning: the one orange badge stays the push
+  warning.
+- **Repository headline** (`.repos.headline`): the single repository of a GitHub token
+  request, at 17 px / 600 like the agent's name; several repositories are a list.
 - **Fingerprint box**: dashed 2 px `--primary` frame, with the fingerprint's
   five words in monospace and bold, and under them its hex form in small `--muted`
   text, for an agent or an older CLI that shows only hex. The words wrap only at

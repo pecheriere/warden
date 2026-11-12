@@ -7,6 +7,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
+use warden_broker_proto::github_token::MAX_REPOSITORIES;
 use warden_broker_proto::release::{CommitId, ReleaseTag, RepoName};
 use warden_broker_proto::signing::{Audience, Nonce};
 use warden_broker_proto::{
@@ -176,6 +177,22 @@ fn check_request(data: &[u8]) {
         assert!(is_repo_name(repository.as_str()));
         assert!(is_release_tag(tag.as_str()));
         assert!(is_hex40(commit.as_str()));
+    }
+    if let Access::GithubToken(github) = &request.access {
+        let repositories = &github.repositories;
+        assert!(repositories.len() <= MAX_REPOSITORIES);
+        for (i, a) in repositories.iter().enumerate() {
+            assert!(is_repo_name(a.as_str()));
+            assert!(
+                repositories[..i]
+                    .iter()
+                    .all(|b| !a.as_str().eq_ignore_ascii_case(b.as_str()))
+            );
+        }
+        if let Some(automatic) = &github.automatic {
+            assert_eq!(repositories.len(), 1);
+            assert!(automatic.dir.as_ref().is_none_or(|dir| dir.len() <= 512));
+        }
     }
     if let Access::Api {
         methods: Some(methods),

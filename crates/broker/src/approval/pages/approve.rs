@@ -3,7 +3,8 @@
 use maud::{Markup, html};
 
 use super::{
-    destination_access, icon, key_icon, layout, release, stated_fields, window_words, windows_for,
+    destination_access, github_token, icon, key_icon, layout, release, stated_fields, window_words,
+    windows_for,
 };
 use crate::requests::{Destination, LinkHosts, PendingView, window_label};
 
@@ -21,7 +22,7 @@ pub fn approve(view: &PendingView, hosts: &LinkHosts, now: i64) -> Markup {
     // The script sends `data-target` back when the approval begins, binding
     // it to the destination shown here.
     let content = html! {
-        main.split #approval data-target=(view.destination.digest()) {
+        main.split #approval data-target=(view.destination_digest()) {
             div.col {
                 span.chip {
                     (icon(14, "2.4", &clock))
@@ -44,7 +45,7 @@ pub fn approve(view: &PendingView, hosts: &LinkHosts, now: i64) -> Markup {
                     }
                     div.field.tight {
                         span.label { "Access" }
-                        (destination_access(&view.request, &view.destination))
+                        (destination_access(&view.agent, &view.request, &view.destination, view.github.as_ref()))
                     }
                     div.field {
                         span.label { "Goal" }
@@ -63,37 +64,44 @@ pub fn approve(view: &PendingView, hosts: &LinkHosts, now: i64) -> Markup {
                     span.fp-hex { "In hex " code { (view.fingerprint) } }
                 }
                 div.actions {
-                    fieldset {
-                        legend.label { "Grant for" }
-                        // A release has one lifetime, said once below, so no cap to explain.
-                        @let capped_by = match view.destination {
-                            Destination::Ssh(_) => Some("target"),
-                            Destination::Api(_) => Some("secret"),
-                            Destination::CommitSigning(_) => Some("signing key"),
-                            Destination::GithubToken(_) => Some("GitHub App"),
-                            Destination::Release(_) => None,
-                        };
-                        @if let (true, Some(noun)) = (view.request.window > max, capped_by) {
-                            p.detail.capped {
-                                "Asked for " (window_words(view.request.window)) "; at most "
-                                (window_words(max)) " for this " (noun) "."
+                    @let not_approvable = github_token::not_approvable(view);
+                    @if let Some(message) = &not_approvable {
+                        (message)
+                    } @else {
+                        fieldset {
+                            legend.label { "Grant for" }
+                            // A release has one lifetime, said once below, so no cap to explain.
+                            @let capped_by = match view.destination {
+                                Destination::Ssh(_) => Some("target"),
+                                Destination::Api(_) => Some("secret"),
+                                Destination::CommitSigning(_) => Some("signing key"),
+                                Destination::GithubToken(_) => Some("GitHub App"),
+                                Destination::Release(_) => None,
+                            };
+                            @if let (true, Some(noun)) = (view.request.window > max, capped_by) {
+                                p.detail.capped {
+                                    "Asked for " (window_words(view.request.window)) "; at most "
+                                    (window_words(max)) " for this " (noun) "."
+                                }
                             }
-                        }
-                        @if matches!(view.destination, Destination::Release(_)) {
-                            p.detail { (release::LIFETIME) }
-                        }
-                        div.seg {
-                            @for window in windows_for(&view.destination).iter().copied().filter(|w| *w <= max) {
-                                @let id = format!("window-{}", window_label(window));
-                                input #(id) type="radio" name="window"
-                                    value=(window_label(window)) checked[window == default];
-                                label for=(id) { (window_words(window)) }
+                            @if matches!(view.destination, Destination::Release(_)) {
+                                p.detail { (release::LIFETIME) }
+                            }
+                            div.seg {
+                                @for window in windows_for(&view.destination).iter().copied().filter(|w| *w <= max) {
+                                    @let id = format!("window-{}", window_label(window));
+                                    input #(id) type="radio" name="window"
+                                        value=(window_label(window)) checked[window == default];
+                                    label for=(id) { (window_words(window)) }
+                                }
                             }
                         }
                     }
                     div.btns {
-                        button.btn.approve #approve type="button" {
-                            (icon(20, "2.2", &key_icon())) " Approve with passkey"
+                        @if not_approvable.is_none() {
+                            button.btn.approve #approve type="button" {
+                                (icon(20, "2.2", &key_icon())) " Approve with passkey"
+                            }
                         }
                         button.btn.deny #deny type="button" { "Deny" }
                     }

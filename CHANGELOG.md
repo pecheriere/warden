@@ -8,15 +8,57 @@ All notable changes to this project are recorded here. The format follows
 
 ### Upgrading
 
-- New audit entries: `release_tag_created`, `release_manifest_signed`, `release_published`,
-  `release_refused`, `release_refusals_held` and `github_token_renewal_notified`. An older
+- New migration `0011_scoped_github_tokens`, applied at startup. As with every migration, rolling back means
+  restoring the backup together with the old version.
+- **Upgrade the broker before the CLI.** Every GitHub token grant and pending GitHub request
+  that names no repository ends at upgrade, and the agents ask again per repository. See
+  [docs/upgrading.md](docs/upgrading.md#repository-scoped-github-grants).
+- New audit entries: `github_unscoped_ended`, `github_repositories_resolved` and
+  `github_token_grant_replaced`, and `github_token_minted` gains optional `repository` and
+  `repository_id`. An older `warden-server audit verify` refuses a log holding one of the
+  new entries.
+
+### Changed
+
+- GitHub token grants are scoped to repositories (#230, #234). `warden request github
+  <owner/name>... --goal …` names one to ten; a token is minted for one repository, by id,
+  and cannot reach another repository the App is installed on, though it can still open a new
+  issue on a public repository the App is installed on (measured), and is to be assumed able to open issues and comment on any public repository, installed or not. An agent can hold several grants;
+  approving one ends the agent's grants that share a repository (by id or name) with it, which
+  the approval page lists. The broker resolves the repositories against GitHub when the owner
+  first opens the approval page. `POST /v1/github-token` takes `{"repository":"owner/name"}`
+  and answers with the repository and its id; `GET /v1/info` reports `scoped_github_tokens`.
+  New errors: `NO_ACTIVE_GRANT` for the repository, `AMBIGUOUS_GRANT` and
+  `REPOSITORY_UNREACHABLE` (409), `OLD_CLIENT` (400). `github-token.json` is now per
+  repository, and `warden doctor` checks that the broker supports it. The grants page, the
+  history, the pending list, `warden status` and the notice before a grant ends name a
+  GitHub grant's repositories; a grant from before scoping shows as "All repositories of the
+  installation (ended at upgrade)". On the approval page the repository is the headline, the
+  several-repositories notice no longer looks like the warning, and the warning icon keeps
+  its size and sits on the heading's first line.
+- `warden setup github` sets `credential.https://github.com.useHttpPath`, and the `gh` wrapper refuses to run when it cannot tell the repository; run `warden setup github` again after upgrading.
+
+## [0.12.0] - 2026-11-11
+
+### Upgrading
+
+Back up warden's data first, with warden stopped, as
+[docs/upgrading.md](https://github.com/pecheriere/warden/blob/v0.12.0/docs/upgrading.md)
+says. No setting has to change: release items are optional, and nothing in this release
+needs them.
+
+- New migration `0010_release`, applied at startup. As with every migration, rolling back
+  means restoring the backup together with the old version.
+- New audit entries: `release_tag_created`, `release_manifest_signed`,
+  `release_published`, `release_refused`, `release_refusals_held` and
+  `github_token_renewal_notified`. An older
   `warden-server audit verify` refuses a log holding one, and an older `warden-server` does not
   start on one, because it verifies the log when it opens it. So once warden has told you a
   GitHub token grant ends soon, or an agent has called a release route (any call can write
   `release_refused`, not only one that created a tag, signed a manifest or published), rolling
   back also means restoring the audit log from the backup.
-- Releases need the broker to reach `uploads.github.com` as well as `api.github.com`, to attach
-  the manifest to the draft release. If you limit its egress, allow both
+- Only if you set up releases: the broker needs to reach `uploads.github.com` as well as
+  `api.github.com`, to attach the manifest to the draft release. If you limit its egress, allow both
   ([The release App](docs/github-app.md#the-release-app)).
 
 ### Added

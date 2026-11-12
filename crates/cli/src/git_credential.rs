@@ -6,16 +6,21 @@
 //! `host=github.com`, this prints `username=x-access-token` and `password=<token>`,
 //! a GitHub token from the broker. For anything else (another host, a port, `http`,
 //! `store`, `erase`, input it cannot read) it prints nothing and exits 0, which
-//! tells git this helper has nothing to say. Other keys, such as `path`,
-//! `username` and `capability[]`, are ignored: the token is the same for every
-//! repository, and its user name is fixed.
+//! tells git this helper has nothing to say. The token is for the repository
+//! git's `path` names (git sends it with `credential.useHttpPath`, which `warden
+//! setup github` sets): with no `path`, the helper says so on stderr and prints
+//! nothing, and with a `path` that is not exactly a repository, such as the
+//! `/info/lfs` paths git-lfs sends, it prints nothing. Other keys, such as
+//! `username` and `capability[]`, are ignored: the user name is fixed.
 
 use std::ffi::OsString;
 use std::io::{BufRead as _, Write as _};
 use std::process::ExitCode;
 
+use warden_broker_proto::release::RepoName;
 use zeroize::Zeroizing;
 
+use crate::github_repo;
 use crate::github_token::{self, Caller};
 use crate::{EXIT_ERROR, Exit};
 
@@ -38,6 +43,7 @@ pub fn is_program_call(args: &[OsString]) -> bool {
 struct Asked {
     protocol: Option<String>,
     host: Option<String>,
+    path: Option<String>,
 }
 
 impl Asked {
@@ -48,7 +54,7 @@ impl Asked {
 
 /// Read git's description of a credential: `key=value` lines, up to a blank line or
 /// the end. `None` for input git does not send: a line without `=`, the same
-/// `protocol` or `host` twice, input that is not UTF-8 or longer than
+/// `protocol`, `host` or `path` twice, input that is not UTF-8 or longer than
 /// [`MAX_INPUT_BYTES`].
 fn read_asked(input: impl std::io::Read) -> Option<Asked> {
     let mut input = std::io::BufReader::new(input.take(MAX_INPUT_BYTES + 1));
@@ -75,6 +81,7 @@ fn read_asked(input: impl std::io::Read) -> Option<Asked> {
         let slot = match key {
             "protocol" => &mut asked.protocol,
             "host" => &mut asked.host,
+            "path" => &mut asked.path,
             _ => continue,
         };
         if slot.replace(value.to_owned()).is_some() {
@@ -86,6 +93,36 @@ fn read_asked(input: impl std::io::Read) -> Option<Asked> {
 /// Whether to answer: only `get`, alone, for `https://github.com`.
 fn wants_token(args: &[OsString], asked: Option<&Asked>) -> bool {
     matches!(args, [_, op] if op == "get") && asked.is_some_and(Asked::is_github)
+}
+
+/// What to do for a `get` that is for github.com.
+#[derive(Debug)]
+enum Answer {
+    /// Print this token.
+    Token(Zeroizing<String>),
+    /// Print nothing: git sent a path that is not a repository.
+    Nothing,
+    /// Print nothing and say so: git sent no path.
+    NoPath,
+}
+
+/// The answer for `asked`, with the token for its repository from `obtain`, which is
+/// not called when there is no repository.
+///
+/// # Errors
+/// What `obtain` fails with.
+async fn answer<F, Fut>(asked: &Asked, obtain: F) -> anyhow::Result<Answer>
+where
+    F: FnOnce(RepoName) -> Fut,
+    Fut: Future<Output = anyhow::Result<Zeroizing<String>>>,
+{
+    let Some(path) = asked.path.as_deref() else {
+        return Ok(Answer::NoPath);
+    };
+    let Some(repository) = github_repo::from_helper_path(path) else {
+        return Ok(Answer::Nothing);
+    };
+    obtain(repository).await.map(Answer::Token)
 }
 
 /// The lines git reads for `token`.
@@ -109,8 +146,22 @@ pub async fn run(args: &[OsString]) -> ExitCode {
     if !wants_token(args, asked.as_ref()) {
         return ExitCode::SUCCESS;
     }
-    let token = match github_token::obtain(Caller::CredentialHelper).await {
-        Ok(token) => token,
+    let Some(asked) = asked else {
+        return ExitCode::SUCCESS;
+    };
+    let obtain = |repository: RepoName| async move {
+        github_token::obtain(Caller::CredentialHelper, &repository).await
+    };
+    let token = match answer(&asked, obtain).await {
+        Ok(Answer::Token(token)) => token,
+        Ok(Answer::Nothing) => return ExitCode::SUCCESS,
+        Ok(Answer::NoPath) => {
+            eprintln!(
+                "warden: git sent no repository path; run `warden setup github`, which sets \
+                 credential.https://github.com.useHttpPath"
+            );
+            return ExitCode::SUCCESS;
+        }
         Err(e) => {
             let code = e
                 .downcast_ref::<Exit>()
@@ -136,7 +187,7 @@ pub async fn run(args: &[OsString]) -> ExitCode {
 mod tests {
     use std::ffi::OsString;
 
-    use super::{Asked, credentials, is_program_call, read_asked, wants_token};
+    use super::{Answer, Asked, answer, credentials, is_program_call, read_asked, wants_token};
 
     fn args(list: &[&str]) -> Vec<OsString> {
         list.iter().map(OsString::from).collect()
@@ -243,5 +294,77 @@ mod tests {
         // A value may hold `=`.
         let odd = asked("protocol=https\nhost=github.com\npath=a=b\n\n").unwrap();
         assert!(odd.is_github());
+    }
+
+    async fn answered(input: &str) -> (Option<String>, Option<String>) {
+        let received = std::cell::RefCell::new(None);
+        let outcome = answer(&asked(input).unwrap(), |repo| {
+            *received.borrow_mut() = Some(repo.to_string());
+            std::future::ready(Ok(zeroize::Zeroizing::new("ghs_t".to_owned())))
+        })
+        .await
+        .unwrap();
+        let token = match outcome {
+            Answer::Token(t) => Some(t.to_string()),
+            Answer::Nothing | Answer::NoPath => None,
+        };
+        (token, received.into_inner())
+    }
+
+    #[tokio::test]
+    async fn get_with_path_answers_for_that_repository() {
+        for path in [
+            "example-owner/example-repo",
+            "example-owner/example-repo.git",
+        ] {
+            let input = format!("protocol=https\nhost=github.com\npath={path}\n\n");
+            let (token, repo) = answered(&input).await;
+            assert_eq!(token.as_deref(), Some("ghs_t"), "{path}");
+            assert_eq!(
+                repo.as_deref(),
+                Some("example-owner/example-repo"),
+                "{path}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn get_without_path_answers_nothing() {
+        let (token, repo) = answered("protocol=https\nhost=github.com\n\n").await;
+        assert_eq!((token, repo), (None, None));
+        let outcome = answer(
+            &asked("protocol=https\nhost=github.com\n\n").unwrap(),
+            |_| std::future::ready(Ok(zeroize::Zeroizing::new(String::new()))),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(outcome, Answer::NoPath));
+    }
+
+    #[tokio::test]
+    async fn get_with_lfs_path_answers_nothing() {
+        for path in [
+            "example-owner/example-repo.git/info/lfs",
+            "example-owner/example-repo/info/lfs/objects/batch",
+            "example-owner",
+        ] {
+            let input = format!("protocol=https\nhost=github.com\npath={path}\n\n");
+            let (token, repo) = answered(&input).await;
+            assert_eq!((token, repo), (None, None), "{path}");
+            let outcome = answer(&asked(&input).unwrap(), |_| {
+                std::future::ready(Ok(zeroize::Zeroizing::new(String::new())))
+            })
+            .await
+            .unwrap();
+            assert!(matches!(outcome, Answer::Nothing), "{path}");
+        }
+    }
+
+    #[test]
+    fn repeated_path_is_unreadable() {
+        assert_eq!(
+            asked("protocol=https\nhost=github.com\npath=a/b\npath=a/b\n\n"),
+            None
+        );
     }
 }

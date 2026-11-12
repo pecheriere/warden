@@ -519,7 +519,7 @@ that it is the expected key, as `-Y verify` with an allowed-signers file does
 | `POST /v1/grants/{id}/http` | Make an HTTPS call with an `api` grant. |
 | `GET /v1/commit-signing/key` | The public half of the broker's commit signing key. |
 | `POST /v1/commit-signing/sign` | Have a commit signed, under the agent's active commit signing grant. |
-| `POST /v1/github-token` | Mint a GitHub App installation token, under the agent's active GitHub token grant. |
+| `POST /v1/github-token` | Mint a GitHub App installation token, for one repository, under the agent's active GitHub token grant that covers it. |
 
 ### `GET /healthz`
 
@@ -530,14 +530,16 @@ Not signed. `200` with the plain-text body `ok`.
 Not signed (the tailnet policy still decides who can reach it). `200`:
 
 ```json
-{"protocols":["warden-request-v1"],"audience":"40ad20029e94984d193159667b296d8a","github_token_max_window":"30d"}
+{"protocols":["warden-request-v1"],"audience":"40ad20029e94984d193159667b296d8a","github_token_max_window":"30d","scoped_github_tokens":true}
 ```
 
 `protocols` lists the signing protocols the broker accepts; `audience` is
 the value to pin (section 2). `github_token_max_window` is the longest GitHub token grant
 the broker allows (`1d`, `7d` or `30d`, from `WARDEN_GITHUB_TOKEN_MAX_WINDOW`): a request
-for a longer one is refused. Brokers older than GitHub tokens leave it out; ignore any
-field you do not know.
+for a longer one is refused. `scoped_github_tokens` is `true` when the broker scopes GitHub
+grants and tokens to repositories (a client that asks for either must refuse a broker that
+leaves it out or says `false`). Brokers older than GitHub tokens leave `github_token_max_window`
+out; ignore any field you do not know.
 
 ### `POST /v1/requests`
 
@@ -842,19 +844,34 @@ Have a commit signed under the agent's active commit signing grant; see
 
 ### `POST /v1/github-token`
 
-Mint a GitHub App installation token under the agent's active GitHub token grant, which is
-read anew for each call; the grant id is not sent. Signed. The body is an empty object,
-`{}`: a token's repositories and permissions are not the agent's to choose, and any other
-field is refused.
+Mint a GitHub App installation token for one repository, under the agent's active GitHub
+token grant that covers it, read anew for each call; the grant id is not sent. Signed. The
+body names the repository, as `owner/name`, and nothing else: permissions are not the agent's
+to choose, and any other field is refused.
 
-- `200`: `{"token":"ghs_…","expires_at":1793095212,"grant_id":"5e1c…"}`. `expires_at` is
-  when GitHub ends the token, in Unix seconds, an hour after it was minted. The token has
+```json
+{"repository":"example-owner/example-repo"}
+```
+
+- `200`: `{"token":"ghs_…","expires_at":1793095212,"grant_id":"5e1c…","repository":"example-owner/example-repo","repository_id":1001}`.
+  `expires_at` is when GitHub ends the token, in Unix seconds, an hour after it was minted.
+  The token is scoped to that repository's id and has
   `contents`, `pull_requests` and `issues` write, `metadata` read, and nothing else.
   Do not log it or write it to disk.
-- `400`: the body is not `{}`, or the broker holds no GitHub App
+- `400`: the body is not the shape above, or the broker holds no GitHub App
   (`{"error":"GitHub tokens are not configured on this broker"}`).
-- `403` `{"error":"no active GitHub token grant for this agent"}`: none was ever granted,
-  or it ended or was revoked.
+- `400` `{"error":"this warden CLI predates repository-scoped GitHub grants; upgrade it"}`
+  (`OLD_CLIENT`): the body is `{}`, which is what clients sent before grants were scoped.
+- `403` `{"error":"no active GitHub token grant for this agent and repository"}`
+  (`NO_ACTIVE_GRANT`): no grant covering the repository was ever approved, or it ended or
+  was revoked. Names are matched ignoring case.
+- `409` `{"error":"more than one GitHub grant covers this repository; ask the owner to
+  revoke one"}` (`AMBIGUOUS_GRANT`): two grants cover the name or its id. Do not retry; the
+  owner revokes one.
+- `409` `{"error":"GitHub would not issue a token for this repository: the App may no longer
+  reach it, or it was deleted or replaced"}` (`REPOSITORY_UNREACHABLE`): GitHub refused to
+  scope a token to the repository's id. No token is given out, it is never retried, and the
+  attempt still costs the hourly budget.
 - `409` `{"error":"the GitHub App changed; request a new grant"}`: the App or installation
   is no longer the one the owner approved.
 - `409` `{"error":"grant revoked during the call"}` or `{"error":"grant expired during the
@@ -862,14 +879,14 @@ field is refused.
   one. The token is not given out; ask again under the new grant.
 - `429` `{"error":"this agent has reached its limit of GitHub tokens for this hour; it starts
   again at the top of the hour"}`: the agent has had 60 tokens since the top of the hour
-  (UTC). GitHub is not asked. A token lasts an hour, so keep it and ask again only when it is
+  (UTC), across all its grants. GitHub is not asked. A token lasts an hour, so keep it and ask again only when it is
   about to end, as the CLI does.
 - `503` `{"error":"GitHub could not issue a token; try again later"}`, or `{"error":"secret
   backend unavailable"}`. Nothing GitHub said is passed on.
 - `500`: no token, as with an entry that cannot be written to the audit log.
 
-The broker records each token it mints (grant, installation, permissions and expiry, never
-the token) before returning it, and each refusal with a fixed reason. Beyond 30 refusals a
+The broker records each token it mints (grant, repository and its id, installation,
+permissions and expiry, never the token) before returning it, and each refusal with a fixed reason. Beyond 30 refusals a
 minute per agent they are counted, as for commit signing. A token already returned is not
 recalled when its grant ends: it works until `expires_at`.
 
@@ -1155,23 +1172,36 @@ last step is done.
 
 ### GitHub token grants (`"kind":"github_token"`)
 
-Asked for with `{"kind":"github_token"}` as `access` and a `window` of `1d`, `7d` or `30d`:
+Asked for with `{"kind":"github_token","repositories":["example-owner/example-repo"]}` as
+`access` and a `window` of `1d`, `7d` or `30d`. `repositories` is one to 10 distinct
+`owner/name` values (repeats are compared ignoring case); it is required, and a request
+without it is refused. The CLI's own requests for `git` and `gh` also set `automatic` (`by`:
+`git_credential` or `gh_wrapper`, and an optional `dir`), with exactly one repository, so that
+the owner sees a tool asked. The grant, once approved, carries the repositories with the ids
+GitHub gave them: ids come when the owner first opens the approval page, or, for a renewal,
+when it is created:
 
 ```json
-{"grant_id":"5e1c…","not_before":1793091612,"not_after":1795683612,"access":{"kind":"github_token","app_id":"123456","installation_id":7890123,"digest":"…"}}
+{"grant_id":"5e1c…","not_before":1793091612,"not_after":1795683612,"access":{"kind":"github_token","app_id":"123456","installation_id":7890123,"digest":"…","repositories":[{"name":"example-owner/example-repo","id":1001}]}}
 ```
 
 The request is refused with a `400` when the broker holds no GitHub App
 (`GitHub tokens are not configured on this broker`), and for a window outside the three.
-There is nothing to install and the grant id is not needed: `POST /v1/github-token` uses the
-agent's own active grant, read anew for each token. An agent has one at a time: approving a
-new one ends the one before it, whose `not_after` stops counting. Minting is refused with a
-`409` once the broker's App or installation is no longer the one with this `digest`.
+There is nothing to install and the grant id is not needed: `POST /v1/github-token` finds
+the agent's active grant for the named repository, read anew for each token. An agent may
+hold several grants at once, but two never cover the same repository: they overlap when they
+share a repository id or a repository name (ignoring case), and approving a grant ends the
+agent's overlapping ones, which the owner is told on the approval page before approving
+(the approval is refused with a `409` if that set changed meanwhile). Minting is refused with a
+`409` once the broker's App or installation is no longer the one with this `digest`. A
+grant approved before grants were scoped has no `repositories`: it ends at upgrade and
+mints nothing. Renewing a grant carries its repositories over, and the owner sees a rename.
 
-The token covers every repository the App's installation covers, with `contents`,
-`pull_requests` and `issues` write and `metadata` read, and GitHub lets it open issues and
-comment on public repositories outside the installation too. A client chooses neither repositories
-nor permissions. Unlike the other kinds, this grant gives the agent a credential that outlives
+A token covers one repository of the grant, with `contents`,
+`pull_requests` and `issues` write and `metadata` read. It cannot reach another repository
+the App is installed on, though GitHub still lets it open a new issue on a public repository
+the App is installed on, and to be assumed, open issues and comment on any public repository,
+installed or not. A client chooses the repository, never the permissions. Unlike the other kinds, this grant gives the agent a credential that outlives
 the grant: tokens last an hour, and revoking does not recall one. A client should keep the
 token only in memory or in a file only its user can read, mint another when less than 5
 minutes of it remain, and never log it. `warden` is a client of this:

@@ -5,20 +5,32 @@ use std::sync::Arc;
 
 use sqlx::{Row as _, SqliteConnection};
 use url::Url;
+use warden_broker_proto::release::RepoName;
 use warden_broker_proto::{
-    Access, AgentName, CreateRequest, CreatedResponse, Id, TargetName, fingerprint,
+    Access, AgentName, CreateRequest, CreatedResponse, GithubTokenAccess, Id, TargetName, Window,
+    fingerprint,
 };
 
+use super::github_scope::{Resolution, resolution_event};
 use super::revocation::commit_with_entries;
 use super::transition::detached;
 use super::{
     PENDING_TTL_SECS, RELAY_NOT_CONFIGURED, ReleaseFacts, RequestError, Requests, Scope,
-    approval_token, begin, check_ed25519, check_window, commit_signing, github_token, limits,
-    note_if_not_applied, parse, record, sha256_hex, window_label,
+    approval_token, begin, check_ed25519, check_window, commit_signing, github_scope, github_token,
+    limits, note_if_not_applied, parse, record, sha256_hex, window_label,
 };
 use crate::audit::AuditEvent;
 use crate::notify::{Doorbell, doorbell};
 use crate::policy::SshMode;
+
+/// What is stored with a new request, in its transaction.
+#[derive(Default)]
+pub(super) struct Attached<'a> {
+    /// A release request's facts.
+    pub release: Option<&'a ReleaseFacts>,
+    /// What a renewal's repositories resolved to.
+    pub resolution: Option<&'a Resolution>,
+}
 
 /// What checking a request against policy found.
 struct Checked {
@@ -95,7 +107,17 @@ impl Requests {
                 );
                 detached(async move {
                     let created = this
-                        .insert(&agent, &req, &subject, &key, &token, release.as_ref())
+                        .insert(
+                            &agent,
+                            &req,
+                            &subject,
+                            &key,
+                            &token,
+                            Attached {
+                                release: release.as_ref(),
+                                resolution: None,
+                            },
+                        )
                         .await;
                     drop(change);
                     if let Err(RequestError::Limited(refusal)) = &created {
@@ -119,6 +141,29 @@ impl Requests {
             }
         }
         Err(RequestError::Contended)
+    }
+
+    /// Checks a GitHub token request and returns its dedupe key and subject.
+    async fn check_github_token(
+        &self,
+        agent: &AgentName,
+        github: &GithubTokenAccess,
+        window: Window,
+    ) -> Result<(String, String), RequestError> {
+        github_scope::check_request(github)?;
+        // Does not read the key: any enrolled agent can get this far.
+        if !self.backend.has_github_app().await? {
+            return Err(RequestError::Rejected(
+                warden_broker_proto::github_token::NOT_CONFIGURED.to_owned(),
+            ));
+        }
+        github_token::check_window(window, self.github_token_max)
+            .map_err(RequestError::Rejected)?;
+        let names: Vec<&str> = github.repositories.iter().map(RepoName::as_str).collect();
+        Ok((
+            format!("{agent}|github_token|{}", github.slot()),
+            format!("github token for {}", names.join(", ")),
+        ))
     }
 
     /// Check `req` of `agent` against the policy as it is now. Returns its dedupe
@@ -195,16 +240,8 @@ impl Requests {
                     "commit signing".to_owned(),
                 )
             }
-            Access::GithubToken {} => {
-                // Does not read the key: any enrolled agent can get this far.
-                if !self.backend.has_github_app().await? {
-                    return Err(RequestError::Rejected(
-                        warden_broker_proto::github_token::NOT_CONFIGURED.to_owned(),
-                    ));
-                }
-                github_token::check_window(req.window, self.github_token_max)
-                    .map_err(RequestError::Rejected)?;
-                (format!("{agent}|github_token"), "github token".to_owned())
+            Access::GithubToken(github) => {
+                self.check_github_token(agent, github, req.window).await?
             }
             Access::Release { .. } => {
                 let slot = self.release_slot(req.window, &req.access, agent).await?;
@@ -240,7 +277,7 @@ impl Requests {
         subject: &str,
         dedupe_key: &str,
         token: &str,
-        release: Option<&ReleaseFacts>,
+        attached: Attached<'_>,
     ) -> Result<CreatedResponse, RequestError> {
         let id = Id::random();
         let fp = fingerprint(agent, req);
@@ -257,6 +294,10 @@ impl Requests {
         let mut conn = self.pool.acquire().await?;
         limits::check(&mut conn, &self.limits, agent, dedupe_key, self.clock.now()).await?;
         drop(conn);
+        let Attached {
+            release,
+            resolution,
+        } = attached;
         let created = AuditEvent::RequestCreated {
             id: id.clone(),
             agent: agent.clone(),
@@ -265,7 +306,11 @@ impl Requests {
             session: req.session.as_ref().map(ToString::to_string),
         };
         let transition = format!("creation of request {id}");
-        record(&self.audit, vec![created], &transition).await?;
+        let mut events = vec![created];
+        if let Some(resolution) = resolution {
+            events.push(resolution_event(&id, resolution));
+        }
+        record(&self.audit, events, &transition).await?;
         let applied = async {
             let mut tx = begin(&self.pool).await?;
             // Read after the write lock: a create that queued for it must see the
@@ -309,6 +354,17 @@ impl Requests {
                     .bind(serde_json::to_string(facts)?)
                     .execute(&mut *tx)
                     .await?;
+            }
+            if let Some(resolution) = resolution {
+                // With the request, so a page opened in between never resolves it
+                // by name first.
+                sqlx::query(
+                    "INSERT INTO github_repositories (request_id, resolution) VALUES (?, ?)",
+                )
+                .bind(id.as_str())
+                .bind(serde_json::to_string(resolution)?)
+                .execute(&mut *tx)
+                .await?;
             }
             tx.commit().await?;
             Ok(())

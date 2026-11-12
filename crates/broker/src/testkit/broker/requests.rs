@@ -11,13 +11,14 @@ use ssh_encoding::Encode as _;
 use ssh_key::rand_core::OsRng;
 use ssh_key::{Algorithm, HashAlg, PrivateKey};
 use tower::ServiceExt as _;
+use warden_broker_proto::release::RepoName;
 use warden_broker_proto::signing::{
     AGENT_HEADER, NAMESPACE, NONCE_HEADER, Nonce, SIGNATURE_HEADER, SignedRequestParts,
     TIMESTAMP_HEADER, canonical_message,
 };
 use warden_broker_proto::{
-    Access, AgentName, CreateRequest, CreatedResponse, Goal, SecretName, TargetName, UnixUser,
-    Window,
+    Access, AgentName, CreateRequest, CreatedResponse, GithubTokenAccess, Goal, SecretName,
+    TargetName, UnixUser, Window,
 };
 
 use super::{TestBroker, TestResponse};
@@ -171,12 +172,22 @@ impl TestBroker {
     /// A request for a GitHub App installation token.
     ///
     /// # Panics
-    /// If `goal` is not a valid goal.
+    /// If `goal` is not a valid goal or a repository is not valid.
     #[must_use]
-    pub fn github_token_request(goal: &str, window: Window) -> CreateRequest {
+    pub fn github_token_request(
+        goal: &str,
+        window: Window,
+        repositories: &[&str],
+    ) -> CreateRequest {
+        let repositories = repositories
+            .iter()
+            .map(|r| RepoName::try_from((*r).to_owned()).expect("valid repository"))
+            .collect();
         CreateRequest {
             goal: Goal::try_from(goal.to_owned()).expect("valid goal"),
-            access: Access::GithubToken {},
+            access: Access::GithubToken(
+                GithubTokenAccess::new(repositories, None).expect("valid repositories"),
+            ),
             window,
             session: None,
             link: None,

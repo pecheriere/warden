@@ -15,13 +15,21 @@ use serde_json::json;
 use tempfile::TempDir;
 use warden_broker::github_app::GithubApi;
 use warden_broker::requests::Clock as _;
-use warden_broker::testkit::upstream::{HttpsUpstream, Scripted};
+use warden_broker::testkit::github_app::{minted_answer, token_answer};
+use warden_broker::testkit::upstream::HttpsUpstream;
 use warden_broker::testkit::{CapturingNotifier, TestBroker, github_app_key};
 use warden_broker_proto::Window;
 
 const AGENT: &str = "build-agent";
 const TOKEN: &str = "ghs_e2eToken0123456789";
-const GITHUB_INPUT: &str = "protocol=https\nhost=github.com\n\n";
+const REPO: &str = "example-owner/example-repo";
+const REPO_ID: u64 = 1001;
+const OTHER: &str = "example-owner/homebrew-tap";
+const OTHER_ID: u64 = 1002;
+const GITHUB_INPUT: &str =
+    "protocol=https\nhost=github.com\npath=example-owner/example-repo.git\n\n";
+const OTHER_INPUT: &str =
+    "protocol=https\nhost=github.com\npath=example-owner/homebrew-tap.git\n\n";
 
 fn text(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
@@ -70,7 +78,7 @@ impl Machine {
         let gh = root.path().join("bin/gh");
         fs::write(
             &gh,
-            "#!/bin/sh\nprintf 'token=%s\\n' \"$GH_TOKEN\"\nprintf 'args=%s\\n' \"$*\"\n",
+            "#!/bin/sh\n: > \"$(dirname \"$0\")/gh-ran\"\nprintf 'token=%s\\n' \"$GH_TOKEN\"\nprintf 'args=%s\\n' \"$*\"\n",
         )
         .unwrap();
         fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).unwrap();
@@ -188,13 +196,38 @@ async fn setup_with_max(max: Window) -> Setup {
     }
 }
 
-/// Queue GitHub's answer for the next mint: `token`, ending an hour from now.
-fn script_token(s: &Setup, token: &str) {
-    let expires = jiff::Timestamp::from_second(s.broker.clock.now() + 3600).unwrap();
-    s.upstream.script_github_token(Scripted::with_body(
-        201,
-        json!({"token": token, "expires_at": expires.to_string()}).to_string(),
+/// Queue GitHub's answer for the next mint: `token` for repository `(id, name)`,
+/// ending an hour from now.
+fn script_token(s: &Setup, token: &str, repository: (u64, &str)) {
+    s.upstream.script_github_token(minted_answer(
+        token,
+        s.broker.clock.now() + 3600,
+        &[repository],
     ));
+}
+
+/// Approve the request `token` for `window` as the owner would, with GitHub
+/// resolving `repositories` (`(id, name)`) when the page asks and then minting
+/// `mints` (`(token, repository)`) for the agent, in order.
+async fn approve_for(
+    s: &Setup,
+    token: &str,
+    window: Window,
+    repositories: &[(u64, &str)],
+    mints: &[(&str, (u64, &str))],
+) {
+    s.upstream.script_github_token(token_answer(
+        "ghs_resolve_0123456789",
+        s.broker.clock.now() + 3600,
+        repositories,
+        &[("metadata", "read")],
+        "selected",
+    ));
+    for (mint, repository) in mints {
+        script_token(s, mint, *repository);
+    }
+    let approved = s.broker.approve(token, window).await;
+    assert!(approved.status.is_success(), "{}", approved.body);
 }
 
 async fn wait(child: Child) -> Output {
@@ -204,19 +237,18 @@ async fn wait(child: Child) -> Output {
         .unwrap()
 }
 
-/// `warden request github`, approved with a passkey as the owner would.
+/// `warden request github` for [`REPO`], approved with a passkey as the owner would.
 async fn get_grant(s: &Setup) -> Output {
     let child = s
         .machine
         .warden()
-        .args(["request", "github", "--goal", "push the fix"])
+        .args(["request", "github", REPO, "--goal", "push the fix"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
     let token = CapturingNotifier::token(&s.broker.capture.next().await);
-    let approved = s.broker.approve(&token, Window::D30).await;
-    assert!(approved.status.is_success(), "{}", approved.body);
+    approve_for(s, &token, Window::D30, &[(REPO_ID, REPO)], &[]).await;
     let out = wait(child).await;
     assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
     out
@@ -239,7 +271,7 @@ async fn e2e_request_github_then_git_credential() {
     assert_eq!(set_up.status.code(), Some(0), "{}", text(&set_up.stderr));
 
     // Real git asks the helper and gets the token.
-    script_token(&s, TOKEN);
+    script_token(&s, TOKEN, (REPO_ID, REPO));
     let filled = s.machine.git(&["credential", "fill"], GITHUB_INPUT);
     assert!(filled.status.success(), "{}", text(&filled.stderr));
     let out = text(&filled.stdout);
@@ -261,7 +293,7 @@ async fn e2e_request_github_then_git_credential() {
     let token = s
         .machine
         .warden()
-        .args(["github", "token"])
+        .args(["github", "token", "--repo", REPO])
         .output()
         .unwrap();
     assert_eq!(token.status.code(), Some(0), "{}", text(&token.stderr));
@@ -270,15 +302,22 @@ async fn e2e_request_github_then_git_credential() {
     // Plain `gh` runs the wrapper, which hands the real one the token.
     let mut gh = Command::new("gh");
     s.machine.env(&mut gh);
-    let gh = gh.args(["pr", "list"]).output().unwrap();
+    let gh = gh.args(["pr", "list", "-R", REPO]).output().unwrap();
     assert!(gh.status.success(), "{}", text(&gh.stderr));
-    assert_eq!(text(&gh.stdout), format!("token={TOKEN}\nargs=pr list\n"));
-    assert_eq!(s.upstream.received().len(), 1, "one mint, then the cache");
+    assert_eq!(
+        text(&gh.stdout),
+        format!("token={TOKEN}\nargs=pr list -R {REPO}\n")
+    );
+    // The approval page's lookup, then one mint; the cache serves the rest.
+    assert_eq!(s.upstream.received().len(), 2, "one mint, then the cache");
 
     // Revoking the grant here drops its cached token.
     let minted = fs::read_to_string(s.machine.cache()).unwrap();
     let grant: serde_json::Value = serde_json::from_str(&minted).unwrap();
-    let grant = grant["grant_id"].as_str().unwrap().to_owned();
+    assert_eq!(grant["version"], 2);
+    assert_eq!(grant["entries"][0]["repository"], REPO);
+    assert_eq!(grant["entries"][0]["repository_id"], REPO_ID);
+    let grant = grant["entries"][0]["grant_id"].as_str().unwrap().to_owned();
     let revoked = s
         .machine
         .warden()
@@ -292,11 +331,10 @@ async fn e2e_request_github_then_git_credential() {
 #[tokio::test(flavor = "multi_thread")]
 async fn token_without_grant_asks_the_owner_and_serves_once_approved() {
     let s = setup().await;
-    script_token(&s, TOKEN);
     let child = s
         .machine
         .warden()
-        .args(["github", "token"])
+        .args(["github", "token", "--repo", REPO])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -305,13 +343,22 @@ async fn token_without_grant_asks_the_owner_and_serves_once_approved() {
     // The request it filed is a 30-day one, with the fixed goal and the directory.
     let status = s.machine.warden().arg("status").output().unwrap();
     let listed = text(&status.stdout);
-    assert!(listed.contains("github token for 30d"), "{listed}");
+    assert!(
+        listed.contains(&format!("github token for {REPO} for 30d")),
+        "{listed}"
+    );
     assert!(
         listed.contains("requested automatically by the gh wrapper"),
         "{listed}"
     );
-    let approved = s.broker.approve(&token, Window::D30).await;
-    assert!(approved.status.is_success(), "{}", approved.body);
+    approve_for(
+        &s,
+        &token,
+        Window::D30,
+        &[(REPO_ID, REPO)],
+        &[(TOKEN, (REPO_ID, REPO))],
+    )
+    .await;
     let out = wait(child).await;
     assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
     assert_eq!(text(&out.stdout), format!("{TOKEN}\n"), "only the token");
@@ -362,7 +409,7 @@ fn spawn_token(s: &Setup, dir: &str) -> Child {
     fs::create_dir_all(&dir).unwrap();
     s.machine
         .warden()
-        .args(["github", "token"])
+        .args(["github", "token", "--repo", REPO])
         .current_dir(dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -376,7 +423,7 @@ async fn an_automatic_request_waits_on_one_already_pending_and_leaves_it_on_ctrl
     let first = s
         .machine
         .warden()
-        .args(["request", "github", "--goal", "push the fix"])
+        .args(["request", "github", REPO, "--goal", "push the fix"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -387,7 +434,7 @@ async fn an_automatic_request_waits_on_one_already_pending_and_leaves_it_on_ctrl
     let other = s
         .machine
         .warden()
-        .args(["request", "github", "--goal", "something else"])
+        .args(["request", "github", REPO, "--goal", "something else"])
         .output()
         .unwrap();
     assert_eq!(other.status.code(), Some(1), "{}", text(&other.stderr));
@@ -415,12 +462,17 @@ async fn an_automatic_request_waits_on_one_already_pending_and_leaves_it_on_ctrl
 
     // The gh wrapper, from another directory, waits on the same request; one
     // approval serves both.
-    script_token(&s, TOKEN);
     let mut second = spawn_token(&s, "another/repo");
     let (said, _rest) = waiting(&mut second).await;
     assert!(said.contains("made elsewhere"), "{said}");
-    let approved = s.broker.approve(&token, Window::D30).await;
-    assert!(approved.status.is_success(), "{}", approved.body);
+    approve_for(
+        &s,
+        &token,
+        Window::D30,
+        &[(REPO_ID, REPO)],
+        &[(TOKEN, (REPO_ID, REPO))],
+    )
+    .await;
     let first = wait(first).await;
     assert_eq!(first.status.code(), Some(0), "{}", text(&first.stderr));
     let second = wait(second).await;
@@ -459,16 +511,24 @@ async fn other_kinds_still_refuse_a_pending_request_of_another_fingerprint() {
 #[tokio::test(flavor = "multi_thread")]
 async fn an_automatic_request_asks_for_no_more_than_the_broker_allows() {
     let s = setup_with_max(Window::D7).await;
-    script_token(&s, TOKEN);
     let mut cmd = s.machine.warden();
     cmd.args(["git-credential", "get"]);
     let child = spawn_with_input(&mut cmd, GITHUB_INPUT);
     let token = CapturingNotifier::token(&s.broker.capture.next().await);
     let status = s.machine.warden().arg("status").output().unwrap();
     let listed = text(&status.stdout);
-    assert!(listed.contains("github token for 7d"), "{listed}");
-    let approved = s.broker.approve(&token, Window::D7).await;
-    assert!(approved.status.is_success(), "{}", approved.body);
+    assert!(
+        listed.contains(&format!("github token for {REPO} for 7d")),
+        "{listed}"
+    );
+    approve_for(
+        &s,
+        &token,
+        Window::D7,
+        &[(REPO_ID, REPO)],
+        &[(TOKEN, (REPO_ID, REPO))],
+    )
+    .await;
     let out = wait(child).await;
     assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
     assert_eq!(
@@ -477,11 +537,213 @@ async fn an_automatic_request_asks_for_no_more_than_the_broker_allows() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn git_push_gets_token_for_its_repository() {
+    let s = setup().await;
+    get_grant(&s).await;
+    script_token(&s, TOKEN, (REPO_ID, REPO));
+    let out = s.machine.credential("get", GITHUB_INPUT);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    assert_eq!(
+        text(&out.stdout),
+        format!("username=x-access-token\npassword={TOKEN}\n")
+    );
+    // GitHub was asked for that repository's id alone: the page's lookup, then one mint.
+    let received = s.upstream.received();
+    assert_eq!(received.len(), 2, "{received:?}");
+    let body: serde_json::Value = serde_json::from_slice(&received[1].body).unwrap();
+    assert_eq!(body["repository_ids"], json!([REPO_ID]));
+
+    // The same repository spelled in another case is served from the cache.
+    let again = s.machine.credential(
+        "get",
+        "protocol=https\nhost=github.com\npath=Example-Owner/EXAMPLE-repo.git\n\n",
+    );
+    assert_eq!(again.status.code(), Some(0), "{}", text(&again.stderr));
+    assert_eq!(text(&again.stdout), text(&out.stdout));
+    assert_eq!(s.upstream.received().len(), 2, "no second mint");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn second_repository_files_its_own_request() {
+    let s = setup().await;
+    get_grant(&s).await;
+    script_token(&s, TOKEN, (REPO_ID, REPO));
+    let first = s.machine.credential("get", GITHUB_INPUT);
+    assert_eq!(first.status.code(), Some(0), "{}", text(&first.stderr));
+
+    // The grant covers the first repository only: the second one asks the owner.
+    let mut cmd = s.machine.warden();
+    cmd.args(["git-credential", "get"]);
+    let child = spawn_with_input(&mut cmd, OTHER_INPUT);
+    let token = CapturingNotifier::token(&s.broker.capture.next().await);
+    let status = s.machine.warden().arg("status").output().unwrap();
+    let listed = text(&status.stdout);
+    assert!(listed.contains(OTHER), "{listed}");
+    let second = "ghs_e2eSecondRepo0123456789";
+    approve_for(
+        &s,
+        &token,
+        Window::D30,
+        &[(OTHER_ID, OTHER)],
+        &[(second, (OTHER_ID, OTHER))],
+    )
+    .await;
+    let out = wait(child).await;
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    assert_eq!(
+        text(&out.stdout),
+        format!("username=x-access-token\npassword={second}\n")
+    );
+
+    // Each repository keeps its own token in the cache.
+    let before = s.upstream.received().len();
+    let a = s.machine.credential("get", GITHUB_INPUT);
+    let b = s.machine.credential("get", OTHER_INPUT);
+    assert!(text(&a.stdout).contains(TOKEN), "{}", text(&a.stdout));
+    assert!(text(&b.stdout).contains(second), "{}", text(&b.stdout));
+    assert_eq!(s.upstream.received().len(), before, "both from the cache");
+}
+
+/// A broker that predates repository-scoped grants, local: serves `/v1/info`
+/// without the flag and records every request line it gets. Stops with the guard.
+struct OldBroker {
+    url: url::Url,
+    seen: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    address: std::net::SocketAddr,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl OldBroker {
+    fn start() -> Self {
+        use std::sync::atomic::Ordering;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (log, halt) = (seen.clone(), stop.clone());
+        let thread = std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                if halt.load(Ordering::SeqCst) {
+                    break;
+                }
+                let mut stream = stream.unwrap();
+                let mut request = Vec::new();
+                let mut byte = [0_u8; 1];
+                while !request.ends_with(b"\r\n\r\n") && stream.read(&mut byte).unwrap_or(0) == 1 {
+                    request.push(byte[0]);
+                }
+                let first = text(&request).lines().next().unwrap_or_default().to_owned();
+                log.lock().unwrap().push(first);
+                let body = r#"{"protocols":["warden-request-v1"],"audience":"40ad20029e94984d193159667b296d8a"}"#;
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        Self {
+            url: format!("http://{address}/").parse().unwrap(),
+            seen,
+            stop,
+            address,
+            thread: Some(thread),
+        }
+    }
+
+    /// The request lines received so far.
+    fn requests(&self) -> Vec<String> {
+        self.seen.lock().unwrap().clone()
+    }
+}
+
+impl Drop for OldBroker {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        // Wake the accept loop so that it sees the flag.
+        let _ = std::net::TcpStream::connect(self.address);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+#[test]
+fn an_old_broker_is_refused_before_any_request_is_created() {
+    let broker = OldBroker::start();
+    let machine = Machine::new(&broker.url, format!("wdn_{}", "S".repeat(43)));
+    let out = machine
+        .warden()
+        .args(["request", "github", REPO, "--goal", "push the fix"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out.stderr));
+    let said = text(&out.stderr);
+    assert!(
+        said.contains(
+            "the broker does not support repository-scoped GitHub grants: upgrade the broker \
+             before asking for GitHub access"
+        ),
+        "{said}"
+    );
+    assert_eq!(
+        broker.requests(),
+        ["GET /v1/info HTTP/1.1"],
+        "nothing but the capability check reached the broker"
+    );
+
+    // The same for a token, which is not served from a cache.
+    let token = machine
+        .warden()
+        .args(["github", "token", "--repo", REPO])
+        .output()
+        .unwrap();
+    assert_eq!(token.status.code(), Some(1), "{}", text(&token.stderr));
+    assert_eq!(text(&token.stdout), "");
+    assert!(
+        broker
+            .requests()
+            .iter()
+            .all(|line| line.starts_with("GET /v1/info")),
+        "{:?}",
+        broker.requests()
+    );
+}
+
 /// No broker is configured here: answering at all would mean calling one.
 fn offline() -> Machine {
     let machine = Machine::new(&"http://127.0.0.1:9/".parse().unwrap(), String::new());
     fs::remove_file(machine.root.path().join("config/warden/config.toml")).unwrap();
     machine
+}
+
+#[test]
+fn the_gh_wrapper_refuses_without_a_repository_and_never_starts_the_real_gh() {
+    let machine = offline();
+    let set_up = machine.warden().args(["setup", "github"]).output().unwrap();
+    assert_eq!(set_up.status.code(), Some(0), "{}", text(&set_up.stderr));
+
+    // No `-R`, no `GH_REPO`, and a directory with no `origin`.
+    let mut gh = Command::new("gh");
+    machine.env(&mut gh);
+    let out = gh
+        .env_remove("GH_REPO")
+        .args(["pr", "list"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out.stderr));
+    let said = text(&out.stderr);
+    assert!(
+        said.contains("cannot tell which repository; pass -R owner/name"),
+        "{said}"
+    );
+    assert!(out.stdout.is_empty(), "{}", text(&out.stdout));
+    assert!(
+        !machine.root.path().join("bin/gh-ran").exists(),
+        "the real gh was started"
+    );
 }
 
 #[test]

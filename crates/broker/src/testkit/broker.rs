@@ -28,6 +28,7 @@ use crate::signed::BodyReadTimeout;
 use crate::{AppState, store};
 
 mod approval;
+mod github_rows;
 mod inspect;
 mod requests;
 mod serve;
@@ -510,6 +511,10 @@ impl TestBroker {
         .with_github_api(limits.github_api.clone())
         .with_link_hosts(limits.link_hosts.clone())
         .with_call_limits(config.proxy.max_calls_per_agent, config.proxy.max_calls);
+        requests
+            .end_unscoped_github()
+            .await
+            .expect("ending unscoped GitHub grants");
         let passkeys = Passkeys::new(
             pool.clone(),
             audit.clone(),

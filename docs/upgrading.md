@@ -47,6 +47,30 @@ and requests made before the upgrade show their words too.
 A script that reads the fingerprint from `warden request`'s stderr needs checking:
 the line is now `fingerprint <words> (<hex>)`. Prefer the API's `fingerprint` field.
 
+## GitHub tokens and the repository
+
+After upgrading the CLI past 0.12.0, run `warden setup github` again on every machine
+where an agent uses it. It sets `credential.https://github.com.useHttpPath` and
+rewrites the `gh` wrapper to pass `gh`'s arguments to warden. Until then `warden
+doctor` fails its `github.token` check, git sends warden no repository, and an old
+wrapper does not pass `-R` to warden. A `gh` run outside a checkout needs `-R
+owner/name`.
+
+## Repository-scoped GitHub grants
+
+GitHub token grants now cover named repositories, and a token is minted for one repository.
+**Upgrade the broker before the CLI.** A new CLI refuses a broker that does not report
+`scoped_github_tokens` in `/v1/info`, and an old CLI is refused by a new broker (its mint
+body is `{}`). At upgrade, every GitHub grant and pending GitHub request that names no
+repository ends, each recorded as `github_unscoped_ended`: the agents ask again with
+`warden request github <owner/name>...`, or let the first `git` or `gh` call ask. The
+owner approves each again, with the repositories shown on the page. Run `warden setup
+github` again on each agent machine, as [above](#github-tokens-and-the-repository) says
+after upgrading the CLI past 0.12.0. The CLI's token cache is
+now per repository (`github-token.json`, version 2): an older file is ignored and replaced.
+An agent may now hold several GitHub grants, and approving one ends the agent's grants that
+share a repository with it.
+
 ## Private files
 
 From 0.9.0, warden keeps its files private to its user, and corrects

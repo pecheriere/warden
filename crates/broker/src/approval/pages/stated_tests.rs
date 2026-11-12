@@ -75,6 +75,7 @@ fn pages(link: &str, hosts: &LinkHosts) -> Vec<(&'static str, String)> {
         destination: destination(),
         expires_at: NOW + 240,
         release: None,
+        github: None,
     };
     let entry = PendingEntry {
         id: id(),
@@ -242,6 +243,7 @@ fn a_request_without_them_shows_neither() {
         destination: destination(),
         expires_at: NOW + 240,
         release: None,
+        github: None,
     };
     let html = approve(&view, &hosts, NOW).into_string();
     assert!(!html.contains("stated"), "{html}");

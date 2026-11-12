@@ -87,9 +87,9 @@ async fn mark_approved_is_single_use_and_returns_grant() {
 
     let (a, b) = tokio::join!(
         h.requests
-            .mark_approved(&token, Window::M15, grant.clone(), "pk1"),
+            .mark_approved(&token, Window::M15, grant.clone(), "pk1", &[]),
         h.requests
-            .mark_approved(&token, Window::M15, other.clone(), "pk1"),
+            .mark_approved(&token, Window::M15, other.clone(), "pk1", &[]),
     );
     let oks = [&a, &b].iter().filter(|r| r.is_ok()).count();
     assert_eq!(oks, 1, "{a:?} {b:?}");
@@ -121,7 +121,8 @@ async fn mark_approved_is_single_use_and_returns_grant() {
                 "unknown-token",
                 Window::M15,
                 grant_for(&h, Window::M15),
-                "pk1"
+                "pk1",
+                &[]
             )
             .await,
         Err(RequestError::NotFound)
@@ -138,7 +139,7 @@ async fn mark_approved_rejects_grant_not_spanning_the_window() {
     for grant in [longer, shifted] {
         assert!(matches!(
             h.requests
-                .mark_approved(&token, Window::M15, grant, "pk1")
+                .mark_approved(&token, Window::M15, grant, "pk1", &[])
                 .await,
             Err(RequestError::Internal(_))
         ));
@@ -160,7 +161,7 @@ async fn mark_approved_after_expiry_leaves_no_grant() {
     h.clock.advance(600);
     assert!(matches!(
         h.requests
-            .mark_approved(&token, Window::M30, grant_for(&h, Window::M30), "pk1")
+            .mark_approved(&token, Window::M30, grant_for(&h, Window::M30), "pk1", &[])
             .await,
         Err(RequestError::AlreadyDecided)
     ));
@@ -173,7 +174,7 @@ async fn revoke_grant_marks_request_revoked() {
     let (created, token) = create_notified(&h, "bot", pi_request()).await;
     let grant = grant_for(&h, Window::M30);
     h.requests
-        .mark_approved(&token, Window::M30, grant.clone(), "pk1")
+        .mark_approved(&token, Window::M30, grant.clone(), "pk1", &[])
         .await
         .unwrap();
     h.requests

@@ -1,27 +1,42 @@
 //! The GitHub token grant's own rules: its windows, the policy the App makes and
 //! finding an agent's active grant.
 //!
-//! An agent holds at most one: approving a new grant ends the one it replaces (see
-//! `renewal`), so that revoking a grant really does stop that agent's minting.
+//! An agent holds at most one grant per repository: approving a new grant ends the
+//! ones it overlaps (see `renewal`), so that revoking a grant really does stop that
+//! agent's minting.
 
 use sqlx::Row as _;
+use warden_broker_proto::github_token::GrantRepository;
+use warden_broker_proto::release::RepoName;
 use warden_broker_proto::{AgentName, GithubTokenGrant, GrantAccess, GrantView, Id, Window};
 
 use super::{RequestError, Requests, parse};
 use crate::audit::AuditEvent;
 use crate::policy::GithubTokenPolicy;
 
-/// A usable GitHub token grant.
+/// A usable GitHub token grant, with the repository of it that was asked for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActiveGithubToken {
     /// The grant.
     pub grant_id: Id,
     /// What was approved.
     pub grant: GithubTokenGrant,
+    /// The repository asked for, as the grant stores it.
+    pub repository: GrantRepository,
 }
 
-/// Tokens per agent per hour, unless a test says otherwise. An agent holds at most one
-/// GitHub token grant, so this counts that grant's mints. The CLI caches a token for
+/// What an agent's active grants say about one repository.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GithubLookup {
+    /// No active grant covers it.
+    None,
+    /// Exactly one does.
+    One(ActiveGithubToken),
+    /// More than one does, so none can be chosen; holds the first one's id.
+    Ambiguous(Id),
+}
+
+/// Tokens per agent per hour, unless a test says otherwise. The CLI caches a token for
 /// most of its hour, so it mints about once an hour; this is far more, and small
 /// enough that a looping agent cannot use up the App's rate limit at GitHub, which
 /// every agent shares, or fill the audit log.
@@ -51,20 +66,23 @@ impl Requests {
         self
     }
 
-    /// Take one of `grant`'s tokens for this hour, or say there are none left. In one
+    /// Take one of `agent`'s tokens for this hour, or say there are none left. In one
     /// statement, so that concurrent calls cannot pass the limit, and in the database,
-    /// so that a restart does not reset it.
+    /// so that a restart does not reset it. Counted per agent, whatever grants it has
+    /// held this hour.
     ///
     /// # Errors
     /// Storage failures: the caller refuses.
-    pub(crate) async fn take_mint(&self, grant: &Id) -> Result<bool, RequestError> {
+    pub(crate) async fn take_mint(&self, agent: &AgentName) -> Result<bool, RequestError> {
         let taken = sqlx::query(
-            "UPDATE grants SET mint_hour = ?1, mint_count = \
-             CASE WHEN mint_hour = ?1 THEN mint_count + 1 ELSE 1 END \
-             WHERE id = ?2 AND (mint_hour IS NOT ?1 OR mint_count < ?3)",
+            "INSERT INTO github_token_mints (agent, mint_hour, mint_count) VALUES (?1, ?2, 1) \
+             ON CONFLICT(agent) DO UPDATE SET \
+             mint_count = CASE WHEN mint_hour = excluded.mint_hour THEN mint_count + 1 ELSE 1 END, \
+             mint_hour = excluded.mint_hour \
+             WHERE mint_hour IS NOT excluded.mint_hour OR mint_count < ?3",
         )
+        .bind(agent.as_str())
         .bind(self.clock.now().div_euclid(3600))
-        .bind(grant.as_str())
         .bind(self.github_token_per_hour)
         .execute(&self.pool)
         .await?
@@ -91,33 +109,54 @@ impl Requests {
             .policy(self.github_token_max))
     }
 
-    /// The GitHub token grant `agent` may mint with now, if any. Read for every
-    /// mint, so that a revocation or the end of the window stops the next one.
+    /// The GitHub token grant `agent` may mint with now for `repository`, matched
+    /// by name in any case. Read for every mint, so that a revocation or the end
+    /// of the window stops the next one. A grant stored before scoping covers
+    /// nothing. More than one active grant on the repository (by id, or by name
+    /// under different ids) is [`GithubLookup::Ambiguous`]: approving replaces an
+    /// overlapping grant, so storage holds that only if something went wrong, and
+    /// the mint refuses rather than pick one.
     ///
     /// # Errors
     /// Storage failures or an unreadable stored grant: the caller refuses.
-    pub async fn active_github_token(
+    pub async fn active_github_token_for(
         &self,
         agent: &AgentName,
-    ) -> Result<Option<ActiveGithubToken>, RequestError> {
-        let Some(row) = self
-            .active_rows(agent, "github_token")
-            .await?
-            .into_iter()
-            .next()
-        else {
-            return Ok(None);
+        repository: &RepoName,
+    ) -> Result<GithubLookup, RequestError> {
+        let mut grants = Vec::new();
+        for row in self.active_rows(agent, "github_token").await? {
+            let view: String = row.try_get("view")?;
+            let view: GrantView = serde_json::from_str(&view)?;
+            let GrantAccess::GithubToken(grant) = view.access else {
+                return Err(RequestError::Corrupt(
+                    "GitHub token grant changed kind".to_owned(),
+                ));
+            };
+            grants.push((parse::<Id>(&row, "id")?, grant));
+        }
+        let mut covering = grants.iter().filter_map(|(grant_id, grant)| {
+            grant
+                .repositories
+                .covering(repository)
+                .map(|found| (grant_id, grant, found))
+        });
+        let Some((grant_id, grant, found)) = covering.next() else {
+            return Ok(GithubLookup::None);
         };
-        let view: String = row.try_get("view")?;
-        let view: GrantView = serde_json::from_str(&view)?;
-        let GrantAccess::GithubToken(grant) = view.access else {
-            return Err(RequestError::Corrupt(
-                "GitHub token grant changed kind".to_owned(),
-            ));
-        };
-        Ok(Some(ActiveGithubToken {
-            grant_id: parse(&row, "id")?,
-            grant,
+        let found_id = found.id;
+        let found = found.clone();
+        let sharing = grants
+            .iter()
+            .filter(|(_, other)| other.repositories.list().iter().any(|r| r.id == found_id))
+            .count();
+        if covering.next().is_some() || sharing > 1 {
+            return Ok(GithubLookup::Ambiguous(grant_id.clone()));
+        }
+        Ok(GithubLookup::One(ActiveGithubToken {
+            grant_id: grant_id.clone(),
+            grant: grant.clone(),
+            repository: found,
         }))
     }
 

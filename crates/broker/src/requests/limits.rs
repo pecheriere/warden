@@ -407,6 +407,7 @@ mod tests {
     use url::Url;
     use warden_broker_proto::{AgentName, Window};
 
+    use super::super::create::Attached;
     use super::{
         AUDIT_EVERY_SECS, LimitRefusal, NEW_AT_LIMIT, NOTICE_EVERY_SECS, PENDING_AT_LIMIT,
         Refusals, RequestError, RequestLimits, Steps, Tally, check, due, history_link, wait_until,
@@ -661,9 +662,10 @@ mod tests {
         // keeps from being granted, so any earlier clock read happens now.
         let bot = agent("bot");
         let req = TestBroker::api_request("github", "triage issue 42", Window::M15);
-        let create = state
-            .requests
-            .insert(&bot, &req, "subject", "slot", "token", None);
+        let create =
+            state
+                .requests
+                .insert(&bot, &req, "subject", "slot", "token", Attached::default());
         tokio::pin!(create);
         poll_fn(|cx| {
             assert!(create.as_mut().poll(cx).is_pending());

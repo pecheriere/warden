@@ -55,7 +55,7 @@ async fn revoking_agent_cancels_pending_and_wakes_waiters() {
     let (approved, token) = create_notified(&h, "bot", pi_request()).await;
     let grant = grant_for(&h, Window::M30);
     h.requests
-        .mark_approved(&token, Window::M30, grant.clone(), "pk1")
+        .mark_approved(&token, Window::M30, grant.clone(), "pk1", &[])
         .await
         .unwrap();
     let (pending, pending_token) = create_notified(&h, "bot", pi_request()).await;
@@ -111,7 +111,8 @@ async fn revoking_agent_cancels_pending_and_wakes_waiters() {
                 &pending_token,
                 Window::M30,
                 grant_for(&h, Window::M30),
-                "pk1"
+                "pk1",
+                &[]
             )
             .await,
         Err(RequestError::AlreadyDecided)
@@ -138,7 +139,7 @@ async fn every_transition_is_audited() {
     let (_, token) = create_notified(&h, "bot", pi_request()).await;
     let grant = grant_for(&h, Window::M30);
     h.requests
-        .mark_approved(&token, Window::M30, grant.clone(), "pk1")
+        .mark_approved(&token, Window::M30, grant.clone(), "pk1", &[])
         .await
         .unwrap();
     h.requests

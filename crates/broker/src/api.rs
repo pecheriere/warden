@@ -156,12 +156,14 @@ const fn status_of(e: &RequestError) -> Option<StatusCode> {
         RequestError::UnknownTarget(_)
         | RequestError::UnknownSecret(_)
         | RequestError::NotFound => Some(StatusCode::NOT_FOUND),
-        RequestError::AlreadyDecided | RequestError::KeyInUse => Some(StatusCode::CONFLICT),
+        RequestError::AlreadyDecided | RequestError::KeyInUse | RequestError::ReplacedChanged => {
+            Some(StatusCode::CONFLICT)
+        }
         RequestError::AgentRevoked => Some(StatusCode::UNAUTHORIZED),
         RequestError::Limited(_) => Some(StatusCode::TOO_MANY_REQUESTS),
-        RequestError::Unavailable(_) | RequestError::Contended => {
-            Some(StatusCode::SERVICE_UNAVAILABLE)
-        }
+        RequestError::Unavailable(_)
+        | RequestError::GithubUnavailable
+        | RequestError::Contended => Some(StatusCode::SERVICE_UNAVAILABLE),
         RequestError::UnknownAgent(_)
         | RequestError::Agent(_)
         | RequestError::Db(_)
@@ -271,6 +273,7 @@ async fn info(State(state): State<AppState>) -> Json<InfoResponse> {
         protocols: vec![signing::PROTOCOL.to_owned()],
         audience: state.audience,
         github_token_max_window: Some(state.requests.github_token_max()),
+        scoped_github_tokens: true,
     })
 }
 
