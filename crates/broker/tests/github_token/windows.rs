@@ -13,7 +13,8 @@ async fn ask(
     key: &str,
     window: Window,
 ) -> warden_broker::testkit::TestResponse {
-    let request = TestBroker::github_token_request("push the fix", window);
+    let request =
+        TestBroker::github_token_request("push the fix", window, &["example-owner/example-repo"]);
     broker
         .api_post_json(
             key,
@@ -62,7 +63,10 @@ async fn window_must_be_1d_7d_or_30d() {
     }
     // Chosen at approval: refused before any passkey is asked for.
     let (_, token) = broker
-        .create_request("bot", TestBroker::github_token_request("goal", Window::D7))
+        .create_request(
+            "bot",
+            TestBroker::github_token_request("goal", Window::D7, &["example-owner/example-repo"]),
+        )
         .await;
     broker.enroll_soft_passkey().await;
     for window in [Window::H1, Window::D90] {
@@ -86,7 +90,10 @@ async fn window_above_server_max_refused() {
     assert_eq!(resp.status, StatusCode::CREATED, "{}", resp.body);
     // Chosen at approval, above the maximum: refused too.
     let (_, token) = broker
-        .create_request("bot", TestBroker::github_token_request("goal", Window::D7))
+        .create_request(
+            "bot",
+            TestBroker::github_token_request("goal", Window::D7, &["example-owner/example-repo"]),
+        )
         .await;
     broker.enroll_soft_passkey().await;
     let begin = broker.begin_approval(&token, Window::D30).await;
@@ -178,5 +185,5 @@ async fn approving_new_grant_ends_previous() {
         .filter(|e| e.status == "revoked")
         .collect::<Vec<_>>();
     assert_eq!(revoked.len(), 1, "{revoked:?}");
-    assert!(matches!(revoked[0].request.access, Access::GithubToken {}));
+    assert!(matches!(revoked[0].request.access, Access::GithubToken(_)));
 }

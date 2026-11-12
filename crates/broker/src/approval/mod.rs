@@ -489,7 +489,7 @@ fn check_policy(
             api_scope(&view.request, policy).map(drop)
         }
         (Access::CommitSigning {}, Destination::CommitSigning(_))
-        | (Access::GithubToken {}, Destination::GithubToken(_))
+        | (Access::GithubToken(_), Destination::GithubToken(_))
         | (Access::Release { .. }, Destination::Release(_)) => Ok(()),
         _ => Err("the request does not match its policy kind".to_owned()),
     }
@@ -513,7 +513,7 @@ pub(crate) fn api_scope(
         } => policy.scope(methods.as_deref(), path_prefix.as_deref()),
         Access::Ssh { .. }
         | Access::CommitSigning {}
-        | Access::GithubToken {}
+        | Access::GithubToken(_)
         | Access::Release { .. } => Err("the request does not match its policy kind".to_owned()),
     }
 }

@@ -7,11 +7,12 @@ use anyhow::{Context as _, Result, anyhow, bail, ensure};
 use ssh_key::rand_core::OsRng;
 use ssh_key::{Algorithm, PrivateKey};
 use warden_broker_proto::doctor::sanitize;
+use warden_broker_proto::github_token::{AutomaticCaller, AutomaticRequest};
 use warden_broker_proto::release::{CommitId, ReleaseTag, RepoName};
 use warden_broker_proto::{
-    Access, ApiGrant, CreateRequest, CreatedResponse, Goal, GrantAccess, GrantView, Id,
-    RequestStatus, SecretName, SessionLabel, SessionLink, TargetName, UnixUser, Window,
-    is_read_only, modifying_methods, under_prefix,
+    Access, ApiGrant, CreateRequest, CreatedResponse, GithubTokenAccess, Goal, GrantAccess,
+    GrantView, Id, RequestStatus, SecretName, SessionLabel, SessionLink, TargetName, UnixUser,
+    Window, is_read_only, modifying_methods, under_prefix,
 };
 
 use crate::client::{CallError, Client, MAX_WAIT_SECS, fetch_info};
@@ -204,7 +205,8 @@ pub(crate) async fn request_github(
 ) -> Result<()> {
     let (session, link) = resolve_context(context)?;
     let (config, client) = client()?;
-    let req = github_request(goal, window, session, link);
+    // No repository argument yet: the legacy shape, which the broker refuses.
+    let req = github_request(goal, window, GithubTokenAccess::default(), session, link);
     let grant = request_grant(&config, &client, &req, GITHUB_SUBJECT, Pending::Same).await?;
     check_github_grant(&grant)?;
     announce(&grant);
@@ -249,13 +251,16 @@ pub(crate) async fn request_github_for_tool(
     config: &Config,
     client: &Client,
     goal: Goal,
+    caller: AutomaticCaller,
+    repository: &RepoName,
 ) -> Result<()> {
     let (session, link) = resolve_context(RequestContext::default())?;
     let max = fetch_info(&config.server)
         .await
         .ok()
         .and_then(|info| info.github_token_max_window);
-    let req = github_request(goal, tool_window(max), session, link);
+    let access = tool_access(caller, repository)?;
+    let req = github_request(goal, tool_window(max), access, session, link);
     eprintln!("warden: this agent has no active GitHub token grant; asking the owner for one");
     let grant = request_grant(config, client, &req, GITHUB_SUBJECT, Pending::AnyOfKind)
         .await
@@ -282,18 +287,31 @@ fn tool_window(max: Option<Window>) -> Window {
     })
 }
 
+/// The access of a request made for git or `gh`: the one repository they found,
+/// and the directory they ran in when it is usable as free text.
+fn tool_access(caller: AutomaticCaller, repository: &RepoName) -> Result<GithubTokenAccess> {
+    let dir = std::env::current_dir()
+        .ok()
+        .and_then(|dir| dir.to_str().map(str::to_owned));
+    let automatic = |dir| Some(AutomaticRequest { by: caller, dir });
+    GithubTokenAccess::new(vec![repository.clone()], automatic(dir))
+        .or_else(|_| GithubTokenAccess::new(vec![repository.clone()], automatic(None)))
+        .context("cannot build the GitHub token request")
+}
+
 /// What completes "a request …" for a GitHub token request.
 const GITHUB_SUBJECT: &str = "for a github token";
 
 fn github_request(
     goal: Goal,
     window: Window,
+    access: GithubTokenAccess,
     session: Option<SessionLabel>,
     link: Option<SessionLink>,
 ) -> CreateRequest {
     CreateRequest {
         goal,
-        access: Access::GithubToken {},
+        access: Access::GithubToken(access),
         window,
         session,
         link,

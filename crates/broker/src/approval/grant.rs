@@ -4,6 +4,7 @@
 use axum::http::StatusCode;
 use axum::response::Response;
 use ssh_key::PublicKey;
+use warden_broker_proto::github_token::GrantScope;
 use warden_broker_proto::{
     Access, CreateRequest, GrantAccess, GrantView, Id, RelayGrant, SshGrant, Window,
 };
@@ -68,7 +69,7 @@ pub(super) async fn build_grant(
                 grant_id: Id::random(),
                 not_before,
                 not_after,
-                access: GrantAccess::GithubToken(policy.grant()),
+                access: GrantAccess::GithubToken(policy.grant(GrantScope::Legacy)),
             },
             Err((context, cause)) => return Err(Box::new(internal(context, &cause))),
         },

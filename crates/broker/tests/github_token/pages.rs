@@ -14,7 +14,11 @@ async fn approval_page_names_app_installation_and_permissions() {
     let (_, token) = broker
         .create_request(
             "bot",
-            TestBroker::github_token_request("push the fix", Window::D30),
+            TestBroker::github_token_request(
+                "push the fix",
+                Window::D30,
+                &["example-owner/example-repo"],
+            ),
         )
         .await;
     let page = broker.get(&format!("/approve/{token}")).await;
@@ -63,7 +67,11 @@ async fn destination_changed_between_page_and_approve() {
     let (_, token) = broker
         .create_request(
             "bot",
-            TestBroker::github_token_request("push the fix", Window::D7),
+            TestBroker::github_token_request(
+                "push the fix",
+                Window::D7,
+                &["example-owner/example-repo"],
+            ),
         )
         .await;
     let mut auth = broker.enroll_soft_passkey().await;

@@ -18,9 +18,11 @@ mod self_contained;
 use http::{HeaderName, Method};
 use maud::Markup;
 use url::Url;
+use warden_broker_proto::github_token::GrantScope;
+use warden_broker_proto::release::RepoName;
 use warden_broker_proto::{
-    Access, AgentName, ApiGrant, CommitSigningGrant, CreateRequest, Fingerprint, Goal, GrantAccess,
-    Id, RelayGrant, SecretName, SshGrant, TargetName, UnixUser, Window,
+    Access, AgentName, ApiGrant, CommitSigningGrant, CreateRequest, Fingerprint, GithubTokenAccess,
+    Goal, GrantAccess, Id, RelayGrant, SecretName, SshGrant, TargetName, UnixUser, Window,
 };
 
 use super::super::{LiveGrant, LiveProxyCall, LiveRelaySession};
@@ -471,7 +473,13 @@ fn commit_signing_pages() -> Vec<(&'static str, Markup)> {
 fn github_token_request() -> CreateRequest {
     CreateRequest {
         goal: goal("Push the fix and open a pull request"),
-        access: Access::GithubToken {},
+        access: Access::GithubToken(
+            GithubTokenAccess::new(
+                vec![RepoName::try_from("example-owner/example-repo".to_owned()).unwrap()],
+                None,
+            )
+            .unwrap(),
+        ),
         window: Window::D30,
         session: None,
         link: None,
@@ -491,7 +499,7 @@ fn github_token_pages() -> Vec<(&'static str, Markup)> {
     let mut grant = active(
         10,
         github_token_request(),
-        GrantAccess::GithubToken(github_token_policy().grant()),
+        GrantAccess::GithubToken(github_token_policy().grant(GrantScope::Legacy)),
     );
     grant.not_after = NOW + 26 * 86_400;
     let grants_list = vec![grant];

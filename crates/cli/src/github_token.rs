@@ -21,7 +21,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, Result, anyhow};
 use serde::{Deserialize, Serialize};
 use warden_broker_proto::github_token::{
-    APP_CHANGED, GithubTokenResponse, HOURLY_LIMIT, NO_ACTIVE_GRANT, NOT_CONFIGURED,
+    APP_CHANGED, AutomaticCaller, GithubTokenResponse, HOURLY_LIMIT, NO_ACTIVE_GRANT,
+    NOT_CONFIGURED,
 };
 use warden_broker_proto::release::RepoName;
 use warden_broker_proto::{Goal, Id};
@@ -119,6 +120,8 @@ impl Held {
             token,
             expires_at,
             grant_id,
+            repository: _,
+            repository_id: _,
         } = response;
         Self {
             token: Zeroizing::new(token),
@@ -322,7 +325,11 @@ pub async fn obtain(caller: Caller, repository: &RepoName) -> Result<Zeroizing<S
         Err(e) if is_no_grant(&e) => {
             let dir = std::env::current_dir().ok();
             let goal = goal_for(caller, repository, dir.as_deref())?;
-            request::request_github_for_tool(&config, &client, goal).await?;
+            let by = match caller {
+                Caller::CredentialHelper => AutomaticCaller::GitCredential,
+                Caller::GhWrapper => AutomaticCaller::GhWrapper,
+            };
+            request::request_github_for_tool(&config, &client, goal, by, repository).await?;
             cached_or_mint(&config, &client, unix_now())
                 .await
                 .map_err(explain)

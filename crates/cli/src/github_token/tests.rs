@@ -43,6 +43,8 @@ fn token(token: &str, expires_at: i64) -> Held {
         token: token.to_owned(),
         expires_at,
         grant_id: Id::random(),
+        repository: RepoName::try_from("example-owner/example-repo".to_owned()).unwrap(),
+        repository_id: 1001,
     };
     Held::new(response, identity())
 }
@@ -61,6 +63,8 @@ async fn serve_as(path: &Path, identity: &Identity) -> (String, bool) {
             token: FRESH.to_owned(),
             expires_at: NOW + 3600,
             grant_id: Id::random(),
+            repository: RepoName::try_from("example-owner/example-repo".to_owned()).unwrap(),
+            repository_id: 1001,
         }))
     })
     .await
@@ -202,6 +206,8 @@ async fn a_token_that_is_not_well_formed_is_refused_and_not_cached() {
             token: "ghs_a\npassword=other".to_owned(),
             expires_at: NOW + 3600,
             grant_id: Id::random(),
+            repository: RepoName::try_from("example-owner/example-repo".to_owned()).unwrap(),
+            repository_id: 1001,
         }))
     })
     .await

@@ -145,7 +145,7 @@ fn access_line(request: &CreateRequest, host: &str, port: u16) -> String {
         Access::Ssh { target, user, .. } => format!("ssh {user}@{target} ({host}:{port})"),
         Access::Api { secret, .. } => format!("api {secret}"),
         Access::CommitSigning {} => "commit signing".to_owned(),
-        Access::GithubToken {} => "github token".to_owned(),
+        Access::GithubToken(_) => "github token".to_owned(),
         Access::Release {
             repository, tag, ..
         } => format!("release {tag} of {repository}"),

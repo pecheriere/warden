@@ -12,6 +12,7 @@ use aws_lc_rs::signature::RSA_PKCS1_SHA256;
 use rustls_pki_types::PrivateKeyDer;
 use rustls_pki_types::pem::PemObject as _;
 use sha2::{Digest as _, Sha256};
+use warden_broker_proto::github_token::GrantScope;
 use warden_broker_proto::{GithubTokenGrant, Window};
 use zeroize::Zeroizing;
 
@@ -233,13 +234,14 @@ impl GithubTokenPolicy {
         hex::encode(hasher.finalize())
     }
 
-    /// The grant details approving this policy gives.
+    /// The grant details approving this policy gives, for these repositories.
     #[must_use]
-    pub fn grant(&self) -> GithubTokenGrant {
+    pub fn grant(&self, repositories: GrantScope) -> GithubTokenGrant {
         GithubTokenGrant {
             app_id: self.app_id.clone(),
             installation_id: self.installation_id,
             digest: self.destination_digest(),
+            repositories,
         }
     }
 }
@@ -282,6 +284,7 @@ impl GithubAppProbe {
 mod tests {
     use aws_lc_rs::signature::{RSA_PKCS1_2048_8192_SHA256, UnparsedPublicKey};
     use warden_broker_proto::Window;
+    use warden_broker_proto::github_token::GrantScope;
 
     use super::{GithubAppKey, GithubAppProbe};
     use crate::policy::PolicyError;
@@ -374,7 +377,7 @@ mod tests {
             a.policy(Window::D30).destination_digest(),
             b.policy(Window::D30).destination_digest()
         );
-        let grant = base.grant();
+        let grant = base.grant(GrantScope::Legacy);
         assert_eq!(grant.app_id, APP_ID);
         assert_eq!(grant.installation_id, INSTALLATION_ID);
         assert_eq!(grant.digest, base.destination_digest());

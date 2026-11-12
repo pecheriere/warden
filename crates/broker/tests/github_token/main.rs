@@ -25,7 +25,11 @@ async fn approve(broker: &TestBroker, agent: &str, window: Window) -> String {
     let (created, token) = broker
         .create_request(
             agent,
-            TestBroker::github_token_request("push the fix", window),
+            TestBroker::github_token_request(
+                "push the fix",
+                window,
+                &["example-owner/example-repo"],
+            ),
         )
         .await;
     let approved = broker.approve(&token, window).await;

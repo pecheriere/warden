@@ -9,7 +9,9 @@ use sqlx::Row as _;
 use sqlx::sqlite::SqliteRow;
 use sqlx::{Sqlite, Transaction};
 use url::Url;
-use warden_broker_proto::{Access, AgentName, CreateRequest, Goal, GrantAccess, Id, Window};
+use warden_broker_proto::{
+    Access, AgentName, CreateRequest, GithubTokenAccess, Goal, GrantAccess, Id, Window,
+};
 
 use super::transition::detached;
 use super::{Destination, RequestError, Requests, Scope, approval_token, begin, parse};
@@ -96,10 +98,10 @@ impl OneAtATime {
         }
     }
 
-    const fn access(self) -> Access {
+    fn access(self) -> Access {
         match self {
             Self::CommitSigning => Access::CommitSigning {},
-            Self::GithubToken => Access::GithubToken {},
+            Self::GithubToken => Access::GithubToken(GithubTokenAccess::default()),
         }
     }
 

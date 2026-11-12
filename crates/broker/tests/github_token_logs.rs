@@ -55,7 +55,11 @@ async fn the_token_stays_out_of_the_logs() {
     let (_, token) = broker
         .create_request(
             "bot",
-            TestBroker::github_token_request("push the fix", Window::D30),
+            TestBroker::github_token_request(
+                "push the fix",
+                Window::D30,
+                &["example-owner/example-repo"],
+            ),
         )
         .await;
     let approved = broker.approve(&token, Window::D30).await;

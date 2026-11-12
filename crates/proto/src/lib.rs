@@ -76,7 +76,7 @@ pub use self::names::{AgentName, Goal, SecretName, TargetName, UnixUser};
 pub use self::session::{SessionLabel, SessionLink};
 pub use self::window::Window;
 pub use commit_signing::CommitSigningGrant;
-pub use github_token::GithubTokenGrant;
+pub use github_token::{GithubTokenAccess, GithubTokenGrant};
 
 /// 16 bytes of OS randomness as 32 lowercase hex characters.
 ///
@@ -147,7 +147,7 @@ pub enum Access {
     CommitSigning {},
     /// A short-lived GitHub App installation token, minted by the broker.
     #[serde(rename = "github_token")]
-    GithubToken {},
+    GithubToken(github_token::GithubTokenAccess),
     /// A release made by the broker: the tag, a signed manifest and the
     /// publication.
     Release {
@@ -369,6 +369,10 @@ pub struct InfoResponse {
     /// asks for no more. Absent from brokers older than GitHub tokens.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub github_token_max_window: Option<Window>,
+    /// Whether GitHub token grants name their repositories. `false` from brokers
+    /// older than that, which a newer CLI must not send repositories to.
+    #[serde(default)]
+    pub scoped_github_tokens: bool,
 }
 
 /// Error body returned by the API.

@@ -6,7 +6,8 @@ use std::sync::Arc;
 use sqlx::{Row as _, SqliteConnection};
 use url::Url;
 use warden_broker_proto::{
-    Access, AgentName, CreateRequest, CreatedResponse, Id, TargetName, fingerprint,
+    Access, AgentName, CreateRequest, CreatedResponse, GithubTokenAccess, Id, TargetName, Window,
+    fingerprint,
 };
 
 use super::revocation::commit_with_entries;
@@ -121,6 +122,29 @@ impl Requests {
         Err(RequestError::Contended)
     }
 
+    /// Checks a GitHub token request and returns its dedupe key and subject.
+    async fn check_github_token(
+        &self,
+        agent: &AgentName,
+        github: &GithubTokenAccess,
+        window: Window,
+    ) -> Result<(String, String), RequestError> {
+        if github.is_legacy() {
+            return Err(RequestError::Rejected(
+                warden_broker_proto::github_token::OLD_CLIENT.to_owned(),
+            ));
+        }
+        // Does not read the key: any enrolled agent can get this far.
+        if !self.backend.has_github_app().await? {
+            return Err(RequestError::Rejected(
+                warden_broker_proto::github_token::NOT_CONFIGURED.to_owned(),
+            ));
+        }
+        github_token::check_window(window, self.github_token_max)
+            .map_err(RequestError::Rejected)?;
+        Ok((format!("{agent}|github_token"), "github token".to_owned()))
+    }
+
     /// Check `req` of `agent` against the policy as it is now. Returns its dedupe
     /// slot, what it asks for in the owner's notification and, for a release,
     /// what GitHub said about it. For a release, a duplicate of the agent's
@@ -195,16 +219,8 @@ impl Requests {
                     "commit signing".to_owned(),
                 )
             }
-            Access::GithubToken {} => {
-                // Does not read the key: any enrolled agent can get this far.
-                if !self.backend.has_github_app().await? {
-                    return Err(RequestError::Rejected(
-                        warden_broker_proto::github_token::NOT_CONFIGURED.to_owned(),
-                    ));
-                }
-                github_token::check_window(req.window, self.github_token_max)
-                    .map_err(RequestError::Rejected)?;
-                (format!("{agent}|github_token"), "github token".to_owned())
+            Access::GithubToken(github) => {
+                self.check_github_token(agent, github, req.window).await?
             }
             Access::Release { .. } => {
                 let slot = self.release_slot(req.window, &req.access, agent).await?;

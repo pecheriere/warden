@@ -11,7 +11,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use secrecy::ExposeSecret as _;
 use warden_broker_proto::github_token::{
-    APP_CHANGED, GithubTokenResponse, HOURLY_LIMIT, NO_ACTIVE_GRANT, PERMISSIONS,
+    APP_CHANGED, GithubTokenResponse, GrantScope, HOURLY_LIMIT, NO_ACTIVE_GRANT, PERMISSIONS,
 };
 use warden_broker_proto::{AgentName, Id};
 
@@ -105,6 +105,15 @@ async fn attempt(
     if current.destination_digest() != grant.digest {
         return Err(refused(StatusCode::CONFLICT, APP_CHANGED));
     }
+    // A grant that names no repository mints nothing: there is nothing to scope the
+    // token to. Until the request names the repository, only a grant of exactly
+    // one can be served.
+    let GrantScope::Repositories(covered) = &grant.repositories else {
+        return Err(refused(StatusCode::FORBIDDEN, NO_ACTIVE_GRANT));
+    };
+    let [repository] = covered.as_slice() else {
+        return Err(refused(StatusCode::FORBIDDEN, NO_ACTIVE_GRANT));
+    };
     // Taken before GitHub is asked, so that refused calls cost GitHub nothing.
     if !state.requests.take_mint(&grant_id).await? {
         return Err(refused(StatusCode::TOO_MANY_REQUESTS, HOURLY_LIMIT));
@@ -144,6 +153,8 @@ async fn attempt(
         token: minted.token.expose_secret().to_owned(),
         expires_at: minted.expires_at,
         grant_id,
+        repository: repository.name.clone(),
+        repository_id: repository.id,
     })
 }
 

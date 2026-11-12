@@ -95,7 +95,10 @@ async fn a_request_already_waiting_is_what_renewing_opens() {
     let (broker, _) = configured(TestBroker::new().await).await;
     let old = approve(&broker, "bot", Window::D30).await;
     let (created, stale) = broker
-        .create_request("bot", TestBroker::github_token_request("again", Window::D7))
+        .create_request(
+            "bot",
+            TestBroker::github_token_request("again", Window::D7, &["example-owner/example-repo"]),
+        )
         .await;
     let token = renew(&broker, &old).await;
     // The same request, on a new link.

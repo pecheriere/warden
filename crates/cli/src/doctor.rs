@@ -502,6 +502,7 @@ mod tests {
     fn info(id: &str, protocols: &[&str]) -> InfoResponse {
         InfoResponse {
             github_token_max_window: None,
+            scoped_github_tokens: true,
             protocols: protocols.iter().map(|p| (*p).to_owned()).collect(),
             audience: audience(id),
         }
