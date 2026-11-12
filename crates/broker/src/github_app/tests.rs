@@ -48,7 +48,8 @@ fn created_at(token: &str, expires_at: i64) -> Scripted {
 fn created(token: &str, expires_at: &str) -> Scripted {
     let epoch = expires_at
         .parse::<jiff::Timestamp>()
-        .map_or(0, jiff::Timestamp::as_second);
+        .expect("a test expiry is a valid timestamp")
+        .as_second();
     created_at(token, epoch)
 }
 
@@ -211,7 +212,14 @@ async fn mint_refuses_malformed_answers() {
 #[tokio::test]
 async fn mint_refuses_bad_expiry() {
     assert_eq!(
-        refused(created("ghs_test", "tomorrow")).await,
+        refused(answer_body(
+            "ghs_test",
+            "tomorrow",
+            &json!({"repositories": [{"id": REPO_ID, "full_name": REPO}],
+                    "permissions": expected_permissions(),
+                    "repository_selection": "selected"}),
+        ))
+        .await,
         MintError::Malformed
     );
 }
@@ -534,18 +542,38 @@ async fn errors_carry_no_github_text() {
                "repositories": [{"id": REPO_ID, "full_name": MARKER}],
                "permissions": {"metadata": "read"}}),
     ];
-    for body in bodies {
-        let scripted = Scripted::with_body(201, body.to_string());
-        // `mint` ignores names, so the third body is only a refusal for `resolve`.
-        let errors = [
-            mint_with(Scripted::with_body(201, body.to_string()))
-                .await
-                .err(),
-            resolve_with(&[REPO], scripted).await.err(),
-        ];
-        assert!(errors.iter().any(Option::is_some));
-        for err in errors.into_iter().flatten() {
+    // Whether `mint` and `resolve` must refuse each body. `mint` ignores names, so
+    // the third body is only a refusal for `resolve`.
+    let must_fail = [(true, true), (true, true), (false, true)];
+    for (body, (mint_fails, resolve_fails)) in bodies.into_iter().zip(must_fail) {
+        let minted = mint_with(Scripted::with_body(201, body.to_string())).await;
+        let resolved = resolve_with(&[REPO], Scripted::with_body(201, body.to_string())).await;
+        assert_eq!(minted.is_err(), mint_fails, "{body}");
+        assert_eq!(resolved.is_err(), resolve_fails, "{body}");
+        for err in [minted.err(), resolved.err()].into_iter().flatten() {
             assert!(!format!("{err:?} {err}").contains(MARKER), "{err:?}");
         }
     }
+}
+
+#[tokio::test]
+async fn mint_refuses_missing_permissions() {
+    let absent = answer_body(
+        "ghs_test",
+        EXPIRES_AT,
+        &json!({"repositories": [{"id": REPO_ID, "full_name": REPO}],
+                "repository_selection": "selected"}),
+    );
+    assert_eq!(refused(absent).await, MintError::Malformed);
+}
+
+#[tokio::test]
+async fn mint_refuses_missing_selection() {
+    let absent = answer_body(
+        "ghs_test",
+        EXPIRES_AT,
+        &json!({"repositories": [{"id": REPO_ID, "full_name": REPO}],
+                "permissions": expected_permissions()}),
+    );
+    assert_eq!(refused(absent).await, MintError::WrongScope);
 }

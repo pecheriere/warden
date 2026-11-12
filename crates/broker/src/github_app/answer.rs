@@ -22,7 +22,6 @@ struct Wire {
     expires_at: String,
     #[serde(default)]
     repositories: Vec<WireRepository>,
-    #[serde(default)]
     permissions: HashMap<String, String>,
     #[serde(default)]
     repository_selection: Option<String>,

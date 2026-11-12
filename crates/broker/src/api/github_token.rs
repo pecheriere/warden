@@ -129,7 +129,14 @@ async fn attempt(
                 github_app::MintError::NotAccessible | github_app::MintError::WrongScope => {
                     refused(StatusCode::CONFLICT, REPOSITORY_UNREACHABLE)
                 }
-                _ => refused(StatusCode::SERVICE_UNAVAILABLE, GITHUB_UNAVAILABLE),
+                github_app::MintError::Key
+                | github_app::MintError::Unreachable
+                | github_app::MintError::Refused(_)
+                | github_app::MintError::Malformed
+                | github_app::MintError::TooLarge
+                | github_app::MintError::Compressed => {
+                    refused(StatusCode::SERVICE_UNAVAILABLE, GITHUB_UNAVAILABLE)
+                }
             }
         })?;
 
