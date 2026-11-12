@@ -591,6 +591,10 @@ grant has used that step: ask for a new release for the same tag and commit, and
 only the steps left. When the owner approves it, the earlier grant for that release ends, so
 only the new one is active.
 
+For warden's own releases, `scripts/sign-release.sh` checks the signed manifest after
+`sign-manifest`: publish only after it printed Signed for the tag. If it fails after
+signing, do not publish; ask for a new release for the same tag and commit.
+
 A step refused for `policy changed; request access again` means the release item (the key, the
 tagger, the manifest's name and namespace, or the publish setting) or the release App changed
 since the owner approved: ask again. `this step is not part of the approved release`

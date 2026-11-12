@@ -1,20 +1,30 @@
 #!/usr/bin/env bash
-# Signs the manifest of a draft release, with a key that is not on GitHub. The
-# maintainer runs this after the release workflow has left the draft, and before
-# publishing it: a published release is immutable, so it cannot gain these files
-# later. docs/verifying-releases.md explains what the signature is for.
+# Has warden sign the manifest of a draft release, once the release workflow has
+# left the draft and before it is published: a published release is immutable, so it
+# cannot gain these files later. docs/verifying-releases.md explains what the
+# signature is for.
 #
-# Usage: scripts/sign-release.sh vX.Y.Z [public-key-file]
+# Usage: scripts/sign-release.sh vX.Y.Z
 #
-# The key defaults to git's user.signingkey, and must be listed in
-# docs/release-signers for the warden-release namespace. The script refuses to
-# sign unless the tag carries a good signature from that same key and was signed
-# under that name, the draft holds
-# exactly the expected files, and each archive, under its own name, and the image
-# have a build attestation from the release workflow at that tag and commit. It
-# then uploads warden-<version>-SHA256SUMS and its .sig to the draft. It never
-# publishes. It needs gh, git, ssh-keygen and shasum, and is safe to rerun. A rerun
-# of the workflow replaces the archives and removes the manifest, so sign again.
+# The signing key is the broker's, behind the owner's phone approval of the release
+# grant (`warden request release`). This script holds no key and uploads nothing:
+# `warden release sign-manifest` signs the manifest and attaches it, with its
+# signature, to the draft. The script refuses to ask for that unless the tag carries
+# a good signature from a key docs/release-signers lists under the identity
+# warden-release, the draft holds exactly the expected files, and each archive, under
+# its own name, and the image have a build attestation from the release workflow at
+# that tag and commit. It then fetches the draft's manifest and signature and checks
+# them against docs/release-signers before it says Signed. It never publishes. It
+# needs gh (with a token from `warden github token`, in GH_TOKEN: it refuses to run
+# without one, so that gh never falls back to a stored login), warden, git,
+# ssh-keygen and shasum.
+#
+# A rerun is safe only until `warden release sign-manifest` has succeeded: the broker
+# signs once per release grant, even when the check afterwards fails. If the workflow
+# is rerun after signing (it replaces the archives and removes the manifest), or the
+# script fails after signing, ask for a new release grant for the same tag and
+# commit, which covers only the steps left, and run the script again. Never publish
+# unless the script printed Signed for this tag.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -23,7 +33,7 @@ repo=pecheriere/warden
 image=ghcr.io/pecheriere/warden
 workflow=pecheriere/warden/.github/workflows/release.yml
 signers=docs/release-signers
-identity=pecheriere@users.noreply.github.com
+identity=warden-release
 namespace=warden-release
 # Every archive the release workflow attaches. warden-demo is the local demo: it is
 # signed like the rest, because the signature says who approved a file, not that it
@@ -37,46 +47,28 @@ fail() {
   exit 1
 }
 
-if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
-  echo "usage: $0 vX.Y.Z [public-key-file]" >&2
+if [ "$#" -ne 1 ]; then
+  echo "usage: $0 vX.Y.Z" >&2
   exit 2
 fi
 tag=$1
+[ -n "${GH_TOKEN:-}" ] || fail "GH_TOKEN is not set: token=\$(warden github token) && GH_TOKEN=\$token $0 $tag"
 [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "not a release tag: $tag"
 version=${tag#v}
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
-# The key can be a file or, as with an agent-held key, the literal public key.
-key=${2:-$(git config --type=path user.signingkey || true)}
-key=${key#key::}
-case "$key" in
-  '') fail "no key given, and git has no user.signingkey" ;;
-  ssh-*)
-    printf '%s\n' "$key" > "$work/key.pub"
-    key=$work/key.pub
-    ;;
-esac
-[ -r "$key" ] || fail "cannot read the public key: $key"
-read -r key_type key_blob _ < "$key"
-grep -Fq "$key_type $key_blob" "$signers" || fail "the key is not listed in $signers"
-grep -v '^#' "$signers" | grep -F "$key_type $key_blob" | grep -q 'namespaces="[^"]*warden-release' \
-  || fail "the key may not sign manifests: $signers limits it to other namespaces"
-key_fingerprint=$(ssh-keygen -lf "$key" | awk '{ print $2 }')
-
 # Checks the tag with ssh-keygen directly, so that the result depends on the
 # list in this repository and not on this machine's git configuration.
 git cat-file tag "refs/tags/$tag" > "$work/tag" 2> /dev/null || fail "$tag is not an annotated tag here: git fetch --tags"
 sed -n '/^-----BEGIN SSH SIGNATURE-----$/,$p' "$work/tag" > "$work/tag.sig"
 sed '/^-----BEGIN SSH SIGNATURE-----$/,$d' "$work/tag" > "$work/tag.payload"
-tag_check=$(ssh-keygen -Y verify -f "$signers" -I "$identity" -n git -s "$work/tag.sig" < "$work/tag.payload" 2>&1) \
+tag_verdict=$(ssh-keygen -Y verify -f "$signers" -I "$identity" -n git -s "$work/tag.sig" < "$work/tag.payload" 2> /dev/null) \
   || fail "$tag has no good signature from a key in $signers"
-# An older key stays listed so that its tags verify, but a new release's tag must
-# come from the key that signs its manifest. Otherwise git's default key can sign a
-# tag without anyone noticing.
-[ "${tag_check##* }" = "$key_fingerprint" ] \
-  || fail "$tag was signed by another key, not $key_fingerprint: sign the tag with the release key"
+# ssh-keygen ends its verdict with the key's fingerprint.
+tag_key=${tag_verdict##* }
+[[ "$tag_key" =~ ^SHA256: ]] || fail "unexpected verdict for the signature on $tag: $tag_verdict"
 # A signed tag object can be moved to another ref, so its signed name must match.
 signed_name=$(sed -n 's/^tag //p' "$work/tag.payload" | head -n 1)
 [ "$signed_name" = "$tag" ] || fail "the tag at $tag was signed as $signed_name"
@@ -142,13 +134,28 @@ image_digest=$(gh attestation verify "oci://$image_ref" "${attestation_args[@]}"
 [[ "$image_digest" =~ ^[0-9a-f]{64}$ ]] || fail "unexpected digest for $image_ref: $image_digest"
 printf '%s  %s\n' "$image_digest" "$image_ref" >> "$manifest"
 
-# Signs the way git does, so a key held in an agent works the same as for a tag.
-program=$(git config gpg.ssh.program || echo ssh-keygen)
-"$program" -Y sign -n "$namespace" -f "$key" "$manifest"
-ssh-keygen -Y verify -f "$signers" -I "$identity" -n "$namespace" -s "$manifest.sig" < "$manifest" \
-  || fail "the new signature does not verify against $signers"
+# From here on warden has signed, and signs once per grant: a failure below means
+# do not publish, and a new release grant is needed before running this again.
+after_signing() {
+  fail "$* (do not publish; ask for a new release grant for $tag and run this again)"
+}
 
-gh release upload "$tag" "$manifest" "$manifest.sig" --repo "$repo" --clobber
+# warden signs and attaches the manifest; it never leaves this machine's hands unchecked.
+warden release sign-manifest "$repo" "$tag" "$manifest" || after_signing "warden could not sign the manifest"
+
+# What the draft now holds is what counts, so it is fetched back and checked against
+# the list in this repository, and against the manifest that was sent.
+mkdir "$work/draft"
+gh release download "$tag" --repo "$repo" --dir "$work/draft" \
+  --pattern "warden-$version-SHA256SUMS" --pattern "warden-$version-SHA256SUMS.sig" \
+  || after_signing "could not fetch the draft's manifest and signature"
+drafted=$work/draft/warden-$version-SHA256SUMS
+cmp -s "$manifest" "$drafted" || after_signing "the draft's manifest is not the one that was sent"
+manifest_verdict=$(ssh-keygen -Y verify -f "$signers" -I "$identity" -n "$namespace" -s "$drafted.sig" < "$drafted" 2> /dev/null) \
+  || after_signing "the signature on the draft does not verify against $signers"
+# One key must stand behind both, so a retired key's tag cannot pass with a new key's manifest.
+[ "${manifest_verdict##* }" = "$tag_key" ] \
+  || after_signing "the manifest is not signed by the key that signed the tag"
 
 cat "$manifest"
-echo "Signed. Check the draft, then publish it: gh release edit $tag --repo $repo --draft=false"
+echo "Signed. Check the draft, then publish it: warden release publish $repo $tag"
