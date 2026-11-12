@@ -45,7 +45,7 @@ pub fn approve(view: &PendingView, hosts: &LinkHosts, now: i64) -> Markup {
                     }
                     div.field.tight {
                         span.label { "Access" }
-                        (destination_access(&view.request, &view.destination))
+                        (destination_access(&view.agent, &view.request, &view.destination, view.github.as_ref()))
                     }
                     div.field {
                         span.label { "Goal" }

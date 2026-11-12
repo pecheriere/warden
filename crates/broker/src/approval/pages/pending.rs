@@ -57,7 +57,7 @@ fn card(entry: &PendingEntry, hosts: &LinkHosts, now: i64) -> Markup {
             div.field.tight {
                 span.label { "Access" }
                 @match &entry.destination {
-                    Some(destination) => (destination_access(&entry.request, destination)),
+                    Some(destination) => (destination_access(&entry.agent, &entry.request, destination, None)),
                     None => (stored_access(entry)),
                 }
             }

@@ -3,11 +3,14 @@
 //! and that a minted token outlives the grant's revocation.
 
 use maud::{Markup, html};
-use warden_broker_proto::Access;
-use warden_broker_proto::github_token::PERMISSIONS;
+use warden_broker_proto::github_token::{
+    AutomaticCaller, GithubTokenAccess, GrantScope, PERMISSIONS,
+};
+use warden_broker_proto::{Access, AgentName};
 
 use super::{icon, warning_icon};
-use crate::requests::{PendingView, Resolution};
+use crate::policy::GithubTokenPolicy;
+use crate::requests::{GithubPending, PendingView, ReplacedGrant, Resolution};
 
 /// What the approval page says instead of offering Approve, when the request names
 /// no repository (a CLI from before grants were scoped) or GitHub says the App cannot
@@ -72,12 +75,146 @@ fn app(app_id: &str, installation_id: u64) -> Markup {
     html! { "GitHub App " code { bdi { (app_id) } } ", installation " code { (installation_id) } }
 }
 
-/// What approving GitHub tokens gives, for the approval and pending pages.
-pub(super) fn access(app_id: &str, installation_id: u64) -> Markup {
+/// A repository as the page names it.
+struct Named {
+    name: String,
+    /// The name it was approved under, when GitHub's differs.
+    renamed_from: Option<String>,
+}
+
+/// The repositories to show: GitHub's resolution when there is one, otherwise the
+/// names the request asked for.
+fn named(request: &GithubTokenAccess, pending: Option<&GithubPending>) -> Vec<Named> {
+    if let Some(GithubPending {
+        resolution: Resolution::Resolved(list),
+        ..
+    }) = pending
+    {
+        return list
+            .iter()
+            .map(|r| Named {
+                name: r.name.as_str().to_owned(),
+                renamed_from: r.renamed_from.as_ref().map(|n| n.as_str().to_owned()),
+            })
+            .collect();
+    }
+    request
+        .repositories
+        .iter()
+        .map(|r| Named {
+            name: r.as_str().to_owned(),
+            renamed_from: None,
+        })
+        .collect()
+}
+
+/// A repository's name in the identifier type, with the name it was approved under
+/// when GitHub's differs.
+fn repository(repo: &Named) -> Markup {
     html! {
-        span { "Mint tokens for " (app(app_id, installation_id)) }
-        (reach())
+        code { bdi { (repo.name) } }
+        @if let Some(old) = &repo.renamed_from {
+            " (approved as " code { bdi { (old) } } ")"
+        }
+    }
+}
+
+/// The warning of what the access can change, for the repositories it covers.
+fn reach_of(repos: &[Named]) -> Markup {
+    html! {
+        strong.badge.modify {
+            (icon(14, "2.4", &warning_icon()))
+            // One child, so the badge's flex layout does not split the name from the words.
+            span {
+                @if let [only] = repos {
+                    "Can push and merge on " bdi { (only.name) }
+                } @else {
+                    "Can push and merge on these " (repos.len()) " repositories"
+                }
+            }
+        }
+    }
+}
+
+/// What the grants that approving would end say, one line each.
+fn replaced(agent: &AgentName, replaces: &[ReplacedGrant]) -> Markup {
+    html! {
+        @for grant in replaces {
+            span.detail.replaces {
+                "Approving ends " bdi { (agent) } "\u{2019}s grant for "
+                @match &grant.scope {
+                    GrantScope::Legacy => "all repositories of the installation",
+                    GrantScope::Repositories(list) => {
+                        @for (i, repo) in list.iter().enumerate() {
+                            @if i > 0 { ", " }
+                            code { bdi { (repo.name) } }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Which tool filed the request, when one did.
+fn automatic(request: &GithubTokenAccess) -> Markup {
+    html! {
+        @if let Some(auto) = &request.automatic {
+            span.detail {
+                "Filed automatically by "
+                (match auto.by {
+                    AutomaticCaller::GitCredential => "the git credential helper",
+                    AutomaticCaller::GhWrapper => "the gh wrapper",
+                })
+                @if let Some(dir) = &auto.dir {
+                    ". Working directory: " code { bdi { (dir) } }
+                }
+            }
+        }
+    }
+}
+
+/// What approving GitHub tokens gives, for the approval page; the pending list has
+/// no resolution (`pending` is `None`) and shows the names as asked.
+pub(super) fn access(
+    policy: &GithubTokenPolicy,
+    request: &GithubTokenAccess,
+    agent: &AgentName,
+    pending: Option<&GithubPending>,
+) -> Markup {
+    let repos = named(request, pending);
+    let reachable = !matches!(
+        pending,
+        Some(GithubPending {
+            resolution: Resolution::NotAccessible,
+            ..
+        })
+    );
+    html! {
+        @if repos.len() > 1 {
+            strong.badge.modify {
+                (icon(14, "2.4", &warning_icon()))
+                " This request covers " (repos.len()) " repositories"
+            }
+        }
+        @match repos.as_slice() {
+            [] => span { "Mint tokens for " (app(&policy.app_id, policy.installation_id)) },
+            [only] => span.repos { (repository(only)) },
+            many => ul.repos {
+                @for repo in many { li { (repository(repo)) } }
+            },
+        }
+        @if reachable && !repos.is_empty() {
+            (reach_of(&repos))
+        }
+        @if !repos.is_empty() {
+            span.detail { "Mints tokens for " (app(&policy.app_id, policy.installation_id)) }
+        }
         (permissions())
+        @if let Some(pending) = pending {
+            (replaced(agent, &pending.replaces))
+        }
+        (automatic(request))
         span.detail {
             "warden mints a token whenever this agent asks, until the grant ends or is revoked, \
              and records each one. " (REVOKING)
