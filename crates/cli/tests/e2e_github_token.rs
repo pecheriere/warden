@@ -21,7 +21,7 @@ use warden_broker_proto::Window;
 
 const AGENT: &str = "build-agent";
 const TOKEN: &str = "ghs_e2eToken0123456789";
-const GITHUB_INPUT: &str = "protocol=https\nhost=github.com\n\n";
+const GITHUB_INPUT: &str = "protocol=https\nhost=github.com\npath=owner/repo.git\n\n";
 
 fn text(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
@@ -261,7 +261,7 @@ async fn e2e_request_github_then_git_credential() {
     let token = s
         .machine
         .warden()
-        .args(["github", "token"])
+        .args(["github", "token", "--repo", "owner/repo"])
         .output()
         .unwrap();
     assert_eq!(token.status.code(), Some(0), "{}", text(&token.stderr));
@@ -270,9 +270,15 @@ async fn e2e_request_github_then_git_credential() {
     // Plain `gh` runs the wrapper, which hands the real one the token.
     let mut gh = Command::new("gh");
     s.machine.env(&mut gh);
-    let gh = gh.args(["pr", "list"]).output().unwrap();
+    let gh = gh
+        .args(["pr", "list", "-R", "owner/repo"])
+        .output()
+        .unwrap();
     assert!(gh.status.success(), "{}", text(&gh.stderr));
-    assert_eq!(text(&gh.stdout), format!("token={TOKEN}\nargs=pr list\n"));
+    assert_eq!(
+        text(&gh.stdout),
+        format!("token={TOKEN}\nargs=pr list -R owner/repo\n")
+    );
     assert_eq!(s.upstream.received().len(), 1, "one mint, then the cache");
 
     // Revoking the grant here drops its cached token.
@@ -296,7 +302,7 @@ async fn token_without_grant_asks_the_owner_and_serves_once_approved() {
     let child = s
         .machine
         .warden()
-        .args(["github", "token"])
+        .args(["github", "token", "--repo", "owner/repo"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -362,7 +368,7 @@ fn spawn_token(s: &Setup, dir: &str) -> Child {
     fs::create_dir_all(&dir).unwrap();
     s.machine
         .warden()
-        .args(["github", "token"])
+        .args(["github", "token", "--repo", "owner/repo"])
         .current_dir(dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

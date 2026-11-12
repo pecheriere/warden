@@ -7,6 +7,7 @@
 //! a repository read wrongly is a token for the wrong repository.
 
 use std::ffi::OsString;
+use std::os::unix::ffi::OsStrExt as _;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -72,11 +73,14 @@ pub fn from_gh_value(value: &str) -> Result<RepoName, RepoArgError> {
     let parts: Vec<&str> = rest.split('/').collect();
     match parts.as_slice() {
         [owner, name] if !had_scheme => parse_pair(owner, name),
-        [host, owner, name] if host.contains('.') => {
-            if host.eq_ignore_ascii_case(HOST) {
-                parse_pair(owner, name)
-            } else {
-                Err(RepoArgError::OtherHost)
+        [host, ..] if host.contains('.') => {
+            // gh accepts one trailing `/` and one `.git` after a URL's repository.
+            let rest = rest.strip_suffix('/').unwrap_or(rest);
+            let rest = rest.strip_suffix(".git").unwrap_or(rest);
+            match rest.split('/').collect::<Vec<_>>().as_slice() {
+                [HOST, owner, name] => parse_pair(owner, name),
+                [_, _, _] => Err(RepoArgError::OtherHost),
+                _ => Err(RepoArgError::Invalid),
             }
         }
         _ => Err(RepoArgError::Invalid),
@@ -103,6 +107,12 @@ pub fn repo_flag(args: &[OsString]) -> Result<Option<RepoName>, RepoArgError> {
             break;
         }
         let Some(arg) = arg.to_str() else {
+            // A value that is not UTF-8 cannot name a repository, and skipping it would
+            // let the flag be ignored.
+            let bytes = arg.as_bytes();
+            if bytes.starts_with(b"-R") || bytes.starts_with(b"--repo=") {
+                return Err(RepoArgError::Invalid);
+            }
             continue;
         };
         let value = if arg == "-R" || arg == "--repo" {

@@ -10,8 +10,8 @@ use warden_broker_proto::github_token::GithubTokenResponse;
 use warden_broker_proto::release::RepoName;
 
 use super::{
-    Caller, Held, Identity, MIN_REMAINING_SECS, Stored, explain, goal_for, read_cache, serve_from,
-    well_formed, write_cache,
+    Caller, Held, Identity, MIN_REMAINING_SECS, Stored, explain, goal_for, read_cache,
+    repository_for, serve_from, well_formed, write_cache,
 };
 use crate::client::CallError;
 use crate::{EXIT_ERROR, EXIT_NO_GRANT, Exit};
@@ -285,4 +285,19 @@ fn goal_names_the_repository() {
     assert!(goal.as_str().contains("example-owner/example-repo"));
     let goal = goal_for(Caller::GhWrapper, &repo, Some(Path::new("/a\nb"))).unwrap();
     assert!(!goal.as_str().contains(", in"), "{}", goal.as_str());
+}
+
+#[test]
+fn a_bad_repo_flag_in_gh_mode_refuses_with_the_fixed_message() {
+    for args in [
+        &["-R", "ghe.example.com/o/r"][..],
+        &["-R", "o"][..],
+        &["-R"][..],
+    ] {
+        let args: Vec<std::ffi::OsString> = args.iter().map(Into::into).collect();
+        let e = repository_for(None, true, &args).unwrap_err();
+        let exit = e.downcast_ref::<Exit>().unwrap();
+        assert_eq!(exit.code, EXIT_ERROR);
+        assert_eq!(exit.message, crate::github_repo::UNDETERMINED_GH);
+    }
 }

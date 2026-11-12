@@ -80,8 +80,28 @@ fn remote_url_forms() {
 
 #[test]
 fn gh_value_forms() {
-    for value in ["o/r", "github.com/o/r", "https://github.com/o/r"] {
+    for value in [
+        "o/r",
+        "github.com/o/r",
+        "https://github.com/o/r",
+        "github.com/o/r.git",
+        "https://github.com/o/r.git",
+        "github.com/o/r/",
+        "https://github.com/o/r/",
+        "https://github.com/o/r.git/",
+    ] {
         assert_eq!(from_gh_value(value), Ok(repo("o/r")), "{value}");
+    }
+    // The host is compared as `from_remote_url` does: exactly, in lowercase.
+    for value in ["GitHub.com/o/r", "https://GITHUB.COM/o/r"] {
+        assert_eq!(
+            from_gh_value(value),
+            Err(RepoArgError::OtherHost),
+            "{value}"
+        );
+    }
+    for value in ["github.com/o/r//", "github.com/o/.git"] {
+        assert_eq!(from_gh_value(value), Err(RepoArgError::Invalid), "{value}");
     }
     assert_eq!(
         from_gh_value("ghe.example.com/o/r"),
@@ -124,6 +144,19 @@ fn repo_flag_forms() {
         repo_flag(&os(&["-R", "ghe.example.com/o/r"])),
         Err(RepoArgError::OtherHost)
     );
+}
+
+#[test]
+fn a_repo_flag_value_that_is_not_utf8_is_refused() {
+    use std::os::unix::ffi::OsStringExt as _;
+
+    let bad = OsString::from_vec(b"o/\xff".to_vec());
+    let attached = OsString::from_vec(b"-Ro/\xff".to_vec());
+    assert_eq!(
+        repo_flag(&[OsString::from("-R"), bad]),
+        Err(RepoArgError::Invalid)
+    );
+    assert_eq!(repo_flag(&[attached]), Err(RepoArgError::Invalid));
 }
 
 #[test]

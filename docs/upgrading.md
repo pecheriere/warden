@@ -47,6 +47,15 @@ and requests made before the upgrade show their words too.
 A script that reads the fingerprint from `warden request`'s stderr needs checking:
 the line is now `fingerprint <words> (<hex>)`. Prefer the API's `fingerprint` field.
 
+## GitHub tokens and the repository
+
+After upgrading the CLI past 0.12.0, run `warden setup github` again on every machine
+where an agent uses it. It sets `credential.https://github.com.useHttpPath` and
+rewrites the `gh` wrapper to pass `gh`'s arguments to warden. Until then `warden
+doctor` fails its `github.token` check, git sends warden no repository, and an old
+wrapper does not pass `-R` to warden. A `gh` run outside a checkout needs `-R
+owner/name`.
+
 ## Private files
 
 From 0.9.0, warden keeps its files private to its user, and corrects

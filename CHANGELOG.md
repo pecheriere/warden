@@ -6,6 +6,10 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- `warden setup github` sets `credential.https://github.com.useHttpPath`, and the `gh` wrapper refuses to run when it cannot tell the repository; run `warden setup github` again after upgrading.
+
 ## [0.12.0] - 2026-11-11
 
 ### Upgrading

@@ -397,7 +397,8 @@ pub fn repository_for(
     args: &[OsString],
 ) -> Result<RepoName> {
     let explicit = if gh_args {
-        github_repo::repo_flag(args).map_err(|e| Exit::new(EXIT_ERROR, e.to_string()))?
+        github_repo::repo_flag(args)
+            .map_err(|_| Exit::new(EXIT_ERROR, github_repo::UNDETERMINED_GH))?
     } else {
         repo
     };

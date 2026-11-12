@@ -2,8 +2,10 @@
 //!
 //! In git's global configuration, `credential.https://github.com.helper` becomes
 //! an empty value, which drops the helpers configured before it, then
-//! `!<this program> git-credential`. And `~/.local/bin/gh` becomes a script that
-//! sets `GH_TOKEN` from `warden github token` and runs the real `gh`, the first one
+//! `!<this program> git-credential`; `credential.https://github.com.useHttpPath` becomes
+//! `true`, so that git sends the repository. And `~/.local/bin/gh` becomes a script that
+//! sets `GH_TOKEN` from `warden github token`, told `gh`'s arguments so that it can
+//! tell the repository, and runs the real `gh`, the first one
 //! on `PATH` at setup that is not this script. A `~/.local/bin/gh` this command did
 //! not write is never replaced. Everything is checked before anything changes,
 //! and every change is printed.
@@ -21,6 +23,10 @@ use crate::agent;
 
 /// The git setting this sets.
 const HELPER_KEY: &str = "credential.https://github.com.helper";
+
+/// The git setting that makes git send the repository to the helper, so that the
+/// token is for that repository.
+pub const USE_HTTP_PATH_KEY: &str = "credential.https://github.com.useHttpPath";
 
 /// The line that marks a `gh` wrapper as written by this command.
 const MARKER: &str = "# Written by `warden setup github`, which may replace it.";
@@ -97,7 +103,7 @@ pub fn this_program() -> Option<String> {
 fn wrapper_script(exe: &str, real_gh: &str) -> String {
     format!(
         "#!/bin/sh\n{MARKER}\n# Gives gh a GitHub token from warden: see `warden setup github`.\n\
-         GH_TOKEN=\"$({} github token)\" || exit $?\nexport GH_TOKEN\nexec {} \"$@\"\n",
+         GH_TOKEN=\"$({} github token --gh-args -- \"$@\")\" || exit $?\nexport GH_TOKEN\nexec {} \"$@\"\n",
         shell_quote(exe),
         shell_quote(real_gh)
     )
@@ -168,8 +174,14 @@ fn position(path_var: &OsStr, dir: &Path) -> Option<usize> {
 }
 
 fn git_config(args: &[&str]) -> Result<Output> {
-    Command::new("git")
-        .arg("config")
+    git_config_with(&|_| {}, args)
+}
+
+/// [`git_config`], with `configure` setting up the command first.
+fn git_config_with(configure: &impl Fn(&mut Command), args: &[&str]) -> Result<Output> {
+    let mut cmd = Command::new("git");
+    configure(&mut cmd);
+    cmd.arg("config")
         .arg("--global")
         .args(args)
         .output()
@@ -227,6 +239,17 @@ fn set_helper(helper: &str) -> Result<()> {
     }
     println!("{HELPER_KEY} = \"\" (git consults no helper configured before it for GitHub)");
     println!("{HELPER_KEY} = {helper}");
+    Ok(())
+}
+
+/// Make [`USE_HTTP_PATH_KEY`] `true` in git's global configuration, saying so. With
+/// it git sends the repository path, which the helper needs to scope a token.
+fn set_use_http_path(configure: &impl Fn(&mut Command)) -> Result<()> {
+    check_git(
+        &git_config_with(configure, &["--replace-all", USE_HTTP_PATH_KEY, "true"])?,
+        &format!("--replace-all {USE_HTTP_PATH_KEY}"),
+    )?;
+    println!("{USE_HTTP_PATH_KEY} = true");
     Ok(())
 }
 
@@ -301,6 +324,7 @@ pub fn run() -> Result<()> {
         .transpose()?;
 
     set_helper(&helper_value(&exe))?;
+    set_use_http_path(&|_| {})?;
     if let Some(notice) = notice {
         println!("{notice}");
     }
@@ -339,8 +363,8 @@ mod tests {
     use std::os::unix::fs::PermissionsExt as _;
 
     use super::{
-        Existing, MARKER, existing, find_real_gh, helper_program, helper_value, is_ours, position,
-        shell_quote, wrapper_script, write_wrapper,
+        Existing, MARKER, USE_HTTP_PATH_KEY, existing, find_real_gh, helper_program, helper_value,
+        is_ours, position, set_use_http_path, shell_quote, wrapper_script, write_wrapper,
     };
 
     #[test]
@@ -386,11 +410,57 @@ mod tests {
     }
 
     #[test]
+    fn the_wrapper_passes_gh_arguments_to_warden() {
+        let script = wrapper_script("/opt/bin/warden", "/usr/bin/gh");
+        assert!(
+            script.contains("github token --gh-args -- \"$@\")\" || exit $?\n"),
+            "{script}"
+        );
+        assert!(script.ends_with("exec '/usr/bin/gh' \"$@\"\n"), "{script}");
+        assert!(is_ours(script.as_bytes()));
+    }
+
+    #[test]
+    fn setup_sets_use_http_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("gitconfig");
+        let isolated = |cmd: &mut std::process::Command| {
+            cmd.env("GIT_CONFIG_GLOBAL", &file)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .current_dir(dir.path());
+        };
+        let read = || {
+            let mut cmd = std::process::Command::new("git");
+            isolated(&mut cmd);
+            let out = cmd
+                .args(["config", "--global", "--get", USE_HTTP_PATH_KEY])
+                .output()
+                .unwrap();
+            String::from_utf8(out.stdout).unwrap()
+        };
+        assert_eq!(read(), "");
+        set_use_http_path(&isolated).unwrap();
+        assert_eq!(read(), "true\n");
+        // Again, and over a value of another kind.
+        set_use_http_path(&isolated).unwrap();
+        assert_eq!(read(), "true\n");
+        fs::write(
+            &file,
+            "[credential \"https://github.com\"]\n\tuseHttpPath = false\n",
+        )
+        .unwrap();
+        set_use_http_path(&isolated).unwrap();
+        assert_eq!(read(), "true\n");
+    }
+
+    #[test]
     fn the_wrapper_sets_the_token_or_stops_and_carries_the_marker() {
         let script = wrapper_script("/opt/bin/warden", "/usr/bin/gh");
         assert!(script.starts_with("#!/bin/sh\n"), "{script}");
         assert!(
-            script.contains("GH_TOKEN=\"$('/opt/bin/warden' github token)\" || exit $?\n"),
+            script.contains(
+                "GH_TOKEN=\"$('/opt/bin/warden' github token --gh-args -- \"$@\")\" || exit $?\n"
+            ),
             "{script}"
         );
         assert!(script.contains("export GH_TOKEN\n"), "{script}");

@@ -854,14 +854,29 @@ of this, and the owner sees every signature in the audit log.
 Once, on each machine, and needing no grant: `warden setup github`. It points git's global
 `credential.https://github.com.helper` at warden alone, first an empty value, which drops the
 helpers configured before it, then `!<warden> git-credential`. It writes `~/.local/bin/gh`, a
-script that sets `GH_TOKEN` from `warden github token` and runs the real `gh`. It refuses to
+script that sets `GH_TOKEN` from `warden github token`, passing it `gh`'s own arguments, and runs
+the real `gh`. It also sets `credential.https://github.com.useHttpPath` to `true`, so that git
+sends warden the repository it is working with. It refuses to
 replace a `gh` there that it did not write, and warns on stderr when `~/.local/bin` is not
 before the real `gh` on `PATH`, as plain `gh` would then run without a token. With no `gh` on
 `PATH` it sets git up and writes no wrapper. It prints each change. Both the helper and the
 wrapper name warden by the path it was started from (Homebrew's `/opt/homebrew/bin/warden`
 on macOS or Linux, not its versioned directory), under the same conditions as for
 `warden setup git` above, so they survive an upgrade. Run it again if you move the binary
-to another path.
+to another path. Run it again after upgrading from a version that did not set
+`useHttpPath`: `warden doctor` fails until you do.
+
+**Which repository.** A token is asked for one repository, and warden works it out. For git, it is
+the repository in the URL git is talking to. For `gh`, it is `-R`/`--repo` if given, else
+`GH_REPO`, else the `origin` remote of the current directory. Only `github.com` repositories
+count. A `gh` run outside a checkout, or in one whose `origin` is not on `github.com`, needs
+`-R owner/name`.
+
+**When warden cannot tell the repository**, `warden github token` prints nothing and exits 1, and
+the `gh` wrapper stops with "cannot tell which repository; pass -R owner/name". It never runs
+`gh` without a token, because `gh` would then use whatever login it has. Name the repository with
+`-R` and run it again. Git-lfs is not supported through the helper: it sends paths that
+warden does not take for a repository, so it gets no token.
 
 After that `git push`, `git fetch` and `gh` work against GitHub as usual, with a token from
 warden. The token covers **every repository the owner's GitHub App is installed on**, with
