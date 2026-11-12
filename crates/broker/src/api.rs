@@ -156,7 +156,9 @@ const fn status_of(e: &RequestError) -> Option<StatusCode> {
         RequestError::UnknownTarget(_)
         | RequestError::UnknownSecret(_)
         | RequestError::NotFound => Some(StatusCode::NOT_FOUND),
-        RequestError::AlreadyDecided | RequestError::KeyInUse => Some(StatusCode::CONFLICT),
+        RequestError::AlreadyDecided | RequestError::KeyInUse | RequestError::ReplacedChanged => {
+            Some(StatusCode::CONFLICT)
+        }
         RequestError::AgentRevoked => Some(StatusCode::UNAUTHORIZED),
         RequestError::Limited(_) => Some(StatusCode::TOO_MANY_REQUESTS),
         RequestError::Unavailable(_) | RequestError::Contended => {

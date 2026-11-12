@@ -200,7 +200,11 @@ impl Requests {
         })
     }
 
-    async fn stored_resolution(&self, id: &Id) -> Result<Option<Resolution>, RequestError> {
+    /// The answer stored for request `id`, if any.
+    pub(super) async fn stored_resolution(
+        &self,
+        id: &Id,
+    ) -> Result<Option<Resolution>, RequestError> {
         let Some(row) =
             sqlx::query("SELECT resolution FROM github_repositories WHERE request_id = ?")
                 .bind(id.as_str())

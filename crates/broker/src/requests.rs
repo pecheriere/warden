@@ -181,6 +181,10 @@ pub enum RequestError {
     /// Stored data failed validation.
     #[error("stored data invalid: {0}")]
     Corrupt(String),
+    /// The GitHub token grants an approval would end are no longer those the owner's
+    /// page showed; nothing changed and the owner must review the page again.
+    #[error("the GitHub grants to replace changed")]
+    ReplacedChanged,
     /// A local resource (randomness, configuration) is unusable.
     #[error("internal error: {0}")]
     Internal(&'static str),

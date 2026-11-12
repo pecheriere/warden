@@ -563,7 +563,7 @@ async fn approval_past_its_check(
         let (token, grant) = (token.to_owned(), test_grant(broker.clock.now()));
         tokio::spawn(async move {
             requests
-                .mark_approved(&token, Window::M15, grant, "passkey")
+                .mark_approved(&token, Window::M15, grant, "passkey", &[])
                 .await
         })
     };

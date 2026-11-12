@@ -631,16 +631,25 @@ async fn approve_finish(
         Err(refusal) => return *refusal,
     };
     let grant_id = grant.grant_id.clone();
+    // The grants the owner's digest bound; approving must end exactly these.
+    let replaces: Vec<Id> = view
+        .github
+        .as_ref()
+        .map(|github| github.replaces.iter().map(|r| r.grant_id.clone()).collect())
+        .unwrap_or_default();
     // The certificate stays in `grant` until this commits, with its
     // `cert_issued` entry already written; if that fails, it is dropped here.
     match state
         .requests
-        .mark_approved(&token, binding.window, grant, &passkey_id)
+        .mark_approved(&token, binding.window, grant, &passkey_id, &replaces)
         .await
     {
         Ok(()) => {}
         Err(RequestError::NotFound | RequestError::AlreadyDecided) => {
             return undecidable(&state, &token, &binding, now).await;
+        }
+        Err(RequestError::ReplacedChanged) => {
+            return json_error(StatusCode::CONFLICT, DESTINATION_CHANGED);
         }
         Err(e) => return request_error(&e),
     }

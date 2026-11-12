@@ -305,6 +305,16 @@ impl Requests {
         };
         self.expire_due(Scope::Dedupe(dedupe_key.clone())).await?;
         if let Some(existing) = self.pending_in_slot(&dedupe_key).await? {
+            // The request already there may hold no resolution yet (the agent's own, not
+            // yet opened, or a renewal whose row was not written): without one the page
+            // resolves by name, and a repository recreated under it would be taken for
+            // the grant's. The first stored answer wins.
+            if let Some(scope) = &renewing
+                && self.stored_resolution(&existing.id).await?.is_none()
+            {
+                let resolution = self.current_names(scope).await?;
+                self.record_resolution(&existing.id, resolution).await?;
+            }
             let link = self.replace_link(&existing.id).await?;
             return Ok((existing.id, link));
         }

@@ -95,9 +95,10 @@ async fn another_agents_grants_stay() {
 }
 
 /// Two requests for overlapping repositories, both pages rendered and both
-/// approvals begun before either finishes, then both finished at once. Whatever
-/// order they run in, the later one is refused (the owner did not see the first)
-/// or replaces the first: never both active.
+/// approvals begun before either finishes, then both finished at once. Both pages
+/// showed no grant being replaced, so whichever commits second would end a grant its
+/// owner never saw: it is refused with 409 whichever order they run in, and stores
+/// nothing, so one grant covers the repository.
 #[tokio::test]
 async fn concurrent_overlapping_approvals_leave_one() {
     let (broker, _key, upstream) = configured_on_fake().await;
@@ -137,13 +138,21 @@ async fn concurrent_overlapping_approvals_leave_one() {
         broker.finish_approval(&first, &ceremony_first, &credential_first),
         broker.finish_approval(&second, &ceremony_second, &credential_second),
     );
-    let statuses = [one.status, two.status];
-    assert!(statuses.contains(&StatusCode::OK), "{one:?} {two:?}");
-    for status in statuses {
-        assert!(
-            status == StatusCode::OK || status == StatusCode::CONFLICT,
-            "{one:?} {two:?}"
-        );
-    }
+    let mut statuses = [one.status, two.status];
+    statuses.sort_unstable();
+    assert_eq!(
+        statuses,
+        [StatusCode::OK, StatusCode::CONFLICT],
+        "{one:?} {two:?}"
+    );
+    let refused = if one.status == StatusCode::CONFLICT {
+        &one
+    } else {
+        &two
+    };
+    assert!(
+        refused.body.contains("policy changed; reload and review"),
+        "{refused:?}"
+    );
     assert_eq!(active_covering(&broker, 1001).await, 1);
 }

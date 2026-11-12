@@ -233,18 +233,22 @@ impl Requests {
     /// [`RequestError::NotFound`] for an unknown token;
     /// [`RequestError::AlreadyDecided`] if the request is no longer pending,
     /// has expired or its agent was revoked; [`RequestError::Audit`] if an
-    /// entry could not be written.
+    /// entry could not be written; [`RequestError::ReplacedChanged`] if the GitHub
+    /// token grants this approval ends are not exactly `replaces`, the ones the
+    /// owner's page showed and the passkey was bound to (nothing changes then).
     pub async fn mark_approved(
         &self,
         token: &str,
         window: Window,
         grant: GrantView,
         passkey_id: &str,
+        replaces: &[Id],
     ) -> Result<(), RequestError> {
         let this = self.clone();
         let (token, passkey_id) = (token.to_owned(), passkey_id.to_owned());
+        let replaces = replaces.to_vec();
         detached(async move {
-            this.mark_approved_now(&token, window, grant, &passkey_id)
+            this.mark_approved_now(&token, window, grant, &passkey_id, &replaces)
                 .await
         })
         .await
@@ -256,6 +260,7 @@ impl Requests {
         window: Window,
         grant: GrantView,
         passkey_id: &str,
+        replaces: &[Id],
     ) -> Result<(), RequestError> {
         let hash = sha256_hex(token);
         let now = self.clock.now();
@@ -290,6 +295,11 @@ impl Requests {
         let (events, github_replaced) = self
             .approval_events(&id, &agent, &grant, renews, passkey_id, window_secs)
             .await?;
+        // What the owner saw must be what ends: the digest bound `replaces`, and a
+        // grant approved since then changes the answer.
+        if !same_ids(&github_replaced, replaces) {
+            return Err(RequestError::ReplacedChanged);
+        }
         let transition = format!("approval of request {id}");
         record(&self.audit, events, &transition).await?;
         let applied = async {
@@ -450,4 +460,14 @@ fn to_status(row: &SqliteRow) -> Result<RequestStatus, RequestError> {
         },
         other => return Err(RequestError::Corrupt(format!("unknown status {other}"))),
     })
+}
+
+/// Whether `a` and `b` hold the same ids, in any order.
+pub(super) fn same_ids(a: &[Id], b: &[Id]) -> bool {
+    let sorted = |ids: &[Id]| {
+        let mut ids: Vec<String> = ids.iter().map(|id| id.as_str().to_owned()).collect();
+        ids.sort_unstable();
+        ids
+    };
+    sorted(a) == sorted(b)
 }

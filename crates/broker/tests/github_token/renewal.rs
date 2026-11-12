@@ -125,15 +125,14 @@ async fn a_request_already_waiting_is_what_renewing_opens() {
             TestBroker::github_token_request("again", Window::D7, &["example-owner/example-repo"]),
         )
         .await;
-    let token = renew_unscripted(&broker, &old).await;
+    let current = resolved(&broker, &[(1001, "example-owner/example-repo")]);
+    let token = renew_as(&broker, &upstream, &old, current).await;
     // The same request, on a new link.
     assert_ne!(token, stale);
     let pending = broker.state().requests.pending_expiries().await.unwrap();
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].0, created.id);
-    // With the goal and window its agent gave, not the grant's. Its repositories
-    // are resolved by the page, as for any request: renewing did not.
-    upstream.script_github_token(resolved(&broker, &[(1001, "example-owner/example-repo")]));
+    // With the goal and window its agent gave, not the grant's.
     let page = broker.get(&format!("/approve/{token}")).await;
     assert!(page.body.contains("again"), "{}", page.body);
     assert!(page.body.contains(r#"value="7d" checked"#), "{}", page.body);
@@ -284,6 +283,8 @@ async fn renewal_copies_names_and_ids() {
     let approved = broker.approve(&token, Window::D30).await;
     assert_eq!(approved.status, StatusCode::OK, "{}", approved.body);
     assert_eq!(upstream.received().len(), asked);
+    // One for the grant's own request, resolved when its owner opened the page, and
+    // one for this renewal, recorded when it was started.
     assert_eq!(entries(&broker, "github_repositories_resolved").len(), 2);
 }
 
@@ -335,4 +336,41 @@ async fn renewal_of_unreachable_repository_cannot_be_approved() {
     assert!(!page.body.contains("echoed"), "{}", page.body);
     // The old grant keeps working.
     assert_eq!(minting_with(&broker).await.as_deref(), Some(old.as_str()));
+}
+
+/// A request waiting in the slot holds no resolution until renewing stores the grant's
+/// own ids, so a repository recreated under the name cannot be taken for the grant's.
+#[tokio::test]
+async fn renewing_pins_the_ids_of_a_request_already_waiting() {
+    let (broker, _key, upstream) = configured_on_fake().await;
+    let old = approve(&broker, &upstream, "bot", Window::D30).await;
+    broker
+        .create_request(
+            "bot",
+            TestBroker::github_token_request("again", Window::D7, &["example-owner/example-repo"]),
+        )
+        .await;
+    let before = entries(&broker, "github_repositories_resolved").len();
+    let token = renew(&broker, &upstream, &old).await;
+    assert_eq!(
+        stored_resolution(&broker).await,
+        Resolution::Resolved(vec![scoped(1001, "example-owner/example-repo", None)])
+    );
+    assert_eq!(
+        entries(&broker, "github_repositories_resolved").len(),
+        before + 1
+    );
+
+    // Renewing again asks nothing more and writes nothing more, and the page asks
+    // GitHub nothing either.
+    let asked = upstream.received().len();
+    let again = renew_unscripted(&broker, &old).await;
+    assert_ne!(again, token);
+    let page = broker.get(&format!("/approve/{again}")).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    assert_eq!(upstream.received().len(), asked);
+    assert_eq!(
+        entries(&broker, "github_repositories_resolved").len(),
+        before + 1
+    );
 }

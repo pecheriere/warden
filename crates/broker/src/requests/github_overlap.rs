@@ -6,6 +6,7 @@ use sqlx::{Row as _, Sqlite, Transaction};
 use warden_broker_proto::github_token::GrantScope;
 use warden_broker_proto::{AgentName, GrantAccess, GrantView, Id};
 
+use super::decide::same_ids;
 use super::{ReplacedGrant, RequestError, Requests, parse};
 use crate::audit::AuditEvent;
 
@@ -87,7 +88,7 @@ impl Requests {
 /// unrecorded or leave one of the overlapping grants active.
 ///
 /// # Errors
-/// [`RequestError::Internal`] when the grants to end are not `expected`; storage
+/// [`RequestError::ReplacedChanged`] when the grants to end are not `expected`; storage
 /// failures.
 pub(super) async fn end_overlapping(
     tx: &mut Transaction<'static, Sqlite>,
@@ -114,14 +115,9 @@ pub(super) async fn end_overlapping(
             grants.push((parse(row, "id")?, parse(row, "request_id")?));
         }
     }
-    let mut found: Vec<&str> = grants.iter().map(|(id, _)| id.as_str()).collect();
-    let mut wanted: Vec<&str> = expected.iter().map(Id::as_str).collect();
-    found.sort_unstable();
-    wanted.sort_unstable();
-    if found != wanted {
-        return Err(RequestError::Internal(
-            "the GitHub grants to replace changed",
-        ));
+    let found: Vec<Id> = grants.iter().map(|(id, _)| id.clone()).collect();
+    if !same_ids(&found, expected) {
+        return Err(RequestError::ReplacedChanged);
     }
     let mut requests = Vec::new();
     for (grant, request) in grants {
