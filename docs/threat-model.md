@@ -45,8 +45,8 @@ warden does **not** protect against:
   commit for that agent, not that anyone reviewed the change. See
   [Commit signing](#commit-signing).
 - **A GitHub token an agent already holds.** A token lasts an hour, covers one
-  repository of its grant, can still open a new issue on a public repository the GitHub App
-  is installed on, and is a bearer secret the agent has:
+  repository of its grant, can still open issues (and, to be assumed, comment) on public
+  repositories, including ones the GitHub App is not installed on, and is a bearer secret the agent has:
   revoking its grant stops new tokens, not that one. See [GitHub tokens](#github-tokens).
 - **Instant revocation everywhere.** An issued certificate stays valid on
   its target until it expires, and an open login to a certificate target continues
@@ -917,12 +917,17 @@ What an attacker gets, and what stops it:
   as that went. The installation is still the outer limit: the owner chooses repositories by
   installing the App on them (never All repositories) and sets what each allows with
   GitHub's own rules: see [the three levels](github-app.md#the-three-levels-per-repository).
-- **A scoped token can still open a new issue on a public repository the App is installed
-  on.** The same measurement: a token for A created an issue (201) on a public repository B
-  that the App is installed on, and nothing else on B. A prompt-injected agent can use this
-  to spam, or to post what it read. An agent with network access could post elsewhere
-  anyway; what the token adds is the App's name, which carries the owner's standing. warden
-  cannot narrow this; GitHub's logs show it.
+- **A scoped token can still open issues, and probably comment, on public repositories.**
+  Measured on 2026-11-11: a token for A created an issue (201) on a public repository B that
+  the App is installed on, and nothing else on B. That is the only case measured for scoped
+  tokens. Assume it reaches further, as an unscoped token did on 2026-11-09
+  ([F22](security-assessment.md#findings-of-this-review)): opening an issue, and presumably commenting,
+  takes only read access, and an installation token can read public repositories, so assume
+  a scoped token can do both on public repositories the App is not installed on, anyone's.
+  That is untested for scoped tokens, and other accounts' repositories were never tried. A
+  prompt-injected agent can use this to spam, or to post what it read. An agent with network
+  access could post elsewhere anyway; what the token adds is the App's name, which carries
+  the owner's standing. warden cannot narrow this; GitHub's logs show it.
 - **The owner can approve the wrong repository.** The approval page shows the repositories
   the request names, resolved against GitHub (with their ids) when the owner first opens it,
   and the goal is the agent's claim. A persuasive goal for a repository the owner did not

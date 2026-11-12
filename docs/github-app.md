@@ -19,7 +19,7 @@ set it up.
   scope the token to that repository's id, so a token for A cannot push, open a pull request,
   comment or edit issues on B, even though the App is installed on B. What the agent can do
   on the repository is what you installed the App on and the rules you set there: see
-  [the three levels](#the-three-levels-per-repository). New issues reach further: see below.
+  [the three levels](#the-three-levels-per-repository). Issues on public repositories reach further: see below.
 - **Fixed permissions**: `contents` write, `pull_requests` write, `issues` write and
   `metadata` read. warden asks GitHub for these and nothing else, whatever the App itself may
   do. No `workflows`, no `administration`.
@@ -35,13 +35,16 @@ set it up.
   (ignoring case); the approval page lists them before you approve. A grant that names no
   repository (made before grants were scoped) ends at upgrade and is replaced by asking
   again.
-- **New issues on public repositories, too.** Measured on real GitHub: a token scoped to
+- **Issues on public repositories, too.** Measured on real GitHub: a token scoped to
   repository A got 403 creating a branch, a pull request or a comment, and editing issues on
   B, and 404 reading a private B, but it could still open a new issue on a public repository
-  the App is installed on. So the agent can post a new issue as the App on any public
-  repository the App is installed on, not only the one its token is for. Nothing else on
-  them. What it posts shows as the App (`<app name>[bot]`), and GitHub's logs, not warden's,
-  record it.
+  B the App is installed on. Nothing else was possible on that B. That is the only case
+  measured for a scoped token. Opening an issue (and, to be assumed, commenting) takes only
+  read access, and an unscoped token did it on a public repository the App is not installed
+  on (finding F22 in the [security assessment](security-assessment.md#findings-of-this-review)), so assume
+  a scoped token can open issues and comment on public repositories the App is not installed
+  on, anyone's. What it posts shows as the App (`<app name>[bot]`), and GitHub's logs, not
+  warden's, record it.
 
 ## What the agent holds
 

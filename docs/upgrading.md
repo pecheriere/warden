@@ -65,7 +65,8 @@ body is `{}`). At upgrade, every GitHub grant and pending GitHub request that na
 repository ends, each recorded as `github_unscoped_ended`: the agents ask again with
 `warden request github <owner/name>...`, or let the first `git` or `gh` call ask. The
 owner approves each again, with the repositories shown on the page. Run `warden setup
-github` again on each agent machine if you have not since 0.12.0. The CLI's token cache is
+github` again on each agent machine, as [above](#github-tokens-and-the-repository) says
+after upgrading the CLI past 0.12.0. The CLI's token cache is
 now per repository (`github-token.json`, version 2): an older file is ignored and replaced.
 An agent may now hold several GitHub grants, and approving one ends the agent's grants that
 share a repository with it.

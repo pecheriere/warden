@@ -217,6 +217,30 @@ fn put_drops_the_entry_ending_soonest_past_the_limits() {
 }
 
 #[test]
+fn put_counts_the_token_as_json_encodes_it() {
+    // A token of quotes and backslashes takes twice its length in the file. Whatever
+    // is kept must be written and read back, and the newest entry is always kept.
+    let tricky = "\"\\".repeat(512);
+    let dir = dir();
+    let path = dir.cache.clone();
+    let mut cache = Cache::empty(identity());
+    for i in 0..10 {
+        cache.put(entry(
+            &tricky,
+            NOW + 1000 + i,
+            &format!("o/r{i}"),
+            100 + i.unsigned_abs(),
+        ));
+    }
+    assert!(cache.entries.len() < 10);
+    assert!(cache.entries.iter().any(|e| e.repository_id == 109));
+    cache.write(&path).expect("write");
+    assert!(fs::metadata(&path).expect("stat").len() <= 16 * 1024);
+    let back = loaded(&path);
+    assert_eq!(back.entries.len(), cache.entries.len());
+}
+
+#[test]
 fn discard_drops_only_that_grants_entries() {
     let mut cache = Cache::empty(identity());
     let first = entry("ghs_a", NOW + 3600, REPO, 1001);

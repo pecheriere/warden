@@ -11,6 +11,7 @@ use warden_broker_proto::{
     fingerprint,
 };
 
+use super::github_scope::{Resolution, resolution_event};
 use super::revocation::commit_with_entries;
 use super::transition::detached;
 use super::{
@@ -21,6 +22,15 @@ use super::{
 use crate::audit::AuditEvent;
 use crate::notify::{Doorbell, doorbell};
 use crate::policy::SshMode;
+
+/// What is stored with a new request, in its transaction.
+#[derive(Default)]
+pub(super) struct Attached<'a> {
+    /// A release request's facts.
+    pub release: Option<&'a ReleaseFacts>,
+    /// What a renewal's repositories resolved to.
+    pub resolution: Option<&'a Resolution>,
+}
 
 /// What checking a request against policy found.
 struct Checked {
@@ -97,7 +107,17 @@ impl Requests {
                 );
                 detached(async move {
                     let created = this
-                        .insert(&agent, &req, &subject, &key, &token, release.as_ref())
+                        .insert(
+                            &agent,
+                            &req,
+                            &subject,
+                            &key,
+                            &token,
+                            Attached {
+                                release: release.as_ref(),
+                                resolution: None,
+                            },
+                        )
                         .await;
                     drop(change);
                     if let Err(RequestError::Limited(refusal)) = &created {
@@ -257,7 +277,7 @@ impl Requests {
         subject: &str,
         dedupe_key: &str,
         token: &str,
-        release: Option<&ReleaseFacts>,
+        attached: Attached<'_>,
     ) -> Result<CreatedResponse, RequestError> {
         let id = Id::random();
         let fp = fingerprint(agent, req);
@@ -274,6 +294,10 @@ impl Requests {
         let mut conn = self.pool.acquire().await?;
         limits::check(&mut conn, &self.limits, agent, dedupe_key, self.clock.now()).await?;
         drop(conn);
+        let Attached {
+            release,
+            resolution,
+        } = attached;
         let created = AuditEvent::RequestCreated {
             id: id.clone(),
             agent: agent.clone(),
@@ -282,7 +306,11 @@ impl Requests {
             session: req.session.as_ref().map(ToString::to_string),
         };
         let transition = format!("creation of request {id}");
-        record(&self.audit, vec![created], &transition).await?;
+        let mut events = vec![created];
+        if let Some(resolution) = resolution {
+            events.push(resolution_event(&id, resolution));
+        }
+        record(&self.audit, events, &transition).await?;
         let applied = async {
             let mut tx = begin(&self.pool).await?;
             // Read after the write lock: a create that queued for it must see the
@@ -326,6 +354,17 @@ impl Requests {
                     .bind(serde_json::to_string(facts)?)
                     .execute(&mut *tx)
                     .await?;
+            }
+            if let Some(resolution) = resolution {
+                // With the request, so a page opened in between never resolves it
+                // by name first.
+                sqlx::query(
+                    "INSERT INTO github_repositories (request_id, resolution) VALUES (?, ?)",
+                )
+                .bind(id.as_str())
+                .bind(serde_json::to_string(resolution)?)
+                .execute(&mut *tx)
+                .await?;
             }
             tx.commit().await?;
             Ok(())

@@ -1178,7 +1178,8 @@ Asked for with `{"kind":"github_token","repositories":["example-owner/example-re
 without it is refused. The CLI's own requests for `git` and `gh` also set `automatic` (`by`:
 `git_credential` or `gh_wrapper`, and an optional `dir`), with exactly one repository, so that
 the owner sees a tool asked. The grant, once approved, carries the repositories with the ids
-GitHub gave them when the owner opened the approval page:
+GitHub gave them: ids come when the owner first opens the approval page, or, for a renewal,
+when it is created:
 
 ```json
 {"grant_id":"5e1c…","not_before":1793091612,"not_after":1795683612,"access":{"kind":"github_token","app_id":"123456","installation_id":7890123,"digest":"…","repositories":[{"name":"example-owner/example-repo","id":1001}]}}
@@ -1199,7 +1200,8 @@ mints nothing. Renewing a grant carries its repositories over, and the owner see
 A token covers one repository of the grant, with `contents`,
 `pull_requests` and `issues` write and `metadata` read. It cannot reach another repository
 the App is installed on, though GitHub still lets it open a new issue on a public repository
-the App is installed on. A client chooses the repository, never the permissions. Unlike the other kinds, this grant gives the agent a credential that outlives
+the App is installed on, and to be assumed, open issues and comment on any public repository,
+installed or not. A client chooses the repository, never the permissions. Unlike the other kinds, this grant gives the agent a credential that outlives
 the grant: tokens last an hour, and revoking does not recall one. A client should keep the
 token only in memory or in a file only its user can read, mint another when less than 5
 minutes of it remain, and never log it. `warden` is a client of this:

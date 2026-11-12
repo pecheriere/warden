@@ -214,6 +214,8 @@ async fn grant_for_a_recreated_repository_replaces_the_stale_one() {
     let replaced = entries(&broker, "github_token_grant_replaced");
     assert_eq!(replaced.len(), 1, "{replaced:?}");
     assert_eq!(replaced[0]["grant_id"], old.as_str());
+    // Only the name overlaps, and the entry still names the ended grant's repository.
+    assert_eq!(replaced[0]["repository_ids"], serde_json::json!([1001]));
     assert_eq!(active_covering(&broker, 1001).await, 0);
     assert_eq!(active_covering(&broker, 1003).await, 1);
 

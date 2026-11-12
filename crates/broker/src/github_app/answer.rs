@@ -134,6 +134,9 @@ impl Answer {
                 let mut matching = found.iter().filter(|entry| entry.name.matches(name));
                 match (matching.next(), matching.next()) {
                     (Some(entry), None) => Ok(entry.clone()),
+                    // A name GitHub answered with another owner or name is not one
+                    // the App reaches as asked; a repeated answer is malformed.
+                    (None, _) => Err(MintError::NotAccessible),
                     _ => Err(MintError::WrongScope),
                 }
             })

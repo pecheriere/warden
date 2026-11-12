@@ -23,7 +23,7 @@ All notable changes to this project are recorded here. The format follows
 - GitHub token grants are scoped to repositories (#230, #234). `warden request github
   <owner/name>... --goal …` names one to ten; a token is minted for one repository, by id,
   and cannot reach another repository the App is installed on, though it can still open a new
-  issue on a public repository the App is installed on. An agent can hold several grants;
+  issue on a public repository the App is installed on (measured), and is to be assumed able to open issues and comment on any public repository, installed or not. An agent can hold several grants;
   approving one ends the agent's grants that share a repository (by id or name) with it, which
   the approval page lists. The broker resolves the repositories against GitHub when the owner
   first opens the approval page. `POST /v1/github-token` takes `{"repository":"owner/name"}`

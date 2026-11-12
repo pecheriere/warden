@@ -127,6 +127,32 @@ async fn page_shows_not_installed_and_no_approve() {
 }
 
 #[tokio::test]
+async fn page_cannot_be_approved_when_github_answers_another_owner() {
+    let (broker, _key, upstream) = configured_on_fake().await;
+    let (_, token) = broker.create_request("bot", request(&[REPO])).await;
+    // The name resolves to a repository of another owner: a mismatch, stored as such,
+    // and not an outage to be asked again on every open.
+    upstream.script_github_token(resolved(&broker, &[(1001, "other-owner/example-repo")]));
+    let page = broker.get(&format!("/approve/{token}")).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    assert!(
+        page.body.contains("This request cannot be approved"),
+        "{}",
+        page.body
+    );
+    assert!(!page.body.contains("id=\"approve\""), "{}", page.body);
+    let stored: i64 = sqlx::query_scalar("SELECT count(*) FROM github_repositories")
+        .fetch_one(&broker.state().pool)
+        .await
+        .unwrap();
+    assert_eq!(stored, 1);
+    // Opened again, it is not asked of GitHub again.
+    let again = broker.get(&format!("/approve/{token}")).await;
+    assert_eq!(again.status, StatusCode::OK, "{}", again.body);
+    assert_eq!(entries(&broker, "github_repositories_resolved").len(), 1);
+}
+
+#[tokio::test]
 async fn page_unavailable_when_github_down_and_stores_nothing() {
     let (broker, _key, upstream) = configured_on_fake().await;
     let (_, token) = broker.create_request("bot", request(&[REPO])).await;
@@ -139,6 +165,18 @@ async fn page_unavailable_when_github_down_and_stores_nothing() {
         page.body
     );
     assert!(!page.body.contains("ghs_echoed"), "{}", page.body);
+    // GitHub's outage has its own words: the secret backend is not the problem.
+    assert!(
+        page.body
+            .contains("GitHub could not be asked about the repositories"),
+        "{}",
+        page.body
+    );
+    assert!(
+        !page.body.contains("secret backend unavailable"),
+        "{}",
+        page.body
+    );
     let stored: i64 = sqlx::query_scalar("SELECT count(*) FROM github_repositories")
         .fetch_one(&broker.state().pool)
         .await

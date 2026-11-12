@@ -253,13 +253,20 @@ impl GrantScope {
         }
     }
 
-    /// The ids of the repositories both scopes cover; none when either is legacy.
+    /// The ids, in this scope, of the repositories the other scope also covers by id
+    /// or by name (ignoring case): a repository recreated under its name has a new id
+    /// and still overlaps. None when either is legacy.
     #[must_use]
-    pub fn shared_ids(&self, other: &Self) -> Vec<u64> {
+    pub fn overlapping_ids(&self, other: &Self) -> Vec<u64> {
         self.list()
             .iter()
+            .filter(|r| {
+                other
+                    .list()
+                    .iter()
+                    .any(|o| o.id == r.id || o.name.matches(&r.name))
+            })
             .map(|r| r.id)
-            .filter(|id| other.list().iter().any(|o| o.id == *id))
             .collect()
     }
 

@@ -23,8 +23,8 @@ use crate::policy::{ApiScope, ApiSecretPolicy, SshMode, SshTarget};
 use crate::proxy::CallInfo;
 use crate::relay::{LiveSessionInfo, RelayEndpoint};
 use crate::requests::{
-    ActiveGrant, AuditOutcome, BACKEND_UNAVAILABLE, Destination, PendingView, RELAY_NOT_CONFIGURED,
-    RequestError, sha256_hex, window_label,
+    ActiveGrant, AuditOutcome, BACKEND_UNAVAILABLE, Destination, GITHUB_UNAVAILABLE, PendingView,
+    RELAY_NOT_CONFIGURED, RequestError, sha256_hex, window_label,
 };
 
 use self::passkeys::{ApprovalBinding, PasskeyError};
@@ -334,6 +334,9 @@ fn request_error(e: &RequestError) -> Response {
         }
         RequestError::Rejected(_) => json_error(StatusCode::BAD_REQUEST, e.to_string()),
         RequestError::Unavailable(detail) => backend_unavailable(detail),
+        RequestError::GithubUnavailable => {
+            json_error(StatusCode::SERVICE_UNAVAILABLE, GITHUB_UNAVAILABLE)
+        }
         RequestError::Audit(cause) => {
             tracing::error!(error = %cause, "could not write the audit log; change rolled back");
             json_error(StatusCode::SERVICE_UNAVAILABLE, AUDIT_UNAVAILABLE)
@@ -392,6 +395,11 @@ async fn approve_page(State(state): State<AppState>, Path(token): Path<String>) 
             )
                 .into_response()
         }
+        Err(RequestError::GithubUnavailable) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            pages::unavailable(GITHUB_UNAVAILABLE),
+        )
+            .into_response(),
         Err(
             e @ (RequestError::UnknownTarget(_)
             | RequestError::UnknownSecret(_)

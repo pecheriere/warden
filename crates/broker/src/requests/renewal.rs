@@ -16,6 +16,7 @@ use warden_broker_proto::{
     Access, AgentName, CreateRequest, GithubTokenAccess, Goal, GrantAccess, GrantView, Id, Window,
 };
 
+use super::create::Attached;
 use super::github_scope::{Resolution, resolution_of};
 use super::transition::detached;
 use super::{Destination, RequestError, Requests, Scope, approval_token, begin, parse};
@@ -318,7 +319,9 @@ impl Requests {
             let link = self.replace_link(&existing.id).await?;
             return Ok((existing.id, link));
         }
-        // Asked before the request is stored, so that an outage leaves nothing behind.
+        // Asked before the request is stored, so that an outage leaves nothing behind;
+        // stored with the request, as what the owner sees on the page (the names are the
+        // grant's, the ids are what the grant covers).
         let resolution = match &renewing {
             Some(scope) => Some(self.current_names(scope).await?),
             None => None,
@@ -333,7 +336,10 @@ impl Requests {
                 &renewal_subject(kind, &req.access),
                 &dedupe_key,
                 &token,
-                None,
+                Attached {
+                    release: None,
+                    resolution: resolution.as_ref(),
+                },
             )
             .await;
         drop(change);
@@ -341,11 +347,6 @@ impl Requests {
             self.record_refusal(agent, *refusal).await;
         }
         let created = created?;
-        if let Some(resolution) = resolution {
-            // What the owner sees on the page; the names are the grant's, the ids are
-            // what the grant covers.
-            self.record_resolution(&created.id, resolution).await?;
-        }
         Ok((created.id, link))
     }
 
@@ -355,7 +356,7 @@ impl Requests {
         let app = self.backend.github_app().await?;
         let ids: Vec<u64> = scope.list().iter().map(|r| r.id).collect();
         let answer = github_app::current_names(&self.github, &app, &ids, self.clock.now()).await;
-        resolution_of(answer, scope)
+        resolution_of(answer, Some(scope))
     }
 
     /// Tell the owner about every commit signing and GitHub token grant about to end.

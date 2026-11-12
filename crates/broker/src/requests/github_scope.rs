@@ -133,16 +133,16 @@ impl GithubPending {
     }
 }
 
-/// What GitHub's `answer` means for a request. `renewing` is the grant being renewed,
-/// if any (a legacy scope otherwise): a repository it holds under another name
-/// carries that name as `renamed_from`.
+/// What GitHub's `answer` means for a request. `renewing` is the scope of the grant
+/// being renewed, if any: a repository it holds under another name carries that name
+/// as `renamed_from`.
 ///
 /// # Errors
-/// [`RequestError::Unavailable`] with a fixed text when the answer is anything but
-/// the repositories or "not accessible": nothing GitHub said is in it.
+/// [`RequestError::GithubUnavailable`] when the answer is anything but the
+/// repositories or "not accessible": nothing GitHub said is in it.
 pub(super) fn resolution_of(
     answer: Result<Vec<ResolvedRepository>, MintError>,
-    renewing: &GrantScope,
+    renewing: Option<&GrantScope>,
 ) -> Result<Resolution, RequestError> {
     match answer {
         Ok(found) => Ok(Resolution::Resolved(
@@ -150,7 +150,7 @@ pub(super) fn resolution_of(
                 .into_iter()
                 .map(|r| ScopedRepository {
                     renamed_from: renewing
-                        .list()
+                        .map_or(&[][..], GrantScope::list)
                         .iter()
                         .find(|held| held.id == r.id && !held.name.matches(&r.name))
                         .map(|held| held.name.clone()),
@@ -160,10 +160,24 @@ pub(super) fn resolution_of(
                 .collect(),
         )),
         Err(MintError::NotAccessible) => Ok(Resolution::NotAccessible),
-        // The text of a `MintError` is fixed: nothing GitHub said is in it.
-        Err(e) => Err(RequestError::Unavailable(format!(
-            "GitHub repositories: {e}"
-        ))),
+        Err(e) => {
+            // The text of a `MintError` is fixed: nothing GitHub said is in it.
+            tracing::warn!(error = %e, "GitHub could not resolve the repositories of a request");
+            Err(RequestError::GithubUnavailable)
+        }
+    }
+}
+
+/// The `github_repositories_resolved` entry for `resolution` of request `id`.
+pub(super) fn resolution_event(id: &Id, resolution: &Resolution) -> AuditEvent {
+    let (repository_ids, accessible) = match resolution {
+        Resolution::Resolved(list) => (list.iter().map(|r| r.id).collect(), true),
+        Resolution::NotAccessible => (Vec::new(), false),
+    };
+    AuditEvent::GithubRepositoriesResolved {
+        request_id: id.clone(),
+        repository_ids,
+        accessible,
     }
 }
 
@@ -174,7 +188,8 @@ impl Requests {
     /// approving would end.
     ///
     /// # Errors
-    /// [`RequestError::Unavailable`] when GitHub or the App cannot be reached (nothing
+    /// [`RequestError::GithubUnavailable`] when GitHub cannot say, or
+    /// [`RequestError::Unavailable`] when the App cannot be read (nothing
     /// is stored, so a later call asks again); the audit and storage failures.
     pub(super) async fn github_pending(
         &self,
@@ -226,7 +241,7 @@ impl Requests {
         let app = self.backend.github_app().await?;
         let answer =
             github_app::resolve(&self.github, &app, &access.repositories, self.clock.now()).await;
-        let resolution = resolution_of(answer, &GrantScope::Legacy)?;
+        let resolution = resolution_of(answer, None)?;
         self.record_resolution(id, resolution).await
     }
 
@@ -237,17 +252,7 @@ impl Requests {
         id: &Id,
         resolution: Resolution,
     ) -> Result<Resolution, RequestError> {
-        let (repository_ids, accessible) = match &resolution {
-            Resolution::Resolved(list) => (list.iter().map(|r| r.id).collect(), true),
-            Resolution::NotAccessible => (Vec::new(), false),
-        };
-        self.audit
-            .append(AuditEvent::GithubRepositoriesResolved {
-                request_id: id.clone(),
-                repository_ids,
-                accessible,
-            })
-            .await?;
+        self.audit.append(resolution_event(id, &resolution)).await?;
         // The first render's answer wins when two race.
         sqlx::query(
             "INSERT OR IGNORE INTO github_repositories (request_id, resolution) VALUES (?, ?)",

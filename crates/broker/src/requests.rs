@@ -105,6 +105,11 @@ pub const RELAY_NOT_CONFIGURED: &str = "relay is not configured";
 /// cannot answer; the detail goes to the server log only.
 pub const BACKEND_UNAVAILABLE: &str = "secret backend unavailable";
 
+/// What callers and the owner are told when GitHub could not say what a GitHub token
+/// request's repositories are. Nothing GitHub said is in it.
+pub const GITHUB_UNAVAILABLE: &str =
+    "GitHub could not be asked about the repositories; try again shortly";
+
 /// Why a request operation failed. Messages never carry secrets, but
 /// [`RequestError::Unavailable`] may describe backend internals (addresses,
 /// item names) and is shown to callers only as [`BACKEND_UNAVAILABLE`].
@@ -143,6 +148,11 @@ pub enum RequestError {
     /// The secret backend could not answer.
     #[error("secret backend unavailable: {0}")]
     Unavailable(String),
+    /// GitHub could not say what the repositories of a GitHub token request are:
+    /// unreachable, refusing or answering something unusable. Nothing is stored, so a
+    /// later try asks again.
+    #[error("{}", GITHUB_UNAVAILABLE)]
+    GithubUnavailable,
     /// No such request or grant (or it belongs to another agent).
     #[error("not found")]
     NotFound,

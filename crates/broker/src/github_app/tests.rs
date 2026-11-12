@@ -451,7 +451,8 @@ async fn resolve_refuses_other_owner() {
     let err = resolve_with(&["other-owner/example-repo"], scripted)
         .await
         .unwrap_err();
-    assert_eq!(err, MintError::WrongScope);
+    // The name the App reaches belongs to another owner: not the repository asked for.
+    assert_eq!(err, MintError::NotAccessible);
 }
 
 #[tokio::test]

@@ -235,6 +235,11 @@ fn grant_scope_overlap_by_name_with_other_ids() {
     assert!(recreated.overlaps(&other));
     let unrelated = GrantScope::repositories(vec![granted("example-owner/other", 2000)]).unwrap();
     assert!(!old.overlaps(&unrelated));
+    // The ended grant's own ids are listed, by id or by name.
+    assert_eq!(old.overlapping_ids(&recreated), vec![1001]);
+    assert_eq!(recreated.overlapping_ids(&other), vec![1003]);
+    assert_eq!(old.overlapping_ids(&unrelated), [] as [u64; 0]);
+    assert_eq!(GrantScope::Legacy.overlapping_ids(&old), [] as [u64; 0]);
 }
 
 #[test]

@@ -70,7 +70,7 @@ impl Requests {
             events.push(AuditEvent::GithubTokenGrantReplaced {
                 grant_id: replaced.grant_id.clone(),
                 by_grant: kept.clone(),
-                repository_ids: replaced.scope.shared_ids(&new.repositories),
+                repository_ids: replaced.scope.overlapping_ids(&new.repositories),
             });
             ids.push(replaced.grant_id);
         }

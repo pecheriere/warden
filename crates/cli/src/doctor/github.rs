@@ -365,6 +365,12 @@ pub fn check(
             "Upgrade the broker, then run doctor again.",
         );
     }
+    // Said only when the broker answered: a failed info call says nothing about scoping.
+    let support = if scoped == Some(true) {
+        ", the broker supports repository-scoped grants"
+    } else {
+        ""
+    };
     match grant {
         None => Check::could_not_check(
             NAME,
@@ -386,14 +392,16 @@ pub fn check(
         ),
         Some(Ok(true)) => Check::pass(
             NAME,
-            "Git takes GitHub tokens from warden, the broker supports repository-scoped grants, and \
-             this agent has an active grant.",
+            format!(
+                "Git takes GitHub tokens from warden{support}, and this agent has an active grant."
+            ),
         ),
         Some(Ok(false)) => Check::pass(
             NAME,
-            "Git takes GitHub tokens from warden, and the broker supports repository-scoped grants. \
-             This agent has no active grant yet: the first git or gh call to a repository asks \
-             the owner for one and waits.",
+            format!(
+                "Git takes GitHub tokens from warden{support}. This agent has no active grant \
+                 yet: the first git or gh call to a repository asks the owner for one and waits."
+            ),
         ),
     }
 }

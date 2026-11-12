@@ -216,7 +216,8 @@ pub async fn mint(
 ///
 /// # Errors
 /// A [`MintError`]; [`MintError::NotAccessible`] when GitHub cannot reach one of
-/// them, [`MintError::WrongScope`] when the answer is not one entry per name.
+/// them or answers a name with another owner, [`MintError::WrongScope`] when the answer
+/// is not one entry per name.
 pub async fn resolve(
     api: &GithubApi,
     key: &GithubAppKey,

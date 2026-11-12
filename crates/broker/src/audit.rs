@@ -304,7 +304,8 @@ pub enum AuditEvent {
         grant_id: Id,
         /// The grant approved in its place.
         by_grant: Id,
-        /// The repositories both cover; empty when the ended grant named none.
+        /// The ended grant's repositories (by its ids) that the new grant also covers
+        /// by id or by name; empty when the ended grant named none.
         repository_ids: Vec<u64>,
     },
     /// The broker asked GitHub which repositories a GitHub token request names,

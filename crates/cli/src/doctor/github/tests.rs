@@ -371,6 +371,10 @@ fn github_passes_naming_the_scoped_grants_the_broker_supports() {
         result.detail
     );
     // A broker that could not be asked is not a verdict on this check.
-    let unknown = check(&Ok(setup(&["", OURS])), None, Some(Ok(true)));
-    assert_eq!(unknown.status, Status::Pass);
+    // and the check then says nothing about scoping, with or without a grant.
+    for grant in [Ok(true), Ok(false)] {
+        let unknown = check(&Ok(setup(&["", OURS])), None, Some(grant));
+        assert_eq!(unknown.status, Status::Pass);
+        assert!(!unknown.detail.contains("scoped"), "{}", unknown.detail);
+    }
 }

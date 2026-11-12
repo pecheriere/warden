@@ -8,8 +8,9 @@ CREATE TABLE github_token_mints (
   mint_count INTEGER NOT NULL
 );
 
--- What the repository names of a GitHub token request resolved to when it was
--- made: the repositories the owner is shown and approves.
+-- What the repository names of a GitHub token request resolved to: the repositories
+-- the owner is shown and approves. The row is written when the owner first opens the
+-- approval page, or, for a renewal, when the renewal is created.
 CREATE TABLE github_repositories (
   request_id TEXT PRIMARY KEY REFERENCES requests(id),
   resolution TEXT NOT NULL

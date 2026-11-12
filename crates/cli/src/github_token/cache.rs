@@ -81,9 +81,19 @@ impl Entry {
         }
     }
 
-    /// The bytes it takes in the file, at most.
+    /// The bytes it takes in the file, at most. The token is counted as JSON encodes
+    /// it: `"` and `\` take two bytes, a control character up to six.
     fn size_bound(&self) -> usize {
-        ENTRY_OVERHEAD + self.token.len() + self.repository.as_str().len()
+        let token: usize = self
+            .token
+            .bytes()
+            .map(|b| match b {
+                b'"' | b'\\' => 2,
+                0..=0x1f => 6,
+                _ => 1,
+            })
+            .sum();
+        ENTRY_OVERHEAD + token + self.repository.as_str().len()
     }
 }
 
@@ -219,7 +229,7 @@ impl Cache {
 
     /// Add `entry`, replacing the one with the same repository id or name. What
     /// does not fit in [`MAX_ENTRIES`] entries or [`MAX_CACHE_BYTES`] bytes is
-    /// dropped, the entry ending soonest first.
+    /// dropped, the entry ending soonest first, but never `entry` itself.
     pub fn put(&mut self, entry: Entry) {
         self.entries.retain(|e| {
             e.repository_id != entry.repository_id && !e.repository.matches(&entry.repository)
@@ -230,6 +240,7 @@ impl Cache {
                 .entries
                 .iter()
                 .enumerate()
+                .take(self.entries.len() - 1)
                 .min_by_key(|(_, e)| e.expires_at)
                 .map(|(i, _)| i)
             else {

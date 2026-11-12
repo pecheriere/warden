@@ -161,9 +161,9 @@ const fn status_of(e: &RequestError) -> Option<StatusCode> {
         }
         RequestError::AgentRevoked => Some(StatusCode::UNAUTHORIZED),
         RequestError::Limited(_) => Some(StatusCode::TOO_MANY_REQUESTS),
-        RequestError::Unavailable(_) | RequestError::Contended => {
-            Some(StatusCode::SERVICE_UNAVAILABLE)
-        }
+        RequestError::Unavailable(_)
+        | RequestError::GithubUnavailable
+        | RequestError::Contended => Some(StatusCode::SERVICE_UNAVAILABLE),
         RequestError::UnknownAgent(_)
         | RequestError::Agent(_)
         | RequestError::Db(_)

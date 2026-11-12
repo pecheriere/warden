@@ -887,7 +887,8 @@ After that `git push`, `git fetch` and `gh` work against GitHub as usual, with a
 warden. Each token covers **one repository**, the one git or `gh` is working on, with `contents`,
 `pull_requests` and `issues` write, and lasts an hour. It cannot push, open pull requests,
 comment or edit issues on another repository the App is installed on, but it can still open
-a new issue on a public repository the App is installed on. warden keeps one token per
+a new issue on a public repository the App is installed on, and you should assume it can open
+issues and comment on any public repository, installed or not. warden keeps one token per
 repository in `github-token.json` in its state directory, mode 0600 (an older, single-token
 file is ignored and replaced), and gets a new one when less than 5 minutes of it remain. Use it only through `git` and `gh`: do not print it, write it into a
 file, put it in a URL or hand it to another program.
@@ -1002,7 +1003,7 @@ never try to get around warden by any other route.
 - **Revoking commit signing does not undo a signature.** It stops new ones.
 - **Revoking a GitHub token grant does not recall a token already minted.** It stops new
   ones. A token already out works for up to an hour, for its repository, and can still open new
-  issues on public repositories the App is installed on.
+  issues (and, to be assumed, comment) on public repositories, installed or not.
 - **Revoking does not invalidate an issued certificate** on the target
   ([issue #35][i35]).
 

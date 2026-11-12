@@ -153,7 +153,7 @@ warden request github <owner/name> --goal "<which agent, and what it pushes or o
 A grant covers the repositories the person approves, and a token covers one of them. Name the
 repository your task is about, and more than one only when the task needs them. A token for
 one repository cannot push, open pull requests, comment or edit issues on another, but it can
-still open a new issue on a public repository the App is installed on. Revoking does not
+still open a new issue on a public repository the App is installed on, and assume it can open issues and comment on any public repository, installed or not. Revoking does not
 recall a token already minted, so keep to the repository your task is about, and post nowhere
 else. If a call says more than one grant covers the repository, stop and tell the person: they
 revoke one.
