@@ -44,9 +44,9 @@ warden does **not** protect against:
 - **What an agent commits while it may sign.** A signature means warden signed the
   commit for that agent, not that anyone reviewed the change. See
   [Commit signing](#commit-signing).
-- **A GitHub token an agent already holds.** A token lasts an hour, covers every
-  repository the GitHub App is installed on, can post issues and comments on public
-  repositories outside it, and is a bearer secret the agent has:
+- **A GitHub token an agent already holds.** A token lasts an hour, covers one
+  repository of its grant, can still open a new issue on a public repository the GitHub App
+  is installed on, and is a bearer secret the agent has:
   revoking its grant stops new tokens, not that one. See [GitHub tokens](#github-tokens).
 - **Instant revocation everywhere.** An issued certificate stays valid on
   its target until it expires, and an open login to a certificate target continues
@@ -907,25 +907,41 @@ describes that setup.
 
 What an attacker gets, and what stops it:
 
-- **A token covers every repository the App's installation covers**, not the one the agent's
-  goal named. warden asks GitHub for no repository restriction, and could not know which
-  repository a goal means. The owner chooses repositories by installing the App on them and
-  sets what each allows with GitHub's own rules: see
-  [the three levels](github-app.md#the-three-levels-per-repository). The approval page says
-  this in its badge.
-- **Issues and comments reach further than the installation.** Opening an issue or
-  commenting on a public repository takes only read access, and GitHub documents that an
-  installation token can read public repositories. On 2026-11-09 a token opened an issue on
-  a public repository of the App owner's account that the App was not installed on; other
-  accounts' public repositories were not tried, and should be assumed reachable too. A
-  prompt-injected agent can use this to spam, or to post what it read. An agent with network
-  access could post elsewhere anyway; what the token adds is the App's name, which carries
-  the owner's standing. warden cannot narrow this; GitHub's logs show it.
+- **A token covers one repository of the grant**, the one the owner approved and the agent
+  named. warden asks GitHub for a token scoped to that repository's id, so a token for A
+  cannot reach B, even when the App is installed on B. This was measured on real GitHub on
+  2026-11-11: minting with a repository id on an All-repositories installation returned a
+  token for exactly that repository; naming a repository the App cannot reach was refused
+  (422, all or nothing); a token for A got 403 creating a branch, opening a pull request,
+  commenting or editing issues on B, and 404 reading a private B. It is stated only as far
+  as that went. The installation is still the outer limit: the owner chooses repositories by
+  installing the App on them (never All repositories) and sets what each allows with
+  GitHub's own rules: see [the three levels](github-app.md#the-three-levels-per-repository).
+- **A scoped token can still open a new issue on a public repository the App is installed
+  on.** The same measurement: a token for A created an issue (201) on a public repository B
+  that the App is installed on, and nothing else on B. A prompt-injected agent can use this
+  to spam, or to post what it read. An agent with network access could post elsewhere
+  anyway; what the token adds is the App's name, which carries the owner's standing. warden
+  cannot narrow this; GitHub's logs show it.
+- **The owner can approve the wrong repository.** The approval page shows the repositories
+  the request names, resolved against GitHub (with their ids) when the owner first opens it,
+  and the goal is the agent's claim. A persuasive goal for a repository the owner did not
+  mean is the same risk as any approval ([risk 1](security-assessment.md#ranked-risks)).
+  Approving a grant also ends the agent's other grants that share a repository by id or by
+  name (ignoring case), listed on the page, and the approval is refused if that set changed
+  between the page and the passkey. If GitHub cannot be reached when the page is first
+  opened, the page shows an error and nothing is stored; the first stored answer wins.
+- **The CLI's choice of repository is not a boundary.** The CLI works out the repository from
+  git's URL or `gh`'s arguments, but an agent that holds a key can call
+  `POST /v1/github-token` itself with any repository. What bounds it is the grant: the broker
+  mints only for a repository an active grant of that agent covers, by name ignoring case,
+  and refuses with a 403 otherwise, or a 409 when two grants cover it.
 - **The permissions are fixed**: `contents`, `pull_requests` and `issues` write, `metadata`
   read. Neither the agent nor the owner chooses them at approval, and the broker sends
   exactly these to GitHub whatever the App is allowed. No `workflows`, so GitHub refuses a push
   that changes a workflow file, and no `administration`.
-- **Within a grant, the agent gets tokens with no prompt**, up to 60 an hour (UTC): far more
+- **Within a grant, the agent gets tokens with no prompt**, up to 60 an hour (UTC), per
+  agent across all its grants: far more
   than the CLI, which keeps each token for its hour, needs, and few enough that a looping
   agent cannot use up the App's rate limit at GitHub, which every agent shares, or fill the
   audit log. A refused mint does not reach GitHub and is audited as `github_token_refused`.
@@ -935,9 +951,10 @@ What an attacker gets, and what stops it:
   the owner must not allow more than pull requests, and a pull request there is code to read.
 - **Revoking cannot recall a token already minted.** It stops the next mint at once,
   including one finishing when the revocation lands: that token is not given out. A token
-  already out lives until GitHub ends it, at most an hour. The CLI also keeps the token in
-  `github-token.json` in its state directory (mode 0600, for that agent and broker), and
-  serves it for the rest of its hour after the owner revokes in the approval UI, as nothing
+  already out lives until GitHub ends it, at most an hour, and the agent may hold one for
+  each repository it asked for. The CLI also keeps the tokens in `github-token.json` in its
+  state directory (mode 0600, for that agent and broker, one per repository), and
+  serves each for the rest of its hour after the owner revokes in the approval UI, as nothing
   tells the CLI. `warden revoke` on the agent's machine drops it. An owner who must end a
   token at once suspends the App or removes its installation on GitHub, which ends the tokens
   of every agent.
@@ -966,7 +983,17 @@ What holds:
   private key: warden uses it for public keys only, to verify the pinned host keys of relay
   targets. The key must be unencrypted RSA of at least 2048 bits, PKCS#1 or PKCS#8.
 - **One agent's grant does not help another.** Minting looks up the calling agent's own
-  grant, for each token.
+  grants, for each token. A mint for a repository two of its grants cover is refused
+  (`AMBIGUOUS_GRANT`) rather than guessed.
+- **A token GitHub will not scope is discarded.** If GitHub refuses a token for the
+  repository's id, which is what happens when the App no longer reaches it or it was deleted
+  or replaced, the agent gets a fixed `REPOSITORY_UNREACHABLE` 409 and no token. The attempt
+  still costs the hourly budget and is never retried.
+- **Grants stored before scoping end at upgrade.** A GitHub grant or pending request that
+  names no repository ends, each recorded as `github_unscoped_ended`, and the agent asks
+  again per repository. Nothing is minted under a grant without a repository.
+- **Git-lfs is not supported through the helper.** It sends paths that warden does not take
+  for a repository, so it gets no token, rather than a token for a guessed one.
 - **It fails closed.** A database that cannot be read, an App that cannot be read, a grant
   that ended while GitHub was answering, or an entry that cannot be written all mean no token.
   The token leaves the broker only after its entry is written, and only if the same grant is
@@ -977,13 +1004,19 @@ What holds:
   outage, so nothing GitHub said, including an echo of the JWT or token, reaches it. The
   client trusts the system roots, refuses redirects and reads at most 64 KiB.
 - **Every mint and every refusal is recorded**. A `github_token_minted` entry can be followed by a `github_token_refused` entry for the same call, when the grant ended or was replaced during the mint: the token was then not given out. `github_token_minted` holds the grant, agent,
-  installation, permissions and expiry, and `github_token_refused` the reason. Beyond 30
+  installation, repository and its id, permissions and expiry, and `github_token_refused` the reason. New entries
+  record the approval's effects too: `github_token_grant_replaced` for each of the agent's
+  grants an approval ended, naming the repository ids both cover, and
+  `github_repositories_resolved` when the broker asked GitHub about a request's repositories
+  (the ids, and whether the App reaches them all). Two first renders of the same approval
+  page can race: each may write a `github_repositories_resolved` entry, and the losing entry
+  may disagree with the row that was stored, which is the first answer. Beyond 30
   refusals a minute per agent they are counted in `github_token_refusals_held`, through the
   limiter commit signing uses, so refused calls cannot fill the log. A body over the route's
   16 KiB limit is refused before the caller is known, and is not recorded, as on every route.
 - **An agent cannot approve it, and nothing renews by itself.** A grant takes the passkey,
-  and so does renewing it. One agent has one grant at a time: approving a new one ends the
-  one before it. As for commit signing, warden notifies the owner a few days before a grant
+  and so does renewing it. An agent may hold several grants, but two never cover the same
+  repository: approving one ends the agent's overlapping ones. As for commit signing, warden notifies the owner a few days before a grant
   ends, naming only the agent, and **Renew** on Active grants opens a request that still needs
   the passkey; the grant works until that approval. If the owner lets it end, the agent's
   next call asks the owner again, so the request comes while the agent is working, and the

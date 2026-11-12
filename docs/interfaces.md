@@ -39,7 +39,7 @@ specified. Interfaces with a reference of their own are linked, not repeated.
 | Output | Format | Reference |
 |---|---|---|
 | Audit log | One JSON object per line, in a hash chain: `{"seq","ts","prev","event","hash"}`. `event` has a `type`. The types are in [`audit.rs`](../crates/broker/src/audit.rs). | [Audit log](design.md#11-audit-log), `warden-server audit verify` |
-| `~/.local/bin/gh` and `github-token.json` | `warden setup github` writes a `gh` wrapper (a shell script with a marker line); the CLI caches the GitHub token in its state directory, mode 0600 | [GitHub tokens](agent-usage.md#github-tokens) |
+| `~/.local/bin/gh` and `github-token.json` | `warden setup github` writes a `gh` wrapper (a shell script with a marker line); the CLI caches the GitHub tokens, one per repository, in its state directory, mode 0600 | [GitHub tokens](agent-usage.md#github-tokens) |
 | Standard output | Logs (`RUST_LOG`), and each audit entry again under the target `audit` | [Server data](configuration.md#server-data) |
 | SQLite database | Internal; it may change between releases, with one-way migrations | [Backups and upgrades](deployment.md#9-backups-and-upgrades) |
 
@@ -71,7 +71,7 @@ stable API for other clients. The code is in
 | `GET /grants` | | Active grants, with a Revoke button and live activity. |
 | `GET /grants/live` | | The live activity, as JSON, for the page to refresh. |
 | `POST /grants/{id}/revoke` | `{}` | Revokes a grant. Takes no passkey. |
-| `POST /grants/{id}/renew` | `{}` | For an active commit signing or GitHub token grant: makes a request of its agent for the same length, or as long as the server now allows, and returns its approval link as `{"link"}`. If that agent already has a request of that kind waiting, gives that one a new link instead. Approves nothing and takes no passkey: the grant keeps working until the owner approves the renewal on its page. 404 for any other grant, or one that has ended. |
+| `POST /grants/{id}/renew` | `{}` | For an active commit signing or GitHub token grant: makes a request of its agent for the same length (for a GitHub grant, for the same repositories, noting a rename as "<new> (approved as <old>)"), or as long as the server now allows, and returns its approval link as `{"link"}`. If that agent already has a request of that kind waiting, gives that one a new link instead. Approves nothing and takes no passkey: the grant keeps working until the owner approves the renewal on its page. 404 for any other grant, or one that has ended. |
 | `GET /history` | | The latest 100 requests. |
 | `GET /enroll` | | The page for enrolling a passkey. |
 | `POST /enroll/begin` | `{"code","label"}` | Spends an enrollment code and starts registration. |
