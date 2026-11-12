@@ -1,5 +1,6 @@
 //! The command line: what `warden` accepts, as clap parses it.
 
+use std::ffi::OsString;
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
@@ -165,7 +166,22 @@ pub(crate) enum GithubCmd {
     /// has 5 minutes left, otherwise a new one from the broker. Without an active
     /// grant, it asks the owner for one (30 days) and waits; it exits 5 if the
     /// owner does not approve. The `gh` wrapper of `warden setup github` runs it.
-    Token,
+    ///
+    /// The token is for one repository: --repo, else `GH_REPO`, else the `origin`
+    /// remote of the current directory. When none of them names a repository on
+    /// github.com, it prints nothing and exits 1.
+    Token {
+        /// The repository the token is for, `owner/name`.
+        #[arg(long, conflicts_with = "gh_args")]
+        repo: Option<RepoName>,
+        /// What follows `--` are `gh`'s own arguments: the repository is read from
+        /// their `-R`/`--repo`, as the `gh` wrapper passes them.
+        #[arg(long)]
+        gh_args: bool,
+        /// `gh`'s arguments, with --gh-args.
+        #[arg(last = true, requires = "gh_args")]
+        args: Vec<OsString>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -283,4 +299,62 @@ pub(crate) enum RequestKind {
         /// Grant identifier, as listed by `warden status`.
         grant: Id,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser as _;
+
+    use super::{Cli, Cmd, GithubCmd};
+
+    #[test]
+    fn token_command_takes_repo_and_gh_args() {
+        let cli = Cli::try_parse_from([
+            "warden",
+            "github",
+            "token",
+            "--gh-args",
+            "--",
+            "pr",
+            "view",
+            "-R",
+            "o/r",
+        ])
+        .unwrap();
+        let Cmd::Github {
+            what:
+                GithubCmd::Token {
+                    repo,
+                    gh_args,
+                    args,
+                },
+        } = cli.command
+        else {
+            panic!("not the token command");
+        };
+        assert_eq!(repo, None);
+        assert!(gh_args);
+        assert_eq!(args, ["pr", "view", "-R", "o/r"]);
+
+        let cli = Cli::try_parse_from(["warden", "github", "token", "--repo", "o/r"]).unwrap();
+        let Cmd::Github {
+            what: GithubCmd::Token { repo, gh_args, .. },
+        } = cli.command
+        else {
+            panic!("not the token command");
+        };
+        assert_eq!(repo.unwrap().as_str(), "o/r");
+        assert!(!gh_args);
+    }
+
+    #[test]
+    fn token_command_refuses_what_does_not_fit() {
+        for args in [
+            &["warden", "github", "token", "--repo", "bad"][..],
+            &["warden", "github", "token", "--", "pr", "view"],
+            &["warden", "github", "token", "--repo", "o/r", "--gh-args"],
+        ] {
+            assert!(Cli::try_parse_from(args).is_err(), "{args:?}");
+        }
+    }
 }

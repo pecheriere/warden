@@ -28,6 +28,7 @@ fn setup(list: &[&str]) -> GithubSetup {
             })
             .collect(),
         this_program: Some(THIS.to_owned()),
+        use_http_path: true,
     }
 }
 
@@ -238,6 +239,51 @@ fn git_decides_which_urls_match() {
             "first", "", "ours", "pathy", "owner", "slash", "hostonly", "wild", "last"
         ]
     );
+}
+
+#[test]
+fn doctor_fails_without_use_http_path() {
+    let mut without = setup(&["", OURS]);
+    without.use_http_path = false;
+    for grant in [Some(Ok(true)), Some(Ok(false)), None] {
+        let result = check(&Ok(without.clone()), grant);
+        assert_eq!(result.status, Status::Fail);
+        assert_eq!(
+            result.detail,
+            "git does not send the repository to warden \
+             (credential.https://github.com.useHttpPath is not true)"
+        );
+    }
+}
+
+#[test]
+fn doctor_passes_with_use_http_path() {
+    let result = check(&Ok(setup(&["", OURS])), Some(Ok(true)));
+    assert_eq!(result.status, Status::Pass);
+}
+
+#[test]
+fn git_says_whether_use_http_path_is_true() {
+    let read = |config: &str| setup_of(config, |_| {}).unwrap().use_http_path;
+    assert!(read(
+        "[credential \"https://github.com\"]\n\tuseHttpPath = true\n"
+    ));
+    assert!(read(
+        "[credential \"https://github.com\"]\n\tuseHttpPath = yes\n"
+    ));
+    assert!(!read(
+        "[credential \"https://github.com\"]\n\tuseHttpPath = false\n"
+    ));
+    // A generic value counts for github.com, and a github.com one wins over it.
+    assert!(read("[credential]\n\tuseHttpPath = true\n"));
+    assert!(!read(
+        "[credential]\n\tuseHttpPath = true\n\
+         [credential \"https://github.com\"]\n\tuseHttpPath = false\n"
+    ));
+    assert!(!read(
+        "[credential \"https://gitlab.com\"]\n\tuseHttpPath = true\n"
+    ));
+    assert!(!read(""));
 }
 
 #[test]

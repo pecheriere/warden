@@ -12,6 +12,7 @@
 //! stderr that it waits, and goes on once the owner approves. Nothing but the token
 //! ever goes to stdout, which git and the `gh` wrapper read.
 
+use std::ffi::OsString;
 use std::fs;
 use std::io::{Read as _, Write as _};
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
@@ -22,11 +23,13 @@ use serde::{Deserialize, Serialize};
 use warden_broker_proto::github_token::{
     APP_CHANGED, GithubTokenResponse, HOURLY_LIMIT, NO_ACTIVE_GRANT, NOT_CONFIGURED,
 };
+use warden_broker_proto::release::RepoName;
 use warden_broker_proto::{Goal, Id};
 use zeroize::Zeroizing;
 
 use crate::client::{CallError, Client};
 use crate::config::Config;
+use crate::github_repo;
 use crate::{EXIT_ERROR, EXIT_NO_GRANT, Exit, agent, request, unix_now};
 
 /// A cached token is served only while it has at least this long left, in seconds.
@@ -52,31 +55,31 @@ pub enum Caller {
 
 impl Caller {
     /// The fixed goal of the request filed for this caller.
-    const fn goal(self) -> &'static str {
+    const fn requester(self) -> &'static str {
         match self {
-            Self::CredentialHelper => {
-                "GitHub token for git and gh, requested automatically by the git credential helper"
-            }
-            Self::GhWrapper => {
-                "GitHub token for git and gh, requested automatically by the gh wrapper"
-            }
+            Self::CredentialHelper => "the git credential helper",
+            Self::GhWrapper => "the gh wrapper",
         }
     }
 }
 
-/// The goal of a request filed for `caller` from `dir`: the fixed text, and the
-/// directory when it fits in a goal.
+/// The goal of a request filed for `caller` for `repository` from `dir`: the fixed
+/// text, and the directory when it fits in a goal.
 ///
 /// # Errors
-/// Never in practice: the fixed texts are valid goals.
-fn goal_for(caller: Caller, dir: Option<&Path>) -> Result<Goal> {
+/// Never in practice: the fixed text with a repository name is a valid goal.
+fn goal_for(caller: Caller, repository: &RepoName, dir: Option<&Path>) -> Result<Goal> {
+    let base = format!(
+        "GitHub token for {repository}, requested automatically by {}",
+        caller.requester()
+    );
     let with_dir = dir
         .and_then(Path::to_str)
         .filter(|dir| !dir.chars().any(char::is_control))
-        .and_then(|dir| Goal::try_from(format!("{}, in {dir}", caller.goal())).ok());
+        .and_then(|dir| Goal::try_from(format!("{base}, in {dir}")).ok());
     match with_dir {
         Some(goal) => Ok(goal),
-        None => Goal::try_from(caller.goal().to_owned()).map_err(|e| anyhow!("{e}")),
+        None => Goal::try_from(base).map_err(|e| anyhow!("{e}")),
     }
 }
 
@@ -306,19 +309,19 @@ fn is_no_grant(e: &anyhow::Error) -> bool {
         .is_some_and(|e| matches!(e, CallError::Refused(m) if m.contains(NO_ACTIVE_GRANT)))
 }
 
-/// A token for `caller`. Without an active grant, a request is filed for it and the
+/// A token for `caller`, for `repository`. Without an active grant, a request is filed for it and the
 /// owner's decision awaited first, as `warden request` waits.
 ///
 /// # Errors
 /// [`Exit`] with [`EXIT_NO_GRANT`] when the owner does not approve or no grant is
 /// usable, and otherwise as [`explain`] says.
-pub async fn obtain(caller: Caller) -> Result<Zeroizing<String>> {
+pub async fn obtain(caller: Caller, repository: &RepoName) -> Result<Zeroizing<String>> {
     let (config, client) = crate::client()?;
     match cached_or_mint(&config, &client, unix_now()).await {
         Ok(token) => Ok(token),
         Err(e) if is_no_grant(&e) => {
             let dir = std::env::current_dir().ok();
-            let goal = goal_for(caller, dir.as_deref())?;
+            let goal = goal_for(caller, repository, dir.as_deref())?;
             request::request_github_for_tool(&config, &client, goal).await?;
             cached_or_mint(&config, &client, unix_now())
                 .await
@@ -380,12 +383,47 @@ fn explain(e: anyhow::Error) -> anyhow::Error {
     Exit::new(code, message).into()
 }
 
-/// `warden github token`: print a token, and nothing else, on stdout.
+/// The repository `warden github token` is for. With `gh_args`, `-R`/`--repo` in
+/// `args` is the explicit one and refusal speaks of `-R`; otherwise `repo` is, and it
+/// speaks of `--repo`. Then `GH_REPO` (unset or empty counts as unset, as for `gh`),
+/// then the `origin` remote of the current directory.
+///
+/// # Errors
+/// [`Exit`] with [`EXIT_ERROR`] when the repository cannot be told, so that nothing
+/// reaches stdout.
+pub fn repository_for(
+    repo: Option<RepoName>,
+    gh_args: bool,
+    args: &[OsString],
+) -> Result<RepoName> {
+    let explicit = if gh_args {
+        github_repo::repo_flag(args)
+            .map_err(|_| Exit::new(EXIT_ERROR, github_repo::UNDETERMINED_GH))?
+    } else {
+        repo
+    };
+    let gh_repo = std::env::var_os("GH_REPO")
+        .filter(|v| !v.is_empty())
+        .map(|v| v.to_string_lossy().into_owned());
+    github_repo::choose(explicit, gh_repo.as_deref(), || {
+        github_repo::origin_url(&std::env::current_dir().ok()?)
+    })
+    .map_err(|github_repo::Undetermined| {
+        let message = if gh_args {
+            github_repo::UNDETERMINED_GH
+        } else {
+            github_repo::UNDETERMINED_TOKEN
+        };
+        Exit::new(EXIT_ERROR, message).into()
+    })
+}
+
+/// `warden github token`: print a token for `repository`, and nothing else, on stdout.
 ///
 /// # Errors
 /// As [`obtain`], or if stdout cannot be written.
-pub async fn print_token() -> Result<()> {
-    let token = obtain(Caller::GhWrapper).await?;
+pub async fn print_token(repository: &RepoName) -> Result<()> {
+    let token = obtain(Caller::GhWrapper, repository).await?;
     let mut out = std::io::stdout().lock();
     out.write_all(token.as_bytes())
         .and_then(|()| out.write_all(b"\n"))

@@ -19,7 +19,7 @@ use warden_broker_proto::{GrantAccess, GrantView};
 
 use super::FIX_EARLIER;
 use crate::client::CallError;
-use crate::setup_github::helper_program;
+use crate::setup_github::{USE_HTTP_PATH_KEY, helper_program};
 
 /// The check's name.
 pub const NAME: &str = "github.token";
@@ -30,6 +30,9 @@ const GITHUB_HOST: &str = "github.com";
 /// What the owner does when git's configuration could not be read.
 const READ_GIT: &str = "Check that `git config --list` runs and reads the configuration, then \
                         run doctor again.";
+
+/// What the owner does when git's setup for warden is missing or wrong.
+const SETUP: &str = "Run `warden setup github`.";
 
 /// One credential helper entry of git's configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,6 +50,9 @@ pub struct GithubSetup {
     pub helpers: Vec<Helper>,
     /// This program's path as `warden setup github` writes it, if it can tell.
     pub this_program: Option<String>,
+    /// Whether `credential.https://github.com.useHttpPath` is true, so that git sends
+    /// the repository to the helper.
+    pub use_http_path: bool,
 }
 
 /// Run `git` with `args`, set up by `configure`, with `stdin` as its input. `None`
@@ -176,12 +182,32 @@ fn github_helpers(
     Ok(helpers)
 }
 
+/// Whether git reads [`USE_HTTP_PATH_KEY`] as true for `https://github.com`, the way
+/// it resolves the setting: a generic value counts, and a `github.com` one wins.
+fn use_http_path(configure: &impl Fn(&mut Command)) -> Result<bool, String> {
+    let args = [
+        "config",
+        "--type=bool",
+        "--get-urlmatch",
+        "credential.useHttpPath",
+        "https://github.com",
+    ];
+    let out = git(configure, &args, None).ok_or_else(|| "git could not be run".to_owned())?;
+    match out.status.code() {
+        Some(0) => Ok(out.stdout == b"true\n"),
+        // 1: the key is not set.
+        Some(1) => Ok(false),
+        code => Err(unreadable(code)),
+    }
+}
+
 /// How git is set up here, as `configure` points it.
 fn setup_with(configure: impl Fn(&mut Command)) -> Result<GithubSetup, String> {
     let entries = helper_entries(&configure)?;
     Ok(GithubSetup {
         helpers: github_helpers(entries, |pattern| pattern_matches(pattern, &configure))?,
         this_program: crate::setup_github::this_program(),
+        use_http_path: use_http_path(&configure)?,
     })
 }
 
@@ -251,7 +277,6 @@ pub fn through_warden(setup: &GithubSetup) -> bool {
 /// The failure for `used`, the helpers that count, when they are not this warden
 /// alone.
 fn not_alone(used: &[Helper], this: Option<&str>) -> Check {
-    const SETUP: &str = "Run `warden setup github`.";
     if let [only] = used
         && kind(&only.value, this) == Kind::OtherWarden
     {
@@ -319,6 +344,13 @@ pub fn check(setup: &Result<GithubSetup, String>, grant: Option<Result<bool, Cal
         .map_or(&helpers[..], |last| &helpers[last + 1..]);
     if !matches!(used, [only] if kind(&only.value, this) == Kind::This) {
         return not_alone(used, this);
+    }
+    if !setup.use_http_path {
+        return Check::fail(
+            NAME,
+            format!("git does not send the repository to warden ({USE_HTTP_PATH_KEY} is not true)"),
+            SETUP,
+        );
     }
     match grant {
         None => Check::could_not_check(
