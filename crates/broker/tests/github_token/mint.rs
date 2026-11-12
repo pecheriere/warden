@@ -9,11 +9,12 @@ use serde_json::{Value, json};
 use warden_broker::github_app::GithubApi;
 use warden_broker::policy::GithubAppKey;
 use warden_broker::requests::Clock as _;
+use warden_broker::testkit::github_app::token_answer;
 use warden_broker::testkit::github_app::{APP_ID, INSTALLATION_ID, RSA2048_PKCS8};
 use warden_broker::testkit::upstream::{Gate, HttpsUpstream, Scripted};
 use warden_broker::testkit::{TestBroker, TestResponse};
 use warden_broker_proto::Window;
-use warden_broker_proto::github_token::{HOURLY_LIMIT, NO_ACTIVE_GRANT};
+use warden_broker_proto::github_token::{HOURLY_LIMIT, NO_ACTIVE_GRANT, PERMISSIONS};
 
 use super::{approve, configured, entries};
 
@@ -368,4 +369,52 @@ async fn refusals_past_the_limit_are_counted_instead_of_listed() {
     assert_eq!(held.len(), 1);
     assert_eq!(held[0]["agent"], "bot");
     assert_eq!(held[0]["count"], 3);
+}
+
+#[tokio::test]
+async fn hourly_limit_survives_restart() {
+    let upstream = HttpsUpstream::start().await;
+    let api = GithubApi::pinned(
+        upstream.origin().parse().unwrap(),
+        upstream.origin().parse().unwrap(),
+        upstream.ca_pem().as_bytes().to_vec(),
+    );
+    let (broker, key) = configured(TestBroker::with_github(api, Window::D30, 2).await).await;
+    // Written straight into the database: scoped approval comes later.
+    broker
+        .insert_scoped_github_grant("bot", &[("example-owner/example-repo", 1001)])
+        .await;
+    for _ in 0..2 {
+        upstream.script_github_token(token_answer(
+            TOKEN,
+            broker.clock.now() + 3600,
+            &[(1001, "example-owner/example-repo")],
+            &PERMISSIONS,
+            "selected",
+        ));
+        let resp = mint(&broker, &key).await;
+        assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
+    }
+    let broker = broker.restart().await;
+    let resp = mint(&broker, &key).await;
+    assert_refused(&broker, &resp, StatusCode::TOO_MANY_REQUESTS, HOURLY_LIMIT);
+    assert_eq!(upstream.received().len(), 2);
+    let minted = entries(&broker, "github_token_minted");
+    assert_eq!(minted.len(), 2);
+    assert_eq!(minted[0]["repository"], "example-owner/example-repo");
+    assert_eq!(minted[0]["repository_id"], 1001);
+}
+
+#[tokio::test]
+async fn info_says_scoped_github_tokens() {
+    let broker = TestBroker::new().await;
+    let resp = broker
+        .api_send(
+            axum::http::Request::get("/v1/info")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
+    assert_eq!(resp.json()["scoped_github_tokens"], true);
 }

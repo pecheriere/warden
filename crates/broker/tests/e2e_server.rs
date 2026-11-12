@@ -197,7 +197,8 @@ async fn info_endpoint_shape() {
         .await;
     assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
     let info: Value = serde_json::from_str(&resp.body).unwrap();
-    assert_eq!(info.as_object().unwrap().len(), 3, "{info}");
+    assert_eq!(info.as_object().unwrap().len(), 4, "{info}");
+    assert_eq!(info["scoped_github_tokens"], true);
     assert_eq!(info["protocols"], json!(["warden-request-v1"]));
     assert_eq!(info["github_token_max_window"], "30d");
     let audience = info["audience"].as_str().unwrap();

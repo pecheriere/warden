@@ -20,8 +20,7 @@ pub struct ActiveGithubToken {
     pub grant: GithubTokenGrant,
 }
 
-/// Tokens per agent per hour, unless a test says otherwise. An agent holds at most one
-/// GitHub token grant, so this counts that grant's mints. The CLI caches a token for
+/// Tokens per agent per hour, unless a test says otherwise. The CLI caches a token for
 /// most of its hour, so it mints about once an hour; this is far more, and small
 /// enough that a looping agent cannot use up the App's rate limit at GitHub, which
 /// every agent shares, or fill the audit log.
@@ -51,20 +50,23 @@ impl Requests {
         self
     }
 
-    /// Take one of `grant`'s tokens for this hour, or say there are none left. In one
+    /// Take one of `agent`'s tokens for this hour, or say there are none left. In one
     /// statement, so that concurrent calls cannot pass the limit, and in the database,
-    /// so that a restart does not reset it.
+    /// so that a restart does not reset it. Counted per agent, whatever grants it has
+    /// held this hour.
     ///
     /// # Errors
     /// Storage failures: the caller refuses.
-    pub(crate) async fn take_mint(&self, grant: &Id) -> Result<bool, RequestError> {
+    pub(crate) async fn take_mint(&self, agent: &AgentName) -> Result<bool, RequestError> {
         let taken = sqlx::query(
-            "UPDATE grants SET mint_hour = ?1, mint_count = \
-             CASE WHEN mint_hour = ?1 THEN mint_count + 1 ELSE 1 END \
-             WHERE id = ?2 AND (mint_hour IS NOT ?1 OR mint_count < ?3)",
+            "INSERT INTO github_token_mints (agent, mint_hour, mint_count) VALUES (?1, ?2, 1) \
+             ON CONFLICT(agent) DO UPDATE SET \
+             mint_count = CASE WHEN mint_hour = excluded.mint_hour THEN mint_count + 1 ELSE 1 END, \
+             mint_hour = excluded.mint_hour \
+             WHERE mint_hour IS NOT excluded.mint_hour OR mint_count < ?3",
         )
+        .bind(agent.as_str())
         .bind(self.clock.now().div_euclid(3600))
-        .bind(grant.as_str())
         .bind(self.github_token_per_hour)
         .execute(&self.pool)
         .await?

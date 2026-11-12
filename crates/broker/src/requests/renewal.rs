@@ -34,6 +34,8 @@ const ENDING_SOON: &str = "\
     SELECT id, agent, not_after, json_extract(view, '$.access.kind') AS kind FROM grants \
     WHERE not_after > ?1 AND revoked_at IS NULL \
     AND json_extract(view, '$.access.kind') IN ('commit_signing', 'github_token') \
+    AND (json_extract(view, '$.access.kind') != 'github_token' \
+         OR json_array_length(view, '$.access.repositories') > 0) \
     AND not_after - ?1 <= MIN(?3, window_secs / 4) \
     AND renewal_noticed_at IS NULL \
     AND (renewal_notice_tried_at IS NULL OR renewal_notice_tried_at <= ?2)";
@@ -235,7 +237,9 @@ impl Requests {
     pub async fn renew_grant(&self, grant_id: &Id) -> Result<(Id, Url), RequestError> {
         let row = sqlx::query(
             "SELECT agent, window_secs, json_extract(view, '$.access.kind') AS kind \
-             FROM grants WHERE id = ?1 AND revoked_at IS NULL AND not_after > ?2",
+             FROM grants WHERE id = ?1 AND revoked_at IS NULL AND not_after > ?2 \
+             AND (json_extract(view, '$.access.kind') != 'github_token' \
+                  OR json_array_length(view, '$.access.repositories') > 0)",
         )
         .bind(grant_id.as_str())
         .bind(self.clock.now())

@@ -116,7 +116,7 @@ async fn attempt(
         return Err(refused(StatusCode::FORBIDDEN, NO_ACTIVE_GRANT));
     };
     // Taken before GitHub is asked, so that refused calls cost GitHub nothing.
-    if !state.requests.take_mint(&grant_id).await? {
+    if !state.requests.take_mint(agent).await? {
         return Err(refused(StatusCode::TOO_MANY_REQUESTS, HOURLY_LIMIT));
     }
     let minted = github_app::mint(&state.github, &key, repository.id, state.clock.now())
@@ -149,6 +149,8 @@ async fn attempt(
             .map(|(name, level)| format!("{name}:{level}"))
             .collect(),
         expires_at: minted.expires_at,
+        repository: repository.name.clone(),
+        repository_id: repository.id,
     };
     drop(key);
     state

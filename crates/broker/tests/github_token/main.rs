@@ -7,6 +7,7 @@ use serde_json::Value;
 use warden_broker::testkit::{TestBroker, github_app_key};
 use warden_broker_proto::Window;
 
+mod legacy;
 mod mint;
 mod pages;
 mod renewal;

@@ -281,6 +281,18 @@ pub enum AuditEvent {
         permissions: Vec<String>,
         /// When GitHub ends the token, unix seconds.
         expires_at: i64,
+        /// The repository the token is limited to, as the grant names it.
+        repository: RepoName,
+        /// GitHub's id for that repository.
+        repository_id: u64,
+    },
+    /// A GitHub token grant or pending request that named no repository was ended
+    /// at upgrade, because GitHub grants are now scoped to repositories.
+    GithubUnscopedEnded {
+        /// The request: the grant's, or the pending one.
+        request_id: Id,
+        /// The grant that ended; `None` for a pending request.
+        grant_id: Option<Id>,
     },
     /// The broker refused to mint a GitHub token for an agent, or minted one it
     /// then did not give out because the grant had ended.
