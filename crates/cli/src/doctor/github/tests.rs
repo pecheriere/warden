@@ -274,6 +274,12 @@ fn git_says_whether_use_http_path_is_true() {
     assert!(!read(
         "[credential \"https://github.com\"]\n\tuseHttpPath = false\n"
     ));
+    // A generic value counts for github.com, and a github.com one wins over it.
+    assert!(read("[credential]\n\tuseHttpPath = true\n"));
+    assert!(!read(
+        "[credential]\n\tuseHttpPath = true\n\
+         [credential \"https://github.com\"]\n\tuseHttpPath = false\n"
+    ));
     assert!(!read(
         "[credential \"https://gitlab.com\"]\n\tuseHttpPath = true\n"
     ));

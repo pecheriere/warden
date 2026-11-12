@@ -182,9 +182,16 @@ fn github_helpers(
     Ok(helpers)
 }
 
-/// Whether git reads [`USE_HTTP_PATH_KEY`] as true.
+/// Whether git reads [`USE_HTTP_PATH_KEY`] as true for `https://github.com`, the way
+/// it resolves the setting: a generic value counts, and a `github.com` one wins.
 fn use_http_path(configure: &impl Fn(&mut Command)) -> Result<bool, String> {
-    let args = ["config", "--type=bool", "--get", USE_HTTP_PATH_KEY];
+    let args = [
+        "config",
+        "--type=bool",
+        "--get-urlmatch",
+        "credential.useHttpPath",
+        "https://github.com",
+    ];
     let out = git(configure, &args, None).ok_or_else(|| "git could not be run".to_owned())?;
     match out.status.code() {
         Some(0) => Ok(out.stdout == b"true\n"),

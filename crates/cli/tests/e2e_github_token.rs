@@ -70,7 +70,7 @@ impl Machine {
         let gh = root.path().join("bin/gh");
         fs::write(
             &gh,
-            "#!/bin/sh\nprintf 'token=%s\\n' \"$GH_TOKEN\"\nprintf 'args=%s\\n' \"$*\"\n",
+            "#!/bin/sh\n: > \"$(dirname \"$0\")/gh-ran\"\nprintf 'token=%s\\n' \"$GH_TOKEN\"\nprintf 'args=%s\\n' \"$*\"\n",
         )
         .unwrap();
         fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).unwrap();
@@ -488,6 +488,33 @@ fn offline() -> Machine {
     let machine = Machine::new(&"http://127.0.0.1:9/".parse().unwrap(), String::new());
     fs::remove_file(machine.root.path().join("config/warden/config.toml")).unwrap();
     machine
+}
+
+#[test]
+fn the_gh_wrapper_refuses_without_a_repository_and_never_starts_the_real_gh() {
+    let machine = offline();
+    let set_up = machine.warden().args(["setup", "github"]).output().unwrap();
+    assert_eq!(set_up.status.code(), Some(0), "{}", text(&set_up.stderr));
+
+    // No `-R`, no `GH_REPO`, and a directory with no `origin`.
+    let mut gh = Command::new("gh");
+    machine.env(&mut gh);
+    let out = gh
+        .env_remove("GH_REPO")
+        .args(["pr", "list"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out.stderr));
+    let said = text(&out.stderr);
+    assert!(
+        said.contains("cannot tell which repository; pass -R owner/name"),
+        "{said}"
+    );
+    assert!(out.stdout.is_empty(), "{}", text(&out.stdout));
+    assert!(
+        !machine.root.path().join("bin/gh-ran").exists(),
+        "the real gh was started"
+    );
 }
 
 #[test]

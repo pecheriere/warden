@@ -62,7 +62,9 @@ pub fn from_remote_url(url: &str) -> Option<RepoName> {
 }
 
 /// The repository `gh` is told with `-R` or `GH_REPO`: `OWNER/REPO`,
-/// `github.com/OWNER/REPO` or `https://github.com/OWNER/REPO`.
+/// `github.com/OWNER/REPO` or `https://github.com/OWNER/REPO`. A URL form may
+/// end in one `/` and then one `.git`, as gh accepts; the plain `OWNER/REPO` form
+/// takes neither. The host must be exactly `github.com`.
 ///
 /// # Errors
 /// [`RepoArgError::OtherHost`] for another host, [`RepoArgError::Invalid`] otherwise.
