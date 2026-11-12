@@ -37,6 +37,21 @@ All notable changes to this project are recorded here. The format follows
   several-repositories notice no longer looks like the warning, and the warning icon keeps
   its size and sits on the heading's first line.
 - `warden setup github` sets `credential.https://github.com.useHttpPath`, and the `gh` wrapper refuses to run when it cannot tell the repository; run `warden setup github` again after upgrading.
+- `scripts/sign-release.sh vX.Y.Z` signs a release's manifest through `warden release
+  sign-manifest` and no longer takes a key or uploads anything itself. It checks the tag against
+  `docs/release-signers` under the identity `warden-release`, keeps its other checks, and
+  verifies the manifest and signature it fetches back from the draft before it says Signed.
+  `AGENTS.md` describes the release as the agent's steps (`warden request release`,
+  `warden release tag`, the script, `warden release publish`) with the owner's phone
+  approval as the yes. `docs/verifying-releases.md` says why the attestation check is
+  required and to verify an older release against `release-signers` at its tag. The script
+  requires `GH_TOKEN`, checks that the tag and the manifest were signed by the same key, and
+  says not to publish when a check fails after signing; a repeat after signing needs a new
+  release grant.
+- Releases from 0.13.0 are signed by a key warden's broker holds,
+  `SHA256:q7ezyVes9zAFsYyAtOqarJZJckRAVSikw9le8ufdSdc`, listed in `docs/release-signers` under
+  the identity `warden-release` and in the Homebrew tap's copy. Earlier releases verify with
+  the maintainer's key, as before.
 
 ## [0.12.0] - 2026-11-11
 
@@ -115,20 +130,6 @@ needs them.
   if that is less, and Renew on Active grants opens a request for the same window, or as
   long as the server now allows, that takes one passkey approval. The notice is recorded as
   `github_token_renewal_notified` (#190).
-
-### Changed
-
-- `scripts/sign-release.sh vX.Y.Z` signs a release's manifest through `warden release
-  sign-manifest` and no longer takes a key or uploads anything itself. It checks the tag against
-  `docs/release-signers` under the identity `warden-release`, keeps its other checks, and
-  verifies the manifest and signature it fetches back from the draft before it says Signed.
-  `AGENTS.md` describes the release as the agent's steps (`warden request release`,
-  `warden release tag`, the script, `warden release publish`) with the owner's phone
-  approval as the yes. `docs/verifying-releases.md` says why the attestation check is
-  required and to verify an older release against `release-signers` at its tag. The script
-  requires `GH_TOKEN`, checks that the tag and the manifest were signed by the same key, and
-  says not to publish when a check fails after signing; a repeat after signing needs a new
-  release grant.
 
 ### Fixed
 

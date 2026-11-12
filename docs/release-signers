@@ -7,3 +7,4 @@
 # docs/verifying-releases.md check against. The older line below keeps its own
 # identity and verifies the releases signed before that.
 pecheriere@users.noreply.github.com namespaces="git,warden-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIN5zA+J2lBK+qWdhVBz+3WiucLhgDfWn3Yw0JHZyIhBJ
+warden-release namespaces="git,warden-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPU8lP0ukIXv5Oi6ozNGvBHVvAzZBNvxxN8NpnCh/t0R

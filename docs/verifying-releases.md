@@ -39,17 +39,26 @@ curl -fsSLO https://raw.githubusercontent.com/pecheriere/warden/main/docs/releas
 grep -v '^#' release-signers | awk '{ print $3, $4 }' | ssh-keygen -lf -
 ```
 
-Compare that fingerprint with the signing keys on the maintainer's GitHub account:
+The key that warden's broker holds signs the releases made through warden's release
+steps, from 0.13.0 on. Its fingerprint is
+`SHA256:q7ezyVes9zAFsYyAtOqarJZJckRAVSikw9le8ufdSdc`. Compare it with the Homebrew
+tap's copy of the list, which is kept and reviewed in its own repository:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/pecheriere/homebrew-tap/main/release-signers \
+  | grep -v '^#' | awk '{ print $3, $4 }' | ssh-keygen -lf -
+```
+
+The maintainer's own key signed every release before that. Its fingerprint is
+`SHA256:aF+0knqtnI3TWceyXtxVRGbcfH64yoZfRGJ3HnDbPT4`. It is also a signing key on
+the maintainer's GitHub account, which you can compare against:
 
 ```sh
 curl -fsSL https://api.github.com/users/pecheriere/ssh_signing_keys | jq -r '.[].key' | ssh-keygen -lf -
 ```
 
-For a release signed by the maintainer's own key (every release before the first made
-through warden's release steps), the first command should print
-`SHA256:aF+0knqtnI3TWceyXtxVRGbcfH64yoZfRGJ3HnDbPT4`, and the second should list
-it. The account can hold other signing keys; only the ones in `release-signers`
-sign releases.
+The account can hold other signing keys; only the ones in `release-signers` sign
+releases.
 
 **Verify an older release against the file as it was at that release's tag**, not
 today's: a key is removed from `release-signers` once it is retired, and an old
