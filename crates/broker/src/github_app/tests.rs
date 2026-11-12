@@ -4,9 +4,12 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use secrecy::ExposeSecret as _;
 use serde_json::{Value, json};
 use warden_broker_proto::github_token::PERMISSIONS;
+use warden_broker_proto::release::RepoName;
 
-use super::{GithubApi, InstallationToken, MintError, jwt, mint};
-use crate::testkit::github_app::{APP_ID, INSTALLATION_ID, github_app_key};
+use super::{
+    GithubApi, InstallationToken, MintError, ResolvedRepository, current_names, jwt, mint, resolve,
+};
+use crate::testkit::github_app::{APP_ID, INSTALLATION_ID, github_app_key, token_answer};
 use crate::testkit::upstream::{Gate, HttpsUpstream, Scripted};
 
 /// 2026-11-08T12:00:00Z.
@@ -24,17 +27,44 @@ async fn upstream() -> (HttpsUpstream, GithubApi) {
     (upstream, api)
 }
 
-fn created(token: &str, expires_at: &str) -> Scripted {
-    Scripted::with_body(
-        201,
-        json!({"token": token, "expires_at": expires_at}).to_string(),
+const REPO_ID: u64 = 1001;
+const REPO: &str = "example-owner/example-repo";
+
+fn asked_permissions() -> Vec<(&'static str, &'static str)> {
+    PERMISSIONS.to_vec()
+}
+
+/// A good answer for [`REPO_ID`], expiring at `expires_at` (Unix seconds).
+fn created_at(token: &str, expires_at: i64) -> Scripted {
+    token_answer(
+        token,
+        expires_at,
+        &[(REPO_ID, REPO)],
+        &asked_permissions(),
+        "selected",
     )
+}
+
+fn created(token: &str, expires_at: &str) -> Scripted {
+    let epoch = expires_at
+        .parse::<jiff::Timestamp>()
+        .map_or(0, jiff::Timestamp::as_second);
+    created_at(token, epoch)
+}
+
+/// A body with the shape of an answer, but not what `created` makes.
+fn answer_body(token: &str, expires_at: &str, extra: &Value) -> Scripted {
+    let mut body = json!({"token": token, "expires_at": expires_at});
+    body.as_object_mut()
+        .unwrap()
+        .extend(extra.as_object().unwrap().clone());
+    Scripted::with_body(201, body.to_string())
 }
 
 async fn mint_with(scripted: Scripted) -> Result<InstallationToken, MintError> {
     let (upstream, api) = upstream().await;
     upstream.script_github_token(scripted);
-    mint(&api, &github_app_key().0, NOW).await
+    mint(&api, &github_app_key().0, REPO_ID, NOW).await
 }
 
 /// The error of a mint that must fail.
@@ -73,11 +103,11 @@ fn jwt_verifies_with_public_key_and_has_claims() {
 }
 
 #[tokio::test]
-async fn mint_sends_fixed_permissions_and_headers() {
+async fn mint_names_one_repository_id_with_fixed_permissions_and_headers() {
     let (upstream, api) = upstream().await;
     upstream.script_github_token(created("ghs_test", EXPIRES_AT));
     let (key, public) = github_app_key();
-    mint(&api, &key, NOW).await.unwrap();
+    mint(&api, &key, REPO_ID, NOW).await.unwrap();
     let received = upstream.received();
     assert_eq!(received.len(), 1);
     let request = &received[0];
@@ -99,7 +129,10 @@ async fn mint_sends_fixed_permissions_and_headers() {
         .iter()
         .map(|(name, level)| ((*name).to_owned(), json!(level)))
         .collect();
-    assert_eq!(body, json!({ "permissions": expected }));
+    assert_eq!(
+        body,
+        json!({ "permissions": expected, "repository_ids": [1001] })
+    );
 }
 
 #[tokio::test]
@@ -143,9 +176,15 @@ async fn mint_refuses_oversize_without_a_length() {
     let scripted = Scripted::with_body(201, vec![b' '; 64 * 1024 + 1]).chunked();
     assert_eq!(refused(scripted).await, MintError::TooLarge);
     // Exactly the cap, in chunks, is read whole (and then parsed).
-    let mut body = json!({"token": "ghs_test", "expires_at": EXPIRES_AT})
-        .to_string()
-        .into_bytes();
+    let mut body = json!({
+        "token": "ghs_test",
+        "expires_at": EXPIRES_AT,
+        "repository_selection": "selected",
+        "repositories": [{"id": REPO_ID, "full_name": REPO}],
+        "permissions": expected_permissions(),
+    })
+    .to_string()
+    .into_bytes();
     body.resize(64 * 1024, b' ');
     let minted = mint_with(Scripted::with_body(201, body).chunked())
         .await
@@ -206,7 +245,9 @@ async fn mint_fails_closed_when_upstream_is_untrusted() {
         upstream.origin().parse().unwrap(),
         other.ca_pem().as_bytes().to_vec(),
     );
-    let err = mint(&api, &github_app_key().0, NOW).await.unwrap_err();
+    let err = mint(&api, &github_app_key().0, REPO_ID, NOW)
+        .await
+        .unwrap_err();
     assert_eq!(err, MintError::Unreachable);
     assert!(upstream.received().is_empty());
 }
@@ -216,7 +257,7 @@ async fn mint_waits_for_a_held_answer() {
     let (upstream, api) = upstream().await;
     let gate = Gate::new();
     upstream.script_github_token(created("ghs_test", EXPIRES_AT).held_by(&gate));
-    let call = tokio::spawn(async move { mint(&api, &github_app_key().0, NOW).await });
+    let call = tokio::spawn(async move { mint(&api, &github_app_key().0, REPO_ID, NOW).await });
     upstream.wait_for_github_token_calls(1).await;
     assert!(!call.is_finished());
     gate.open();
@@ -232,7 +273,279 @@ fn mint_error_messages_are_fixed() {
         (MintError::Malformed, "GitHub's answer was not understood"),
         (MintError::TooLarge, "GitHub's answer was too large"),
         (MintError::Compressed, "GitHub's answer was compressed"),
+        (
+            MintError::NotAccessible,
+            "GitHub says the App cannot reach that repository",
+        ),
+        (
+            MintError::WrongScope,
+            "GitHub's token was not limited as asked",
+        ),
     ] {
         assert_eq!(err.to_string(), text);
+    }
+}
+
+fn expected_permissions() -> Value {
+    PERMISSIONS
+        .iter()
+        .map(|(name, level)| ((*name).to_owned(), json!(level)))
+        .collect::<serde_json::Map<_, _>>()
+        .into()
+}
+
+fn name(value: &str) -> RepoName {
+    RepoName::try_from(value.to_owned()).unwrap()
+}
+
+fn resolved(id: u64, value: &str) -> ResolvedRepository {
+    ResolvedRepository {
+        id,
+        name: name(value),
+    }
+}
+
+const METADATA: [(&str, &str); 1] = [("metadata", "read")];
+
+fn answer(repositories: &[(u64, &str)], permissions: &[(&str, &str)], selection: &str) -> Scripted {
+    token_answer("ghs_test", NOW + 3600, repositories, permissions, selection)
+}
+
+#[tokio::test]
+async fn mint_refuses_other_repository() {
+    let scripted = answer(
+        &[(1002, "example-owner/homebrew-tap")],
+        &asked_permissions(),
+        "selected",
+    );
+    assert_eq!(refused(scripted).await, MintError::WrongScope);
+}
+
+#[tokio::test]
+async fn mint_refuses_two_repositories() {
+    let scripted = answer(
+        &[(REPO_ID, REPO), (1002, "example-owner/homebrew-tap")],
+        &asked_permissions(),
+        "selected",
+    );
+    assert_eq!(refused(scripted).await, MintError::WrongScope);
+}
+
+#[tokio::test]
+async fn mint_refuses_missing_repositories() {
+    let none = answer(&[], &asked_permissions(), "selected");
+    assert_eq!(refused(none).await, MintError::WrongScope);
+    let absent = answer_body(
+        "ghs_test",
+        EXPIRES_AT,
+        &json!({"permissions": expected_permissions(), "repository_selection": "selected"}),
+    );
+    assert_eq!(refused(absent).await, MintError::WrongScope);
+}
+
+#[tokio::test]
+async fn mint_refuses_wider_permissions() {
+    let mut extra = asked_permissions();
+    extra.push(("administration", "write"));
+    let mut higher: Vec<_> = asked_permissions()
+        .into_iter()
+        .filter(|(name, _)| *name != "contents")
+        .collect();
+    higher.push(("contents", "admin"));
+    let mut unknown = asked_permissions();
+    unknown.push(("contents", "bogus"));
+    for permissions in [extra, higher, unknown] {
+        let scripted = answer(&[(REPO_ID, REPO)], &permissions, "selected");
+        assert_eq!(
+            refused(scripted).await,
+            MintError::WrongScope,
+            "{permissions:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn mint_accepts_lower_permissions() {
+    let scripted = answer(&[(REPO_ID, REPO)], &METADATA, "selected");
+    assert!(mint_with(scripted).await.is_ok());
+}
+
+#[tokio::test]
+async fn mint_refuses_selection_all() {
+    let scripted = answer(&[(REPO_ID, REPO)], &asked_permissions(), "all");
+    assert_eq!(refused(scripted).await, MintError::WrongScope);
+}
+
+#[tokio::test]
+async fn mint_maps_inaccessible_status_without_echo() {
+    let err = refused(Scripted::with_body(422, "SECRET-ECHO")).await;
+    assert_eq!(err, MintError::NotAccessible);
+    assert!(!format!("{err:?} {err}").contains("SECRET-ECHO"));
+}
+
+#[tokio::test]
+async fn resolve_sends_bare_names_and_metadata_only() {
+    let (upstream, api) = upstream().await;
+    upstream.script_github_token(answer(
+        &[(REPO_ID, REPO), (1002, "example-owner/homebrew-tap")],
+        &METADATA,
+        "selected",
+    ));
+    let names = [name(REPO), name("example-owner/homebrew-tap")];
+    resolve(&api, &github_app_key().0, &names, NOW)
+        .await
+        .unwrap();
+    let received = upstream.received();
+    assert_eq!(received.len(), 1);
+    let body: Value = serde_json::from_slice(&received[0].body).unwrap();
+    assert_eq!(
+        body,
+        json!({
+            "permissions": {"metadata": "read"},
+            "repositories": ["example-repo", "homebrew-tap"],
+        })
+    );
+}
+
+async fn resolve_with(
+    names: &[&str],
+    scripted: Scripted,
+) -> Result<Vec<ResolvedRepository>, MintError> {
+    let (upstream, api) = upstream().await;
+    upstream.script_github_token(scripted);
+    let names: Vec<RepoName> = names.iter().map(|n| name(n)).collect();
+    resolve(&api, &github_app_key().0, &names, NOW).await
+}
+
+#[tokio::test]
+async fn resolve_returns_ids_and_github_case() {
+    let scripted = answer(
+        &[(1002, "Example-Owner/Homebrew-Tap"), (REPO_ID, REPO)],
+        &METADATA,
+        "selected",
+    );
+    let found = resolve_with(&[REPO, "example-owner/homebrew-tap"], scripted)
+        .await
+        .unwrap();
+    assert_eq!(
+        found,
+        vec![
+            resolved(REPO_ID, REPO),
+            resolved(1002, "Example-Owner/Homebrew-Tap"),
+        ]
+    );
+    assert_eq!(found[1].name.to_string(), "Example-Owner/Homebrew-Tap");
+}
+
+#[tokio::test]
+async fn resolve_refuses_other_owner() {
+    let scripted = answer(&[(REPO_ID, REPO)], &METADATA, "selected");
+    let err = resolve_with(&["other-owner/example-repo"], scripted)
+        .await
+        .unwrap_err();
+    assert_eq!(err, MintError::WrongScope);
+}
+
+#[tokio::test]
+async fn resolve_refuses_missing_or_extra_entry() {
+    let both = [REPO, "example-owner/homebrew-tap"];
+    let missing = answer(&[(REPO_ID, REPO)], &METADATA, "selected");
+    assert_eq!(
+        resolve_with(&both, missing).await.unwrap_err(),
+        MintError::WrongScope
+    );
+    let extra = answer(
+        &[(REPO_ID, REPO), (1002, "example-owner/homebrew-tap")],
+        &METADATA,
+        "selected",
+    );
+    assert_eq!(
+        resolve_with(&[REPO], extra).await.unwrap_err(),
+        MintError::WrongScope
+    );
+    let twice = answer(&[(REPO_ID, REPO), (REPO_ID, REPO)], &METADATA, "selected");
+    assert_eq!(
+        resolve_with(&[REPO], twice).await.unwrap_err(),
+        MintError::WrongScope
+    );
+}
+
+#[tokio::test]
+async fn resolve_refuses_more_than_metadata() {
+    let scripted = answer(&[(REPO_ID, REPO)], &asked_permissions(), "selected");
+    assert_eq!(
+        resolve_with(&[REPO], scripted).await.unwrap_err(),
+        MintError::WrongScope
+    );
+}
+
+#[tokio::test]
+async fn resolve_maps_inaccessible_status() {
+    let err = resolve_with(&[REPO], Scripted::with_body(422, "{}"))
+        .await
+        .unwrap_err();
+    assert_eq!(err, MintError::NotAccessible);
+}
+
+#[tokio::test]
+async fn current_names_returns_new_name_for_id() {
+    let (upstream, api) = upstream().await;
+    upstream.script_github_token(answer(
+        &[(REPO_ID, "example-owner/renamed-repo")],
+        &METADATA,
+        "selected",
+    ));
+    let found = current_names(&api, &github_app_key().0, &[REPO_ID], NOW)
+        .await
+        .unwrap();
+    assert_eq!(found, vec![resolved(REPO_ID, "example-owner/renamed-repo")]);
+    let body: Value = serde_json::from_slice(&upstream.received()[0].body).unwrap();
+    assert_eq!(
+        body,
+        json!({"permissions": {"metadata": "read"}, "repository_ids": [1001]})
+    );
+}
+
+#[tokio::test]
+async fn current_names_refuses_other_ids() {
+    let (upstream, api) = upstream().await;
+    upstream.script_github_token(answer(
+        &[(1002, "example-owner/homebrew-tap")],
+        &METADATA,
+        "selected",
+    ));
+    let err = current_names(&api, &github_app_key().0, &[REPO_ID], NOW)
+        .await
+        .unwrap_err();
+    assert_eq!(err, MintError::WrongScope);
+}
+
+#[tokio::test]
+async fn errors_carry_no_github_text() {
+    const MARKER: &str = "MARKER-FROM-GITHUB";
+    let bodies = [
+        json!({"token": "ghs_test", "expires_at": EXPIRES_AT, "message": MARKER,
+               "repository_selection": MARKER,
+               "repositories": [{"id": 5, "full_name": MARKER}],
+               "permissions": {MARKER: MARKER}}),
+        json!({"token": MARKER, "expires_at": MARKER}),
+        json!({"token": "ghs_test", "expires_at": EXPIRES_AT,
+               "repository_selection": "selected",
+               "repositories": [{"id": REPO_ID, "full_name": MARKER}],
+               "permissions": {"metadata": "read"}}),
+    ];
+    for body in bodies {
+        let scripted = Scripted::with_body(201, body.to_string());
+        // `mint` ignores names, so the third body is only a refusal for `resolve`.
+        let errors = [
+            mint_with(Scripted::with_body(201, body.to_string()))
+                .await
+                .err(),
+            resolve_with(&[REPO], scripted).await.err(),
+        ];
+        assert!(errors.iter().any(Option::is_some));
+        for err in errors.into_iter().flatten() {
+            assert!(!format!("{err:?} {err}").contains(MARKER), "{err:?}");
+        }
     }
 }

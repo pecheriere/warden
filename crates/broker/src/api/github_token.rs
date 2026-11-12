@@ -12,6 +12,7 @@ use axum::http::StatusCode;
 use secrecy::ExposeSecret as _;
 use warden_broker_proto::github_token::{
     APP_CHANGED, GithubTokenResponse, GrantScope, HOURLY_LIMIT, NO_ACTIVE_GRANT, PERMISSIONS,
+    REPOSITORY_UNREACHABLE,
 };
 use warden_broker_proto::{AgentName, Id};
 
@@ -118,12 +119,18 @@ async fn attempt(
     if !state.requests.take_mint(&grant_id).await? {
         return Err(refused(StatusCode::TOO_MANY_REQUESTS, HOURLY_LIMIT));
     }
-    let minted = github_app::mint(&state.github, &key, state.clock.now())
+    let minted = github_app::mint(&state.github, &key, repository.id, state.clock.now())
         .await
         .map_err(|e| {
-            // The error's text is fixed and carries nothing GitHub said.
+            // The error's text is fixed and carries nothing GitHub said. A token that
+            // was not limited as asked was dropped unread, and nothing is retried.
             tracing::warn!(agent = %agent, error = %e, "minting a GitHub token failed");
-            refused(StatusCode::SERVICE_UNAVAILABLE, GITHUB_UNAVAILABLE)
+            match e {
+                github_app::MintError::NotAccessible | github_app::MintError::WrongScope => {
+                    refused(StatusCode::CONFLICT, REPOSITORY_UNREACHABLE)
+                }
+                _ => refused(StatusCode::SERVICE_UNAVAILABLE, GITHUB_UNAVAILABLE),
+            }
         })?;
 
     let event = AuditEvent::GithubTokenMinted {

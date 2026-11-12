@@ -5,12 +5,13 @@
 
 use http::{Method, StatusCode};
 use reqwest::Client;
-use serde::Deserialize;
 use serde_json::json;
 use url::Url;
 use warden_broker_proto::github_token::PERMISSIONS;
+use warden_broker_proto::release::RepoName;
 use zeroize::Zeroizing;
 
+use self::answer::Answer;
 use crate::github_http::{self, Failure, Payload};
 use crate::policy::GithubAppKey;
 
@@ -64,6 +65,8 @@ impl GithubApi {
     }
 }
 
+mod answer;
+
 pub use crate::github_http::InstallationToken;
 
 /// Why no token was minted. The messages are fixed and carry nothing GitHub said.
@@ -88,6 +91,12 @@ pub enum MintError {
     /// The answer is encoded in a way the broker does not read.
     #[error("GitHub's answer was compressed")]
     Compressed,
+    /// GitHub says the App cannot reach a repository asked for.
+    #[error("GitHub says the App cannot reach that repository")]
+    NotAccessible,
+    /// The token's answer shows it was not limited as asked.
+    #[error("GitHub's token was not limited as asked")]
+    WrongScope,
 }
 
 impl From<Failure> for MintError {
@@ -101,10 +110,17 @@ impl From<Failure> for MintError {
     }
 }
 
-#[derive(Deserialize)]
-struct Answer {
-    token: String,
-    expires_at: String,
+/// The status GitHub answers with when a repository asked for is not reachable by
+/// the installation (measured against the real API: all-or-nothing for a list).
+const INACCESSIBLE_STATUS: u16 = 422;
+
+/// A repository as GitHub names it: its id and its name in GitHub's case.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedRepository {
+    /// GitHub's id for the repository.
+    pub id: u64,
+    /// `owner/name` as GitHub spells it today.
+    pub name: RepoName,
 }
 
 /// The App JWT, for the App `key` names.
@@ -116,19 +132,22 @@ fn jwt(key: &GithubAppKey, now: i64) -> Result<Zeroizing<String>, MintError> {
     })?)
 }
 
-/// Mint an installation token for `key`'s installation with the fixed
-/// [`PERMISSIONS`] and no repository restriction. `now` is Unix seconds.
-///
-/// The client trusts the system roots (or the pinned CA), refuses redirects and
-/// never retries.
-///
-/// # Errors
-/// A [`MintError`]; nothing partial is returned.
-pub async fn mint(
+fn permissions_body(permissions: &[(&str, &str)]) -> serde_json::Value {
+    permissions
+        .iter()
+        .map(|(name, level)| ((*name).to_owned(), json!(level)))
+        .collect::<serde_json::Map<_, _>>()
+        .into()
+}
+
+/// Ask GitHub for a token with `body` and parse the answer. Nothing is checked
+/// beyond the shape, the token and its expiry: the callers check the scope.
+async fn request(
     api: &GithubApi,
     key: &GithubAppKey,
+    body: &serde_json::Value,
     now: i64,
-) -> Result<InstallationToken, MintError> {
+) -> Result<Answer, MintError> {
     let signer = key.clone();
     // RSA signing takes milliseconds of CPU: keep it off the async workers.
     let jwt = tokio::task::spawn_blocking(move || jwt(&signer, now))
@@ -141,34 +160,93 @@ pub async fn mint(
             key.installation_id()
         ))
         .map_err(|_| MintError::Unreachable)?;
-    let permissions: serde_json::Map<String, serde_json::Value> = PERMISSIONS
-        .iter()
-        .map(|(name, level)| ((*name).to_owned(), json!(level)))
-        .collect();
-    let body = json!({ "permissions": permissions }).to_string();
     let request = github_http::request(
         &api.client()?,
         Method::POST,
         url,
         jwt.as_str(),
         github_http::JSON,
-        Payload::Json(body),
+        Payload::Json(body.to_string()),
     )?;
     let response = github_http::send(request).await?;
-    if response.status() != StatusCode::CREATED {
+    let status = response.status();
+    if status.as_u16() == INACCESSIBLE_STATUS {
         // The body is never read: nothing GitHub says is passed on.
-        return Err(MintError::Refused(response.status().as_u16()));
+        return Err(MintError::NotAccessible);
+    }
+    if status != StatusCode::CREATED {
+        return Err(MintError::Refused(status.as_u16()));
     }
     let raw = github_http::read_body(response, github_http::MAX_RESPONSE_BYTES).await?;
-    parse(&raw, now)
+    Answer::parse(&raw, now)
 }
 
-/// The token and expiry in `raw`, which must expire after `now` and within
-/// two hours.
-fn parse(raw: &[u8], now: i64) -> Result<InstallationToken, MintError> {
-    let Answer { token, expires_at } =
-        serde_json::from_slice(raw).map_err(|_| MintError::Malformed)?;
-    github_http::checked_token(token, &expires_at, now).ok_or(MintError::Malformed)
+/// Mint an installation token for `key`'s installation with the fixed
+/// [`PERMISSIONS`], limited to the repository with id `repository_id`. `now` is
+/// Unix seconds. There is no way to mint a token without naming a repository.
+///
+/// The client trusts the system roots (or the pinned CA), refuses redirects and
+/// never retries.
+///
+/// # Errors
+/// A [`MintError`]; nothing partial is returned. [`MintError::WrongScope`] when
+/// GitHub's answer does not show a token limited to exactly that repository
+/// with no more than the permissions asked.
+pub async fn mint(
+    api: &GithubApi,
+    key: &GithubAppKey,
+    repository_id: u64,
+    now: i64,
+) -> Result<InstallationToken, MintError> {
+    let body = json!({
+        "permissions": permissions_body(&PERMISSIONS),
+        "repository_ids": [repository_id],
+    });
+    let answer = request(api, key, &body, now).await?;
+    answer.check_minted(repository_id)?;
+    Ok(answer.token)
+}
+
+/// What `names` are today, by GitHub's account: each one's id and its name in
+/// GitHub's case. The token that tells it is limited to reading metadata and is
+/// dropped unused.
+///
+/// The owner part of a name is not sent (GitHub takes bare names within the
+/// installation's account); it is checked against the answer instead.
+///
+/// # Errors
+/// A [`MintError`]; [`MintError::NotAccessible`] when GitHub cannot reach one of
+/// them, [`MintError::WrongScope`] when the answer is not one entry per name.
+pub async fn resolve(
+    api: &GithubApi,
+    key: &GithubAppKey,
+    names: &[RepoName],
+    now: i64,
+) -> Result<Vec<ResolvedRepository>, MintError> {
+    let bare: Vec<&str> = names.iter().map(RepoName::name).collect();
+    let body = json!({
+        "permissions": permissions_body(&[("metadata", "read")]),
+        "repositories": bare,
+    });
+    request(api, key, &body, now).await?.check_names(names)
+}
+
+/// What the repositories with `ids` are called today, for renewing a grant whose
+/// repositories may have been renamed. The token is dropped unused.
+///
+/// # Errors
+/// As [`resolve`]; the answer must hold exactly those ids.
+pub async fn current_names(
+    api: &GithubApi,
+    key: &GithubAppKey,
+    ids: &[u64],
+    now: i64,
+) -> Result<Vec<ResolvedRepository>, MintError> {
+    let body = json!({
+        "permissions": permissions_body(&[("metadata", "read")]),
+        "repository_ids": ids,
+    });
+    request(api, key, &body, now).await?.check_ids(ids)
 }
 
 #[cfg(test)]
