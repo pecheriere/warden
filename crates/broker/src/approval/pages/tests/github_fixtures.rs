@@ -166,15 +166,68 @@ pub(super) fn automatic_view(dir: Option<&str>) -> crate::requests::PendingView 
     )
 }
 
-/// The pages of a GitHub token grant.
-pub(super) fn github_token_pages() -> Vec<(&'static str, Markup)> {
+/// An active GitHub token grant of `scope`.
+pub(super) fn github_grant(n: u8, scope: GrantScope) -> crate::requests::ActiveGrant {
     let mut grant = active(
-        10,
+        n,
         github_token_request(),
-        GrantAccess::GithubToken(github_token_policy().grant(GrantScope::Legacy)),
+        GrantAccess::GithubToken(github_token_policy().grant(scope)),
     );
     grant.not_after = NOW + 26 * 86_400;
-    let grants_list = vec![grant];
+    grant
+}
+
+/// A grant of the given repositories (id, name).
+pub(super) fn scope_of(list: &[(u64, &str)]) -> GrantScope {
+    GrantScope::repositories(
+        list.iter()
+            .map(|(id, text)| GrantRepository {
+                name: name(text),
+                id: *id,
+            })
+            .collect(),
+    )
+    .unwrap()
+}
+
+/// The pending list with one GitHub token request for `names`, whose policy was
+/// readable when `readable` and not otherwise.
+pub(super) fn pending_page(names: &[&str], readable: bool) -> String {
+    let entry = PendingEntry {
+        id: id(10),
+        agent: agent("build-agent"),
+        fingerprint: fingerprint(10),
+        request: github_token_request_for(access(names, None)),
+        destination: readable.then(|| Destination::GithubToken(github_token_policy())),
+        expires_at: NOW + 240,
+    };
+    super::super::pending(&[entry], &LinkHosts::default(), NOW).into_string()
+}
+
+/// The history page with one GitHub token request for `names`.
+pub(super) fn history_page(names: &[&str]) -> String {
+    history(&[history_entry(names)], &LinkHosts::default()).into_string()
+}
+
+fn history_entry(names: &[&str]) -> HistoryEntry {
+    HistoryEntry {
+        id: id(10),
+        agent: agent("build-agent"),
+        fingerprint: fingerprint(10),
+        request: github_token_request_for(access(names, None)),
+        status: "approved".to_owned(),
+        created_at: NOW - 600,
+        granted_secs: Some(2_592_000),
+    }
+}
+
+/// The pages of a GitHub token grant.
+pub(super) fn github_token_pages() -> Vec<(&'static str, Markup)> {
+    let legacy = vec![github_grant(10, GrantScope::Legacy)];
+    let multi = vec![github_grant(
+        11,
+        scope_of(&[(1001, REPO), (1002, TAP), (1004, LONG)]),
+    )];
     let pending_list = vec![PendingEntry {
         id: id(10),
         agent: agent("build-agent"),
@@ -211,23 +264,16 @@ pub(super) fn github_token_pages() -> Vec<(&'static str, Markup)> {
             super::super::pending(&pending_list, &lnk, NOW),
         ),
         (
-            "grants-github-token",
-            grants(&grants_list, &idle(&grants_list), &lnk, NOW, 0),
+            "grants-github-token-multi",
+            grants(&multi, &idle(&multi), &lnk, NOW, 0),
+        ),
+        (
+            "grants-github-token-legacy",
+            grants(&legacy, &idle(&legacy), &lnk, NOW, 0),
         ),
         (
             "history-github-token",
-            history(
-                &[HistoryEntry {
-                    id: id(10),
-                    agent: agent("build-agent"),
-                    fingerprint: fingerprint(10),
-                    request: github_token_request(),
-                    status: "approved".to_owned(),
-                    created_at: NOW - 600,
-                    granted_secs: Some(2_592_000),
-                }],
-                &lnk,
-            ),
+            history(&[history_entry(&[REPO, TAP])], &lnk),
         ),
     ]
 }

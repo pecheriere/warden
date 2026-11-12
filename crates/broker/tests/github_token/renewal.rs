@@ -163,7 +163,7 @@ async fn an_ended_github_token_grant_cannot_be_renewed() {
 }
 
 #[tokio::test]
-async fn the_owner_hears_once_a_few_days_before_a_grant_ends() {
+async fn ending_soon_notice_names_repositories() {
     let (broker, _, upstream) = configured_on_fake().await;
     let grant = approve(&broker, &upstream, "bot", Window::D30).await;
     let requests = broker.state().requests.clone();
@@ -181,6 +181,13 @@ async fn the_owner_hears_once_a_few_days_before_a_grant_ends() {
         assert!(notices[0].message.contains(says), "{}", notices[0].message);
     }
     assert!(notices[0].url.path().ends_with("/grants"));
+    assert!(
+        notices[0]
+            .message
+            .starts_with("GitHub token for example-owner/example-repo ends in "),
+        "{}",
+        notices[0].message
+    );
     let told = entries(&broker, "github_token_renewal_notified");
     assert_eq!(told.len(), 1);
     assert_eq!(told[0]["grant_id"], grant.as_str());

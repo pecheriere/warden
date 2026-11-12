@@ -37,7 +37,7 @@ const NOTICE_RETRY_SECS: i64 = 3600;
 /// Grants of every [`OneAtATime`] kind ending soon at `?1`, whose owner was not told
 /// yet and was not tried since `?2`.
 const ENDING_SOON: &str = "\
-    SELECT id, agent, not_after, json_extract(view, '$.access.kind') AS kind FROM grants \
+    SELECT id, agent, not_after, view, json_extract(view, '$.access.kind') AS kind FROM grants \
     WHERE not_after > ?1 AND revoked_at IS NULL \
     AND json_extract(view, '$.access.kind') IN ('commit_signing', 'github_token') \
     AND (json_extract(view, '$.access.kind') != 'github_token' \
@@ -107,8 +107,15 @@ impl OneAtATime {
     }
 
     /// The doorbell telling the owner that `agent`'s grant ends in `left`. It names
-    /// the agent and nothing it wrote.
-    fn notice(self, agent: &AgentName, left: &str, url: Url) -> Doorbell {
+    /// the agent and, for a GitHub token, the repositories the owner approved; no other
+    /// text the agent wrote.
+    fn notice(
+        self,
+        agent: &AgentName,
+        scope: Option<&GrantScope>,
+        left: &str,
+        url: Url,
+    ) -> Doorbell {
         let without = match self {
             Self::CommitSigning => "this agent's commits fail once it ends",
             Self::GithubToken => {
@@ -117,9 +124,17 @@ impl OneAtATime {
         };
         Doorbell {
             title: format!("warden: {} for {agent} ends soon", self.name()),
-            message: format!(
-                "It ends in {left}. Renewing takes one passkey approval; without it, {without}."
-            ),
+            message: match scope {
+                Some(scope) => format!(
+                    "{} for {} ends in {left}. Renewing takes one passkey approval; without it, \
+                     {without}.",
+                    self.name(),
+                    scope.names()
+                ),
+                None => format!(
+                    "It ends in {left}. Renewing takes one passkey approval; without it, {without}."
+                ),
+            },
             url,
         }
     }
@@ -133,10 +148,15 @@ impl OneAtATime {
 }
 
 /// Whether the owner can renew a grant of `access`, and hears before it ends: the
-/// kinds an agent holds one of at a time.
+/// kinds an agent holds one of at a time. A GitHub token grant from before grants were
+/// scoped has ended and names no repository to renew. The grants page and the renewal
+/// handler both ask this.
 #[must_use]
-pub(crate) const fn renewable(access: &GrantAccess) -> bool {
-    OneAtATime::of(access).is_some()
+pub(crate) fn renewable(access: &GrantAccess) -> bool {
+    match access {
+        GrantAccess::GithubToken(grant) => !grant.repositories.is_legacy(),
+        other => OneAtATime::of(other).is_some(),
+    }
 }
 
 /// The stored kind of the grants `access` replaces when approved by kind, or `None`
@@ -416,7 +436,8 @@ impl Requests {
             .map_err(|()| RequestError::Internal("public URL cannot be a base"))?
             .pop_if_empty()
             .push("grants");
-        let bell = kind.notice(&agent, &time_left(not_after - now), url);
+        let scope = renewing_scope(row, kind)?;
+        let bell = kind.notice(&agent, scope.as_ref(), &time_left(not_after - now), url);
         match self.notifier.ring(&bell).await {
             Ok(channel) => {
                 sqlx::query("UPDATE grants SET renewal_noticed_at = ? WHERE id = ?")
@@ -450,11 +471,10 @@ fn renewing_scope(row: &SqliteRow, kind: OneAtATime) -> Result<Option<GrantScope
     }
     let view: String = row.try_get("view")?;
     let view: GrantView = serde_json::from_str(&view)?;
+    let renewable = renewable(&view.access);
     match view.access {
-        GrantAccess::GithubToken(grant) if !grant.repositories.is_legacy() => {
-            Ok(Some(grant.repositories))
-        }
-        // A grant that names no repository is not renewed: it has ended.
+        GrantAccess::GithubToken(grant) if renewable => Ok(Some(grant.repositories)),
+        // A grant that cannot be renewed (one that names no repository has ended).
         GrantAccess::GithubToken(_) => Err(RequestError::NotFound),
         _ => Err(RequestError::Corrupt(
             "GitHub token grant changed kind".to_owned(),

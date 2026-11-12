@@ -343,7 +343,10 @@ async fn token_without_grant_asks_the_owner_and_serves_once_approved() {
     // The request it filed is a 30-day one, with the fixed goal and the directory.
     let status = s.machine.warden().arg("status").output().unwrap();
     let listed = text(&status.stdout);
-    assert!(listed.contains("github token for 30d"), "{listed}");
+    assert!(
+        listed.contains(&format!("github token for {REPO} for 30d")),
+        "{listed}"
+    );
     assert!(
         listed.contains("requested automatically by the gh wrapper"),
         "{listed}"
@@ -514,7 +517,10 @@ async fn an_automatic_request_asks_for_no_more_than_the_broker_allows() {
     let token = CapturingNotifier::token(&s.broker.capture.next().await);
     let status = s.machine.warden().arg("status").output().unwrap();
     let listed = text(&status.stdout);
-    assert!(listed.contains("github token for 7d"), "{listed}");
+    assert!(
+        listed.contains(&format!("github token for {REPO} for 7d")),
+        "{listed}"
+    );
     approve_for(
         &s,
         &token,

@@ -71,7 +71,7 @@ pub fn broker_grant_line(grant: &GrantView, local: &[Id]) -> String {
         GrantAccess::CommitSigning(signing) => {
             format!("commit signing with {}", signing.key_fingerprint)
         }
-        GrantAccess::GithubToken(_) => "github token".to_owned(),
+        GrantAccess::GithubToken(token) => token.repositories.summary(),
         GrantAccess::Release(release) => {
             format!("release {} of {}", release.tag, release.repository)
         }
@@ -103,7 +103,7 @@ fn access_summary(access: &Access) -> String {
             }
         }
         Access::CommitSigning {} => "commit signing".to_owned(),
-        Access::GithubToken(_) => "github token".to_owned(),
+        Access::GithubToken(github) => github.summary(),
         Access::Release {
             repository,
             tag,
@@ -234,7 +234,8 @@ pub async fn collect(grant_id: &Id) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use warden_broker_proto::github_token::GrantScope;
+    use warden_broker_proto::github_token::{GrantRepository, GrantScope};
+    use warden_broker_proto::release::RepoName;
     use warden_broker_proto::{
         ApiGrant, CommitSigningGrant, GithubTokenAccess, GithubTokenGrant, GrantAccess, GrantView,
         Id, RelayGrant, Window,
@@ -332,7 +333,7 @@ mod tests {
             }),
         };
         assert_eq!(elsewhere_note(&grant, &[]), "");
-        assert!(broker_grant_line(&grant, &[]).contains("github token"));
+        assert!(broker_grant_line(&grant, &[]).contains("github token (all repositories)"));
         let id = grant.grant_id.clone();
         let Ok(Collected::NothingToCollect(message)) = plan(&id, vec![grant], &[]) else {
             panic!("expected nothing to collect");
@@ -341,7 +342,63 @@ mod tests {
         assert!(message.contains("warden setup github"), "{message}");
         assert_eq!(
             access_summary(&Access::GithubToken(GithubTokenAccess::default())),
-            "github token"
+            "github token (all repositories)"
+        );
+    }
+
+    fn github_grant_view(repositories: GrantScope) -> GrantView {
+        GrantView {
+            grant_id: Id::random(),
+            not_before: 100,
+            not_after: 200,
+            access: GrantAccess::GithubToken(GithubTokenGrant {
+                app_id: "123456".to_owned(),
+                installation_id: 7,
+                digest: "d".repeat(64),
+                repositories,
+            }),
+        }
+    }
+
+    fn repository(id: u64, name: &str) -> GrantRepository {
+        GrantRepository {
+            name: RepoName::try_from(name.to_owned()).unwrap(),
+            id,
+        }
+    }
+
+    #[test]
+    fn status_line_names_repositories() {
+        let scoped = GrantScope::repositories(vec![
+            repository(1001, "example-owner/example-repo"),
+            repository(1002, "example-owner/homebrew-tap"),
+        ])
+        .unwrap();
+        let grant = github_grant_view(scoped);
+        let line = broker_grant_line(&grant, &[]);
+        assert!(
+            line.starts_with(
+                "  github token for example-owner/example-repo, example-owner/homebrew-tap  grant "
+            ),
+            "{line}"
+        );
+        let legacy = broker_grant_line(&github_grant_view(GrantScope::Legacy), &[]);
+        assert!(
+            legacy.contains("github token (all repositories)"),
+            "{legacy}"
+        );
+    }
+
+    #[test]
+    fn access_summary_names_repositories() {
+        let access = GithubTokenAccess::new(
+            vec![RepoName::try_from("example-owner/example-repo".to_owned()).unwrap()],
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            access_summary(&Access::GithubToken(access)),
+            "github token for example-owner/example-repo"
         );
     }
 
