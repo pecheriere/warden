@@ -1,9 +1,24 @@
 //! What the approval page says about the repositories of a GitHub token request.
 
 use super::github_fixtures::{
-    LONG, REPO, TAP, access, automatic_view, github_view, multi_view, page, replaces_view,
-    replaces_view_with, resolved, scoped, unreachable_view,
+    LONG, REPO, TAP, access, automatic_view, github_grant, github_view, history_page, multi_view,
+    page, pending_page, replaces_view, replaces_view_with, resolved, scope_of, scoped,
+    unreachable_view,
 };
+use crate::approval::pages::grants;
+use crate::requests::{ActiveGrant, LinkHosts};
+use warden_broker_proto::github_token::GrantScope;
+
+fn grants_page(list: &[ActiveGrant]) -> String {
+    grants(
+        list,
+        &super::idle(list),
+        &LinkHosts::default(),
+        super::NOW,
+        0,
+    )
+    .into_string()
+}
 
 /// How many times `needle` appears in `haystack`.
 fn count(haystack: &str, needle: &str) -> usize {
@@ -18,7 +33,7 @@ fn single_repository_is_the_headline() {
     ));
     assert!(
         html.contains(&format!(
-            r#"<span class="repos"><code><bdi>{REPO}</bdi></code>"#
+            r#"<span class="repos headline"><code><bdi>{REPO}</bdi></code>"#
         )),
         "{html}"
     );
@@ -196,4 +211,79 @@ fn page_never_says_every_repository_for_scoped() {
         let html = page(&view);
         assert!(!html.contains("every repository"), "{html}");
     }
+}
+
+#[test]
+fn grants_page_lists_repositories() {
+    let grants = vec![github_grant(11, scope_of(&[(1001, REPO), (1002, TAP)]))];
+    let html = grants_page(&grants);
+    for name in [REPO, TAP] {
+        assert_eq!(
+            count(&html, &format!("<li><code><bdi>{name}</bdi></code>")),
+            1,
+            "{html}"
+        );
+    }
+    assert!(
+        html.contains("Can push and merge on these 2 repositories"),
+        "{html}"
+    );
+    assert!(!html.contains("every repository"), "{html}");
+    assert!(!html.contains("ended at upgrade"), "{html}");
+    let one = grants_page(&[github_grant(12, scope_of(&[(1001, REPO)]))]);
+    assert!(
+        one.contains(&format!("Can push and merge on <bdi>{REPO}</bdi>")),
+        "{one}"
+    );
+}
+
+#[test]
+fn grants_page_shows_legacy() {
+    let html = grants_page(&[github_grant(13, GrantScope::Legacy)]);
+    assert!(
+        html.contains("All repositories of the installation (ended at upgrade)"),
+        "{html}"
+    );
+    assert!(!html.contains("Can push and merge"), "{html}");
+}
+
+#[test]
+fn history_names_repositories() {
+    let html = history_page(&[REPO, TAP]);
+    assert!(
+        html.contains(&format!("github token for {REPO}, {TAP}")),
+        "{html}"
+    );
+    assert!(
+        history_page(&[]).contains("github token (all repositories)"),
+        "a request from before scoping"
+    );
+}
+
+#[test]
+fn pending_list_names_repositories() {
+    let html = pending_page(&[REPO, TAP], false);
+    assert!(
+        html.contains(&format!("github token for {REPO}, {TAP}")),
+        "{html}"
+    );
+    let readable = pending_page(&[REPO, TAP], true);
+    assert!(
+        readable.contains(&format!("<bdi>{REPO}</bdi>")),
+        "{readable}"
+    );
+}
+
+#[test]
+fn several_repositories_notice_is_not_a_warning() {
+    let html = page(&multi_view());
+    assert!(
+        html.contains(r#"<p class="notice-count">This request covers 3 repositories</p>"#),
+        "{html}"
+    );
+    assert_eq!(
+        count(&html, r#"class="badge modify""#),
+        1,
+        "one warning: {html}"
+    );
 }

@@ -30,8 +30,12 @@ All notable changes to this project are recorded here. The format follows
   and answers with the repository and its id; `GET /v1/info` reports `scoped_github_tokens`.
   New errors: `NO_ACTIVE_GRANT` for the repository, `AMBIGUOUS_GRANT` and
   `REPOSITORY_UNREACHABLE` (409), `OLD_CLIENT` (400). `github-token.json` is now per
-  repository, and `warden doctor` checks that the broker supports it. The grants page still
-  describes a GitHub grant's reach the old way.
+  repository, and `warden doctor` checks that the broker supports it. The grants page, the
+  history, the pending list, `warden status` and the notice before a grant ends name a
+  GitHub grant's repositories; a grant from before scoping shows as "All repositories of the
+  installation (ended at upgrade)". On the approval page the repository is the headline, the
+  several-repositories notice no longer looks like the warning, and the warning icon keeps
+  its size and sits on the heading's first line.
 - `warden setup github` sets `credential.https://github.com.useHttpPath`, and the `gh` wrapper refuses to run when it cannot tell the repository; run `warden setup github` again after upgrading.
 
 ## [0.12.0] - 2026-11-11

@@ -18,7 +18,7 @@ fn stored_access(entry: &PendingEntry) -> Markup {
         Access::Ssh { target, user, .. } => format!("ssh {user}@{target}"),
         Access::Api { secret, .. } => format!("api {secret}"),
         Access::CommitSigning {} => "commit signing".to_owned(),
-        Access::GithubToken(_) => "github token".to_owned(),
+        Access::GithubToken(github) => github.summary(),
         Access::Release {
             repository, tag, ..
         } => format!("release {tag} of {repository}"),

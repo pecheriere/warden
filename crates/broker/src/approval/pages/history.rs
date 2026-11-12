@@ -41,7 +41,7 @@ pub fn history(entries: &[HistoryEntry], hosts: &LinkHosts) -> Markup {
                             Access::Ssh { target, user, .. } => format!("{user}@{target}"),
                             Access::Api { secret, .. } => format!("api:{secret}"),
                             Access::CommitSigning {} => "commit signing".to_owned(),
-                            Access::GithubToken(_) => "github token".to_owned(),
+                            Access::GithubToken(github) => github.summary(),
                             Access::Release {
                                 repository, tag, ..
                             } => format!("release {tag} of {repository}"),

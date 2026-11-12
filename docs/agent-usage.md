@@ -818,7 +818,8 @@ response comes back) and
 you request again.
 
 `warden status` lists the grants on this machine, and the broker's view of
-your live grants and pending requests.
+your live grants and pending requests. A GitHub token grant is listed with its
+repositories: `github token for example-owner/example-repo  grant <id>  until <time>`.
 
 ### Signing commits
 

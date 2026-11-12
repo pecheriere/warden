@@ -160,6 +160,19 @@ impl GithubTokenAccess {
         self.repositories.is_empty()
     }
 
+    /// The repository names joined with `, `, as the pages and `warden status` show them.
+    #[must_use]
+    pub fn names(&self) -> String {
+        joined(self.repositories.iter())
+    }
+
+    /// One line about the request: `github token for <names>`, or
+    /// `github token (all repositories)` for one that names none.
+    #[must_use]
+    pub fn summary(&self) -> String {
+        summary(&self.names())
+    }
+
     /// The repositories lowercased, sorted and joined with `,`: equal for the
     /// same set whatever the case or order.
     #[must_use]
@@ -171,6 +184,20 @@ impl GithubTokenAccess {
             .collect();
         names.sort();
         names.join(",")
+    }
+}
+
+/// `names` joined with `, `.
+fn joined<'a>(names: impl Iterator<Item = &'a RepoName>) -> String {
+    names.map(RepoName::as_str).collect::<Vec<_>>().join(", ")
+}
+
+/// The one-line summary of a GitHub token for `names` (empty: every repository).
+fn summary(names: &str) -> String {
+    if names.is_empty() {
+        "github token (all repositories)".to_owned()
+    } else {
+        format!("github token for {names}")
     }
 }
 
@@ -251,6 +278,19 @@ impl GrantScope {
             Self::Legacy => &[],
             Self::Repositories(list) => list,
         }
+    }
+
+    /// The repository names joined with `, `, as the pages and `warden status` show them.
+    #[must_use]
+    pub fn names(&self) -> String {
+        joined(self.list().iter().map(|r| &r.name))
+    }
+
+    /// One line about the grant: `github token for <names>`, or
+    /// `github token (all repositories)` for a legacy scope.
+    #[must_use]
+    pub fn summary(&self) -> String {
+        summary(&self.names())
     }
 
     /// The ids, in this scope, of the repositories the other scope also covers by id

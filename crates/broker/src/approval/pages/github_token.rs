@@ -43,16 +43,6 @@ pub(super) fn not_approvable(view: &PendingView) -> Option<Markup> {
     })
 }
 
-/// The warning of what the access can change.
-fn reach() -> Markup {
-    html! {
-        strong.badge.modify {
-            (icon(14, "2.4", &warning_icon()))
-            " Can push and merge on every repository the App is installed on"
-        }
-    }
-}
-
 /// The permissions every token has.
 fn permissions() -> Markup {
     html! {
@@ -115,6 +105,19 @@ fn repository(repo: &Named) -> Markup {
         code { bdi { (repo.name) } }
         @if let Some(old) = &repo.renamed_from {
             " (approved as " code { bdi { (old) } } ")"
+        }
+    }
+}
+
+/// The repositories: one is the page's headline when `headline`, several are a list.
+fn listing(repos: &[Named], headline: bool) -> Markup {
+    html! {
+        @match repos {
+            [only] if headline => span.repos.headline { (repository(only)) },
+            [only] => span.repos { (repository(only)) },
+            many => ul.repos {
+                @for repo in many { li { (repository(repo)) } }
+            },
         }
     }
 }
@@ -207,17 +210,12 @@ pub(super) fn access(
     );
     html! {
         @if repos.len() > 1 {
-            strong.badge.modify {
-                (icon(14, "2.4", &warning_icon()))
-                " This request covers " (repos.len()) " repositories"
-            }
+            p.notice-count { "This request covers " (repos.len()) " repositories" }
         }
-        @match repos.as_slice() {
-            [] => span { "Mint tokens for " (app(&policy.app_id, policy.installation_id)) },
-            [only] => span.repos { (repository(only)) },
-            many => ul.repos {
-                @for repo in many { li { (repository(repo)) } }
-            },
+        @if repos.is_empty() {
+            span { "Mint tokens for " (app(&policy.app_id, policy.installation_id)) }
+        } @else {
+            (listing(&repos, true))
         }
         @if reachable && !repos.is_empty() {
             (reach_of(&repos))
@@ -237,11 +235,26 @@ pub(super) fn access(
     }
 }
 
-/// What an active GitHub token grant gives, for the grants page.
-pub(super) fn grant_access(app_id: &str, installation_id: u64) -> Markup {
+/// What an active GitHub token grant gives, for the grants page: its repositories,
+/// one per line. A grant from before grants were scoped mints nothing, so it carries
+/// no warning.
+pub(super) fn grant_access(app_id: &str, installation_id: u64, scope: &GrantScope) -> Markup {
+    let repos: Vec<Named> = scope
+        .list()
+        .iter()
+        .map(|r| Named {
+            name: r.name.as_str().to_owned(),
+            renamed_from: None,
+        })
+        .collect();
     html! {
-        span { "Mints tokens for " (app(app_id, installation_id)) }
-        (reach())
+        @if repos.is_empty() {
+            span.legacy { "All repositories of the installation (ended at upgrade)" }
+        } @else {
+            (listing(&repos, false))
+            (reach_of(&repos))
+        }
+        span.detail { "Mints tokens for " (app(app_id, installation_id)) }
         (permissions())
         span.detail { (REVOKING) }
     }

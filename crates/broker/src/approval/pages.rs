@@ -147,7 +147,7 @@ fn access_line(request: &CreateRequest, host: &str, port: u16) -> String {
         Access::Ssh { target, user, .. } => format!("ssh {user}@{target} ({host}:{port})"),
         Access::Api { secret, .. } => format!("api {secret}"),
         Access::CommitSigning {} => "commit signing".to_owned(),
-        Access::GithubToken(_) => "github token".to_owned(),
+        Access::GithubToken(github) => github.summary(),
         Access::Release {
             repository, tag, ..
         } => format!("release {tag} of {repository}"),
@@ -282,7 +282,7 @@ fn grant_access(grant: &ActiveGrant) -> Markup {
             commit_signing::grant_access(&signing.key_fingerprint)
         }
         GrantAccess::GithubToken(token) => {
-            github_token::grant_access(&token.app_id, token.installation_id)
+            github_token::grant_access(&token.app_id, token.installation_id, &token.repositories)
         }
         GrantAccess::Release(release) => release::grant_access(release, grant.release),
     }
