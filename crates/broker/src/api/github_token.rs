@@ -90,7 +90,8 @@ async fn attempt(
     seen: &mut Option<Id>,
 ) -> Result<GithubTokenResponse, Failure> {
     let request = body?;
-    // Unreadable state refuses here: `?` on a storage failure, before anything else.
+    // Unreadable state refuses here: `?` on a storage failure, before GitHub or the
+    // key is touched.
     let lookup = state
         .requests
         .active_github_token_for(agent, &request.repository)
@@ -101,7 +102,10 @@ async fn attempt(
         repository,
     } = match lookup {
         GithubLookup::None => return Err(refused(StatusCode::FORBIDDEN, NO_ACTIVE_GRANT)),
-        GithubLookup::Ambiguous => return Err(refused(StatusCode::CONFLICT, AMBIGUOUS_GRANT)),
+        GithubLookup::Ambiguous(first) => {
+            *seen = Some(first);
+            return Err(refused(StatusCode::CONFLICT, AMBIGUOUS_GRANT));
+        }
         GithubLookup::One(active) => active,
     };
     *seen = Some(grant_id.clone());
@@ -165,10 +169,11 @@ async fn attempt(
         .requests
         .active_github_token_for(agent, &repository.name)
         .await?;
-    if !matches!(&still_active, GithubLookup::One(active)
-        if active.grant_id == grant_id && active.repository.id == repository.id)
-    {
-        return Err(ended(state, agent, &grant_id).await);
+    match &still_active {
+        GithubLookup::One(active)
+            if active.grant_id == grant_id && active.repository.id == repository.id => {}
+        GithubLookup::Ambiguous(_) => return Err(refused(StatusCode::CONFLICT, AMBIGUOUS_GRANT)),
+        _ => return Err(ended(state, agent, &grant_id).await),
     }
     tracing::info!(agent = %agent, grant = %grant_id, "GitHub token minted");
     Ok(GithubTokenResponse {

@@ -271,14 +271,16 @@ impl GrantScope {
         }
     }
 
-    /// Whether the two share a repository, by id. A legacy scope overlaps every
-    /// scope, since it may stand for any repository.
+    /// Whether the two share a repository, by id or by name (ignoring case): a
+    /// repository deleted and recreated under its name has a new id, and a grant
+    /// for the name still stands for it. A legacy scope overlaps every scope,
+    /// since it may stand for any repository.
     #[must_use]
     pub fn overlaps(&self, other: &Self) -> bool {
         match (self, other) {
-            (Self::Repositories(a), Self::Repositories(b)) => {
-                a.iter().any(|x| b.iter().any(|y| x.id == y.id))
-            }
+            (Self::Repositories(a), Self::Repositories(b)) => a
+                .iter()
+                .any(|x| b.iter().any(|y| x.id == y.id || x.name.matches(&y.name))),
             _ => true,
         }
     }

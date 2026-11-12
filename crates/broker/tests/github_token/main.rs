@@ -137,7 +137,7 @@ async fn active_for(
     match found {
         GithubLookup::None => None,
         GithubLookup::One(active) => Some(active),
-        GithubLookup::Ambiguous => panic!("two grants cover {repository}"),
+        GithubLookup::Ambiguous(_) => panic!("two grants cover {repository}"),
     }
 }
 

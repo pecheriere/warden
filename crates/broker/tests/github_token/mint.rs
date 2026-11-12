@@ -524,6 +524,8 @@ async fn mint_refuses_two_grants_covering_one_id() {
     assert_refused(&broker, &resp, StatusCode::CONFLICT, AMBIGUOUS_GRANT);
     assert!(mint_calls(&upstream).is_empty(), "nothing went to GitHub");
     assert_eq!(entries(&broker, "github_token_minted"), [] as [Value; 0]);
+    let refused = entries(&broker, "github_token_refused");
+    assert!(refused[0]["grant_id"].is_string(), "{refused:?}");
 }
 
 #[tokio::test]

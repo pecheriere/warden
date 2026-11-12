@@ -32,8 +32,8 @@ pub enum GithubLookup {
     None,
     /// Exactly one does.
     One(ActiveGithubToken),
-    /// More than one does, so none can be chosen.
-    Ambiguous,
+    /// More than one does, so none can be chosen; holds the first one's id.
+    Ambiguous(Id),
 }
 
 /// Tokens per agent per hour, unless a test says otherwise. The CLI caches a token for
@@ -151,7 +151,7 @@ impl Requests {
             .filter(|(_, other)| other.repositories.list().iter().any(|r| r.id == found_id))
             .count();
         if covering.next().is_some() || sharing > 1 {
-            return Ok(GithubLookup::Ambiguous);
+            return Ok(GithubLookup::Ambiguous(grant_id.clone()));
         }
         Ok(GithubLookup::One(ActiveGithubToken {
             grant_id: grant_id.clone(),

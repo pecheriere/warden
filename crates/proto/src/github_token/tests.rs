@@ -209,6 +209,21 @@ fn grant_scope_overlap_by_id() {
 }
 
 #[test]
+fn grant_scope_overlap_by_name_with_other_ids() {
+    // A repository deleted and created again under its name has another id.
+    let old = GrantScope::repositories(vec![granted("Example-Owner/Example-Repo", 1001)]).unwrap();
+    let recreated =
+        GrantScope::repositories(vec![granted("example-owner/example-repo", 1003)]).unwrap();
+    let other = GrantScope::repositories(vec![granted("example-owner/other", 1003)]).unwrap();
+    assert!(old.overlaps(&recreated));
+    assert!(recreated.overlaps(&old));
+    // Another name with the same id still overlaps; another name and id does not.
+    assert!(recreated.overlaps(&other));
+    let unrelated = GrantScope::repositories(vec![granted("example-owner/other", 2000)]).unwrap();
+    assert!(!old.overlaps(&unrelated));
+}
+
+#[test]
 fn github_token_request_refuses_empty_object() {
     assert!(serde_json::from_str::<GithubTokenRequest>("{}").is_err());
     assert!(

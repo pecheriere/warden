@@ -152,10 +152,7 @@ async fn legacy_grant_not_offered_for_renewal() {
         "{notified:?}"
     );
     let resp = broker
-        .post_json(
-            &format!("/grants/{grant}/renew"),
-            &json!({"repository": "example-owner/example-repo"}),
-        )
+        .post_json(&format!("/grants/{grant}/renew"), &json!({}))
         .await;
     assert_eq!(resp.status, StatusCode::NOT_FOUND, "{}", resp.body);
 }
