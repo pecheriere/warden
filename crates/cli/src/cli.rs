@@ -254,10 +254,13 @@ pub(crate) enum RequestKind {
         context: RequestContext,
     },
     /// GitHub tokens for git and gh (contents, pull requests and issues of the
-    /// repositories the owner's GitHub App is installed on), minted by the broker for
-    /// an hour at a time, for much longer than other access. git and gh also ask for
-    /// this by themselves, once set up with `warden setup github`.
+    /// repositories named), minted by the broker for an hour at a time, for much
+    /// longer than other access. git and gh also ask for this by themselves, for the
+    /// repository they work on, once set up with `warden setup github`.
     Github {
+        /// The repositories, `owner/name`: at least one, at most 10.
+        #[arg(required = true)]
+        repositories: Vec<RepoName>,
         /// Window length: 1d, 7d or 30d, up to what the server allows.
         #[arg(long = "for", default_value = "30d", value_parser = Window::github_token)]
         window: Window,

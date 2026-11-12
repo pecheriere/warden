@@ -21,7 +21,6 @@ use warden_broker_proto::commit_signing::{
     CommitSigningKeyView, SignCommitRequest, SignCommitResponse,
 };
 use warden_broker_proto::doctor::sanitize;
-use warden_broker_proto::github_token::GithubTokenResponse;
 use warden_broker_proto::{
     ApiError, CreateRequest, CreatedResponse, GrantView, Id, InfoResponse, PendingRequest,
     ProxyRequest, ProxyResponse, RequestStatus,
@@ -116,7 +115,10 @@ fn json_body<T: Serialize>(value: &T) -> Result<Vec<u8>, CallError> {
         .map_err(|e| CallError::Refused(format!("cannot encode the request: {e}")))
 }
 
+mod github;
 mod release;
+
+pub(crate) use github::{require_scoped, scoped_or_refuse};
 
 impl Client {
     /// A client for the API at `base`, authenticating with `auth`.
@@ -311,29 +313,6 @@ impl Client {
             .call(Method::POST, url, Some(json_body(request)?))
             .await?;
         json(resp, StatusCode::OK).await
-    }
-
-    /// Have the broker mint a GitHub token under this agent's active grant. The
-    /// body is parsed here, so that no error can quote the token.
-    ///
-    /// # Errors
-    /// If the server is unreachable or refuses.
-    pub async fn github_token(&self) -> Result<GithubTokenResponse, CallError> {
-        let url = self.url("v1/github-token")?;
-        let resp = self.call(Method::POST, url, Some(b"{}".to_vec())).await?;
-        if resp.status() != StatusCode::OK {
-            return Err(failure(resp).await);
-        }
-        let body = Zeroizing::new(
-            resp.bytes()
-                .await
-                .map_err(|e| {
-                    CallError::Unavailable(format!("cannot read the broker's response: {e}"))
-                })?
-                .to_vec(),
-        );
-        serde_json::from_slice(&body)
-            .map_err(|_| CallError::Refused("the broker sent an unexpected response".to_owned()))
     }
 
     /// Have the broker make `call` through api grant `id`.

@@ -8,10 +8,12 @@
 //! group of pages has its own submodule.
 
 use maud::{DOCTYPE, Markup, html};
-use warden_broker_proto::{Access, ApiGrant, CreateRequest, Fingerprint, GrantAccess, Window};
+use warden_broker_proto::{
+    Access, AgentName, ApiGrant, CreateRequest, Fingerprint, GrantAccess, Window,
+};
 
 use crate::policy::{ApiScope, SshMode};
-use crate::requests::{ActiveGrant, Destination};
+use crate::requests::{ActiveGrant, Destination, GithubPending};
 
 mod approve;
 mod commit_signing;
@@ -145,7 +147,7 @@ fn access_line(request: &CreateRequest, host: &str, port: u16) -> String {
         Access::Ssh { target, user, .. } => format!("ssh {user}@{target} ({host}:{port})"),
         Access::Api { secret, .. } => format!("api {secret}"),
         Access::CommitSigning {} => "commit signing".to_owned(),
-        Access::GithubToken {} => "github token".to_owned(),
+        Access::GithubToken(_) => "github token".to_owned(),
         Access::Release {
             repository, tag, ..
         } => format!("release {tag} of {repository}"),
@@ -216,7 +218,12 @@ fn key_icon() -> Markup {
 /// relay target also that the session goes through the warden relay; for an
 /// API secret also how its value is written (the secret shown as `…`) and
 /// whether a pinned CA replaces the system roots.
-fn destination_access(request: &CreateRequest, destination: &Destination) -> Markup {
+fn destination_access(
+    agent: &AgentName,
+    request: &CreateRequest,
+    destination: &Destination,
+    github: Option<&GithubPending>,
+) -> Markup {
     match destination {
         Destination::Ssh(target) => html! {
             span {
@@ -239,7 +246,12 @@ fn destination_access(request: &CreateRequest, destination: &Destination) -> Mar
         },
         Destination::CommitSigning(policy) => commit_signing::access(&policy.key_fingerprint),
         Destination::GithubToken(policy) => {
-            github_token::access(&policy.app_id, policy.installation_id)
+            if let Access::GithubToken(access) = &request.access {
+                github_token::access(policy, access, agent, github)
+            } else {
+                // Not reachable: a destination is chosen from the request's own access.
+                html! { span { "This request does not match its GitHub destination" } }
+            }
         }
         Destination::Release(policy) => release::access(request, policy),
     }

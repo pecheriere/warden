@@ -157,7 +157,7 @@ impl Requests {
             Access::CommitSigning {} => {
                 Destination::CommitSigning(self.approvable_commit_signing_policy().await?)
             }
-            Access::GithubToken {} => Destination::GithubToken(self.github_token_policy().await?),
+            Access::GithubToken(_) => Destination::GithubToken(self.github_token_policy().await?),
             Access::Release {
                 repository, tag, ..
             } => Destination::Release(self.release_policy(repository, tag).await?),

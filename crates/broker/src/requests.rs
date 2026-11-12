@@ -42,6 +42,8 @@ pub(crate) use self::transition::{begin, note_if_not_applied, record};
 
 mod bus;
 mod commit_signing;
+mod github_overlap;
+mod github_scope;
 mod github_token;
 mod limits;
 mod link_hosts;
@@ -55,7 +57,8 @@ mod renewal;
 
 pub use self::bus::StatusBus;
 pub use self::commit_signing::{ActiveCommitSigning, SIGNATURES_PER_DAY};
-pub use self::github_token::{ActiveGithubToken, MINTS_PER_HOUR};
+pub use self::github_scope::{GithubPending, ReplacedGrant, Resolution, ScopedRepository};
+pub use self::github_token::{ActiveGithubToken, GithubLookup, MINTS_PER_HOUR};
 use self::limits::Refusals;
 pub use self::limits::{LimitRefusal, RequestLimits};
 pub use self::link_hosts::LinkHosts;
@@ -102,6 +105,11 @@ pub const RELAY_NOT_CONFIGURED: &str = "relay is not configured";
 /// cannot answer; the detail goes to the server log only.
 pub const BACKEND_UNAVAILABLE: &str = "secret backend unavailable";
 
+/// What callers and the owner are told when GitHub could not say what a GitHub token
+/// request's repositories are. Nothing GitHub said is in it.
+pub const GITHUB_UNAVAILABLE: &str =
+    "GitHub could not be asked about the repositories; try again shortly";
+
 /// Why a request operation failed. Messages never carry secrets, but
 /// [`RequestError::Unavailable`] may describe backend internals (addresses,
 /// item names) and is shown to callers only as [`BACKEND_UNAVAILABLE`].
@@ -140,6 +148,11 @@ pub enum RequestError {
     /// The secret backend could not answer.
     #[error("secret backend unavailable: {0}")]
     Unavailable(String),
+    /// GitHub could not say what the repositories of a GitHub token request are:
+    /// unreachable, refusing or answering something unusable. Nothing is stored, so a
+    /// later try asks again.
+    #[error("{}", GITHUB_UNAVAILABLE)]
+    GithubUnavailable,
     /// No such request or grant (or it belongs to another agent).
     #[error("not found")]
     NotFound,
@@ -178,6 +191,10 @@ pub enum RequestError {
     /// Stored data failed validation.
     #[error("stored data invalid: {0}")]
     Corrupt(String),
+    /// The GitHub token grants an approval would end are no longer those the owner's
+    /// page showed; nothing changed and the owner must review the page again.
+    #[error("the GitHub grants to replace changed")]
+    ReplacedChanged,
     /// A local resource (randomness, configuration) is unusable.
     #[error("internal error: {0}")]
     Internal(&'static str),
@@ -321,6 +338,24 @@ pub struct PendingView {
     pub expires_at: i64,
     /// What GitHub said when a release was requested; `None` for other kinds.
     pub release: Option<ReleaseFacts>,
+    /// What the repositories of a GitHub token request resolved to; `None` for
+    /// other kinds.
+    pub github: Option<GithubPending>,
+}
+
+impl PendingView {
+    /// Lowercase hex digest of what approving binds the owner's passkey to:
+    /// [`Destination::digest`], and for a GitHub token also the repositories it
+    /// resolved to and the grants approving would end.
+    #[must_use]
+    pub fn destination_digest(&self) -> String {
+        match (&self.destination, &self.github) {
+            (Destination::GithubToken(policy), Some(github)) => {
+                github.digest(&policy.destination_digest())
+            }
+            _ => self.destination.digest(),
+        }
+    }
 }
 
 /// One row of the owner's request history.

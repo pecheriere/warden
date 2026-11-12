@@ -23,12 +23,13 @@ use crate::policy::{ApiScope, ApiSecretPolicy, SshMode, SshTarget};
 use crate::proxy::CallInfo;
 use crate::relay::{LiveSessionInfo, RelayEndpoint};
 use crate::requests::{
-    ActiveGrant, AuditOutcome, BACKEND_UNAVAILABLE, Destination, PendingView, RELAY_NOT_CONFIGURED,
-    RequestError, sha256_hex, window_label,
+    ActiveGrant, AuditOutcome, BACKEND_UNAVAILABLE, Destination, GITHUB_UNAVAILABLE, PendingView,
+    RELAY_NOT_CONFIGURED, RequestError, sha256_hex, window_label,
 };
 
 use self::passkeys::{ApprovalBinding, PasskeyError};
 
+mod github_token;
 mod grant;
 pub mod pages;
 pub mod passkeys;
@@ -333,6 +334,9 @@ fn request_error(e: &RequestError) -> Response {
         }
         RequestError::Rejected(_) => json_error(StatusCode::BAD_REQUEST, e.to_string()),
         RequestError::Unavailable(detail) => backend_unavailable(detail),
+        RequestError::GithubUnavailable => {
+            json_error(StatusCode::SERVICE_UNAVAILABLE, GITHUB_UNAVAILABLE)
+        }
         RequestError::Audit(cause) => {
             tracing::error!(error = %cause, "could not write the audit log; change rolled back");
             json_error(StatusCode::SERVICE_UNAVAILABLE, AUDIT_UNAVAILABLE)
@@ -391,6 +395,11 @@ async fn approve_page(State(state): State<AppState>, Path(token): Path<String>) 
             )
                 .into_response()
         }
+        Err(RequestError::GithubUnavailable) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            pages::unavailable(GITHUB_UNAVAILABLE),
+        )
+            .into_response(),
         Err(
             e @ (RequestError::UnknownTarget(_)
             | RequestError::UnknownSecret(_)
@@ -488,8 +497,8 @@ fn check_policy(
         (Access::Api { .. }, Destination::Api(policy)) => {
             api_scope(&view.request, policy).map(drop)
         }
+        (Access::GithubToken(_), Destination::GithubToken(_)) => github_token::check(view),
         (Access::CommitSigning {}, Destination::CommitSigning(_))
-        | (Access::GithubToken {}, Destination::GithubToken(_))
         | (Access::Release { .. }, Destination::Release(_)) => Ok(()),
         _ => Err("the request does not match its policy kind".to_owned()),
     }
@@ -513,7 +522,7 @@ pub(crate) fn api_scope(
         } => policy.scope(methods.as_deref(), path_prefix.as_deref()),
         Access::Ssh { .. }
         | Access::CommitSigning {}
-        | Access::GithubToken {}
+        | Access::GithubToken(_)
         | Access::Release { .. } => Err("the request does not match its policy kind".to_owned()),
     }
 }
@@ -546,7 +555,7 @@ async fn approve_begin(
         Ok(view) => view,
         Err(e) => return request_error(&e),
     };
-    let destination_digest = view.destination.digest();
+    let destination_digest = view.destination_digest();
     if body.target != destination_digest {
         return json_error(StatusCode::CONFLICT, DESTINATION_CHANGED);
     }
@@ -601,7 +610,7 @@ async fn approve_finish(
     // The grant carries the re-fetched destination (SSH host, port and host
     // keys; API origin, prefix, methods and header); it must be the one the
     // owner approved.
-    if view.destination.digest() != binding.destination_digest {
+    if view.destination_digest() != binding.destination_digest {
         return json_error(StatusCode::CONFLICT, DESTINATION_CHANGED);
     }
     // The policy was fetched fresh by `pending_for_token`; the window is the
@@ -630,16 +639,25 @@ async fn approve_finish(
         Err(refusal) => return *refusal,
     };
     let grant_id = grant.grant_id.clone();
+    // The grants the owner's digest bound; approving must end exactly these.
+    let replaces: Vec<Id> = view
+        .github
+        .as_ref()
+        .map(|github| github.replaces.iter().map(|r| r.grant_id.clone()).collect())
+        .unwrap_or_default();
     // The certificate stays in `grant` until this commits, with its
     // `cert_issued` entry already written; if that fails, it is dropped here.
     match state
         .requests
-        .mark_approved(&token, binding.window, grant, &passkey_id)
+        .mark_approved(&token, binding.window, grant, &passkey_id, &replaces)
         .await
     {
         Ok(()) => {}
         Err(RequestError::NotFound | RequestError::AlreadyDecided) => {
             return undecidable(&state, &token, &binding, now).await;
+        }
+        Err(RequestError::ReplacedChanged) => {
+            return json_error(StatusCode::CONFLICT, DESTINATION_CHANGED);
         }
         Err(e) => return request_error(&e),
     }

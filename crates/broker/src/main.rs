@@ -616,6 +616,17 @@ async fn build_app(config: &Arc<Config>) -> Result<App> {
     .with_link_hosts(config.link_hosts.clone())
     .with_call_limits(config.proxy.max_calls_per_agent, config.proxy.max_calls)
     .with_github_api(github.clone());
+    // GitHub grants are scoped to repositories now; the ones stored before name none.
+    let unscoped = requests
+        .end_unscoped_github()
+        .await
+        .context("ending the GitHub token grants and requests that name no repository")?;
+    if unscoped > 0 {
+        tracing::info!(
+            count = unscoped,
+            "ended GitHub token grants and requests that name no repository"
+        );
+    }
     let passkeys = Passkeys::new(
         pool.clone(),
         audit.clone(),

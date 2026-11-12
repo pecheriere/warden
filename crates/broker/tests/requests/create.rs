@@ -300,7 +300,7 @@ async fn public_key_bound_once_across_agents() {
     // Approved: the active grant still holds the key.
     let grant = grant_for(&h, Window::M15);
     h.requests
-        .mark_approved(&token, Window::M15, grant.clone(), "pk1")
+        .mark_approved(&token, Window::M15, grant.clone(), "pk1", &[])
         .await
         .unwrap();
     let err = h
@@ -329,7 +329,7 @@ async fn same_agent_same_target_live_grant_key_refused() {
         create_notified(&h, "bot", ssh_request("pi", "alice", Window::M30, &key)).await;
     let grant = grant_for(&h, Window::M15);
     h.requests
-        .mark_approved(&token, Window::M15, grant.clone(), "pk1")
+        .mark_approved(&token, Window::M15, grant.clone(), "pk1", &[])
         .await
         .unwrap();
     // No pending request holds the slot any more, but the live grant still

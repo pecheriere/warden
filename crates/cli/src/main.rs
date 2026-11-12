@@ -265,10 +265,11 @@ async fn run_request(kind: RequestKind) -> Result<()> {
             context,
         } => request_signing(window, goal, context).await,
         RequestKind::Github {
+            repositories,
             window,
             goal,
             context,
-        } => request_github(window, goal, context).await,
+        } => request_github(repositories, window, goal, context).await,
         RequestKind::Release {
             repository,
             tag,

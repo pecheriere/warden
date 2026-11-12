@@ -588,7 +588,7 @@ async fn approving_holds_no_write_lock_while_the_log_waits() {
     assert_no_write_lock_while_log_waits(&broker, async move {
         drop(
             requests
-                .mark_approved(&token, Window::M15, grant, "passkey")
+                .mark_approved(&token, Window::M15, grant, "passkey", &[])
                 .await,
         );
     })

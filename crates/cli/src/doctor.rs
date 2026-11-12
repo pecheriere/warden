@@ -263,7 +263,11 @@ async fn checks(probes: &impl Probes) -> Vec<Check> {
     } else {
         None
     };
-    checks.push(github::check(&github, grant));
+    checks.push(github::check(
+        &github,
+        info.as_ref().map(|info| info.scoped_github_tokens),
+        grant,
+    ));
     checks.push(version_check());
     checks
 }
@@ -502,6 +506,7 @@ mod tests {
     fn info(id: &str, protocols: &[&str]) -> InfoResponse {
         InfoResponse {
             github_token_max_window: None,
+            scoped_github_tokens: true,
             protocols: protocols.iter().map(|p| (*p).to_owned()).collect(),
             audience: audience(id),
         }

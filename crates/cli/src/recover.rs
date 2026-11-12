@@ -103,7 +103,7 @@ fn access_summary(access: &Access) -> String {
             }
         }
         Access::CommitSigning {} => "commit signing".to_owned(),
-        Access::GithubToken {} => "github token".to_owned(),
+        Access::GithubToken(_) => "github token".to_owned(),
         Access::Release {
             repository,
             tag,
@@ -234,9 +234,10 @@ pub async fn collect(grant_id: &Id) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use warden_broker_proto::github_token::GrantScope;
     use warden_broker_proto::{
-        ApiGrant, CommitSigningGrant, GithubTokenGrant, GrantAccess, GrantView, Id, RelayGrant,
-        Window,
+        ApiGrant, CommitSigningGrant, GithubTokenAccess, GithubTokenGrant, GrantAccess, GrantView,
+        Id, RelayGrant, Window,
     };
 
     use super::{
@@ -327,6 +328,7 @@ mod tests {
                 app_id: "123456".to_owned(),
                 installation_id: 7,
                 digest: "d".repeat(64),
+                repositories: GrantScope::Legacy,
             }),
         };
         assert_eq!(elsewhere_note(&grant, &[]), "");
@@ -337,7 +339,10 @@ mod tests {
         };
         assert!(message.contains(&id.to_string()), "{message}");
         assert!(message.contains("warden setup github"), "{message}");
-        assert_eq!(access_summary(&Access::GithubToken {}), "github token");
+        assert_eq!(
+            access_summary(&Access::GithubToken(GithubTokenAccess::default())),
+            "github token"
+        );
     }
 
     #[test]

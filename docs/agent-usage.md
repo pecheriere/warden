@@ -501,12 +501,17 @@ them should need a prompt. Ask once, not per commit. See [Signing commits](#sign
 ### Requesting GitHub tokens
 
 ```sh
-warden request github --goal "Push branches and open PRs for build-agent's fixes"
+warden request github example-owner/example-repo --goal "Push branches and open PRs for build-agent's fixes"
 ```
 
-The other long grant: 30 days by default, with `--for 1d`, `7d` or `30d` up to what the
-server allows. Ask once, not per push. You do not have to ask ahead: with none, the first
-`git` or `gh` call to GitHub asks by itself and waits. See [GitHub tokens](#github-tokens).
+Name each repository as `owner/name`, one to ten of them. More than one prints a notice that
+the owner approves them together; ask for several only when the task needs them. The owner
+sees the repositories, resolved against GitHub, on the approval page. The other long grant:
+30 days by default, with `--for 1d`, `7d` or `30d` up to what the server allows. Ask once
+per repository, not per push. You do not have to ask ahead: with none for the repository,
+the first `git` or `gh` call to GitHub for it asks by itself and waits. The CLI refuses a
+broker that does not support repository-scoped grants (upgrade the broker first), and
+`warden doctor` checks that too. See [GitHub tokens](#github-tokens).
 Unlike every other grant, this one hands you a credential: revoking the grant stops new
 tokens, and does not recall one already minted. Do not copy the token anywhere.
 
@@ -879,14 +884,17 @@ the `gh` wrapper stops with "cannot tell which repository; pass -R owner/name". 
 warden does not take for a repository, so it gets no token.
 
 After that `git push`, `git fetch` and `gh` work against GitHub as usual, with a token from
-warden. The token covers **every repository the owner's GitHub App is installed on**, with
-`contents`, `pull_requests` and `issues` write, and lasts an hour. It can also open issues and
-comment on public repositories outside the installation, which takes only read access. warden keeps it in
-`github-token.json` in its state directory, mode 0600, and gets a new one when less than 5
-minutes of it remain. Use it only through `git` and `gh`: do not print it, write it into a
+warden. Each token covers **one repository**, the one git or `gh` is working on, with `contents`,
+`pull_requests` and `issues` write, and lasts an hour. It cannot push, open pull requests,
+comment or edit issues on another repository the App is installed on, but it can still open
+a new issue on a public repository the App is installed on, and you should assume it can open
+issues and comment on any public repository, installed or not. warden keeps one token per
+repository in `github-token.json` in its state directory, mode 0600 (an older, single-token
+file is ignored and replaced), and gets a new one when less than 5 minutes of it remain. Use it only through `git` and `gh`: do not print it, write it into a
 file, put it in a URL or hand it to another program.
 
-**With no active grant**, the first call asks the owner itself: a request for 30 days, or the
+**With no active grant for the repository**, the first call asks the owner itself, for that
+repository only: a request for 30 days, or the
 broker's maximum if that is shorter, with a
 fixed goal that says which program asked, followed by `, in <current directory>`. It says on
 stderr that it is asking and waits, as `warden request` does, for up to 11 minutes. To word the
@@ -898,11 +906,15 @@ When no token can be had, `git` or `gh` fails, with the reason on stderr:
 |---|---|
 | The request was denied, expired, cancelled or revoked, or the owner did not answer in time (exit 5, "do not retry … ask the owner"). | Stop. Do not retry in a loop and do not look for another way to reach GitHub: tell the owner what you need and why. |
 | The broker refused the call while the request was waiting, for example because the agent was revoked (exit 5 as well). | The same: tell the owner. |
-| "no active GitHub token grant" although the owner approved one (exit 5). | The grant was revoked since. Ask the owner why before asking again. |
-| "the GitHub App changed; request a new grant" (exit 5). | The owner changed the App or its installation. `warden request github --goal "…"`. |
+| "no active GitHub token grant for this agent and repository" although the owner approved one (exit 5). | The grant was revoked since, or it covers other repositories. Ask the owner why before asking again. |
+| "the GitHub App changed; request a new grant" (exit 5). | The owner changed the App or its installation. `warden request github <owner/name> --goal "…"`. |
+| "more than one GitHub grant covers this repository; ask the owner to revoke one" (exit 1). | Do not retry. Tell the owner: they revoke one of the two grants. |
+| "GitHub would not issue a token for this repository" (exit 1). | The App may no longer reach the repository, or it was deleted or replaced. The CLI does not retry it, and the attempt still counts against the hourly limit. Ask the owner. |
+| "this warden CLI predates repository-scoped GitHub grants; upgrade it" (exit 1). | Upgrade warden on this machine. |
+| "the broker does not support repository-scoped GitHub grants: upgrade the broker" (exit 1). | Tell the owner: the broker is upgraded before the CLI. |
 | The grant ended while the token was being minted (exit 5). | If the owner has just approved a new grant, run the command once more. Otherwise tell the owner. |
 | "GitHub tokens are not configured on this broker" (exit 1). | Tell the owner. |
-| "this agent has reached its limit of GitHub tokens for this hour" (exit 1). | Something on this machine asks for far more tokens than `git` and `gh` need (the CLI keeps one for its hour). Stop it rather than retrying, and tell the owner if you cannot find it. |
+| "this agent has reached its limit of GitHub tokens for this hour" (exit 1; the limit is per agent, across all its grants). | Something on this machine asks for far more tokens than `git` and `gh` need (the CLI keeps one for its hour). Stop it rather than retrying, and tell the owner if you cannot find it. |
 | The broker refused the request when it was made, for example because the agent is over its [request limits](configuration.md#request-limits) (exit 1, with the wait in the message). | Wait that long, or reuse the request already pending. Do not retry sooner. |
 | GitHub or the broker is unavailable, or the broker cannot be reached (exit 1). | As in [When the broker is unreachable](#when-the-broker-is-unreachable): tell the owner and try again once it answers. `warden doctor` checks the connection. |
 
@@ -990,8 +1002,8 @@ never try to get around warden by any other route.
   may already have acted on it.
 - **Revoking commit signing does not undo a signature.** It stops new ones.
 - **Revoking a GitHub token grant does not recall a token already minted.** It stops new
-  ones. A token already out works for up to an hour, and covers every repository the App is
-  installed on, plus issues and comments on public repositories.
+  ones. A token already out works for up to an hour, for its repository, and can still open new
+  issues (and, to be assumed, comment) on public repositories, installed or not.
 - **Revoking does not invalidate an issued certificate** on the target
   ([issue #35][i35]).
 

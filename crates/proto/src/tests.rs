@@ -1,13 +1,15 @@
 //! Unit tests of the wire types.
 
-use crate::GithubTokenGrant;
+use crate::github_token::GrantScope;
 use crate::github_token::{GithubTokenResponse, PERMISSIONS};
+use crate::release::RepoName;
 use crate::{
     Access, AgentName, ApiGrant, CreateRequest, CreatedResponse, Fingerprint, Goal, GrantAccess,
     GrantView, Id, InfoResponse, ProxyRequest, ProxyResponse, RelayGrant, RequestStatus,
     SecretName, SessionLabel, SessionLink, SshGrant, TargetName, UnixUser, Window, fingerprint,
     is_read_only, modifying_methods, signing, under_prefix,
 };
+use crate::{GithubTokenAccess, GithubTokenGrant};
 
 fn sample_request() -> CreateRequest {
     CreateRequest {
@@ -481,7 +483,11 @@ fn info_response_wire_shape() {
         r#"{"protocols":["warden-request-v1"],"audience":"40ad20029e94984d193159667b296d8a"}"#;
     let info: InfoResponse = serde_json::from_str(json).unwrap();
     assert_eq!(info.protocols, [signing::PROTOCOL]);
-    assert_eq!(serde_json::to_string(&info).unwrap(), json);
+    assert!(!info.scoped_github_tokens);
+    assert_eq!(
+        serde_json::to_string(&info).unwrap(),
+        r#"{"protocols":["warden-request-v1"],"audience":"40ad20029e94984d193159667b296d8a","scoped_github_tokens":false}"#
+    );
     assert!(serde_json::from_str::<InfoResponse>(r#"{"protocols":[],"audience":"nope"}"#).is_err());
 }
 
@@ -497,7 +503,7 @@ fn create_request_wire_shape() {
 
 #[test]
 fn github_token_access_serde_shape() {
-    let access = Access::GithubToken {};
+    let access = Access::GithubToken(GithubTokenAccess::default());
     let json = serde_json::to_string(&access).unwrap();
     assert_eq!(json, r#"{"kind":"github_token"}"#);
     assert_eq!(serde_json::from_str::<Access>(&json).unwrap(), access);
@@ -509,6 +515,7 @@ fn github_token_grant_serde_shape() {
         app_id: "12345".to_owned(),
         installation_id: 678,
         digest: "ab12".to_owned(),
+        repositories: GrantScope::Legacy,
     });
     let value = serde_json::to_value(&grant).unwrap();
     assert_eq!(
@@ -557,6 +564,8 @@ fn github_token_response_debug_redacts() {
         token: "ghs_supersecretvalue".to_owned(),
         expires_at: 1_700_000_000,
         grant_id: Id::random(),
+        repository: RepoName::try_from("example-owner/example-repo".to_owned()).unwrap(),
+        repository_id: 1001,
     };
     let debug = format!("{response:?}");
     assert!(!debug.contains("ghs_supersecretvalue"), "{debug}");

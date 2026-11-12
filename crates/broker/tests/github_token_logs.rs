@@ -10,6 +10,7 @@ use axum::http::StatusCode;
 use serde_json::json;
 use warden_broker::github_app::GithubApi;
 use warden_broker::requests::Clock as _;
+use warden_broker::testkit::github_app::{minted_answer, token_answer};
 use warden_broker::testkit::upstream::Scripted;
 use warden_broker::testkit::{HttpsUpstream, TestBroker, github_app_key};
 use warden_broker_proto::Window;
@@ -55,21 +56,36 @@ async fn the_token_stays_out_of_the_logs() {
     let (_, token) = broker
         .create_request(
             "bot",
-            TestBroker::github_token_request("push the fix", Window::D30),
+            TestBroker::github_token_request(
+                "push the fix",
+                Window::D30,
+                &["example-owner/example-repo"],
+            ),
         )
         .await;
+    upstream.script_github_token(token_answer(
+        "ghs_resolve_0123456789",
+        broker.clock.now() + 3600,
+        &[(1001, "example-owner/example-repo")],
+        &[("metadata", "read")],
+        "selected",
+    ));
     let approved = broker.approve(&token, Window::D30).await;
     assert_eq!(approved.status, StatusCode::OK, "{}", approved.body);
 
     let mint = || async {
         broker
-            .api_post_json(&key, "/v1/github-token", &json!({}))
+            .api_post_json(
+                &key,
+                "/v1/github-token",
+                &json!({"repository": "example-owner/example-repo"}),
+            )
             .await
     };
-    let expires = jiff::Timestamp::from_second(broker.clock.now() + 3600).unwrap();
-    upstream.script_github_token(Scripted::with_body(
-        201,
-        json!({"token": "ghs_logged_secret", "expires_at": expires.to_string()}).to_string(),
+    upstream.script_github_token(minted_answer(
+        "ghs_logged_secret",
+        broker.clock.now() + 3600,
+        &[(1001, "example-owner/example-repo")],
     ));
     assert_eq!(mint().await.status, StatusCode::OK);
     upstream.script_github_token(Scripted::with_body(
@@ -82,9 +98,10 @@ async fn the_token_stays_out_of_the_logs() {
         .set_github_app_outage(Some("the vault is unreachable"));
     assert_eq!(mint().await.status, StatusCode::SERVICE_UNAVAILABLE);
 
-    // The JWT was sent, so it could have been logged.
+    // The JWT was sent, so it could have been logged: with the approval's look at
+    // the repository, and the two mints that reached GitHub.
     let sent = upstream.received();
-    assert_eq!(sent.len(), 2);
+    assert_eq!(sent.len(), 3);
     assert!(sent.iter().all(|call| {
         call.headers["authorization"]
             .to_str()

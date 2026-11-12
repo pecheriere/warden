@@ -13,8 +13,8 @@ use super::bus::next_change;
 use super::revocation::commit_with_entries;
 use super::transition::detached;
 use super::{
-    AuditOutcome, PendingView, RequestError, Requests, Scope, begin, note_if_not_applied, parse,
-    record, release_approval, renewal, sha256_hex,
+    AuditOutcome, PendingView, RequestError, Requests, Scope, begin, github_overlap,
+    note_if_not_applied, parse, record, release_approval, renewal, sha256_hex,
 };
 use crate::audit::AuditEvent;
 use crate::ssh_ca;
@@ -97,14 +97,20 @@ impl Requests {
             Access::Release { .. } => Some(self.release_facts(&id).await?),
             _ => None,
         };
+        let agent: AgentName = parse(&row, "agent")?;
+        let github = match &request.access {
+            Access::GithubToken(access) => Some(self.github_pending(&id, &agent, access).await?),
+            _ => None,
+        };
         Ok(PendingView {
             id,
-            agent: parse(&row, "agent")?,
+            agent,
             fingerprint: parse(&row, "fingerprint")?,
             destination,
             expires_at: row.try_get("expires_at")?,
             request,
             release,
+            github,
         })
     }
 
@@ -227,18 +233,22 @@ impl Requests {
     /// [`RequestError::NotFound`] for an unknown token;
     /// [`RequestError::AlreadyDecided`] if the request is no longer pending,
     /// has expired or its agent was revoked; [`RequestError::Audit`] if an
-    /// entry could not be written.
+    /// entry could not be written; [`RequestError::ReplacedChanged`] if the GitHub
+    /// token grants this approval ends are not exactly `replaces`, the ones the
+    /// owner's page showed and the passkey was bound to (nothing changes then).
     pub async fn mark_approved(
         &self,
         token: &str,
         window: Window,
         grant: GrantView,
         passkey_id: &str,
+        replaces: &[Id],
     ) -> Result<(), RequestError> {
         let this = self.clone();
         let (token, passkey_id) = (token.to_owned(), passkey_id.to_owned());
+        let replaces = replaces.to_vec();
         detached(async move {
-            this.mark_approved_now(&token, window, grant, &passkey_id)
+            this.mark_approved_now(&token, window, grant, &passkey_id, &replaces)
                 .await
         })
         .await
@@ -250,6 +260,7 @@ impl Requests {
         window: Window,
         grant: GrantView,
         passkey_id: &str,
+        replaces: &[Id],
     ) -> Result<(), RequestError> {
         let hash = sha256_hex(token);
         let now = self.clock.now();
@@ -281,9 +292,14 @@ impl Requests {
         let agent: AgentName = parse(&row, "agent")?;
         let view = serde_json::to_string(&grant)?;
         let renews = renewal::replaced_kind(&grant.access);
-        let events = self
+        let (events, github_replaced) = self
             .approval_events(&id, &agent, &grant, renews, passkey_id, window_secs)
             .await?;
+        // What the owner saw must be what ends: the digest bound `replaces`, and a
+        // grant approved since then changes the answer.
+        if !same_ids(&github_replaced, replaces) {
+            return Err(RequestError::ReplacedChanged);
+        }
         let transition = format!("approval of request {id}");
         record(&self.audit, events, &transition).await?;
         let applied = async {
@@ -319,24 +335,9 @@ impl Requests {
             .bind(&view)
             .execute(&mut *tx)
             .await?;
-            let mut ended = Vec::new();
-            if let GrantAccess::Release(new) = &grant.access {
-                release_approval::insert_steps(&mut tx, &grant.grant_id).await?;
-                ended = release_approval::end_replaced(
-                    &mut tx,
-                    &agent,
-                    &grant.grant_id,
-                    new,
-                    self.clock.now(),
-                )
+            let ended = self
+                .end_replaced(&mut tx, &agent, &grant, renews, &github_replaced)
                 .await?;
-            }
-            if let Some(kind) = renews {
-                ended.extend(
-                    renewal::end_renewed(&mut tx, &agent, &grant.grant_id, kind, self.clock.now())
-                        .await?,
-                );
-            }
             tx.commit().await?;
             Ok(ended)
         }
@@ -349,7 +350,46 @@ impl Requests {
         Ok(())
     }
 
-    /// The entries written with an approval.
+    /// End, in `tx`, the grants the stored `grant` of `agent` replaces: those of its
+    /// release, of its kind when only one is held at a time (`renews`), or sharing a
+    /// repository with it (`github_replaced`, which must be exactly what is found).
+    /// Returns their requests.
+    async fn end_replaced(
+        &self,
+        tx: &mut Transaction<'static, Sqlite>,
+        agent: &AgentName,
+        grant: &GrantView,
+        renews: Option<&'static str>,
+        github_replaced: &[Id],
+    ) -> Result<Vec<Id>, RequestError> {
+        let now = self.clock.now();
+        let mut ended = Vec::new();
+        match &grant.access {
+            GrantAccess::Release(new) => {
+                release_approval::insert_steps(tx, &grant.grant_id).await?;
+                ended =
+                    release_approval::end_replaced(tx, agent, &grant.grant_id, new, now).await?;
+            }
+            GrantAccess::GithubToken(new) => {
+                ended = github_overlap::end_overlapping(
+                    tx,
+                    agent,
+                    &grant.grant_id,
+                    &new.repositories,
+                    github_replaced,
+                    now,
+                )
+                .await?;
+            }
+            _ => {}
+        }
+        if let Some(kind) = renews {
+            ended.extend(renewal::end_renewed(tx, agent, &grant.grant_id, kind, now).await?);
+        }
+        Ok(ended)
+    }
+
+    /// The entries written with an approval, and the GitHub token grants it ends.
     async fn approval_events(
         &self,
         id: &Id,
@@ -358,7 +398,7 @@ impl Requests {
         renews: Option<&'static str>,
         passkey_id: &str,
         window_secs: u32,
-    ) -> Result<Vec<AuditEvent>, RequestError> {
+    ) -> Result<(Vec<AuditEvent>, Vec<Id>), RequestError> {
         let mut events = vec![AuditEvent::Approved {
             id: id.clone(),
             grant_id: grant.grant_id.clone(),
@@ -377,7 +417,12 @@ impl Requests {
         }
         // A rerun's grant replaces the earlier one for the same release.
         events.extend(self.release_replaced_events(agent, &grant.access).await?);
-        Ok(events)
+        // A GitHub grant replaces only the agent's grants that share a repository.
+        let (replaced, github_replaced) = self
+            .github_replaced_events(agent, &grant.grant_id, &grant.access)
+            .await?;
+        events.extend(replaced);
+        Ok((events, github_replaced))
     }
 
     /// Why a token matched no pending request.
@@ -415,4 +460,14 @@ fn to_status(row: &SqliteRow) -> Result<RequestStatus, RequestError> {
         },
         other => return Err(RequestError::Corrupt(format!("unknown status {other}"))),
     })
+}
+
+/// Whether `a` and `b` hold the same ids, in any order.
+pub(super) fn same_ids(a: &[Id], b: &[Id]) -> bool {
+    let sorted = |ids: &[Id]| {
+        let mut ids: Vec<String> = ids.iter().map(|id| id.as_str().to_owned()).collect();
+        ids.sort_unstable();
+        ids
+    };
+    sorted(a) == sorted(b)
 }
