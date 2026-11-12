@@ -162,6 +162,10 @@ the test shows. No test against anyone else's repository.
 - **The `gh` wrapper is interim.** (owner's decision) It exists until warden covers
   what agents use gh for, and will then be removed. Keep it minimal: no
   parsing beyond `-R/--repo`, no features that would make removing it hard.
+  The root cause of the refusal (gh falling back to the owner's login) goes
+  away when agents run as their own macOS user (#186): then the refusal can
+  relax, or the wrapper go. Running commands as the owner on the same Mac is
+  tracked separately (#231). (owner's decision)
 - A `gh` command spanning two repositories (a pull request from a fork to its
   upstream) gets a token for one of them and fails at GitHub. Accepted: agents
   push branches to the owner's repositories, not forks. **[call]**
