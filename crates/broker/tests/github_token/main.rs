@@ -5,7 +5,7 @@ use std::fs;
 
 use serde_json::Value;
 use warden_broker::github_app::GithubApi;
-use warden_broker::requests::Clock as _;
+use warden_broker::requests::{ActiveGithubToken, Clock as _, GithubLookup};
 use warden_broker::testkit::github_app::token_answer;
 use warden_broker::testkit::upstream::HttpsUpstream;
 use warden_broker::testkit::{TestBroker, github_app_key};
@@ -114,6 +114,31 @@ async fn approve_repositories(
         panic!("not approved: {status:?}");
     };
     view.grant_id.to_string()
+}
+
+/// The grant `agent` would mint with now for `repository`, if any.
+///
+/// # Panics
+/// If two grants cover it.
+async fn active_for(
+    broker: &TestBroker,
+    agent: &str,
+    repository: &str,
+) -> Option<ActiveGithubToken> {
+    let found = broker
+        .state()
+        .requests
+        .active_github_token_for(
+            &agent.parse().unwrap(),
+            &repository.to_owned().try_into().unwrap(),
+        )
+        .await
+        .unwrap();
+    match found {
+        GithubLookup::None => None,
+        GithubLookup::One(active) => Some(active),
+        GithubLookup::Ambiguous => panic!("two grants cover {repository}"),
+    }
 }
 
 /// Every audit entry of type `kind`, oldest first.

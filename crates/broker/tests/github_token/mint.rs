@@ -9,16 +9,21 @@ use serde_json::{Value, json};
 use warden_broker::github_app::GithubApi;
 use warden_broker::policy::GithubAppKey;
 use warden_broker::requests::Clock as _;
-use warden_broker::testkit::github_app::token_answer;
-use warden_broker::testkit::github_app::{APP_ID, INSTALLATION_ID, RSA2048_PKCS8};
-use warden_broker::testkit::upstream::{Gate, HttpsUpstream, Scripted};
+use warden_broker::testkit::github_app::{APP_ID, INSTALLATION_ID, RSA2048_PKCS8, minted_answer};
+use warden_broker::testkit::upstream::{Gate, HttpsUpstream, Received, Scripted};
 use warden_broker::testkit::{TestBroker, TestResponse};
 use warden_broker_proto::Window;
-use warden_broker_proto::github_token::{HOURLY_LIMIT, NO_ACTIVE_GRANT, PERMISSIONS};
+use warden_broker_proto::github_token::{
+    AMBIGUOUS_GRANT, HOURLY_LIMIT, NO_ACTIVE_GRANT, OLD_CLIENT, REPOSITORY_UNREACHABLE,
+};
 
-use super::{approve, configured, entries};
+use super::{approve, approve_repositories, configured, entries};
 
 const TOKEN: &str = "ghs_test_0123456789";
+/// Repository 1001, which the grant of [`granted`] covers.
+const REPO_A: &str = "example-owner/example-repo";
+/// Repository 1002.
+const REPO_B: &str = "example-owner/homebrew-tap";
 
 /// A broker whose GitHub is `upstream`, with an agent `bot` holding a 30-day grant.
 /// Returns the agent's key and the grant.
@@ -34,20 +39,43 @@ async fn granted() -> (Arc<TestBroker>, HttpsUpstream, String, String) {
     (Arc::new(broker), upstream, key, grant)
 }
 
-/// What GitHub answers when it creates a token that ends an hour after the broker's
-/// clock.
+/// What GitHub answers when it creates a token for repository 1001 that ends an hour
+/// after the broker's clock.
 fn created(broker: &TestBroker, token: &str) -> Scripted {
-    let expires = jiff::Timestamp::from_second(broker.clock.now() + 3600).unwrap();
-    Scripted::with_body(
-        201,
-        json!({"token": token, "expires_at": expires.to_string()}).to_string(),
-    )
+    created_for(broker, token, 1001, REPO_A)
+}
+
+/// As [`created`], for the repository `(id, name)`.
+fn created_for(broker: &TestBroker, token: &str, id: u64, name: &str) -> Scripted {
+    minted_answer(token, broker.clock.now() + 3600, &[(id, name)])
 }
 
 async fn mint(broker: &TestBroker, key: &str) -> TestResponse {
+    mint_for(broker, key, REPO_A).await
+}
+
+async fn mint_for(broker: &TestBroker, key: &str, repository: &str) -> TestResponse {
     broker
-        .api_post_json(key, "/v1/github-token", &json!({}))
+        .api_post_json(key, "/v1/github-token", &json!({"repository": repository}))
         .await
+}
+
+/// The requests that asked GitHub for a token to mint (the approval's own look at
+/// a repository is not one of them), oldest first.
+fn mint_calls(upstream: &HttpsUpstream) -> Vec<Received> {
+    upstream
+        .received()
+        .into_iter()
+        .filter(|call| {
+            let body: Value = serde_json::from_slice(&call.body).unwrap();
+            body["permissions"]["contents"] == "write"
+        })
+        .collect()
+}
+
+/// The repository ids a mint call asked for.
+fn asked_ids(call: &Received) -> Value {
+    serde_json::from_slice::<Value>(&call.body).unwrap()["repository_ids"].clone()
 }
 
 fn assert_refused(broker: &TestBroker, resp: &TestResponse, status: StatusCode, says: &str) {
@@ -70,12 +98,13 @@ async fn held_mint(
 ) -> (Gate, tokio::task::JoinHandle<TestResponse>) {
     let gate = Gate::new();
     upstream.script_github_token(created(broker, TOKEN).held_by(&gate));
+    let expected = upstream.received().len() as u64 + 1;
     let call = tokio::spawn({
         let broker = broker.clone();
         let key = key.to_owned();
         async move { mint(&broker, &key).await }
     });
-    upstream.wait_for_github_token_calls(1).await;
+    upstream.wait_for_github_token_calls(expected).await;
     (gate, call)
 }
 
@@ -97,7 +126,7 @@ async fn mints_are_capped_per_agent_per_hour() {
     let resp = mint(&broker, &key).await;
     assert_refused(&broker, &resp, StatusCode::TOO_MANY_REQUESTS, HOURLY_LIMIT);
     assert_eq!(
-        upstream.received().len(),
+        mint_calls(&upstream).len(),
         2,
         "a refused mint costs GitHub nothing"
     );
@@ -128,8 +157,10 @@ async fn mint_returns_token_under_grant() {
     assert_eq!(token["token"], TOKEN);
     assert_eq!(token["grant_id"], grant);
     assert_eq!(token["expires_at"], broker.clock.now() + 3600);
+    assert_eq!(token["repository"], REPO_A);
+    assert_eq!(token["repository_id"], 1001);
 
-    let received = upstream.received();
+    let received = mint_calls(&upstream);
     assert_eq!(received.len(), 1);
     assert_eq!(
         received[0].path_and_query,
@@ -171,7 +202,7 @@ async fn mint_after_revoke_is_403() {
     revoke(&broker, &grant).await;
     let resp = mint(&broker, &key).await;
     assert_refused(&broker, &resp, StatusCode::FORBIDDEN, NO_ACTIVE_GRANT);
-    assert!(upstream.received().is_empty(), "GitHub was never asked");
+    assert!(mint_calls(&upstream).is_empty(), "GitHub was never asked");
 }
 
 #[tokio::test]
@@ -180,14 +211,17 @@ async fn mint_after_the_window_is_403() {
     broker.clock.advance(30 * 86_400);
     let resp = mint(&broker, &key).await;
     assert_refused(&broker, &resp, StatusCode::FORBIDDEN, NO_ACTIVE_GRANT);
-    assert!(upstream.received().is_empty());
+    assert!(mint_calls(&upstream).is_empty());
 }
 
 #[tokio::test]
-async fn a_body_that_is_not_an_empty_object_is_refused_and_audited() {
+async fn a_body_that_does_not_name_a_repository_is_refused_and_audited() {
     let (broker, upstream, key, _) = granted().await;
     for body in [
         json!({"repositories": ["x"]}),
+        json!({"repository": "example-owner/example-repo", "extra": 1}),
+        json!({"repository": "not a repository"}),
+        json!({"repository": 7}),
         json!([]),
         json!("{}"),
         json!(null),
@@ -200,8 +234,9 @@ async fn a_body_that_is_not_an_empty_object_is_refused_and_audited() {
             "the request body is not valid",
         );
         assert!(!resp.body.contains("repositories"), "{}", resp.body);
+        assert!(!resp.body.contains("extra"), "{}", resp.body);
     }
-    assert!(upstream.received().is_empty());
+    assert!(mint_calls(&upstream).is_empty());
 }
 
 #[tokio::test]
@@ -268,7 +303,7 @@ async fn app_changed_since_approval_is_409() {
         StatusCode::CONFLICT,
         "the GitHub App changed; request a new grant",
     );
-    assert!(upstream.received().is_empty(), "no token for another App");
+    assert!(mint_calls(&upstream).is_empty(), "no token for another App");
 }
 
 #[tokio::test]
@@ -310,7 +345,7 @@ async fn backend_failure_is_503_with_a_fixed_message() {
     assert!(!resp.body.contains("vault"), "{}", resp.body);
     let log = std::fs::read_to_string(broker.audit_path()).unwrap();
     assert!(!log.contains("vault.internal"), "{log}");
-    assert!(upstream.received().is_empty());
+    assert!(mint_calls(&upstream).is_empty());
 }
 
 #[tokio::test]
@@ -327,7 +362,7 @@ async fn audit_never_contains_token_or_jwt() {
         StatusCode::SERVICE_UNAVAILABLE
     );
     // The JWT really was sent, so the scan below could have caught it.
-    let sent = upstream.received();
+    let sent = mint_calls(&upstream);
     assert_eq!(sent.len(), 2);
     assert!(sent.iter().all(|call| {
         call.headers["authorization"]
@@ -380,25 +415,18 @@ async fn hourly_limit_survives_restart() {
         upstream.ca_pem().as_bytes().to_vec(),
     );
     let (broker, key) = configured(TestBroker::with_github(api, Window::D30, 2).await).await;
-    // Written straight into the database: scoped approval comes later.
     broker
         .insert_scoped_github_grant("bot", &[("example-owner/example-repo", 1001)])
         .await;
     for _ in 0..2 {
-        upstream.script_github_token(token_answer(
-            TOKEN,
-            broker.clock.now() + 3600,
-            &[(1001, "example-owner/example-repo")],
-            &PERMISSIONS,
-            "selected",
-        ));
+        upstream.script_github_token(created(&broker, TOKEN));
         let resp = mint(&broker, &key).await;
         assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
     }
     let broker = broker.restart().await;
     let resp = mint(&broker, &key).await;
     assert_refused(&broker, &resp, StatusCode::TOO_MANY_REQUESTS, HOURLY_LIMIT);
-    assert_eq!(upstream.received().len(), 2);
+    assert_eq!(mint_calls(&upstream).len(), 2);
     let minted = entries(&broker, "github_token_minted");
     assert_eq!(minted.len(), 2);
     assert_eq!(minted[0]["repository"], "example-owner/example-repo");
@@ -417,4 +445,196 @@ async fn info_says_scoped_github_tokens() {
         .await;
     assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
     assert_eq!(resp.json()["scoped_github_tokens"], true);
+}
+
+#[tokio::test]
+async fn mints_for_the_named_repository() {
+    let (broker, upstream, key, grant) = granted().await;
+    upstream.script_github_token(created(&broker, TOKEN));
+    let resp = mint(&broker, &key).await;
+    assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
+    let token = resp.json();
+    assert_eq!(token["repository"], REPO_A);
+    assert_eq!(token["repository_id"], 1001);
+    assert_eq!(token["grant_id"], grant);
+
+    let calls = mint_calls(&upstream);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(asked_ids(&calls[0]), json!([1001]));
+    let minted = entries(&broker, "github_token_minted");
+    assert_eq!(minted[0]["repository"], REPO_A);
+    assert_eq!(minted[0]["repository_id"], 1001);
+}
+
+#[tokio::test]
+async fn mint_finds_grant_in_any_case() {
+    let (broker, upstream, key, grant) = granted().await;
+    upstream.script_github_token(created(&broker, TOKEN));
+    let resp = mint_for(&broker, &key, "Example-Owner/Example-Repo").await;
+    assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
+    let token = resp.json();
+    // The answer names the repository as the grant stores it.
+    assert_eq!(token["repository"], REPO_A);
+    assert_eq!(token["grant_id"], grant);
+    assert_eq!(asked_ids(&mint_calls(&upstream)[0]), json!([1001]));
+}
+
+#[tokio::test]
+async fn mint_refuses_repository_without_grant() {
+    let (broker, upstream, key, _) = granted().await;
+    let resp = mint_for(&broker, &key, REPO_B).await;
+    assert_refused(&broker, &resp, StatusCode::FORBIDDEN, NO_ACTIVE_GRANT);
+    assert!(mint_calls(&upstream).is_empty(), "nothing went to GitHub");
+}
+
+#[tokio::test]
+async fn mint_uses_the_right_grant_of_two() {
+    let (broker, upstream, key, grant_a) = granted().await;
+    let grant_b =
+        approve_repositories(&broker, &upstream, "bot", Window::D30, &[(1002, REPO_B)]).await;
+    assert_ne!(grant_a, grant_b, "the two do not overlap, so both stay");
+
+    upstream.script_github_token(created_for(&broker, TOKEN, 1002, REPO_B));
+    let resp = mint_for(&broker, &key, REPO_B).await;
+    assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
+    assert_eq!(resp.json()["grant_id"], grant_b);
+    assert_eq!(resp.json()["repository_id"], 1002);
+
+    upstream.script_github_token(created(&broker, TOKEN));
+    let resp = mint_for(&broker, &key, REPO_A).await;
+    assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
+    assert_eq!(resp.json()["grant_id"], grant_a);
+
+    let calls = mint_calls(&upstream);
+    assert_eq!(asked_ids(&calls[0]), json!([1002]));
+    assert_eq!(asked_ids(&calls[1]), json!([1001]));
+    let minted = entries(&broker, "github_token_minted");
+    assert_eq!(minted[0]["grant_id"], grant_b);
+    assert_eq!(minted[1]["grant_id"], grant_a);
+}
+
+#[tokio::test]
+async fn mint_refuses_two_grants_covering_one_id() {
+    let (broker, upstream, key, _) = granted().await;
+    // Approving never leaves two, so this one is written straight into the database.
+    broker
+        .insert_scoped_github_grant("bot", &[(REPO_A, 1001)])
+        .await;
+    let resp = mint(&broker, &key).await;
+    assert_refused(&broker, &resp, StatusCode::CONFLICT, AMBIGUOUS_GRANT);
+    assert!(mint_calls(&upstream).is_empty(), "nothing went to GitHub");
+    assert_eq!(entries(&broker, "github_token_minted"), [] as [Value; 0]);
+}
+
+#[tokio::test]
+async fn mint_refuses_github_answer_for_other_id() {
+    let (broker, upstream, key, grant) = granted().await;
+    // The repository was deleted and recreated, or renamed and replaced: GitHub
+    // answers for another one. The token is discarded and not retried.
+    upstream.script_github_token(created_for(&broker, TOKEN, 1002, REPO_B));
+    let resp = mint(&broker, &key).await;
+    assert_refused(&broker, &resp, StatusCode::CONFLICT, REPOSITORY_UNREACHABLE);
+    assert_eq!(mint_calls(&upstream).len(), 1, "no retry");
+    assert_eq!(entries(&broker, "github_token_minted"), [] as [Value; 0]);
+    assert_eq!(
+        entries(&broker, "github_token_refused")[0]["grant_id"],
+        grant
+    );
+    let log = std::fs::read_to_string(broker.audit_path()).unwrap();
+    assert!(!log.contains("ghs_"), "{log}");
+}
+
+#[tokio::test]
+async fn mint_reports_unreachable_repository() {
+    let (broker, upstream, key, grant) = granted().await;
+    upstream.script_github_token(Scripted::with_body(
+        422,
+        r#"{"message":"repository ghs_test_echoed is gone"}"#,
+    ));
+    let resp = mint(&broker, &key).await;
+    assert_refused(&broker, &resp, StatusCode::CONFLICT, REPOSITORY_UNREACHABLE);
+    assert!(!resp.body.contains("echoed"), "{}", resp.body);
+    assert_eq!(mint_calls(&upstream).len(), 1, "no retry");
+    assert_eq!(entries(&broker, "github_token_minted"), [] as [Value; 0]);
+    assert_eq!(
+        entries(&broker, "github_token_refused")[0]["grant_id"],
+        grant
+    );
+}
+
+/// A mint GitHub refuses as unreachable still costs the agent one of its hour's
+/// tokens, as every call that reaches GitHub does.
+#[tokio::test]
+async fn unreachable_repository_costs_the_hourly_budget() {
+    let upstream = HttpsUpstream::start().await;
+    let api = GithubApi::pinned(
+        upstream.origin().parse().unwrap(),
+        upstream.origin().parse().unwrap(),
+        upstream.ca_pem().as_bytes().to_vec(),
+    );
+    let (broker, key) = configured(TestBroker::with_github(api, Window::D30, 1).await).await;
+    approve(&broker, &upstream, "bot", Window::D30).await;
+    upstream.script_github_token(Scripted::with_body(422, r#"{"message":"gone"}"#));
+    let resp = mint(&broker, &key).await;
+    assert_refused(&broker, &resp, StatusCode::CONFLICT, REPOSITORY_UNREACHABLE);
+    let resp = mint(&broker, &key).await;
+    assert_refused(&broker, &resp, StatusCode::TOO_MANY_REQUESTS, HOURLY_LIMIT);
+    assert_eq!(mint_calls(&upstream).len(), 1);
+}
+
+#[tokio::test]
+async fn old_cli_body_says_upgrade() {
+    let (broker, upstream, key, _) = granted().await;
+    let resp = broker
+        .api_post_json(&key, "/v1/github-token", &json!({}))
+        .await;
+    assert_refused(&broker, &resp, StatusCode::BAD_REQUEST, OLD_CLIENT);
+    assert!(mint_calls(&upstream).is_empty());
+}
+
+#[tokio::test]
+async fn grant_replaced_during_mint_gets_nothing() {
+    let (broker, upstream, key, old) = granted().await;
+    let (gate, call) = held_mint(&broker, &upstream, &key).await;
+    // A grant over both repositories overlaps the old one, so it replaces it.
+    let new = approve_repositories(
+        &broker,
+        &upstream,
+        "bot",
+        Window::D7,
+        &[(1001, REPO_A), (1002, REPO_B)],
+    )
+    .await;
+    assert_ne!(new, old);
+    gate.open();
+    let resp = call.await.unwrap();
+    assert_refused(
+        &broker,
+        &resp,
+        StatusCode::CONFLICT,
+        "grant revoked during the call",
+    );
+    assert_eq!(entries(&broker, "github_token_refused")[0]["grant_id"], old);
+}
+
+#[tokio::test]
+async fn hourly_limit_is_per_agent_across_grants() {
+    let upstream = HttpsUpstream::start().await;
+    let api = GithubApi::pinned(
+        upstream.origin().parse().unwrap(),
+        upstream.origin().parse().unwrap(),
+        upstream.ca_pem().as_bytes().to_vec(),
+    );
+    let (broker, key) = configured(TestBroker::with_github(api, Window::D30, 2).await).await;
+    approve(&broker, &upstream, "bot", Window::D30).await;
+    approve_repositories(&broker, &upstream, "bot", Window::D30, &[(1002, REPO_B)]).await;
+    upstream.script_github_token(created(&broker, TOKEN));
+    assert_eq!(mint_for(&broker, &key, REPO_A).await.status, StatusCode::OK);
+    upstream.script_github_token(created_for(&broker, TOKEN, 1002, REPO_B));
+    assert_eq!(mint_for(&broker, &key, REPO_B).await.status, StatusCode::OK);
+    for repository in [REPO_A, REPO_B] {
+        let resp = mint_for(&broker, &key, repository).await;
+        assert_refused(&broker, &resp, StatusCode::TOO_MANY_REQUESTS, HOURLY_LIMIT);
+    }
+    assert_eq!(mint_calls(&upstream).len(), 2);
 }

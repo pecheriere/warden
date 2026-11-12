@@ -8,7 +8,7 @@ use warden_broker::testkit::TestBroker;
 use warden_broker::testkit::upstream::HttpsUpstream;
 use warden_broker_proto::github_token::NO_ACTIVE_GRANT;
 
-use super::{configured, entries};
+use super::{active_for, configured, entries};
 
 /// A broker with a legacy grant and a legacy pending request from `bot`, as an
 /// upgrade finds them. The startup step has already run, before the rows are added.
@@ -26,10 +26,8 @@ async fn startup_ends_unscoped_grants() {
     assert_eq!(requests.end_unscoped_github().await.unwrap(), 2);
 
     assert!(
-        requests
-            .active_github_token(&"bot".parse().unwrap())
+        active_for(&broker, "bot", "example-owner/example-repo")
             .await
-            .unwrap()
             .is_none()
     );
     let status = |id: &str| {
@@ -86,12 +84,8 @@ async fn a_scoped_grant_survives_the_startup_step() {
         .insert_scoped_github_grant("bot", &[("example-owner/example-repo", 1001)])
         .await;
     let broker = broker.restart().await;
-    let active = broker
-        .state()
-        .requests
-        .active_github_token(&"bot".parse().unwrap())
+    let active = active_for(&broker, "bot", "example-owner/example-repo")
         .await
-        .unwrap()
         .expect("still active");
     assert_eq!(active.grant_id, grant);
     assert_eq!(
@@ -120,7 +114,11 @@ async fn legacy_grant_is_never_minted() {
     let (broker, key) = configured(TestBroker::with_github_api(api).await).await;
     broker.insert_legacy_github_grant("bot").await;
     let resp = broker
-        .api_post_json(&key, "/v1/github-token", &json!({}))
+        .api_post_json(
+            &key,
+            "/v1/github-token",
+            &json!({"repository": "example-owner/example-repo"}),
+        )
         .await;
     assert_eq!(resp.status, StatusCode::FORBIDDEN, "{}", resp.body);
     assert!(resp.body.contains(NO_ACTIVE_GRANT), "{}", resp.body);
@@ -154,7 +152,10 @@ async fn legacy_grant_not_offered_for_renewal() {
         "{notified:?}"
     );
     let resp = broker
-        .post_json(&format!("/grants/{grant}/renew"), &json!({}))
+        .post_json(
+            &format!("/grants/{grant}/renew"),
+            &json!({"repository": "example-owner/example-repo"}),
+        )
         .await;
     assert_eq!(resp.status, StatusCode::NOT_FOUND, "{}", resp.body);
 }

@@ -8,7 +8,7 @@ use warden_broker_proto::{Access, Window};
 use warden_broker::requests::MINTS_PER_HOUR;
 use warden_broker::testkit::upstream::HttpsUpstream;
 
-use super::{api_of, approve, configured, configured_on_fake, entries, resolved};
+use super::{active_for, api_of, approve, configured, configured_on_fake, entries, resolved};
 
 /// Post a GitHub token request for `window` as the agent with `key`.
 async fn ask(
@@ -136,22 +136,14 @@ async fn a_grant_lasts_exactly_the_window_approved() {
         list[0]["not_after"].as_i64().unwrap(),
     );
     assert_eq!(not_after - not_before, 30 * 86_400);
-    let active = broker
-        .state()
-        .requests
-        .active_github_token(&"bot".parse().unwrap())
+    let active = active_for(&broker, "bot", "example-owner/example-repo")
         .await
-        .unwrap()
         .expect("the grant is active");
     assert_eq!(active.grant_id.as_str(), grant);
     assert_eq!(active.grant.installation_id, 7_654_321);
     assert!(
-        broker
-            .state()
-            .requests
-            .active_github_token(&"other".parse().unwrap())
+        active_for(&broker, "other", "example-owner/example-repo")
             .await
-            .unwrap()
             .is_none()
     );
 }
@@ -182,12 +174,8 @@ async fn approving_new_grant_ends_previous() {
     assert_eq!(replaced.len(), 1, "{replaced:?}");
     assert_eq!(replaced[0]["grant_id"], old.as_str());
     assert_eq!(replaced[0]["by_grant"], new.as_str());
-    let active = broker
-        .state()
-        .requests
-        .active_github_token(&"bot".parse().unwrap())
+    let active = active_for(&broker, "bot", "example-owner/example-repo")
         .await
-        .unwrap()
         .expect("the new grant is active");
     assert_eq!(active.grant_id.as_str(), new);
 

@@ -58,7 +58,7 @@ mod renewal;
 pub use self::bus::StatusBus;
 pub use self::commit_signing::{ActiveCommitSigning, SIGNATURES_PER_DAY};
 pub use self::github_scope::{GithubPending, ReplacedGrant, Resolution, ScopedRepository};
-pub use self::github_token::{ActiveGithubToken, MINTS_PER_HOUR};
+pub use self::github_token::{ActiveGithubToken, GithubLookup, MINTS_PER_HOUR};
 use self::limits::Refusals;
 pub use self::limits::{LimitRefusal, RequestLimits};
 pub use self::link_hosts::LinkHosts;

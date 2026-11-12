@@ -8,7 +8,7 @@ use warden_broker::testkit::upstream::{HttpsUpstream, Scripted};
 use warden_broker_proto::Window;
 use warden_broker_proto::github_token::NOT_CONFIGURED;
 
-use super::{approve, configured_on_fake, entries, resolved};
+use super::{active_for, approve, configured_on_fake, entries, resolved};
 
 /// The approval token at the end of `link`.
 fn token_of(link: &str) -> String {
@@ -17,12 +17,8 @@ fn token_of(link: &str) -> String {
 
 /// The grant `bot` would mint with now, if any.
 async fn minting_with(broker: &TestBroker) -> Option<String> {
-    broker
-        .state()
-        .requests
-        .active_github_token(&"bot".parse().unwrap())
+    active_for(broker, "bot", "example-owner/example-repo")
         .await
-        .unwrap()
         .map(|active| active.grant_id.to_string())
 }
 
@@ -305,11 +301,8 @@ async fn renewal_shows_rename() {
     // Approving grants the id under the name GitHub gives it now.
     let approved = broker.approve(&token, Window::D30).await;
     assert_eq!(approved.status, StatusCode::OK, "{}", approved.body);
-    let list = broker.state().requests.clone();
-    let active = list
-        .active_github_token(&"bot".parse().unwrap())
+    let active = active_for(&broker, "bot", "example-owner/renamed-repo")
         .await
-        .unwrap()
         .unwrap();
     assert_ne!(active.grant_id.to_string(), old);
     let name: warden_broker_proto::release::RepoName =

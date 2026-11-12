@@ -78,3 +78,20 @@ pub fn token_answer(
         .to_string(),
     )
 }
+
+/// GitHub's `201` for a mint that went as asked: a token for `repositories`
+/// (`(id, full_name)`) with the permissions an agent's token carries, ending at
+/// `expires_at`.
+///
+/// # Panics
+/// If `expires_at` is not a time a timestamp can hold.
+#[must_use]
+pub fn minted_answer(token: &str, expires_at: i64, repositories: &[(u64, &str)]) -> Scripted {
+    token_answer(
+        token,
+        expires_at,
+        repositories,
+        &warden_broker_proto::github_token::PERMISSIONS,
+        "selected",
+    )
+}
