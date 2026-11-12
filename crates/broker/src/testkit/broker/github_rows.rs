@@ -122,15 +122,13 @@ impl TestBroker {
         };
         let fingerprint = fingerprint(&agent.parse().expect("a valid agent name"), &request);
         let body = serde_json::to_string(&request).expect("a request serialises");
-        let dedupe = if status == "pending" {
-            format!("{agent}|github_token|{id}")
-        } else {
-            format!("{agent}|github_token|{status}|{id}")
-        };
+        // What 0.12.0 wrote, and left unchanged when it approved the request.
+        let dedupe = format!("{agent}|github_token");
+        let decided_at = (status != "pending").then_some(now);
         sqlx::query(
             "INSERT INTO requests (id, agent, fingerprint, dedupe_key, body, \
-             approval_token_hash, status, created_at, expires_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+             approval_token_hash, status, created_at, expires_at, decided_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         )
         .bind(id.as_str())
         .bind(agent)
@@ -141,6 +139,7 @@ impl TestBroker {
         .bind(status)
         .bind(now)
         .bind(now + 86_400)
+        .bind(decided_at)
         .execute(&self.state.pool)
         .await
         .expect("inserting a request");

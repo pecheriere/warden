@@ -102,10 +102,11 @@ async fn a_scoped_grant_survives_the_startup_step() {
 
 #[tokio::test]
 async fn legacy_grant_still_renders() {
-    let (broker, _key, _grant, _pending) = upgraded().await;
+    let (broker, _key, grant, _pending) = upgraded().await;
     let page = broker.get("/grants").await;
     assert_eq!(page.status, StatusCode::OK, "{}", page.body);
-    assert!(page.body.contains("bot"), "{}", page.body);
+    assert!(page.body.contains(&grant), "{}", page.body);
+    assert!(page.body.to_lowercase().contains("github"), "{}", page.body);
 }
 
 #[tokio::test]
@@ -130,20 +131,27 @@ async fn legacy_grant_is_never_minted() {
 async fn legacy_grant_not_offered_for_renewal() {
     let (broker, _key, grant, _pending) = upgraded().await;
     let requests = broker.state().requests.clone();
+    // A scoped grant from the same time is the control: the step does notice it, so
+    // the legacy grant is skipped on purpose and not because nothing is noticed.
+    broker
+        .insert_scoped_github_grant("bot", &[("example-owner/example-repo", 1001)])
+        .await;
     broker.clock.advance(28 * 86_400);
-    requests.notify_ending_grants().await;
-    assert_eq!(
+    let ends_soon = || {
         broker
             .capture
             .rung()
             .into_iter()
             .filter(|bell| bell.title.contains("ends soon"))
-            .count(),
-        0
-    );
-    assert_eq!(
-        entries(&broker, "github_token_renewal_notified"),
-        Vec::<serde_json::Value>::new()
+            .count()
+    };
+    requests.notify_ending_grants().await;
+    assert_eq!(ends_soon(), 1, "only the scoped grant is noticed");
+    let notified = entries(&broker, "github_token_renewal_notified");
+    assert_eq!(notified.len(), 1, "{notified:?}");
+    assert!(
+        notified.iter().all(|e| e["grant_id"] != grant.as_str()),
+        "{notified:?}"
     );
     let resp = broker
         .post_json(&format!("/grants/{grant}/renew"), &json!({}))

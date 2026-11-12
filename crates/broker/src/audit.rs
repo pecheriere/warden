@@ -281,10 +281,13 @@ pub enum AuditEvent {
         permissions: Vec<String>,
         /// When GitHub ends the token, unix seconds.
         expires_at: i64,
-        /// The repository the token is limited to, as the grant names it.
-        repository: RepoName,
-        /// GitHub's id for that repository.
-        repository_id: u64,
+        /// The repository the token is limited to, as the grant names it. Absent in
+        /// the entries 0.12.0 wrote, which a log still holds; every new mint sets it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        repository: Option<RepoName>,
+        /// GitHub's id for that repository; absent in the same old entries.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        repository_id: Option<u64>,
     },
     /// A GitHub token grant or pending request that named no repository was ended
     /// at upgrade, because GitHub grants are now scoped to repositories.
@@ -1014,6 +1017,34 @@ mod tests {
             verify_bytes(format!("{json}\n").as_bytes()).unwrap(),
             (1, line.hash)
         );
+    }
+
+    /// A log written by 0.12.0 holds mints with no repository. It must still open,
+    /// verify and re-serialise to the same bytes after the upgrade.
+    #[test]
+    fn a_v0_12_0_github_token_minted_line_still_verifies() {
+        let event_json = r#"{"type":"github_token_minted","grant_id":"00112233445566778899aabbccddeeff","agent":"build-agent","installation_id":42,"permissions":["contents:write"],"expires_at":1800003600}"#;
+        let event: AuditEvent = serde_json::from_str(event_json).unwrap();
+        assert_eq!(serde_json::to_string(&event).unwrap(), event_json);
+        let (seq, ts) = (1, 1_800_000_000);
+        let hash = compute_hash(
+            GENESIS,
+            &Body {
+                seq,
+                ts,
+                event: &event,
+            },
+        )
+        .unwrap();
+        let line = Line {
+            seq,
+            ts,
+            prev: GENESIS.to_owned(),
+            event,
+            hash: hash.clone(),
+        };
+        let text = format!("{}\n", serde_json::to_string(&line).unwrap());
+        assert_eq!(verify_bytes(text.as_bytes()).unwrap(), (1, hash));
     }
 
     #[test]

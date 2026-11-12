@@ -149,8 +149,8 @@ async fn attempt(
             .map(|(name, level)| format!("{name}:{level}"))
             .collect(),
         expires_at: minted.expires_at,
-        repository: repository.name.clone(),
-        repository_id: repository.id,
+        repository: Some(repository.name.clone()),
+        repository_id: Some(repository.id),
     };
     drop(key);
     state
