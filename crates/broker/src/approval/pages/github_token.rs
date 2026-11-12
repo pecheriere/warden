@@ -1,6 +1,7 @@
 //! What the pages say about GitHub tokens. Its wording matters: the owner must see
-//! how far one grant reaches, which is every repository the App is installed on,
-//! and that a minted token outlives the grant's revocation.
+//! which repositories a grant covers (for a grant from before grants were scoped,
+//! every repository the App is installed on), which grants approving ends, and that
+//! a minted token outlives the grant's revocation.
 
 use maud::{Markup, html};
 use warden_broker_proto::github_token::{
@@ -21,7 +22,7 @@ pub(super) fn not_approvable(view: &PendingView) -> Option<Markup> {
     };
     if access.is_legacy() {
         return Some(html! {
-            p.detail #cannot-approve role="alert" {
+            p.cannot #cannot-approve role="alert" {
                 "This request cannot be approved: it names no repository. The agent's warden "
                 "CLI predates repository-scoped GitHub grants; it needs an upgrade."
             }
@@ -30,15 +31,14 @@ pub(super) fn not_approvable(view: &PendingView) -> Option<Markup> {
     if github.resolution != Resolution::NotAccessible {
         return None;
     }
-    let names: Vec<&str> = access
-        .repositories
-        .iter()
-        .map(warden_broker_proto::release::RepoName::as_str)
-        .collect();
     Some(html! {
-        p.detail #cannot-approve role="alert" {
+        p.cannot #cannot-approve role="alert" {
             "This request cannot be approved: the App is not installed on "
-            (names.join(", ")) ", or one of them does not exist."
+            @for (i, repo) in access.repositories.iter().enumerate() {
+                @if i > 0 { ", " }
+                code { bdi { (repo.as_str()) } }
+            }
+            ", or one of them does not exist."
         }
     })
 }
@@ -136,18 +136,32 @@ fn reach_of(repos: &[Named]) -> Markup {
     }
 }
 
-/// What the grants that approving would end say, one line each.
+/// The grants that approving would end, as a warning block of its own: the owner
+/// decides on these as much as on the repositories, so they are not fine print.
 fn replaced(agent: &AgentName, replaces: &[ReplacedGrant]) -> Markup {
     html! {
-        @for grant in replaces {
-            span.detail.replaces {
-                "Approving ends " bdi { (agent) } "\u{2019}s grant for "
-                @match &grant.scope {
-                    GrantScope::Legacy => "all repositories of the installation",
-                    GrantScope::Repositories(list) => {
-                        @for (i, repo) in list.iter().enumerate() {
-                            @if i > 0 { ", " }
-                            code { bdi { (repo.name) } }
+        @if !replaces.is_empty() {
+            div.replaces {
+                strong {
+                    (icon(14, "2.4", &warning_icon()))
+                    // One child, so the flex layout does not split the name from the words.
+                    span {
+                        "Approving also ends "
+                        @if let [_] = replaces { "1 existing grant" } @else { (replaces.len()) " existing grants" }
+                        " of " bdi { (agent) }
+                    }
+                }
+                @for grant in replaces {
+                    p {
+                        "Approving ends " bdi { (agent) } "\u{2019}s grant for "
+                        @match &grant.scope {
+                            GrantScope::Legacy => "all repositories of the installation",
+                            GrantScope::Repositories(list) => {
+                                @for (i, repo) in list.iter().enumerate() {
+                                    @if i > 0 { ", " }
+                                    code { bdi { (repo.name) } }
+                                }
+                            }
                         }
                     }
                 }
@@ -160,7 +174,8 @@ fn replaced(agent: &AgentName, replaces: &[ReplacedGrant]) -> Markup {
 fn automatic(request: &GithubTokenAccess) -> Markup {
     html! {
         @if let Some(auto) = &request.automatic {
-            span.detail {
+            // Normal text, not muted: the owner must not mistake it for a deliberate push.
+            span.automatic {
                 "Filed automatically by "
                 (match auto.by {
                     AutomaticCaller::GitCredential => "the git credential helper",
@@ -207,13 +222,13 @@ pub(super) fn access(
         @if reachable && !repos.is_empty() {
             (reach_of(&repos))
         }
+        @if let (true, Some(pending)) = (reachable, pending) {
+            (replaced(agent, &pending.replaces))
+        }
         @if !repos.is_empty() {
             span.detail { "Mints tokens for " (app(&policy.app_id, policy.installation_id)) }
         }
         (permissions())
-        @if let Some(pending) = pending {
-            (replaced(agent, &pending.replaces))
-        }
         (automatic(request))
         span.detail {
             "warden mints a token whenever this agent asks, until the grant ends or is revoked, \

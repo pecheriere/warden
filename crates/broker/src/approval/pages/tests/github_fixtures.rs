@@ -125,6 +125,11 @@ pub(super) fn unreachable_view() -> crate::requests::PendingView {
 /// and recreated under the name, so only the name overlaps), one for a different
 /// repository that shares the tap, and a legacy one.
 pub(super) fn replaces_view() -> crate::requests::PendingView {
+    replaces_view_with(3)
+}
+
+/// The same, with only the first `n` of the replaced grants.
+pub(super) fn replaces_view_with(n: usize) -> crate::requests::PendingView {
     github_view(
         access(&[REPO, TAP], None),
         Some(GithubPending {
@@ -139,7 +144,10 @@ pub(super) fn replaces_view() -> crate::requests::PendingView {
                     grant_id: id(13),
                     scope: GrantScope::Legacy,
                 },
-            ],
+            ]
+            .into_iter()
+            .take(n)
+            .collect(),
         }),
     )
 }

@@ -64,37 +64,38 @@ pub fn approve(view: &PendingView, hosts: &LinkHosts, now: i64) -> Markup {
                     span.fp-hex { "In hex " code { (view.fingerprint) } }
                 }
                 div.actions {
-                    fieldset {
-                        legend.label { "Grant for" }
-                        // A release has one lifetime, said once below, so no cap to explain.
-                        @let capped_by = match view.destination {
-                            Destination::Ssh(_) => Some("target"),
-                            Destination::Api(_) => Some("secret"),
-                            Destination::CommitSigning(_) => Some("signing key"),
-                            Destination::GithubToken(_) => Some("GitHub App"),
-                            Destination::Release(_) => None,
-                        };
-                        @if let (true, Some(noun)) = (view.request.window > max, capped_by) {
-                            p.detail.capped {
-                                "Asked for " (window_words(view.request.window)) "; at most "
-                                (window_words(max)) " for this " (noun) "."
-                            }
-                        }
-                        @if matches!(view.destination, Destination::Release(_)) {
-                            p.detail { (release::LIFETIME) }
-                        }
-                        div.seg {
-                            @for window in windows_for(&view.destination).iter().copied().filter(|w| *w <= max) {
-                                @let id = format!("window-{}", window_label(window));
-                                input #(id) type="radio" name="window"
-                                    value=(window_label(window)) checked[window == default];
-                                label for=(id) { (window_words(window)) }
-                            }
-                        }
-                    }
                     @let not_approvable = github_token::not_approvable(view);
                     @if let Some(message) = &not_approvable {
                         (message)
+                    } @else {
+                        fieldset {
+                            legend.label { "Grant for" }
+                            // A release has one lifetime, said once below, so no cap to explain.
+                            @let capped_by = match view.destination {
+                                Destination::Ssh(_) => Some("target"),
+                                Destination::Api(_) => Some("secret"),
+                                Destination::CommitSigning(_) => Some("signing key"),
+                                Destination::GithubToken(_) => Some("GitHub App"),
+                                Destination::Release(_) => None,
+                            };
+                            @if let (true, Some(noun)) = (view.request.window > max, capped_by) {
+                                p.detail.capped {
+                                    "Asked for " (window_words(view.request.window)) "; at most "
+                                    (window_words(max)) " for this " (noun) "."
+                                }
+                            }
+                            @if matches!(view.destination, Destination::Release(_)) {
+                                p.detail { (release::LIFETIME) }
+                            }
+                            div.seg {
+                                @for window in windows_for(&view.destination).iter().copied().filter(|w| *w <= max) {
+                                    @let id = format!("window-{}", window_label(window));
+                                    input #(id) type="radio" name="window"
+                                        value=(window_label(window)) checked[window == default];
+                                    label for=(id) { (window_words(window)) }
+                                }
+                            }
+                        }
                     }
                     div.btns {
                         @if not_approvable.is_none() {

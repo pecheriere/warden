@@ -113,7 +113,7 @@ async fn page_shows_not_installed_and_no_approve() {
     assert_eq!(page.status, StatusCode::OK, "{}", page.body);
     assert!(
         page.body.contains(&format!(
-            "This request cannot be approved: the App is not installed on {REPO}, or one of them does not exist."
+            "This request cannot be approved: the App is not installed on <code><bdi>{REPO}</bdi></code>, or one of them does not exist."
         )),
         "{}",
         page.body

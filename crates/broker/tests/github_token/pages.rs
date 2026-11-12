@@ -31,7 +31,7 @@ async fn approval_page_names_app_installation_and_permissions() {
         "pull_requests: write",
         "issues: write",
         "metadata: read",
-        "on every repository the App is installed on",
+        "Can push and merge on <bdi>example-owner/example-repo</bdi>",
         "tokens last 1 hour and cannot be recalled when revoked",
         "30 days",
     ] {
@@ -56,7 +56,7 @@ async fn approval_page_names_app_installation_and_permissions() {
     assert!(
         pending
             .body
-            .contains("on every repository the App is installed on"),
+            .contains("Can push and merge on <bdi>example-owner/example-repo</bdi>"),
         "{}",
         pending.body
     );

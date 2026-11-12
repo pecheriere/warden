@@ -2,7 +2,7 @@
 
 use super::github_fixtures::{
     LONG, REPO, TAP, access, automatic_view, github_view, multi_view, page, replaces_view,
-    resolved, scoped, unreachable_view,
+    replaces_view_with, resolved, scoped, unreachable_view,
 };
 
 /// How many times `needle` appears in `haystack`.
@@ -63,13 +63,25 @@ fn unreachable_has_no_approve_button() {
     let html = page(&unreachable_view());
     assert!(
         html.contains(&format!(
-            "This request cannot be approved: the App is not installed on {REPO}, {TAP}, or \
-             one of them does not exist."
+            "This request cannot be approved: the App is not installed on <code><bdi>{REPO}</bdi></code>, \
+             <code><bdi>{TAP}</bdi></code>, or one of them does not exist."
         )),
         "{html}"
     );
     assert!(!html.contains(r#"id="approve""#), "{html}");
     assert!(html.contains(r#"id="deny""#), "{html}");
+    assert!(!html.contains(r#"name="window""#), "{html}");
+    assert!(!html.contains("Grant for"), "{html}");
+    assert!(
+        html.contains(r#"<p class="cannot" id="cannot-approve" role="alert">"#),
+        "{html}"
+    );
+    assert!(
+        html.contains(&format!(
+            "<code><bdi>{REPO}</bdi></code>, <code><bdi>{TAP}</bdi></code>"
+        )),
+        "{html}"
+    );
     assert!(!html.contains("Can push and merge"), "{html}");
 }
 
@@ -90,6 +102,34 @@ fn replaced_grants_are_listed() {
         "{html}"
     );
     assert_eq!(count(&html, "Approving ends"), 3, "{html}");
+    assert!(
+        html.contains(r#"<div class="replaces"><strong>"#)
+            && html.contains("Approving also ends 3 existing grants of <bdi>build-agent</bdi>"),
+        "{html}"
+    );
+    // The warning comes right after the reach badge, before the fine print.
+    let block = html.find(r#"class="replaces""#).unwrap();
+    assert!(
+        html.find("Can push and merge on").unwrap() < block
+            && block < html.find("Mints tokens for").unwrap()
+            && block < html.find("Permissions: ").unwrap(),
+        "{html}"
+    );
+}
+
+#[test]
+fn one_replaced_grant_is_singular() {
+    let html = page(&replaces_view_with(1));
+    assert!(
+        html.contains("Approving also ends 1 existing grant of <bdi>build-agent</bdi>"),
+        "{html}"
+    );
+}
+
+#[test]
+fn no_replaced_grants_no_block() {
+    let html = page(&multi_view());
+    assert!(!html.contains(r#"class="replaces""#), "{html}");
 }
 
 #[test]
@@ -111,6 +151,7 @@ fn automatic_label_and_dir_escaped() {
         ),
         "{html}"
     );
+    assert!(html.contains(r#"<span class="automatic">"#), "{html}");
     let html = page(&automatic_view(Some("/work/<b>x</b>")));
     assert!(
         html.contains("<bdi>/work/&lt;b&gt;x&lt;/b&gt;</bdi>"),
