@@ -306,9 +306,14 @@ fn not_alone(used: &[Helper], this: Option<&str>) -> Check {
 }
 
 /// The check: `setup` is how git asks for GitHub credentials, or why that could not
-/// be told; `grant` is whether this agent has an active grant, `None` when the
-/// broker was not asked.
-pub fn check(setup: &Result<GithubSetup, String>, grant: Option<Result<bool, CallError>>) -> Check {
+/// be told; `scoped` is whether the broker says it scopes GitHub grants to
+/// repositories, `None` when it could not be asked; `grant` is whether this agent
+/// has an active grant, `None` when the broker was not asked.
+pub fn check(
+    setup: &Result<GithubSetup, String>,
+    scoped: Option<bool>,
+    grant: Option<Result<bool, CallError>>,
+) -> Check {
     let setup = match setup {
         Ok(setup) => setup,
         Err(reason) => return Check::could_not_check(NAME, reason.clone(), READ_GIT),
@@ -352,6 +357,14 @@ pub fn check(setup: &Result<GithubSetup, String>, grant: Option<Result<bool, Cal
             SETUP,
         );
     }
+    if scoped == Some(false) {
+        return Check::fail(
+            NAME,
+            "The broker does not support repository-scoped grants, so git and gh get no GitHub \
+             token from it.",
+            "Upgrade the broker, then run doctor again.",
+        );
+    }
     match grant {
         None => Check::could_not_check(
             NAME,
@@ -373,12 +386,14 @@ pub fn check(setup: &Result<GithubSetup, String>, grant: Option<Result<bool, Cal
         ),
         Some(Ok(true)) => Check::pass(
             NAME,
-            "Git takes GitHub tokens from warden, and this agent has an active grant.",
+            "Git takes GitHub tokens from warden, the broker supports repository-scoped grants, and \
+             this agent has an active grant.",
         ),
         Some(Ok(false)) => Check::pass(
             NAME,
-            "Git takes GitHub tokens from warden. This agent has no active grant yet: the first \
-             git or gh call to GitHub asks the owner for one and waits.",
+            "Git takes GitHub tokens from warden, and the broker supports repository-scoped grants. \
+             This agent has no active grant yet: the first git or gh call to a repository asks \
+             the owner for one and waits.",
         ),
     }
 }

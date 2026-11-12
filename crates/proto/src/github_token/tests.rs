@@ -75,6 +75,20 @@ fn github_token_access_refuses_unknown_field() {
 }
 
 #[test]
+fn automatic_request_refuses_unknown_field() {
+    let known = json!({"by": "gh_wrapper", "dir": "/src/home-api"});
+    assert!(serde_json::from_value::<AutomaticRequest>(known).is_ok());
+    let unknown = json!({"by": "gh_wrapper", "dir": "/src/home-api", "extra": 1});
+    assert!(serde_json::from_value::<AutomaticRequest>(unknown).is_err());
+    let nested = json!({
+        "kind": "github_token",
+        "repositories": ["example-owner/example-repo"],
+        "automatic": {"by": "git_credential", "extra": true},
+    });
+    assert!(serde_json::from_value::<Access>(nested).is_err());
+}
+
+#[test]
 fn github_token_access_refuses_duplicates() {
     assert!(access(&["Example-Owner/Example-Repo", "example-owner/example-repo"]).is_err());
     let value = json!({

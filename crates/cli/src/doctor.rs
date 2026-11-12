@@ -263,7 +263,11 @@ async fn checks(probes: &impl Probes) -> Vec<Check> {
     } else {
         None
     };
-    checks.push(github::check(&github, grant));
+    checks.push(github::check(
+        &github,
+        info.as_ref().map(|info| info.scoped_github_tokens),
+        grant,
+    ));
     checks.push(version_check());
     checks
 }

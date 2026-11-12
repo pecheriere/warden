@@ -147,7 +147,7 @@ why: do not retry in a loop, and do not use another credential or turn the helpe
 ahead, with a goal of your own:
 
 ```sh
-warden request github --goal "<which agent, and what it pushes or opens>"
+warden request github <owner/name> --goal "<which agent, and what it pushes or opens>"
 ```
 
 The token covers every repository the person installed the App on, and can also open issues

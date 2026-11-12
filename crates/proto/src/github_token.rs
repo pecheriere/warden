@@ -66,6 +66,7 @@ pub enum AutomaticCaller {
 
 /// Says that a tool asked, not the agent, and from where.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AutomaticRequest {
     /// The tool that asked.
     pub by: AutomaticCaller,

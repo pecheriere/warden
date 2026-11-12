@@ -1,49 +1,42 @@
 //! GitHub tokens for git and `gh`: `warden github token`, and the cache it shares
 //! with the git credential helper.
 //!
-//! The broker mints a GitHub App installation token under this agent's active
-//! `github_token` grant. GitHub ends it after an hour; the CLI keeps it in
-//! `<state>/github-token.json` and mints again once less than
-//! [`MIN_REMAINING_SECS`] remain. The file necessarily holds the token in clear, so
-//! it is served only while it is a regular file of this user with mode exactly
-//! 0600 that parses: anything else is replaced, never trusted.
+//! The broker mints a GitHub App installation token for one repository under this
+//! agent's active `github_token` grant that covers it. GitHub ends it after an
+//! hour; the CLI keeps it in `<state>/github-token.json` (see [`cache`]), one entry
+//! per repository, and mints again once less than [`MIN_REMAINING_SECS`] remain.
 //!
-//! When the agent has no active grant, the CLI asks the owner itself, says on
-//! stderr that it waits, and goes on once the owner approves. Nothing but the token
+//! When the agent has no active grant for the repository, the CLI asks the owner
+//! itself, naming that repository, says on stderr that it waits, and goes on once
+//! the owner approves. Nothing but the token
 //! ever goes to stdout, which git and the `gh` wrapper read.
 
 use std::ffi::OsString;
-use std::fs;
-use std::io::{Read as _, Write as _};
-use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
-use std::path::{Path, PathBuf};
+use std::io::Write as _;
+use std::path::Path;
 
 use anyhow::{Context as _, Result, anyhow};
 use serde::{Deserialize, Serialize};
+use warden_broker_proto::Goal;
 use warden_broker_proto::github_token::{
-    APP_CHANGED, AutomaticCaller, GithubTokenResponse, HOURLY_LIMIT, NO_ACTIVE_GRANT,
-    NOT_CONFIGURED,
+    AMBIGUOUS_GRANT, APP_CHANGED, AutomaticCaller, GithubTokenResponse, HOURLY_LIMIT,
+    NO_ACTIVE_GRANT, NOT_CONFIGURED, OLD_CLIENT, REPOSITORY_UNREACHABLE,
 };
 use warden_broker_proto::release::RepoName;
-use warden_broker_proto::{Goal, Id};
 use zeroize::Zeroizing;
 
-use crate::client::{CallError, Client};
+use crate::client::{CallError, Client, require_scoped};
 use crate::config::Config;
 use crate::github_repo;
-use crate::{EXIT_ERROR, EXIT_NO_GRANT, Exit, agent, request, unix_now};
+use crate::{EXIT_ERROR, EXIT_NO_GRANT, Exit, request, unix_now};
+
+mod cache;
+
+pub use cache::discard;
+use cache::{Cache, Entry};
 
 /// A cached token is served only while it has at least this long left, in seconds.
 pub const MIN_REMAINING_SECS: i64 = 300;
-
-/// The cache's name in the state directory.
-const CACHE_FILE: &str = "github-token.json";
-
-/// The largest cache file read, in bytes.
-const MAX_CACHE_BYTES: usize = 16 * 1024;
-
-/// The longest token accepted, in bytes.
-const MAX_TOKEN_BYTES: usize = 1024;
 
 /// Which program wants the token, for the goal of a request made on its behalf.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,204 +99,68 @@ impl Identity {
     }
 }
 
-/// A token in memory that is wiped when dropped.
-struct Held {
-    token: Zeroizing<String>,
-    expires_at: i64,
-    grant_id: Id,
-    identity: Identity,
-}
-
-impl Held {
-    fn new(response: GithubTokenResponse, identity: Identity) -> Self {
-        let GithubTokenResponse {
-            token,
-            expires_at,
-            grant_id,
-            repository: _,
-            repository_id: _,
-        } = response;
-        Self {
-            token: Zeroizing::new(token),
-            expires_at,
-            grant_id,
-            identity,
-        }
-    }
-}
-
-/// The cache file as read.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Stored {
-    token: String,
-    expires_at: i64,
-    grant_id: Id,
-    agent: String,
-    server: String,
-}
-
-/// The cache file as written.
-#[derive(Serialize)]
-struct StoredRef<'a> {
-    token: &'a str,
-    expires_at: i64,
-    grant_id: &'a Id,
-    agent: &'a str,
-    server: &'a str,
-}
-
-/// Whether `token` can go on a line of git's credential protocol and into an
-/// environment variable as it is: printable ASCII without spaces, of a sane length.
-fn well_formed(token: &str) -> bool {
-    !token.is_empty()
-        && token.len() <= MAX_TOKEN_BYTES
-        && token.bytes().all(|b| b.is_ascii_graphic())
-}
-
-/// `<state>/github-token.json`.
-fn cache_path() -> Result<PathBuf> {
-    Ok(agent::state_dir()?.join(CACHE_FILE))
-}
-
-/// The cache at `path`, if it is a regular file of this user with mode exactly
-/// 0600, at most [`MAX_CACHE_BYTES`], that parses. A symlink is never followed and a
-/// FIFO never waited on.
-fn read_stored(path: &Path) -> Option<Held> {
-    use rustix::fs::{Mode, OFlags};
-    let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
-    let file = fs::File::from(rustix::fs::open(path, flags, Mode::empty()).ok()?);
-    let meta = file.metadata().ok()?;
-    if !meta.is_file()
-        || meta.uid() != rustix::process::getuid().as_raw()
-        || meta.mode() & 0o7777 != 0o600
-    {
-        return None;
-    }
-    // Room for one byte more than allowed, so that reading never grows the buffer
-    // and leaves a copy behind.
-    let mut raw = Zeroizing::new(Vec::with_capacity(MAX_CACHE_BYTES + 1));
-    let limit = u64::try_from(MAX_CACHE_BYTES + 1).ok()?;
-    file.take(limit).read_to_end(&mut raw).ok()?;
-    if raw.len() > MAX_CACHE_BYTES {
-        return None;
-    }
-    let Stored {
-        token,
-        expires_at,
-        grant_id,
-        agent,
-        server,
-    } = serde_json::from_slice(&raw).ok()?;
-    let token = Zeroizing::new(token);
-    well_formed(&token).then_some(Held {
-        token,
-        expires_at,
-        grant_id,
-        identity: Identity { agent, server },
-    })
-}
-
-/// The cached token at `path` if it was minted for `identity` and has at least
-/// [`MIN_REMAINING_SECS`] left at `now`.
-fn read_cache(path: &Path, now: i64, identity: &Identity) -> Option<Held> {
-    read_stored(path).filter(|t| {
-        t.identity == *identity && t.expires_at.saturating_sub(now) >= MIN_REMAINING_SECS
-    })
-}
-
-/// Replace the cache at `path` with `token`: written to a new 0600 file beside it,
-/// which is renamed over whatever was there (a rename replaces a symlink, never
-/// what it points to).
-fn write_cache(path: &Path, token: &Held) -> Result<()> {
-    let stored = StoredRef {
-        token: &token.token,
-        expires_at: token.expires_at,
-        grant_id: &token.grant_id,
-        agent: &token.identity.agent,
-        server: &token.identity.server,
-    };
-    // Sized up front, so that writing never grows the buffer and leaves a copy.
-    let mut contents = Zeroizing::new(Vec::with_capacity(token.token.len() + 256));
-    serde_json::to_writer(&mut *contents, &stored).context("cannot encode the token cache")?;
-    let (_, temp) = agent::temp_beside(path)?;
-    let written = agent::write_temp(&temp, &contents)
-        .and_then(|()| {
-            // Whatever the umask took away, the mode is exactly 0600, or the cache
-            // would never be served.
-            fs::set_permissions(&temp, fs::Permissions::from_mode(0o600))
-                .with_context(|| format!("cannot restrict {}", temp.display()))
-        })
-        .and_then(|()| {
-            fs::rename(&temp, path).with_context(|| format!("cannot write {}", path.display()))
-        });
-    if written.is_err() {
-        // Best effort: the error that matters is the one returned.
-        let _ = fs::remove_file(&temp);
-    }
-    written
-}
-
-/// The token cached at `path` if it was minted for `identity` and is good for at
-/// least [`MIN_REMAINING_SECS`] at `now`, or else one from `mint`, which then
-/// replaces the cache. A cache that
-/// cannot be written is reported on stderr and does not stop the token.
+/// The token for `repository` cached at `path` if it was minted for `identity` and
+/// is good for at least [`MIN_REMAINING_SECS`] at `now`, or else one from `mint`,
+/// which then joins the cache. A cache that cannot be written is reported on stderr
+/// and does not stop the token. The answer of `mint` must be for `repository`.
 ///
 /// # Errors
-/// What `mint` failed with, as a [`CallError`], or a token that is not well formed.
+/// What `mint` failed with; a token that is not well formed; or
+/// a token for another repository.
 async fn serve_from<F, Fut>(
     path: &Path,
     now: i64,
     identity: &Identity,
+    repository: &RepoName,
     mint: F,
 ) -> Result<Zeroizing<String>>
 where
     F: FnOnce() -> Fut,
-    Fut: Future<Output = Result<GithubTokenResponse, CallError>>,
+    Fut: Future<Output = Result<GithubTokenResponse>>,
 {
-    if let Some(cached) = read_cache(path, now, identity) {
-        return Ok(cached.token);
+    let loaded = Cache::load(path).filter(|cache| cache.identity == *identity);
+    if let Some(entry) = loaded.as_ref().and_then(|c| c.lookup(repository, now)) {
+        return Ok(entry.token.clone());
     }
-    let fresh = Held::new(mint().await?, identity.clone());
-    if !well_formed(&fresh.token) {
+    let entry = Entry::new(mint().await?);
+    if !entry.repository.matches(repository) {
+        return Err(anyhow!("the broker sent a token for another repository"));
+    }
+    if !cache::well_formed(&entry.token) {
         return Err(anyhow!("the broker sent a token that is not well formed"));
     }
-    if let Err(e) = write_cache(path, &fresh) {
+    let token = entry.token.clone();
+    let mut cache = loaded.unwrap_or_else(|| Cache::empty(identity.clone()));
+    cache.drop_expired(now);
+    cache.put(entry);
+    if let Err(e) = cache.write(path) {
         eprintln!(
             "warden: warning: cannot cache the GitHub token, so it is minted anew next time: {e:#}"
         );
     }
-    Ok(fresh.token)
+    Ok(token)
 }
 
-/// The cached token, or a new one from the broker of `config` when the cache holds
-/// no good one for its agent.
+/// The cached token for `repository`, or a new one from the broker of `config` when
+/// the cache holds no good one for it. A new one is minted only from a broker that
+/// scopes GitHub grants to repositories.
 ///
 /// # Errors
-/// If the state directory is unusable, or as [`serve_from`].
+/// If the state directory is unusable, the broker does not scope GitHub grants, or
+/// as [`serve_from`].
 pub async fn cached_or_mint(
     config: &Config,
     client: &Client,
+    repository: &RepoName,
     now: i64,
 ) -> Result<Zeroizing<String>> {
-    serve_from(&cache_path()?, now, &Identity::of(config), || {
-        client.github_token()
+    let path = cache::cache_path()?;
+    let identity = Identity::of(config);
+    serve_from(&path, now, &identity, repository, || async {
+        require_scoped(&config.server).await?;
+        Ok(client.github_token(repository).await?)
     })
     .await
-}
-
-/// Delete the cached token if it was minted under `grant`, as when the grant is
-/// revoked from here. Returns whether one was.
-///
-/// # Errors
-/// If the state directory is unusable or the file cannot be removed.
-pub fn discard(grant: &Id) -> Result<bool> {
-    let path = cache_path()?;
-    if !read_stored(&path).is_some_and(|t| t.grant_id == *grant) {
-        return Ok(false);
-    }
-    fs::remove_file(&path).with_context(|| format!("cannot remove {}", path.display()))?;
-    Ok(true)
 }
 
 /// Whether `e` says this agent has no active grant.
@@ -320,7 +177,7 @@ fn is_no_grant(e: &anyhow::Error) -> bool {
 /// usable, and otherwise as [`explain`] says.
 pub async fn obtain(caller: Caller, repository: &RepoName) -> Result<Zeroizing<String>> {
     let (config, client) = crate::client()?;
-    match cached_or_mint(&config, &client, unix_now()).await {
+    match cached_or_mint(&config, &client, repository, unix_now()).await {
         Ok(token) => Ok(token),
         Err(e) if is_no_grant(&e) => {
             let dir = std::env::current_dir().ok();
@@ -329,8 +186,16 @@ pub async fn obtain(caller: Caller, repository: &RepoName) -> Result<Zeroizing<S
                 Caller::CredentialHelper => AutomaticCaller::GitCredential,
                 Caller::GhWrapper => AutomaticCaller::GhWrapper,
             };
-            request::request_github_for_tool(&config, &client, goal, by, repository).await?;
-            cached_or_mint(&config, &client, unix_now())
+            request::request_github_for_tool(
+                &config,
+                &client,
+                goal,
+                by,
+                repository,
+                dir.as_deref(),
+            )
+            .await?;
+            cached_or_mint(&config, &client, repository, unix_now())
                 .await
                 .map_err(explain)
         }
@@ -341,6 +206,9 @@ pub async fn obtain(caller: Caller, repository: &RepoName) -> Result<Zeroizing<S
 /// What to tell the agent about a failed mint: what happened, and a next step that
 /// never goes around the owner.
 fn explain(e: anyhow::Error) -> anyhow::Error {
+    if e.downcast_ref::<Exit>().is_some() {
+        return e;
+    }
     let Some(call) = e.downcast_ref::<CallError>() else {
         return e.context("cannot get a GitHub token");
     };
@@ -356,8 +224,23 @@ fn explain(e: anyhow::Error) -> anyhow::Error {
             EXIT_NO_GRANT,
             format!(
                 "cannot get a GitHub token: {m}. Ask the owner for a new grant with: warden \
-                 request github --goal \"<why this agent uses GitHub>\""
+                 request github <owner/name> --goal \"<why this agent uses GitHub>\""
             ),
+        ),
+        CallError::Refused(m) if m.contains(REPOSITORY_UNREACHABLE) => (
+            EXIT_ERROR,
+            format!(
+                "cannot get a GitHub token: {m}. Something is wrong with that repository's \
+                 access, so do not retry; ask the owner whether the App still reaches it"
+            ),
+        ),
+        CallError::Refused(m) if m.contains(AMBIGUOUS_GRANT) => (
+            EXIT_ERROR,
+            format!("cannot get a GitHub token: {m}. Do not retry: ask the owner"),
+        ),
+        CallError::Refused(m) if m.contains(OLD_CLIENT) => (
+            EXIT_ERROR,
+            format!("cannot get a GitHub token: {m}. Upgrade warden on this machine"),
         ),
         CallError::Refused(m) if m.contains(HOURLY_LIMIT) => (
             EXIT_ERROR,
