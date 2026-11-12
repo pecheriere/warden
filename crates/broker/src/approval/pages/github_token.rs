@@ -254,7 +254,11 @@ pub(super) fn grant_access(app_id: &str, installation_id: u64, scope: &GrantScop
             (listing(&repos, false))
             (reach_of(&repos))
         }
-        span.detail { "Mints tokens for " (app(app_id, installation_id)) }
+        @if scope.is_legacy() {
+            span.detail { "Minted tokens for " (app(app_id, installation_id)) " until it ended" }
+        } @else {
+            span.detail { "Mints tokens for " (app(app_id, installation_id)) }
+        }
         (permissions())
         span.detail { (REVOKING) }
     }

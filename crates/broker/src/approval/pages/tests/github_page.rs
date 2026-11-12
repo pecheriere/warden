@@ -245,6 +245,10 @@ fn grants_page_shows_legacy() {
         "{html}"
     );
     assert!(!html.contains("Can push and merge"), "{html}");
+    assert!(!html.contains(r#"class="renew""#), "no Renew: {html}");
+    assert!(!html.contains("Mints tokens"), "{html}");
+    let current = grants_page(&[github_grant(14, scope_of(&[(1001, REPO)]))]);
+    assert!(current.contains(r#"class="renew""#), "{current}");
 }
 
 #[test]
@@ -268,10 +272,14 @@ fn pending_list_names_repositories() {
         "{html}"
     );
     let readable = pending_page(&[REPO, TAP], true);
-    assert!(
-        readable.contains(&format!("<bdi>{REPO}</bdi>")),
-        "{readable}"
-    );
+    for name in [REPO, TAP] {
+        assert_eq!(
+            count(&readable, &format!("<bdi>{name}</bdi>")),
+            1,
+            "{name} once: {readable}"
+        );
+    }
+    assert!(!readable.contains("github token for"), "{readable}");
 }
 
 #[test]

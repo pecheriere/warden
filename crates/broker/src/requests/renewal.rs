@@ -107,7 +107,8 @@ impl OneAtATime {
     }
 
     /// The doorbell telling the owner that `agent`'s grant ends in `left`. It names
-    /// the agent and, for a GitHub token, its repositories; nothing the agent wrote.
+    /// the agent and, for a GitHub token, the repositories the owner approved; no other
+    /// text the agent wrote.
     fn notice(
         self,
         agent: &AgentName,
@@ -147,10 +148,15 @@ impl OneAtATime {
 }
 
 /// Whether the owner can renew a grant of `access`, and hears before it ends: the
-/// kinds an agent holds one of at a time.
+/// kinds an agent holds one of at a time. A GitHub token grant from before grants were
+/// scoped has ended and names no repository to renew. The grants page and the renewal
+/// handler both ask this.
 #[must_use]
-pub(crate) const fn renewable(access: &GrantAccess) -> bool {
-    OneAtATime::of(access).is_some()
+pub(crate) fn renewable(access: &GrantAccess) -> bool {
+    match access {
+        GrantAccess::GithubToken(grant) => !grant.repositories.is_legacy(),
+        other => OneAtATime::of(other).is_some(),
+    }
 }
 
 /// The stored kind of the grants `access` replaces when approved by kind, or `None`
@@ -465,11 +471,10 @@ fn renewing_scope(row: &SqliteRow, kind: OneAtATime) -> Result<Option<GrantScope
     }
     let view: String = row.try_get("view")?;
     let view: GrantView = serde_json::from_str(&view)?;
+    let renewable = renewable(&view.access);
     match view.access {
-        GrantAccess::GithubToken(grant) if !grant.repositories.is_legacy() => {
-            Ok(Some(grant.repositories))
-        }
-        // A grant that names no repository is not renewed: it has ended.
+        GrantAccess::GithubToken(grant) if renewable => Ok(Some(grant.repositories)),
+        // A grant that cannot be renewed (one that names no repository has ended).
         GrantAccess::GithubToken(_) => Err(RequestError::NotFound),
         _ => Err(RequestError::Corrupt(
             "GitHub token grant changed kind".to_owned(),
