@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 use warden_broker_proto::Id;
 use warden_broker_proto::github_token::GithubTokenResponse;
+use warden_broker_proto::release::RepoName;
 
 use super::{
     Caller, Held, Identity, MIN_REMAINING_SECS, Stored, explain, goal_for, read_cache, serve_from,
@@ -263,22 +264,25 @@ fn failures_say_what_to_do_and_never_how_to_get_around_the_owner() {
 }
 
 #[test]
-fn an_automatic_request_says_who_asked_and_from_where() {
-    let goal = goal_for(Caller::CredentialHelper, Some(Path::new("/src/home-api"))).unwrap();
+fn goal_names_the_repository() {
+    let repo: RepoName = "example-owner/example-repo".parse().unwrap();
+    let goal = goal_for(Caller::GhWrapper, &repo, Some(Path::new("/src/home-api"))).unwrap();
     assert_eq!(
         goal.as_str(),
-        "GitHub token for git and gh, requested automatically by the git credential helper, \
-         in /src/home-api"
+        "GitHub token for example-owner/example-repo, requested automatically by the gh \
+         wrapper, in /src/home-api"
     );
-    let goal = goal_for(Caller::GhWrapper, None).unwrap();
+    let goal = goal_for(Caller::CredentialHelper, &repo, None).unwrap();
     assert_eq!(
         goal.as_str(),
-        "GitHub token for git and gh, requested automatically by the gh wrapper"
+        "GitHub token for example-owner/example-repo, requested automatically by the git \
+         credential helper"
     );
     // A directory that does not fit in a goal is left out.
     let long = format!("/{}", "d".repeat(600));
-    let goal = goal_for(Caller::GhWrapper, Some(Path::new(&long))).unwrap();
+    let goal = goal_for(Caller::GhWrapper, &repo, Some(Path::new(&long))).unwrap();
     assert!(!goal.as_str().contains("ddd"), "{}", goal.as_str());
-    let goal = goal_for(Caller::GhWrapper, Some(Path::new("/a\nb"))).unwrap();
+    assert!(goal.as_str().contains("example-owner/example-repo"));
+    let goal = goal_for(Caller::GhWrapper, &repo, Some(Path::new("/a\nb"))).unwrap();
     assert!(!goal.as_str().contains(", in"), "{}", goal.as_str());
 }
