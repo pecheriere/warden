@@ -97,14 +97,20 @@ impl Requests {
             Access::Release { .. } => Some(self.release_facts(&id).await?),
             _ => None,
         };
+        let agent: AgentName = parse(&row, "agent")?;
+        let github = match &request.access {
+            Access::GithubToken(access) => Some(self.github_pending(&id, &agent, access).await?),
+            _ => None,
+        };
         Ok(PendingView {
             id,
-            agent: parse(&row, "agent")?,
+            agent,
             fingerprint: parse(&row, "fingerprint")?,
             destination,
             expires_at: row.try_get("expires_at")?,
             request,
             release,
+            github,
         })
     }
 

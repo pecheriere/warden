@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use sqlx::{Row as _, SqliteConnection};
 use url::Url;
+use warden_broker_proto::release::RepoName;
 use warden_broker_proto::{
     Access, AgentName, CreateRequest, CreatedResponse, GithubTokenAccess, Id, TargetName, Window,
     fingerprint,
@@ -14,8 +15,8 @@ use super::revocation::commit_with_entries;
 use super::transition::detached;
 use super::{
     PENDING_TTL_SECS, RELAY_NOT_CONFIGURED, ReleaseFacts, RequestError, Requests, Scope,
-    approval_token, begin, check_ed25519, check_window, commit_signing, github_token, limits,
-    note_if_not_applied, parse, record, sha256_hex, window_label,
+    approval_token, begin, check_ed25519, check_window, commit_signing, github_scope, github_token,
+    limits, note_if_not_applied, parse, record, sha256_hex, window_label,
 };
 use crate::audit::AuditEvent;
 use crate::notify::{Doorbell, doorbell};
@@ -129,11 +130,7 @@ impl Requests {
         github: &GithubTokenAccess,
         window: Window,
     ) -> Result<(String, String), RequestError> {
-        if github.is_legacy() {
-            return Err(RequestError::Rejected(
-                warden_broker_proto::github_token::OLD_CLIENT.to_owned(),
-            ));
-        }
+        github_scope::check_request(github)?;
         // Does not read the key: any enrolled agent can get this far.
         if !self.backend.has_github_app().await? {
             return Err(RequestError::Rejected(
@@ -142,7 +139,11 @@ impl Requests {
         }
         github_token::check_window(window, self.github_token_max)
             .map_err(RequestError::Rejected)?;
-        Ok((format!("{agent}|github_token"), "github token".to_owned()))
+        let names: Vec<&str> = github.repositories.iter().map(RepoName::as_str).collect();
+        Ok((
+            format!("{agent}|github_token|{}", github.slot()),
+            format!("github token for {}", names.join(", ")),
+        ))
     }
 
     /// Check `req` of `agent` against the policy as it is now. Returns its dedupe

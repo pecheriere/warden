@@ -29,6 +29,7 @@ use crate::requests::{
 
 use self::passkeys::{ApprovalBinding, PasskeyError};
 
+mod github_token;
 mod grant;
 pub mod pages;
 pub mod passkeys;
@@ -488,8 +489,8 @@ fn check_policy(
         (Access::Api { .. }, Destination::Api(policy)) => {
             api_scope(&view.request, policy).map(drop)
         }
+        (Access::GithubToken(_), Destination::GithubToken(_)) => github_token::check(view),
         (Access::CommitSigning {}, Destination::CommitSigning(_))
-        | (Access::GithubToken(_), Destination::GithubToken(_))
         | (Access::Release { .. }, Destination::Release(_)) => Ok(()),
         _ => Err("the request does not match its policy kind".to_owned()),
     }
@@ -546,7 +547,7 @@ async fn approve_begin(
         Ok(view) => view,
         Err(e) => return request_error(&e),
     };
-    let destination_digest = view.destination.digest();
+    let destination_digest = view.destination_digest();
     if body.target != destination_digest {
         return json_error(StatusCode::CONFLICT, DESTINATION_CHANGED);
     }
@@ -601,7 +602,7 @@ async fn approve_finish(
     // The grant carries the re-fetched destination (SSH host, port and host
     // keys; API origin, prefix, methods and header); it must be the one the
     // owner approved.
-    if view.destination.digest() != binding.destination_digest {
+    if view.destination_digest() != binding.destination_digest {
         return json_error(StatusCode::CONFLICT, DESTINATION_CHANGED);
     }
     // The policy was fetched fresh by `pending_for_token`; the window is the

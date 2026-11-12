@@ -30,7 +30,7 @@ async fn granted() -> (Arc<TestBroker>, HttpsUpstream, String, String) {
         upstream.ca_pem().as_bytes().to_vec(),
     );
     let (broker, key) = configured(TestBroker::with_github_api(api).await).await;
-    let grant = approve(&broker, "bot", Window::D30).await;
+    let grant = approve(&broker, &upstream, "bot", Window::D30).await;
     (Arc::new(broker), upstream, key, grant)
 }
 
@@ -88,7 +88,7 @@ async fn mints_are_capped_per_agent_per_hour() {
         upstream.ca_pem().as_bytes().to_vec(),
     );
     let (broker, key) = configured(TestBroker::with_github(api, Window::D30, 2).await).await;
-    approve(&broker, "bot", Window::D30).await;
+    approve(&broker, &upstream, "bot", Window::D30).await;
     for _ in 0..2 {
         upstream.script_github_token(created(&broker, TOKEN));
         let resp = mint(&broker, &key).await;
@@ -243,7 +243,7 @@ async fn expired_during_mint_not_returned() {
 async fn replaced_during_mint_not_returned() {
     let (broker, upstream, key, old) = granted().await;
     let (gate, call) = held_mint(&broker, &upstream, &key).await;
-    let new = approve(&broker, "bot", Window::D7).await;
+    let new = approve(&broker, &upstream, "bot", Window::D7).await;
     assert_ne!(new, old);
     gate.open();
     let resp = call.await.unwrap();

@@ -62,6 +62,7 @@ pub(super) fn release_view(facts: ReleaseFacts) -> PendingView {
         destination: Destination::Release(release_policy()),
         expires_at: NOW + 240,
         release: Some(facts),
+        github: None,
     }
 }
 

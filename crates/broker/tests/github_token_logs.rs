@@ -10,6 +10,7 @@ use axum::http::StatusCode;
 use serde_json::json;
 use warden_broker::github_app::GithubApi;
 use warden_broker::requests::Clock as _;
+use warden_broker::testkit::github_app::token_answer;
 use warden_broker::testkit::upstream::Scripted;
 use warden_broker::testkit::{HttpsUpstream, TestBroker, github_app_key};
 use warden_broker_proto::Window;
@@ -62,6 +63,13 @@ async fn the_token_stays_out_of_the_logs() {
             ),
         )
         .await;
+    upstream.script_github_token(token_answer(
+        "ghs_resolve_0123456789",
+        broker.clock.now() + 3600,
+        &[(1001, "example-owner/example-repo")],
+        &[("metadata", "read")],
+        "selected",
+    ));
     let approved = broker.approve(&token, Window::D30).await;
     assert_eq!(approved.status, StatusCode::OK, "{}", approved.body);
 

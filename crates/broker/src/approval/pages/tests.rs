@@ -171,6 +171,7 @@ fn pending(agent: AgentName, request: CreateRequest, destination: Destination) -
         destination,
         expires_at: NOW + 240,
         release: None,
+        github: None,
     }
 }
 

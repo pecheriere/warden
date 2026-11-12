@@ -5,7 +5,10 @@ use warden_broker::testkit::TestBroker;
 use warden_broker_proto::github_token::NOT_CONFIGURED;
 use warden_broker_proto::{Access, Window};
 
-use super::{approve, configured, entries};
+use warden_broker::requests::MINTS_PER_HOUR;
+use warden_broker::testkit::upstream::HttpsUpstream;
+
+use super::{api_of, approve, configured, configured_on_fake, entries, resolved};
 
 /// Post a GitHub token request for `window` as the agent with `key`.
 async fn ask(
@@ -36,7 +39,7 @@ async fn request_refused_when_app_not_configured() {
 
 #[tokio::test]
 async fn window_must_be_1d_7d_or_30d() {
-    let (broker, key) = configured(TestBroker::new().await).await;
+    let (broker, key, upstream) = configured_on_fake().await;
     for window in [Window::M15, Window::H1, Window::H4, Window::D90] {
         let resp = ask(&broker, &key, window).await;
         assert_eq!(
@@ -69,6 +72,7 @@ async fn window_must_be_1d_7d_or_30d() {
         )
         .await;
     broker.enroll_soft_passkey().await;
+    upstream.script_github_token(resolved(&broker, &[(1001, "example-owner/example-repo")]));
     for window in [Window::H1, Window::D90] {
         let begin = broker.begin_approval(&token, window).await;
         assert_eq!(
@@ -82,7 +86,10 @@ async fn window_must_be_1d_7d_or_30d() {
 
 #[tokio::test]
 async fn window_above_server_max_refused() {
-    let (broker, key) = configured(TestBroker::with_github_token_max(Window::D7).await).await;
+    let upstream = HttpsUpstream::start().await;
+    let (broker, key) =
+        configured(TestBroker::with_github(api_of(&upstream), Window::D7, MINTS_PER_HOUR).await)
+            .await;
     let resp = ask(&broker, &key, Window::D30).await;
     assert_eq!(resp.status, StatusCode::BAD_REQUEST, "{}", resp.body);
     assert!(resp.body.contains("exceeds max 7d"), "{}", resp.body);
@@ -96,6 +103,7 @@ async fn window_above_server_max_refused() {
         )
         .await;
     broker.enroll_soft_passkey().await;
+    upstream.script_github_token(resolved(&broker, &[(1001, "example-owner/example-repo")]));
     let begin = broker.begin_approval(&token, Window::D30).await;
     assert_eq!(begin.status, StatusCode::BAD_REQUEST, "{}", begin.body);
 }
@@ -118,8 +126,8 @@ async fn info_publishes_the_server_max() {
 
 #[tokio::test]
 async fn a_grant_lasts_exactly_the_window_approved() {
-    let (broker, key) = configured(TestBroker::new().await).await;
-    let grant = approve(&broker, "bot", Window::D30).await;
+    let (broker, key, upstream) = configured_on_fake().await;
+    let grant = approve(&broker, &upstream, "bot", Window::D30).await;
     let list = broker.api_get(&key, "/v1/grants").await.json();
     assert_eq!(list[0]["grant_id"], grant);
     assert_eq!(list[0]["access"]["kind"], "github_token");
@@ -150,11 +158,11 @@ async fn a_grant_lasts_exactly_the_window_approved() {
 
 #[tokio::test]
 async fn approving_new_grant_ends_previous() {
-    let (broker, key) = configured(TestBroker::new().await).await;
-    let old = approve(&broker, "bot", Window::D7).await;
+    let (broker, key, upstream) = configured_on_fake().await;
+    let old = approve(&broker, &upstream, "bot", Window::D7).await;
     let other_key = broker.add_agent("other").await;
-    let other = approve(&broker, "other", Window::D7).await;
-    let new = approve(&broker, "bot", Window::D30).await;
+    let other = approve(&broker, &upstream, "other", Window::D7).await;
+    let new = approve(&broker, &upstream, "bot", Window::D30).await;
     assert_ne!(old, new);
 
     let list = broker.api_get(&key, "/v1/grants").await.json();

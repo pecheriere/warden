@@ -3,9 +3,33 @@
 //! and that a minted token outlives the grant's revocation.
 
 use maud::{Markup, html};
+use warden_broker_proto::Access;
 use warden_broker_proto::github_token::PERMISSIONS;
 
 use super::{icon, warning_icon};
+use crate::requests::{PendingView, Resolution};
+
+/// What the approval page says instead of offering Approve, when GitHub says the App
+/// cannot reach a repository the request names; `None` when it can be approved.
+pub(super) fn not_approvable(view: &PendingView) -> Option<Markup> {
+    let (Access::GithubToken(access), Some(github)) = (&view.request.access, &view.github) else {
+        return None;
+    };
+    if github.resolution != Resolution::NotAccessible {
+        return None;
+    }
+    let names: Vec<&str> = access
+        .repositories
+        .iter()
+        .map(warden_broker_proto::release::RepoName::as_str)
+        .collect();
+    Some(html! {
+        p.detail #cannot-approve role="alert" {
+            "This request cannot be approved: the App is not installed on "
+            (names.join(", ")) ", or one of them does not exist."
+        }
+    })
+}
 
 /// The warning of what the access can change.
 fn reach() -> Markup {

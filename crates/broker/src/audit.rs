@@ -297,6 +297,18 @@ pub enum AuditEvent {
         /// The grant that ended; `None` for a pending request.
         grant_id: Option<Id>,
     },
+    /// The broker asked GitHub which repositories a GitHub token request names,
+    /// when the owner opened its approval page, with a token that reads metadata
+    /// and is dropped unused.
+    GithubRepositoriesResolved {
+        /// The request.
+        request_id: Id,
+        /// The ids GitHub gave, in the request's order; empty when it cannot reach
+        /// every repository.
+        repository_ids: Vec<u64>,
+        /// Whether the App reaches every repository named.
+        accessible: bool,
+    },
     /// The broker refused to mint a GitHub token for an agent, or minted one it
     /// then did not give out because the grant had ended.
     GithubTokenRefused {

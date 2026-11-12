@@ -6,7 +6,7 @@ use warden_broker::testkit::TestBroker;
 use warden_broker_proto::Window;
 use warden_broker_proto::github_token::NOT_CONFIGURED;
 
-use super::{approve, configured, entries};
+use super::{approve, configured_on_fake, entries};
 
 /// The approval token at the end of `link`.
 fn token_of(link: &str) -> String {
@@ -44,8 +44,8 @@ fn renewal_notices(broker: &TestBroker) -> Vec<warden_broker::notify::Doorbell> 
 
 #[tokio::test]
 async fn renewing_takes_one_passkey_approval_and_replaces_the_grant() {
-    let (broker, key) = configured(TestBroker::new().await).await;
-    let old = approve(&broker, "bot", Window::D30).await;
+    let (broker, key, upstream) = configured_on_fake().await;
+    let old = approve(&broker, &upstream, "bot", Window::D30).await;
     broker.clock.advance(28 * 86_400);
     let rung_before = broker.capture.rung().len();
     let token = renew(&broker, &old).await;
@@ -81,8 +81,8 @@ async fn renewing_takes_one_passkey_approval_and_replaces_the_grant() {
 
 #[tokio::test]
 async fn renewing_asks_for_no_more_than_the_server_now_allows() {
-    let (broker, _) = configured(TestBroker::new().await).await;
-    let old = approve(&broker, "bot", Window::D30).await;
+    let (broker, _, upstream) = configured_on_fake().await;
+    let old = approve(&broker, &upstream, "bot", Window::D30).await;
     let broker = broker.restart_with_github_token_max(Window::D7).await;
     let token = renew(&broker, &old).await;
     let page = broker.get(&format!("/approve/{token}")).await;
@@ -92,8 +92,8 @@ async fn renewing_asks_for_no_more_than_the_server_now_allows() {
 
 #[tokio::test]
 async fn a_request_already_waiting_is_what_renewing_opens() {
-    let (broker, _) = configured(TestBroker::new().await).await;
-    let old = approve(&broker, "bot", Window::D30).await;
+    let (broker, _, upstream) = configured_on_fake().await;
+    let old = approve(&broker, &upstream, "bot", Window::D30).await;
     let (created, stale) = broker
         .create_request(
             "bot",
@@ -114,8 +114,8 @@ async fn a_request_already_waiting_is_what_renewing_opens() {
 
 #[tokio::test]
 async fn renewing_is_refused_once_the_app_is_gone() {
-    let (broker, _) = configured(TestBroker::new().await).await;
-    let old = approve(&broker, "bot", Window::D30).await;
+    let (broker, _, upstream) = configured_on_fake().await;
+    let old = approve(&broker, &upstream, "bot", Window::D30).await;
     broker.backend.set_github_app(None);
     let resp = broker
         .post_json(&format!("/grants/{old}/renew"), &json!({}))
@@ -130,8 +130,8 @@ async fn renewing_is_refused_once_the_app_is_gone() {
 
 #[tokio::test]
 async fn an_ended_github_token_grant_cannot_be_renewed() {
-    let (broker, _) = configured(TestBroker::new().await).await;
-    let grant = approve(&broker, "bot", Window::D1).await;
+    let (broker, _, upstream) = configured_on_fake().await;
+    let grant = approve(&broker, &upstream, "bot", Window::D1).await;
     broker.clock.advance(86_400);
     let resp = broker
         .post_json(&format!("/grants/{grant}/renew"), &json!({}))
@@ -142,8 +142,8 @@ async fn an_ended_github_token_grant_cannot_be_renewed() {
 
 #[tokio::test]
 async fn the_owner_hears_once_a_few_days_before_a_grant_ends() {
-    let (broker, _) = configured(TestBroker::new().await).await;
-    let grant = approve(&broker, "bot", Window::D30).await;
+    let (broker, _, upstream) = configured_on_fake().await;
+    let grant = approve(&broker, &upstream, "bot", Window::D30).await;
     let requests = broker.state().requests.clone();
 
     broker.clock.advance(27 * 86_400 - 1);
@@ -171,8 +171,8 @@ async fn the_owner_hears_once_a_few_days_before_a_grant_ends() {
 
 #[tokio::test]
 async fn a_short_grant_is_told_about_late_and_a_revoked_one_not_at_all() {
-    let (broker, _) = configured(TestBroker::new().await).await;
-    approve(&broker, "bot", Window::D1).await;
+    let (broker, _, upstream) = configured_on_fake().await;
+    approve(&broker, &upstream, "bot", Window::D1).await;
     let requests = broker.state().requests.clone();
     requests.notify_ending_grants().await;
     assert_eq!(
@@ -193,8 +193,8 @@ async fn a_short_grant_is_told_about_late_and_a_revoked_one_not_at_all() {
         notices[0].message
     );
 
-    let (other, _) = configured(TestBroker::new().await).await;
-    let grant = approve(&other, "bot", Window::D30).await;
+    let (other, _, upstream) = configured_on_fake().await;
+    let grant = approve(&other, &upstream, "bot", Window::D30).await;
     other.clock.advance(28 * 86_400);
     let revoked = other
         .post_json(&format!("/grants/{grant}/revoke"), &json!({}))

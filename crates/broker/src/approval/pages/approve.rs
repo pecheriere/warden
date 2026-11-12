@@ -3,7 +3,8 @@
 use maud::{Markup, html};
 
 use super::{
-    destination_access, icon, key_icon, layout, release, stated_fields, window_words, windows_for,
+    destination_access, github_token, icon, key_icon, layout, release, stated_fields, window_words,
+    windows_for,
 };
 use crate::requests::{Destination, LinkHosts, PendingView, window_label};
 
@@ -21,7 +22,7 @@ pub fn approve(view: &PendingView, hosts: &LinkHosts, now: i64) -> Markup {
     // The script sends `data-target` back when the approval begins, binding
     // it to the destination shown here.
     let content = html! {
-        main.split #approval data-target=(view.destination.digest()) {
+        main.split #approval data-target=(view.destination_digest()) {
             div.col {
                 span.chip {
                     (icon(14, "2.4", &clock))
@@ -91,9 +92,15 @@ pub fn approve(view: &PendingView, hosts: &LinkHosts, now: i64) -> Markup {
                             }
                         }
                     }
+                    @let not_approvable = github_token::not_approvable(view);
+                    @if let Some(message) = &not_approvable {
+                        (message)
+                    }
                     div.btns {
-                        button.btn.approve #approve type="button" {
-                            (icon(20, "2.2", &key_icon())) " Approve with passkey"
+                        @if not_approvable.is_none() {
+                            button.btn.approve #approve type="button" {
+                                (icon(20, "2.2", &key_icon())) " Approve with passkey"
+                            }
                         }
                         button.btn.deny #deny type="button" { "Deny" }
                     }

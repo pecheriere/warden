@@ -6,11 +6,11 @@ use warden_broker::testkit::TestBroker;
 use warden_broker_proto::Window;
 use warden_broker_proto::github_token::NOT_CONFIGURED;
 
-use super::configured;
+use super::{configured_on_fake, resolved};
 
 #[tokio::test]
 async fn approval_page_names_app_installation_and_permissions() {
-    let (broker, _key) = configured(TestBroker::new().await).await;
+    let (broker, _key, upstream) = configured_on_fake().await;
     let (_, token) = broker
         .create_request(
             "bot",
@@ -21,6 +21,7 @@ async fn approval_page_names_app_installation_and_permissions() {
             ),
         )
         .await;
+    upstream.script_github_token(resolved(&broker, &[(1001, "example-owner/example-repo")]));
     let page = broker.get(&format!("/approve/{token}")).await;
     assert_eq!(page.status, StatusCode::OK);
     for says in [
@@ -63,7 +64,7 @@ async fn approval_page_names_app_installation_and_permissions() {
 
 #[tokio::test]
 async fn destination_changed_between_page_and_approve() {
-    let (broker, _key) = configured(TestBroker::new().await).await;
+    let (broker, _key, upstream) = configured_on_fake().await;
     let (_, token) = broker
         .create_request(
             "bot",
@@ -75,6 +76,7 @@ async fn destination_changed_between_page_and_approve() {
         )
         .await;
     let mut auth = broker.enroll_soft_passkey().await;
+    upstream.script_github_token(resolved(&broker, &[(1001, "example-owner/example-repo")]));
     let begin = broker.begin_approval(&token, Window::D7).await;
     let (ceremony, credential) = TestBroker::sign(&mut auth, &begin);
     // Another installation of the same App.
@@ -119,8 +121,8 @@ async fn destination_changed_between_page_and_approve() {
 
 #[tokio::test]
 async fn grants_page_shows_github_token_grant_and_end() {
-    let (broker, _key) = configured(TestBroker::new().await).await;
-    super::approve(&broker, "bot", Window::D30).await;
+    let (broker, _key, upstream) = configured_on_fake().await;
+    super::approve(&broker, &upstream, "bot", Window::D30).await;
     let grants = broker.get("/grants").await;
     for says in [
         "7654321",

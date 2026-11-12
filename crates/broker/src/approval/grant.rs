@@ -4,13 +4,13 @@
 use axum::http::StatusCode;
 use axum::response::Response;
 use ssh_key::PublicKey;
-use warden_broker_proto::github_token::GrantScope;
 use warden_broker_proto::{
     Access, CreateRequest, GrantAccess, GrantView, Id, RelayGrant, SshGrant, Window,
 };
 
 use super::{
-    AppState, RELAY_NOT_CONFIGURED, api_scope, backend_unavailable, internal, json_error, release,
+    AppState, RELAY_NOT_CONFIGURED, api_scope, backend_unavailable, github_token, internal,
+    json_error, release,
 };
 use crate::policy::{ApiSecretPolicy, CaKey, SshMode, SshTarget};
 use crate::relay::RelayEndpoint;
@@ -64,13 +64,8 @@ pub(super) async fn build_grant(
             },
             Err((context, cause)) => return Err(Box::new(internal(context, &cause))),
         },
-        Destination::GithubToken(policy) => match validity(window, now) {
-            Ok((not_before, not_after)) => GrantView {
-                grant_id: Id::random(),
-                not_before,
-                not_after,
-                access: GrantAccess::GithubToken(policy.grant(GrantScope::Legacy)),
-            },
+        Destination::GithubToken(policy) => match github_token::grant(view, policy, window, now) {
+            Ok(grant) => grant,
             Err((context, cause)) => return Err(Box::new(internal(context, &cause))),
         },
         Destination::Release(policy) => match release::grant(view, policy, window, now) {

@@ -56,6 +56,7 @@ mod renewal;
 
 pub use self::bus::StatusBus;
 pub use self::commit_signing::{ActiveCommitSigning, SIGNATURES_PER_DAY};
+pub use self::github_scope::{GithubPending, ReplacedGrant, Resolution, ScopedRepository};
 pub use self::github_token::{ActiveGithubToken, MINTS_PER_HOUR};
 use self::limits::Refusals;
 pub use self::limits::{LimitRefusal, RequestLimits};
@@ -322,6 +323,24 @@ pub struct PendingView {
     pub expires_at: i64,
     /// What GitHub said when a release was requested; `None` for other kinds.
     pub release: Option<ReleaseFacts>,
+    /// What the repositories of a GitHub token request resolved to; `None` for
+    /// other kinds.
+    pub github: Option<GithubPending>,
+}
+
+impl PendingView {
+    /// Lowercase hex digest of what approving binds the owner's passkey to:
+    /// [`Destination::digest`], and for a GitHub token also the repositories it
+    /// resolved to and the grants approving would end.
+    #[must_use]
+    pub fn destination_digest(&self) -> String {
+        match (&self.destination, &self.github) {
+            (Destination::GithubToken(policy), Some(github)) => {
+                github.digest(&policy.destination_digest())
+            }
+            _ => self.destination.digest(),
+        }
+    }
 }
 
 /// One row of the owner's request history.
