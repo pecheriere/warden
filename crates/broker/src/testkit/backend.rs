@@ -35,6 +35,8 @@ pub struct FakeBackend {
     github_app_reads: std::sync::atomic::AtomicUsize,
     release_keys: Mutex<Vec<ReleaseSigningKey>>,
     release_app: Mutex<Option<ReleaseAppKey>>,
+    release_signing_outage: Mutex<Option<String>>,
+    release_app_outage: Mutex<Option<String>>,
     target_outage: Mutex<Option<String>>,
     ca_outage: Mutex<Option<String>>,
     ca_state: Mutex<CaState>,
@@ -76,6 +78,8 @@ impl FakeBackend {
             github_app_reads: std::sync::atomic::AtomicUsize::new(0),
             release_keys: Mutex::new(Vec::new()),
             release_app: Mutex::new(None),
+            release_signing_outage: Mutex::new(None),
+            release_app_outage: Mutex::new(None),
             target_outage: Mutex::new(None),
             ca_outage: Mutex::new(None),
             ca_state: Mutex::new(CaState::Usable),
@@ -378,6 +382,30 @@ impl FakeBackend {
         *self.release_app.lock().expect("app lock poisoned") = app;
     }
 
+    /// Make the release signing presence check fail with
+    /// [`PolicyError::Unavailable`] carrying `detail` (`None` restores it).
+    ///
+    /// # Panics
+    /// If the lock is poisoned.
+    pub fn set_release_signing_outage(&self, detail: Option<&str>) {
+        *self
+            .release_signing_outage
+            .lock()
+            .expect("outage lock poisoned") = detail.map(str::to_owned);
+    }
+
+    /// Make the release App presence check fail with
+    /// [`PolicyError::Unavailable`] carrying `detail` (`None` restores it).
+    ///
+    /// # Panics
+    /// If the lock is poisoned.
+    pub fn set_release_app_outage(&self, detail: Option<&str>) {
+        *self
+            .release_app_outage
+            .lock()
+            .expect("outage lock poisoned") = detail.map(str::to_owned);
+    }
+
     /// How many times the GitHub App has been read.
     #[must_use]
     pub fn github_app_reads(&self) -> usize {
@@ -636,5 +664,49 @@ impl SecretBackend for FakeBackend {
         self.api_entry(name, |(policy, value)| {
             (policy.clone(), SecretValue::new(value.clone()))
         })
+    }
+
+    async fn list_ssh_targets(&self) -> Result<Vec<SshTarget>, PolicyError> {
+        Self::outage(&self.target_outage)?;
+        let mut targets: Vec<SshTarget> = self
+            .targets
+            .lock()
+            .map_err(|_| PolicyError::Unavailable("fake backend lock poisoned".to_owned()))?
+            .values()
+            .map(|(target, _)| target.clone())
+            .collect();
+        targets.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
+        Ok(targets)
+    }
+
+    async fn list_api_secrets(&self) -> Result<Vec<ApiSecretPolicy>, PolicyError> {
+        Self::outage(&self.api_outage)?;
+        let mut secrets: Vec<ApiSecretPolicy> = self
+            .api_secrets
+            .lock()
+            .map_err(|_| PolicyError::Unavailable("fake backend lock poisoned".to_owned()))?
+            .values()
+            .map(|(policy, _)| policy.clone())
+            .collect();
+        secrets.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
+        Ok(secrets)
+    }
+
+    async fn has_release_signing(&self) -> Result<bool, PolicyError> {
+        Self::outage(&self.release_signing_outage)?;
+        Ok(!self
+            .release_keys
+            .lock()
+            .map_err(|_| PolicyError::Unavailable("fake backend lock poisoned".to_owned()))?
+            .is_empty())
+    }
+
+    async fn has_release_app(&self) -> Result<bool, PolicyError> {
+        Self::outage(&self.release_app_outage)?;
+        Ok(self
+            .release_app
+            .lock()
+            .map_err(|_| PolicyError::Unavailable("fake backend lock poisoned".to_owned()))?
+            .is_some())
     }
 }

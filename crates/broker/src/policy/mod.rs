@@ -378,6 +378,33 @@ pub trait SecretBackend: Send + Sync + 'static {
         &self,
         name: &SecretName,
     ) -> Result<(ApiSecretPolicy, SecretValue), PolicyError>;
+
+    /// Every valid SSH target, in name order. Items that fail validation, have
+    /// an invalid title or share a title are skipped (logged by name only).
+    ///
+    /// # Errors
+    /// [`PolicyError::Unavailable`] when the backend cannot be read.
+    async fn list_ssh_targets(&self) -> Result<Vec<SshTarget>, PolicyError>;
+
+    /// As [`SecretBackend::list_ssh_targets`], for API secrets. The values are
+    /// read and dropped as by [`SecretBackend::api_secret`].
+    ///
+    /// # Errors
+    /// [`PolicyError::Unavailable`] when the backend cannot be read.
+    async fn list_api_secrets(&self) -> Result<Vec<ApiSecretPolicy>, PolicyError>;
+
+    /// Whether at least one release signing item exists, from item summaries;
+    /// reads no key.
+    ///
+    /// # Errors
+    /// [`PolicyError::Unavailable`].
+    async fn has_release_signing(&self) -> Result<bool, PolicyError>;
+
+    /// Whether a release App item exists, from item summaries; reads no key.
+    ///
+    /// # Errors
+    /// [`PolicyError::Unavailable`].
+    async fn has_release_app(&self) -> Result<bool, PolicyError>;
 }
 
 #[cfg(test)]

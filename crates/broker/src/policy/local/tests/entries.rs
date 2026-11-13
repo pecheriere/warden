@@ -323,3 +323,47 @@ async fn local_non_string_list_refuses_file() {
         .unwrap_err();
     assert!(matches!(error, PolicyError::Unavailable(_)), "{error:?}");
 }
+
+#[tokio::test]
+async fn local_listing_returns_entries() {
+    let policy = format!(
+        "{}{}\n[targets.alpha-01]\naddress = \"alpha.example.com\"\nmode = \"cert\"\nusers = [\"deploy\"]\nmax_window = \"15m\"\nhost_keys = [\"{}\"]\nlist = \"hidden\"\n",
+        cert_entry(),
+        API_ENTRY,
+        host_key()
+    );
+    let setup = Setup::new(&policy);
+    let targets = setup.backend.list_ssh_targets().await.unwrap();
+    let listed: Vec<_> = targets
+        .iter()
+        .map(|t| (t.name.as_str(), t.listing))
+        .collect();
+    assert_eq!(
+        listed,
+        [("alpha-01", Listing::Hidden), ("web-01", Listing::Full)]
+    );
+    let secrets = setup.backend.list_api_secrets().await.unwrap();
+    let listed: Vec<_> = secrets.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(listed, ["home-api"]);
+    assert!(!format!("{secrets:?}").contains(CREDENTIAL));
+}
+
+#[tokio::test]
+async fn local_listing_skips_an_entry_that_cannot_be_read() {
+    let policy = format!(
+        "{}\n[api_secrets.no-file]\nwebsite = \"https://other.example.com\"\ncredential_file = \"absent\"\n{}",
+        API_ENTRY,
+        cert_entry()
+    );
+    let setup = Setup::new(&policy);
+    let secrets = setup.backend.list_api_secrets().await.unwrap();
+    assert_eq!(secrets.len(), 1);
+    assert_eq!(secrets[0].name.as_str(), "home-api");
+}
+
+#[tokio::test]
+async fn local_has_no_release() {
+    let setup = Setup::new(&cert_entry());
+    assert!(!setup.backend.has_release_signing().await.unwrap());
+    assert!(!setup.backend.has_release_app().await.unwrap());
+}

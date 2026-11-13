@@ -38,6 +38,7 @@ const CA_FIELD_ID: &str = "private_key";
 const TIMEOUT: Duration = Duration::from_secs(5);
 
 mod items;
+mod listing;
 mod probe;
 mod release;
 
@@ -528,5 +529,21 @@ impl SecretBackend for OnePasswordConnect {
         name: &SecretName,
     ) -> Result<(ApiSecretPolicy, SecretValue), PolicyError> {
         self.api_item(name).await
+    }
+
+    async fn list_ssh_targets(&self) -> Result<Vec<SshTarget>, PolicyError> {
+        self.listed_targets().await
+    }
+
+    async fn list_api_secrets(&self) -> Result<Vec<ApiSecretPolicy>, PolicyError> {
+        self.listed_api_secrets().await
+    }
+
+    async fn has_release_signing(&self) -> Result<bool, PolicyError> {
+        Ok(!self.tagged(RELEASE_SIGNING_TAG).await?.is_empty())
+    }
+
+    async fn has_release_app(&self) -> Result<bool, PolicyError> {
+        Ok(!self.tagged(RELEASE_APP_TAG).await?.is_empty())
     }
 }

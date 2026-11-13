@@ -43,6 +43,7 @@ use crate::audit::{AuditEvent, AuditLog};
 use crate::config::LocalSettings;
 
 mod files;
+mod listing;
 mod seal;
 
 pub use seal::{ACCESS_NOTE, SealError, SealedPolicy, Unverified, seal_policy_file, seal_text};
@@ -712,6 +713,23 @@ impl SecretBackend for LocalBackend {
     ) -> Result<(ApiSecretPolicy, SecretValue), PolicyError> {
         let name = name.clone();
         self.read(move |files| files.api(&name)).await
+    }
+
+    async fn list_ssh_targets(&self) -> Result<Vec<SshTarget>, PolicyError> {
+        self.read(Files::listed_targets).await
+    }
+
+    async fn list_api_secrets(&self) -> Result<Vec<ApiSecretPolicy>, PolicyError> {
+        self.read(Files::listed_api_secrets).await
+    }
+
+    /// The local backend holds no release keys: that is 1Password only.
+    async fn has_release_signing(&self) -> Result<bool, PolicyError> {
+        Ok(false)
+    }
+
+    async fn has_release_app(&self) -> Result<bool, PolicyError> {
+        Ok(false)
     }
 }
 
