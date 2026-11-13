@@ -176,6 +176,7 @@ async fn a_malformed_label_or_link_is_refused_without_being_quoted() {
     for (session, link) in [
         (Some("a\u{202E}b"), None),
         (Some("a\nb"), None),
+        (Some("a\u{3164}b"), None),
         (None, Some("https://user:hunter2@git.example.com/")),
         (None, Some("http://git.example.com/hunter2")),
         (None, Some("https://git.example.com/?token=hunter2")),

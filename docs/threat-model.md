@@ -197,7 +197,10 @@ change.
   one, adding an agent or changing its key, enrolling or removing a passkey and
   making an enrollment code write their entries before they touch the database. A
   proxied call and a relay session write theirs before anything reaches the target,
-  and then check the grant again. If the entry cannot be written, the action does
+  and then check the grant again. A release step writes `release_step_started` once
+  it has claimed the step and, for the tag and the manifest, once the release key has
+  signed, before the signature leaves the broker and before GitHub is changed; it too
+  then checks the grant again. If the entry cannot be written, the action does
   not happen and the caller gets an error. A bearer agent's row is written first and
   revoked if its entry cannot be written; its key is shown only after that entry, so
   the row cannot be used.
@@ -323,10 +326,31 @@ change.
     (the larger of 10 s and the limit at 128 KiB/s: 10 s, or 16 s for
     proxied calls; 408), so a caller naming a known agent cannot hold a
     connection or memory beyond that without a valid signature.
+  - **Many connections at once.** The bounds above hold per connection; these
+    bound how many, so that agents, or a peer naming a known agent without
+    its key, cannot use up the file descriptors and memory the approval UI
+    shares with the agent API in one process, at the moment the owner wants
+    to revoke. Bodies read before their signature is verified share one
+    budget of 32 MiB over all callers, counted at their declared length or
+    the route's limit (503 beyond it, before the body is read). An agent may
+    have at most 16 status long-polls waiting at once (429 beyond that).
+    Each listener caps its open connections, 256 for the agent API and 64
+    for the approval UI, and closes any beyond its cap as soon as it is
+    accepted, so a full agent API leaves the approval UI its own share; both
+    together, with the default relay and proxy limits, stay within the usual
+    limit of 1024 open files (raise it if you raise those limits a lot). Request headers must arrive within 120 s, which also
+    ends idle keep-alive connections; behind Serve, which forwards only
+    complete request heads, this matters only for a listener reached without
+    it. What remains: a compromised agent, or a peer naming a known agent,
+    can fill the agent API's share (the body budget, for one, takes 16 slow
+    bodies declared at the 2 MiB limit of a proxied call), and other agents get 502s or 503s until
+    it eases. That is availability of the agent API only, and fails closed:
+    no access is given, and the owner can still open the approval UI and
+    revoke.
   - **Agent names are not secret.** An unauthenticated peer that can reach
     the API can learn whether a name belongs to an enrolled, unrevoked
     key-signed agent: such a name gets a 413 or 408 for an oversized or slow
-    body, any other name a 401. This is accepted: agent names appear in
+    body, or a 503 when the body budget is used up, any other name a 401. This is accepted: agent names appear in
     notifications and logs, and knowing one gives no way to sign.
   - Each refused signed request is logged at warn level with its reason
     (and the agent name once it parsed). A caller can therefore add log
@@ -569,13 +593,16 @@ These were recorded during implementation and are accepted for this release.
 - **Secrets in the environment.** Unless given through a `_FILE` variable (see
   [Configuration](configuration.md#secrets-in-files)), the Connect token and the
   notifier secrets are in the process environment, readable by root and the same
-  user. A `_FILE` keeps them out, and may allow group access. It is read once at
-  startup.
+  user. A `_FILE` keeps them out, and may allow group access. It is checked and
+  read through one open handle, once, at startup.
 - **Goals are free text.** The goal is a single line of at most 500 characters
-  without control characters or invisible format characters (bidi overrides,
-  zero-width characters). The owner decides on the goal alone, and a
-  prompt-injected agent can write a misleading goal. The fingerprint check,
-  the narrow user and the short window limit the damage.
+  without control characters, line or paragraph separators or invisible characters
+  (bidi overrides, zero-width characters, blank fillers), checked when a request
+  arrives; requests stored by an earlier version are read with its rules, so that one
+  cannot stop the pages, the relay or the CLI's lists, and the status lines the
+  CLI prints replace such characters. The owner decides on
+  the goal alone, and a prompt-injected agent can write a misleading goal. The
+  fingerprint check, the narrow user and the short window limit the damage.
 
 - **A session label is a claim.** It has the rules of a goal, at most 64 characters
   on one line, and the same limit: nothing checks it. Sessions of one agent run as
@@ -1057,7 +1084,8 @@ This section covers the request, the approval and the tag, manifest and publish 
   asked, and again as the owner decides. The page shows those facts, with the agent's text
   escaped, control characters as escapes and the changelog cut at 16 KiB with a note. A request
   for a commit off the default branch, or a tag that exists on another commit or under another
-  key, is refused before it is made. Nothing GitHub said is quoted in an error, a log line or an
+  key, is refused before it is made. The default branch's head is read from its own ref
+  (`refs/heads/<branch>`) and compared with the commit by commit id. Nothing GitHub said is quoted in an error, a log line or an
   audit entry.
 - **The grant is bound to the key and the App.** It holds a digest of the facts and the key; a
   step is refused once what the broker reads no longer matches it.
@@ -1072,15 +1100,23 @@ This section covers the request, the approval and the tag, manifest and publish 
 - **A step is claimed once.** Each step is claimed in one database statement before it is done,
   and a claim is never given back, so a repeat, a concurrent call or a retry after a failure does
   not do it twice, and a step that fails stays used. The claim also checks that the grant is not
-  revoked or ended and covers the step, so a revocation while the broker prepares a step stops it.
+  revoked or ended and covers the step, and the grant is checked again once the step's
+  `release_step_started` entry is written, so a revocation while the broker prepares a step
+  stops it. If that entry cannot be written, the step stops there and stays used.
 - **The approve-finish re-check calls GitHub before the passkey assertion.** It mints a release
   App token and reads the commit and the tag. Only someone holding the approval token who has
   started a ceremony reaches it. It is not rate-limited. Accepted: the approval token is the
   owner's, and what it costs is calls on the owner's App.
 - **The broker signs only a manifest that passes fixed rules.** The agent builds the manifest and
   the broker signs what it sent, so the rules are the guard: the grant's file name, lines of a
-  lowercase SHA-256 digest and a name, plain file names or image references at the approved
-  version only, no duplicates, 64 KiB at most. The signature is in the namespace the owner's item
+  lowercase SHA-256 digest and a name, plain file names that carry the approved version as a
+  component or image references tagged with it, no duplicates, 64 KiB at most. So a manifest
+  signed for one version cannot list another version's files. The signed bytes name neither the
+  tag nor the repository, and that format is what existing verifiers check, so the binding is
+  through the names only: a name carrying `1.2.3` is also accepted when it continues with a
+  pre-release suffix (`-rc.1`), which the name rule cannot tell from a platform or package
+  release suffix (`-1.x86_64`), and the repository is told apart only by its release key.
+  Verifiers fetch the manifest from the release they want. The signature is in the namespace the owner's item
   names, which tag signatures (`git`) and commit signatures never share. The broker cannot know
   whether a digest is the digest of the right artifact: the owner approved the release, and the
   verifier trusts the key, so the digests are the agent's claim, as with any build the agent runs.
@@ -1100,6 +1136,15 @@ This section covers the request, the approval and the tag, manifest and publish 
   if it reports none the call is refused. These checks, and that the release is a draft, run
   before the claim. The files other than those two are not checked: the manifest lists them, and
   the digests in it are the agent's claim, as above.
+- **Residual: a write between the checks and the publish.** GitHub has no conditional publish, so
+  anyone with write access to the draft, the agent's routine token included, can replace one of
+  the two files, or delete the tag, after the checks and before the publish (GitHub then creates
+  an unsigned lightweight tag). The broker cannot prevent this. It narrows it to detection: it
+  compares the two files the release was published with, as GitHub's answer to the publish lists
+  them, and the tag object, with what it checked. When they differ it records
+  `release_published_changed`, tells the owner and refuses the call, though the release stays
+  published. Such a release fails verification rather than passing it, so the cost is a burned
+  version, as for the early publish below.
 - **Step calls refused before the claim are not rate-limited.** Each one mints a release App
   token and makes a few GitHub reads before it is refused (a tag that exists, a commit that
   moved, no draft, a swapped file). Only an agent holding an active release grant reaches them, so they cost

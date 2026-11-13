@@ -29,6 +29,7 @@ use warden_broker::private_files::{self, DirectoryState};
 use warden_broker::relay::host_key::RelayHostKey;
 use warden_broker::relay::{RelayEndpoint, RelayLimits, RelayServer, host_key};
 use warden_broker::requests::{self, AuditOutcome, Clock, Requests, SystemClock};
+use warden_broker::serve::{self as listen, ServeLimits};
 use warden_broker::{AppState, agents, audience, audit, build_routers, enrollment, store};
 use warden_broker::{doctor, health};
 use warden_broker_proto::AgentName;
@@ -741,16 +742,26 @@ async fn serve() -> Result<()> {
     let servers = async {
         tokio::try_join!(
             async {
-                axum::serve(api_listener, api)
-                    .with_graceful_shutdown(stopped(stop_rx.clone()))
-                    .await
-                    .context("serving the agent API")
+                listen::serve(
+                    "agent API",
+                    api_listener,
+                    api,
+                    ServeLimits::API,
+                    stopped(stop_rx.clone()),
+                )
+                .await;
+                Ok(())
             },
             async {
-                axum::serve(approval_listener, approval)
-                    .with_graceful_shutdown(stopped(stop_rx.clone()))
-                    .await
-                    .context("serving the approval UI")
+                listen::serve(
+                    "approval UI",
+                    approval_listener,
+                    approval,
+                    ServeLimits::APPROVAL,
+                    stopped(stop_rx.clone()),
+                )
+                .await;
+                Ok(())
             },
             relay_done,
         )

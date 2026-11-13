@@ -197,6 +197,9 @@ fn truncate_goal(goal: &str) -> String {
 
 pub(crate) fn http_client() -> Result<reqwest::Client, reqwest::Error> {
     reqwest::Client::builder()
+        // The notifier secrets go to the configured service only, never to a
+        // proxy named in the environment.
+        .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(NOTIFY_TIMEOUT)

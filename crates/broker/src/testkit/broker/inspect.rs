@@ -7,6 +7,7 @@ use warden_broker_proto::{AgentName, Id, TargetName, UnixUser};
 
 use super::TestBroker;
 use crate::AppState;
+use crate::load::ApiLoad;
 use crate::proxy::CallInfo;
 use crate::requests::{Clock, RelayGrantRecord};
 
@@ -22,6 +23,13 @@ impl TestBroker {
     #[must_use]
     pub const fn state(&self) -> &AppState {
         &self.state
+    }
+
+    /// The bounds the agent API counts against: hold its slots to see the
+    /// broker refuse what goes beyond them.
+    #[must_use]
+    pub const fn api_load(&self) -> &ApiLoad {
+        &self.api_load
     }
 
     /// The bytes `(to the target, from the target)` of each live relay

@@ -10,7 +10,15 @@ All notable changes to this project are recorded here. The format follows
 
 - `warden list` and `warden prime` need a broker of this version: against an older one,
   `warden list` fails saying to upgrade it, and `warden prime` prints its instructions with
-  that note in place of the offers. No migration and no new audit entry.
+  that note in place of the offers. They need no migration and write no audit entry.
+- New audit entries: `release_step_started`, `release_published_changed` and
+  `release_published_changed_notified`. An older `warden-server audit verify` refuses a log
+  holding one.
+- The clients for 1Password Connect, the notifiers and the health probe no longer use a proxy
+  named in `HTTP_PROXY`, `HTTPS_PROXY` or `ALL_PROXY`; a deployment that reached them through
+  one needs a direct route. See [Upgrading](docs/upgrading.md#proxies-and-http2).
+- The listeners serve HTTP/1.1 only: a client that spoke HTTP/2 to them directly (h2c) must
+  use HTTP/1.1. Tailscale Serve and the CLI already do.
 
 ### Added
 
@@ -34,6 +42,40 @@ All notable changes to this project are recorded here. The format follows
   what warden covers, and asking about a repository mints a token at GitHub that the broker
   drops, which is not limited yet: see the
   [threat model](docs/threat-model.md#what-an-agent-can-learn-about-what-warden-covers) (#246).
+
+### Changed
+
+- A proxied API call may not set more routing and client-address headers: the `X-Forwarded-*`,
+  `X-Original-*`, `X-Rewrite-*`, `X-Envoy-*` and `X-Override-*` families, `X-Client-IP`,
+  `True-Client-IP`, `CF-Connecting-IP` and the other `*-Client-IP` and `*-Connecting-IP` names.
+- The release approval page and the commit title shown from GitHub hide the same characters a
+  goal may not hold, decided by one shared check.
+- A new request's goal, session label and automatic GitHub request directory are refused if
+  they hold a line or paragraph separator or an invisible filler (Hangul fillers, the
+  variation selectors other than the emoji and text presentation selectors U+FE0E and
+  U+FE0F, the blank braille pattern), as they already were for control and format
+  characters. Requests stored before still load under the earlier rules, and the CLI still
+  lists them.
+- The broker signs a release manifest only if every plain file name in it carries the
+  release's version as a component (`warden-1.2.3-x86_64.tar.gz`, `warden_1.2.3_amd64.deb`);
+  a name without it is refused, as an image reference with another tag already was.
+- Each listener caps its open connections (256 for the agent API, 64 for the approval UI)
+  and closes those beyond it, and drops a connection whose request headers take over 120 s.
+- Signed request bodies read before their signature is checked share a 32 MiB budget; a body
+  that does not fit is a 503. An agent may have 16 status long-polls waiting at once; one
+  more is a 429, which `warden request` retries.
+
+### Fixed
+
+- A `*_FILE` secret file is checked and read through the same open file, and a FIFO in its
+  place is refused without waiting on it.
+- A release's commit is checked against the default branch's head by commit id, read from
+  the branch's own ref, at the request, on the approval page and at the tag step.
+- Each release step writes a `release_step_started` audit entry, naming what the release key
+  signed, before it changes GitHub, and goes no further if the entry cannot be written.
+- After publishing a release, the broker compares the manifest, its signature and the tag it
+  was published with to what it checked, and records and tells the owner when they differ,
+  answering the call with a 409 that says not to call again.
 
 ## [0.13.0] - 2026-11-12
 

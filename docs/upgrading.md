@@ -101,6 +101,15 @@ with care, as warden is not running and has not started on the new version yet:
 
 Run it again with `docker compose exec` once warden is up.
 
+## Proxies and HTTP/2
+
+From the release after 0.13.0, the broker's clients for 1Password Connect, the
+notifiers and the health probe ignore `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` and
+`NO_PROXY`. A deployment that reached Connect or a notifier only through a proxy
+needs a direct route before it upgrades. The listeners also serve HTTP/1.1 only:
+Tailscale Serve and the CLI use it, but anything else that spoke HTTP/2 to them
+directly (h2c) must change.
+
 ## Plain http URLs
 
 From 0.9.0, warden refuses to start when `WARDEN_OP_CONNECT_URL`,

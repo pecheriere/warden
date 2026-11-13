@@ -1,12 +1,13 @@
 //! Server configuration, read from environment variables.
 
 use std::fmt;
-use std::fs::{self, File};
+use std::fs::File;
 use std::io::{self, Read as _};
 use std::net::SocketAddr;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Component, Path, PathBuf};
 
+use rustix::fs::{Mode, OFlags};
 use secrecy::SecretString;
 use url::Url;
 use warden_broker_proto::Window;
@@ -517,14 +518,27 @@ fn github_token_max_window(
 }
 
 /// The secret in the file at `path`, which `var` names: one line, without its
-/// line ending. It must be a regular file that other users cannot access.
+/// line ending. It must be a regular file that other users cannot access; group
+/// access is allowed, as systemd shows a credential it grants through an ACL with
+/// group bits. The checks are on the open file and the read is from it, so the
+/// file checked is the file read.
 fn read_secret_file(var: &'static str, path: &Path) -> Result<Zeroizing<String>, ConfigError> {
     let unreadable = |e: io::Error| ConfigError::SecretFile {
         var,
         kind: e.kind(),
     };
     let invalid = |reason| ConfigError::Invalid { var, reason };
-    let meta = fs::metadata(path).map_err(unreadable)?;
+    // Never block opening something that is not a regular file, such as a
+    // FIFO: that is refused below.
+    let file = File::from(
+        rustix::fs::open(
+            path,
+            OFlags::RDONLY | OFlags::NONBLOCK | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(|e| unreadable(e.into()))?,
+    );
+    let meta = file.metadata().map_err(unreadable)?;
     if !meta.is_file() {
         return Err(invalid("must name a regular file"));
     }
@@ -536,9 +550,7 @@ fn read_secret_file(var: &'static str, path: &Path) -> Result<Zeroizing<String>,
     let mut value = Zeroizing::new(String::with_capacity(
         usize::from(MAX_SECRET_FILE_BYTES) + 1,
     ));
-    File::open(path)
-        .map_err(unreadable)?
-        .take(u64::from(MAX_SECRET_FILE_BYTES) + 1)
+    file.take(u64::from(MAX_SECRET_FILE_BYTES) + 1)
         .read_to_string(&mut value)
         .map_err(|e| match e.kind() {
             io::ErrorKind::InvalidData => invalid("the file is not valid UTF-8"),

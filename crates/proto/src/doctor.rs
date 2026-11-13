@@ -9,7 +9,7 @@
 
 use std::fmt::Write as _;
 
-use unicode_properties::{GeneralCategory, UnicodeGeneralCategory as _};
+use crate::is_hidden_char;
 
 /// Exit code: no check failed. Some may not have run: the report lists them.
 pub const EXIT_NOTHING_FAILED: u8 = 0;
@@ -190,16 +190,7 @@ impl Report {
 #[must_use]
 pub fn sanitize(text: &str) -> String {
     text.chars()
-        .map(|c| {
-            let unsafe_char = c.is_control()
-                || matches!(
-                    c.general_category(),
-                    GeneralCategory::Format
-                        | GeneralCategory::LineSeparator
-                        | GeneralCategory::ParagraphSeparator
-                );
-            if unsafe_char { '?' } else { c }
-        })
+        .map(|c| if is_hidden_char(c) { '?' } else { c })
         .collect()
 }
 
@@ -330,6 +321,7 @@ mod tests {
         assert_eq!(sanitize("x\u{202e}y\u{2066}z\u{200b}w\u{feff}"), "x?y?z?w?");
         // Line and paragraph separators.
         assert_eq!(sanitize("x\u{2028}y\u{2029}z"), "x?y?z");
+        assert_eq!(sanitize("x\u{3164}y\u{2800}z"), "x?y?z");
         // Other non-ASCII text is kept.
         assert_eq!(
             sanitize("caf\u{e9} \u{5e9}\u{5dc}"),

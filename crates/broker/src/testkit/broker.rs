@@ -20,6 +20,7 @@ use crate::audit::AuditLog;
 use crate::config::Config;
 use crate::github_app::GithubApi;
 use crate::identity::TailscaleServeIdentity;
+use crate::load::ApiLoad;
 use crate::offers_cache::RepositoryOfferCache;
 use crate::policy::SecretBackend;
 use crate::proxy::ProxyLimits;
@@ -123,6 +124,8 @@ pub struct TestBroker {
     state: AppState,
     router: Router,
     api_router: Router,
+    /// The bounds the agent API counts against; hold its slots to test them.
+    api_load: ApiLoad,
     /// The broker's clock.
     pub clock: Arc<ManualClock>,
     /// Captures every doorbell.
@@ -536,11 +539,14 @@ impl TestBroker {
             github: limits.github_api.clone(),
             repository_offers: Arc::new(RepositoryOfferCache::new()),
         };
-        let (api_router, router) = crate::build_routers(state.clone());
+        let api_load = ApiLoad::default();
+        let api_router = crate::api::router(state.clone(), api_load.clone());
+        let router = crate::approval::router(state.clone());
         Self {
             state,
             router,
             api_router,
+            api_load,
             clock,
             capture,
             backend,

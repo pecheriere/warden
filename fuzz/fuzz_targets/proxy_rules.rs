@@ -12,7 +12,7 @@ use base64::engine::general_purpose::STANDARD;
 use http::{HeaderName, Method};
 use libfuzzer_sys::fuzz_target;
 use url::Url;
-use warden_broker::policy::{ApiSecretPolicy, ValueFormat};
+use warden_broker::policy::{ApiSecretPolicy, Listing, ValueFormat};
 use warden_broker::proxy::{Prepared, check};
 use warden_broker_proto::{ProxyRequest, SecretName, Window};
 use warden_fuzz::{fields, text};
@@ -55,6 +55,7 @@ fn policy(prefix: &str) -> Option<ApiSecretPolicy> {
         path_prefix: prefix.to_owned(),
         ca_pem: None,
         max_window: Window::H1,
+        listing: Listing::Full,
     })
 }
 

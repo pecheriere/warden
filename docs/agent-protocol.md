@@ -291,16 +291,17 @@ ready to put in the blob.
 ### What the broker checks
 
 In this order, stopping at the first failure. Every failure is a 401,
-except an oversized body (413), a body too slow to arrive (408) and a database
-failure on the broker's side (500):
+except a busy broker (503), an oversized body (413), a body too slow to arrive
+(408) and a database failure on the broker's side (500):
 
 1. The four `Warden-*` headers are present, each once, and well formed;
    `Warden-Signature` is at most 4096 characters; no other `Warden-*` header
    and no `Authorization` header is present.
 2. The agent exists, is not revoked and has a registered signing key.
 3. The timestamp is within 60 seconds of the broker's clock.
-4. The body is read, within the endpoint's size limit and within the time
-   allowed for that limit ([section 5](#5-api-conventions): 10 seconds, or
+4. The body is read, if the broker has room for it now (503 if not, see
+   [section 5](#5-api-conventions)), within the endpoint's size limit and
+   within the time allowed for that limit ([section 5](#5-api-conventions): 10 seconds, or
    16 for `POST /v1/grants/{id}/http`). A larger body is refused with 413,
    and a body still incomplete when the time is up with 408, at this step,
    before the signature is checked.
@@ -485,6 +486,19 @@ that it is the expected key, as `-Y verify` with an allowed-signers file does
   `POST /v1/grants/{id}/http` (2 MiB). A body still incomplete then is
   `408 {"error":"request body timed out"}`, also before the signature is
   checked. Send the body at once: sign it buffered, not streamed slowly.
+- **Load limits.** The broker reads at most 32 MiB of signed request bodies
+  at once before their signatures are checked, over all callers. A body is
+  counted at its `Content-Length`, or at the endpoint's size limit without
+  one; a request with no body is not counted. A body that does not fit is
+  `503 {"error":"broker busy; try again"}` before it is read: retry after a
+  moment. Each listener also caps its open connections (256 for the agent
+  API, 64 for the approval UI) and closes any connection beyond that without
+  an answer, which reaches the agent through Tailscale Serve as a 502. Request
+  headers must arrive within 120 seconds of the broker starting to wait for
+  them, which also closes a keep-alive connection idle that long. Connections
+  are HTTP/1.1. The two caps do not add up for many agents: 16 agents each with
+  16 status long-polls waiting fill the agent API's 256 connections, and further
+  connections are closed until some end.
 - **Identifiers.** Request and grant ids are 32 lowercase hex characters.
   A malformed id in a path is `400 {"error":"invalid id"}`.
 - **Times** are Unix seconds (integers).
@@ -495,8 +509,9 @@ that it is the expected key, as `-Y verify` with an allowed-signers file does
 - **Common statuses** for every signed endpoint: 401 (authentication
   failed, or the agent is revoked; branch on the status, as the body varies,
   see [Rules](#rules)), 408 (body too slow), 413 (body over the limit), 500 `{"error":"internal error"}`, 503 (the broker's secret
-  backend is unavailable: `{"error":"secret backend unavailable"}`; or a
-  short contention, `{"error":"request slot contended; retry"}`). An unknown
+  backend is unavailable: `{"error":"secret backend unavailable"}`; a
+  short contention, `{"error":"request slot contended; retry"}`; or too
+  many bodies being read, `{"error":"broker busy; try again"}`). An unknown
   path is `404 {"error":"not found"}`.
 - **Retrying.** 5xx statuses and transport errors may be retried with
   backoff (the CLI starts at 1 s and doubles up to 15 s), each attempt signed
@@ -549,7 +564,7 @@ Ask the owner for access. Signed; JSON body:
 
 | Field | Type | Meaning |
 |-------|------|---------|
-| `goal` | string | Why access is needed: what you will do and why, naming the change, issue or error. 1 to 500 characters after trimming whitespace, one line: no control characters and no invisible format characters (Unicode category Cf: bidi controls, zero-width characters, BOM, soft hyphen…). The owner decides on it alone; the notification shows the first 200 characters. |
+| `goal` | string | Why access is needed: what you will do and why, naming the change, issue or error. 1 to 500 characters after trimming whitespace, one line: no control characters, no line or paragraph separators (U+2028, U+2029) and no invisible characters (Unicode category Cf: bidi controls, zero-width characters, BOM, soft hyphen…; the Hangul fillers, the combining grapheme joiner, the variation selectors other than U+FE0E and U+FE0F, which emoji use, and the blank braille pattern). The session label and the working directory of an automatic request follow the same rule. Requests stored by an earlier version, which refused only control and Cf characters (and separators in a label), are still read and answered as they are. The owner decides on it alone; the notification shows the first 200 characters. |
 | `access` | object | What is asked for; see below. |
 | `window` | string | How long the access should last: `15m`, `30m`, `1h` or `4h`, for commit signing, and nothing else, `1d`, `7d`, `30d` or `90d`, and for GitHub tokens, and nothing else, `1d`, `7d` or `30d`. The target's or secret's policy caps it, for commit signing the server's `WARDEN_COMMIT_SIGNING_MAX_WINDOW`, and for GitHub tokens `WARDEN_GITHUB_TOKEN_MAX_WINDOW`. The owner chooses the window when approving, anything up to that cap, so it may be shorter or longer than the one asked for. |
 | `session` | string, optional | The name the session states for itself, shown to the owner as the agent's claim, and written to the notification and the audit log. 1 to 64 characters after trimming whitespace, under the rules of `goal`, and no line or paragraph separators. |
@@ -769,7 +784,10 @@ sees the outcome.
 
 Errors: `400` for a malformed id or `wait` (`wait must be a whole number of
 seconds from 0 to 30`, `wait must be at most 30 seconds`), `404`
-`{"error":"not found"}` for an unknown id or another agent's request, and
+`{"error":"not found"}` for an unknown id or another agent's request, `429`
+`{"error":"too many status requests waiting; try again"}` when the agent
+already has 16 calls with a non-zero `wait` in flight (retry after a moment:
+one ending frees a place; `wait=0` is never refused for this), and
 section 5.
 
 ### `POST /v1/requests/{id}/cancel`
@@ -1090,7 +1108,7 @@ grant covers; pick the grant whose scope covers the call.
 |-------|------|---------|
 | `method` | string | HTTP method, one of the grant's `methods`. |
 | `url` | string | Absolute URL: `https`, exactly the grant's `origin`, a path under `path_prefix` on a segment boundary. Printable ASCII, no spaces, no user info, no fragment; the path has no `.` or `..` segments, `//`, `;`, `\` or encoded separators (`%2e`, `%2f`, `%5c`, `%3b`, `%25`, `%c0`, `%c1`, `%u`, any case). The query is free. |
-| `headers` | array | Request headers, as `[name, value]` pairs: `[["Content-Type","application/json"]]`, at most 100. Not allowed: `Host`, `Content-Length`, `Transfer-Encoding`, `Connection`, `Keep-Alive`, `TE`, `Trailer`, `Upgrade`, `Proxy-*`, the grant's `header`, `Accept-Encoding`, `Range`, `If-Range`, method and URL override headers, forwarding and host-override headers (`Forwarded`, `Via`, `X-Forwarded-*`, `X-Real-IP`, `X-Host`, `X-Original-Host`), and any name or value with CR, LF or NUL. |
+| `headers` | array | Request headers, as `[name, value]` pairs: `[["Content-Type","application/json"]]`, at most 100. Not allowed: `Host`, `Content-Length`, `Transfer-Encoding`, `Connection`, `Keep-Alive`, `TE`, `Trailer`, `Upgrade`, `Proxy-*`, the grant's `header`, `Accept-Encoding`, `Range`, `If-Range`, method and URL override headers, forwarding, host-override and client-address headers (`Forwarded`, `Via`, `X-Forwarded-*`, `X-Original-*`, `X-Rewrite-*`, `X-Envoy-*`, `X-Override-*`, `X-Real-IP`, `X-Host`, `X-Client-IP`, `True-Client-IP`, `CF-Connecting-IP`, `*-Client-IP`, `*-Connecting-IP`), and any name or value with CR, LF or NUL. |
 | `body_b64` | string or null | The request body, **standard base64** (RFC 4648 alphabet with `+` and `/`, `=` padding, no line breaks, no whitespace), at most 1 MiB once decoded. Absent or `null` for no body. |
 
 ```json
@@ -1222,9 +1240,13 @@ The manifest is refused unless all of this holds:
 - At most 64 KiB, UTF-8, at least one line, every line ending with a line feed (no carriage
   returns).
 - Each line is 64 lowercase hex digits, two spaces and a name.
-- A name is a file name (`A-Z a-z 0-9 . _ + -`, not `.` or `..`) or an image reference
-  `<registry>/<path>:<version>` of lowercase `a-z 0-9 . _ -` segments whose tag is exactly the
-  release's version.
+- A name is a file name (`A-Z a-z 0-9 . _ + -`, not `.` or `..`) that carries the release's
+  version as a component, or an image reference `<registry>/<path>:<version>` of lowercase
+  `a-z 0-9 . _ -` segments whose tag is exactly the release's version. A file name carries the
+  version when the version starts it or follows `-` or `_`, and ends it or is followed by `-`,
+  `_`, or a `.` that is not followed by a digit: `warden-1.2.3-x86_64.tar.gz`,
+  `warden_1.2.3_amd64.deb` and `warden-1.2.3-1.x86_64.rpm` carry `1.2.3`, `warden.tar.gz` and
+  `warden-1.2.3.4.tar.gz` do not.
 - No name appears twice.
 
 The step is claimed once the checks pass and the tag has a draft release; a refusal before that
@@ -1267,6 +1289,7 @@ last step is done.
 | `409` | `the manifest has not been signed` | The grant has a manifest step that did not finish; nothing was used |
 | `409` | `the draft's files are not the ones signed` | The manifest or its signature is missing from the draft or differs from what the broker attached; nothing was used |
 | `409` | `GitHub did not report the files' digests` | The files cannot be compared; nothing was used |
+| `409` | `the release was published, but its files or tag changed after they were checked; do not call again, tell the owner` | The release is public, but read back after the publish, its manifest, its signature or its tag differed from what the broker checked; the broker records it and tells the owner. The step is used |
 | `400` | `the request body is not valid` | Nothing was used |
 | `400` | `releases are not configured on this broker` | No release key for the repository, or no release App |
 | `503` | `GitHub could not complete the step; try again later` | GitHub failed; if it failed after the claim, the step stays used |

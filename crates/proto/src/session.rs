@@ -7,11 +7,11 @@
 use std::fmt;
 use std::str::FromStr;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use unicode_properties::{GeneralCategory, UnicodeGeneralCategory as _};
 use url::{Host, Url};
 
-use super::{ParseError, check_free_text};
+use super::{FreeTextCheck, ParseError, check_new_free_text, check_stored_free_text};
 
 /// Longest session label, in characters.
 const LABEL_MAX: usize = 64;
@@ -23,33 +23,61 @@ const LINK_MAX: usize = 256;
 const SCHEME: &str = "https://";
 
 /// The name a session states for itself: 1 to 64 characters after trimming
-/// Unicode whitespace, with the checks of a [`Goal`](super::Goal), and no line or
-/// paragraph separators, so that it stays one line wherever it is shown. The
-/// stored value is trimmed.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
+/// Unicode whitespace, with the checks of a [`Goal`](super::Goal), so that it stays
+/// one line wherever it is shown. The stored value is trimmed.
+///
+/// As for a goal, [`TryFrom`] and [`FromStr`] apply every rule and deserializing
+/// only those of earlier versions, which already refused line and paragraph
+/// separators in a label.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(into = "String")]
 pub struct SessionLabel(String);
+
+const LABEL_WHAT: &str = "session label";
+
+/// The rules a stored label is read with: those of earlier versions.
+fn check_stored_label(what: &'static str, text: &str) -> Result<(), ParseError> {
+    check_stored_free_text(what, text)?;
+    if text.chars().any(|c| {
+        matches!(
+            c.general_category(),
+            GeneralCategory::LineSeparator | GeneralCategory::ParagraphSeparator
+        )
+    }) {
+        return Err(ParseError::new(what, "must be one line"));
+    }
+    Ok(())
+}
+
+impl SessionLabel {
+    fn parse(value: &str, check: FreeTextCheck) -> Result<Self, ParseError> {
+        let trimmed = value.trim();
+        let chars = trimmed.chars().count();
+        if chars == 0 || chars > LABEL_MAX {
+            return Err(ParseError::new(LABEL_WHAT, "must be 1 to 64 characters"));
+        }
+        check(LABEL_WHAT, trimmed)?;
+        Ok(Self(trimmed.to_owned()))
+    }
+
+    /// Checks the label with the rules for a label stated now.
+    pub(crate) fn check_new(&self) -> Result<(), ParseError> {
+        check_new_free_text(LABEL_WHAT, &self.0)
+    }
+}
 
 impl TryFrom<String> for SessionLabel {
     type Error = ParseError;
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
-        const WHAT: &str = "session label";
-        let trimmed = value.trim();
-        let chars = trimmed.chars().count();
-        if chars == 0 || chars > LABEL_MAX {
-            return Err(ParseError::new(WHAT, "must be 1 to 64 characters"));
-        }
-        check_free_text(WHAT, trimmed)?;
-        if trimmed.chars().any(|c| {
-            matches!(
-                c.general_category(),
-                GeneralCategory::LineSeparator | GeneralCategory::ParagraphSeparator
-            )
-        }) {
-            return Err(ParseError::new(WHAT, "must be one line"));
-        }
-        Ok(Self(trimmed.to_owned()))
+        Self::parse(&value, check_new_free_text)
+    }
+}
+
+impl<'de> Deserialize<'de> for SessionLabel {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        Self::parse(&value, check_stored_label).map_err(serde::de::Error::custom)
     }
 }
 string_newtype!(SessionLabel);

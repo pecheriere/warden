@@ -7,6 +7,7 @@ use url::Url;
 
 use super::{BaseUrls, TestBroker};
 use crate::relay::{RelayLimits, RelayServer, host_key};
+use crate::serve::ServeLimits;
 use crate::testkit::TEST_OWNER;
 
 impl TestBroker {
@@ -65,12 +66,23 @@ impl TestBroker {
     async fn serve(&self, routers: [Router; 2], ports: Option<[u16; 2]>) -> BaseUrls {
         let ports = ports.unwrap_or([0, 0]);
         let mut bound = Vec::new();
-        for (router, port) in routers.into_iter().zip(ports) {
+        let listeners = [
+            ("agent API", ServeLimits::API),
+            ("approval UI", ServeLimits::APPROVAL),
+        ];
+        for ((router, port), (name, limits)) in routers.into_iter().zip(ports).zip(listeners) {
             let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port))
                 .await
                 .expect("bind loopback listener");
             let addr = listener.local_addr().expect("listener address");
-            let task = tokio::spawn(serve_connections(listener, router));
+            // Served as in production; aborting the task closes its connections.
+            let task = tokio::spawn(crate::serve::serve(
+                name,
+                listener,
+                router,
+                limits,
+                std::future::pending(),
+            ));
             self.servers
                 .lock()
                 .expect("servers lock poisoned")
@@ -138,27 +150,6 @@ impl TestBroker {
         for (stop, task) in relays {
             stop.send_replace(true);
             task.await.expect("relay task");
-        }
-    }
-}
-
-/// Accept HTTP/1 connections for `router` until aborted. The connections are
-/// owned by this task, so aborting it closes them all.
-async fn serve_connections(listener: tokio::net::TcpListener, router: Router) {
-    let mut connections = tokio::task::JoinSet::new();
-    loop {
-        tokio::select! {
-            accepted = listener.accept() => {
-                let Ok((stream, _)) = accepted else { continue };
-                let service = hyper_util::service::TowerToHyperService::new(router.clone());
-                connections.spawn(async move {
-                    // A connection error only ends that connection.
-                    let _ = hyper::server::conn::http1::Builder::new()
-                        .serve_connection(hyper_util::rt::TokioIo::new(stream), service)
-                        .await;
-                });
-            }
-            Some(_) = connections.join_next(), if !connections.is_empty() => {}
         }
     }
 }

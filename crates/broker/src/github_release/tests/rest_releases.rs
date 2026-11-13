@@ -1,6 +1,7 @@
 //! The release client's release and asset calls, against the fake GitHub.
 
 use serde_json::{Value, json};
+use sha2::{Digest as _, Sha256};
 
 use super::rest::{connect, fixture, requests, tag};
 use crate::github_app::GithubApi;
@@ -245,8 +246,20 @@ async fn delete_asset_removes_it() {
 async fn publish_clears_the_draft_flag() {
     let (upstream, api, repo) = fixture().await;
     let release = upstream.github_release().add_release(&repo, "v1.2.3", true);
+    upstream
+        .github_release()
+        .add_asset(&repo, release, "warden-1.2.3.tar.gz", b"archive");
     let client = connect(&api).await;
-    client.publish(release).await.unwrap();
+    let published = client.publish(release, &tag("v1.2.3")).await.unwrap();
+    assert_eq!(published.id, release);
+    assert!(!published.draft);
+    // The assets it was published with, as the answer to the publish lists them.
+    assert_eq!(published.assets.len(), 1);
+    assert_eq!(published.assets[0].name, "warden-1.2.3.tar.gz");
+    assert_eq!(
+        published.assets[0].digest.as_deref(),
+        Some(format!("sha256:{}", hex::encode(Sha256::digest(b"archive"))).as_str())
+    );
     assert!(
         !upstream
             .github_release()
@@ -272,14 +285,17 @@ async fn publish_refuses_answer_still_draft() {
     let release = upstream.github_release().add_release(&repo, "v1.2.3", true);
     let client = connect(&api).await;
     for body in [
-        json!({"id": release, "draft": true}),
-        json!({"id": release + 1, "draft": false}),
+        json!({"id": release, "tag_name": "v1.2.3", "draft": true, "assets": []}),
+        json!({"id": release + 1, "tag_name": "v1.2.3", "draft": false, "assets": []}),
+        json!({"id": release, "tag_name": "v1.2.4", "draft": false, "assets": []}),
+        json!({"id": release, "tag_name": "v1.2.3", "draft": false, "assets": [{"id": 1, "name": "a/b", "digest": null}]}),
+        json!({"id": release, "draft": false}),
     ] {
         upstream
             .github_release()
             .answer_everything_with(Scripted::with_body(200, body.to_string()));
         assert_eq!(
-            client.publish(release).await.unwrap_err(),
+            client.publish(release, &tag("v1.2.3")).await.unwrap_err(),
             GithubError::Unreadable,
             "{body}"
         );

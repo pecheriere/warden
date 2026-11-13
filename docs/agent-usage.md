@@ -597,8 +597,9 @@ warden release publish example-owner/example-repo v1.2.3
 - **`sign-manifest`** sends the file you built. Its base name must be the file name the owner
   approved. The manifest is lines of `<64 lowercase hex digits>  <name>`, each ending in a line
   feed, at most 64 KiB (a larger file is refused on your machine, and nothing is sent), with no
-  name twice. A name is a plain file name, or an image reference tagged with the release's
-  version, such as `ghcr.io/example-owner/example-repo:1.2.3`. The broker signs what you sent and
+  name twice. A name is a plain file name that carries the release's version, such as
+  `warden-1.2.3-x86_64-unknown-linux-gnu.tar.gz` or `warden_1.2.3_amd64.deb`, or an image
+  reference tagged with it, such as `ghcr.io/example-owner/example-repo:1.2.3`. The broker signs what you sent and
   cannot know whether a digest is that of the right artifact, so run your own checks on the
   artifacts first. It attaches the manifest and its `.sig` to the **draft** release of the tag,
   so create the draft first (your release workflow does). A manifest that breaks a rule, or a
@@ -607,7 +608,9 @@ warden release publish example-owner/example-repo v1.2.3
   not in place as the owner approved it (an annotated tag on that commit, signed by the release
   key), when the draft no longer holds the manifest and signature the broker attached, or when
   the release is not a draft. Releases are immutable on GitHub: a release published without its
-  manifest can never gain one.
+  manifest can never gain one. If the release GitHub published does not match what the broker
+  checked, the call fails with `409` after publishing, the broker tells the owner, and the
+  release stays public: do not call again, tell the owner.
 
 An example session for a repository that only needs a signed tag (no `manifest` in its release
 item, and its own workflow publishes):
@@ -844,8 +847,10 @@ The broker refuses, with a message that names the rule (exit 1):
 - headers you may not set: `Host`, `Content-Length`, `Connection` and other
   hop-by-hop headers, the secret's own header, `Accept-Encoding`, `Range`,
   `If-Range`, method or URL override headers, and forwarding or
-  host-override headers (`Forwarded`, `Via`, `X-Forwarded-*`, `X-Real-IP`,
-  `X-Host`, `X-Original-Host`).
+  host-override headers (`Forwarded`, `Via`, `X-Forwarded-*`, `X-Original-*`,
+  `X-Rewrite-*`, `X-Envoy-*`, `X-Override-*`, `X-Real-IP`, `X-Host`) and
+  client-address headers (`X-Client-IP`, `True-Client-IP`, `CF-Connecting-IP`,
+  `*-Client-IP`).
 
 Redirects are not followed; a 3xx comes back to you as is. Responses over
 the broker's size limit (1 MiB by default) or compressed are an error, and

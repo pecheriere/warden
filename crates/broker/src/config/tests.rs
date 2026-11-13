@@ -323,6 +323,28 @@ fn refuses_a_file_other_users_can_access() {
     }
 }
 
+/// A FIFO is refused without waiting for a writer to open it.
+#[test]
+fn refuses_a_fifo_without_blocking() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("fifo");
+    let made = std::process::Command::new("mkfifo")
+        .arg("-m")
+        .arg("600")
+        .arg(&path)
+        .status()
+        .unwrap();
+    assert!(made.success());
+    let err = token_from_file(path.to_str().unwrap()).unwrap_err();
+    assert!(is_invalid_token_file(&err), "{err}");
+}
+
+#[test]
+fn refuses_a_device_that_is_not_a_regular_file() {
+    let err = token_from_file("/dev/null").unwrap_err();
+    assert!(is_invalid_token_file(&err), "{err}");
+}
+
 /// Whatever is wrong with the content, the error names the variable and
 /// shows none of the content.
 #[test]

@@ -35,7 +35,7 @@ fn largest_manifest() -> String {
     let mut text = String::new();
     let mut i = 0_u32;
     while text.len() + 80 <= 65_536 {
-        writeln!(text, "{DIGEST}  f{i}").unwrap();
+        writeln!(text, "{DIGEST}  f{i}-1.2.3").unwrap();
         i += 1;
     }
     text
