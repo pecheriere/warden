@@ -11,6 +11,7 @@ to disk. For APIs, the agent never sees the secret: warden makes the calls.
 Contents:
 
 - [One-time setup](#one-time-setup)
+- [What warden offers here](#what-warden-offers-here)
 - [Rules for requesting access](#rules-for-requesting-access)
 - [Requesting access](#requesting-access)
 - [Using a grant](#using-a-grant)
@@ -298,6 +299,34 @@ the agent must run on one of the owner's (untagged) devices.
 The server URL must be `https://`, or plain `http://` to a loopback address.
 The CLI never sets the `Tailscale-User-Login` header: Tailscale Serve adds it
 after authenticating the machine.
+
+## What warden offers here
+
+`warden list` shows what this agent may ask the broker for: the SSH targets
+and their users, the API secrets and their methods, and whether GitHub tokens,
+commit signing and releases are available. It asks no one and changes nothing.
+Sections with nothing in them are left out; a part the broker could not read
+is printed as `could not be read` instead, and the command still exits 0.
+
+```sh
+warden list
+warden list --json
+```
+
+In a git checkout whose `origin` is on `github.com`, it also prints a "this
+repository" section: whether the GitHub App covers the repository, whether
+commit signing is available, and whether the repository can be released.
+`--repo owner/name` asks about another repository, and the section is left out
+for a checkout whose remote is not on GitHub. `--json` prints
+`{"offers": …, "repository": …}`, with `repository` null when there is no
+such section.
+
+A target or secret the owner lists as `name` shows no host or origin; one
+listed as `hidden` does not show at all, but can still be requested. What the
+list shows is what the broker says today, and a request is still decided by
+the owner. Exit 0 on success, 1 when the broker cannot be reached, refuses the
+login or is too old to answer (it says to upgrade it), and 64 for a `--repo`
+that is not `owner/name` on `github.com`. See [Exit codes](#exit-codes).
 
 ## Rules for requesting access
 

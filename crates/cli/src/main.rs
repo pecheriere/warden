@@ -14,6 +14,7 @@ mod github_token;
 mod guidance;
 mod http;
 mod install;
+mod list;
 mod login;
 mod recover;
 mod release;
@@ -237,6 +238,7 @@ async fn run(cmd: Cmd) -> Result<()> {
             } => release::run_sign_manifest(repository, tag, &file).await,
             ReleaseCmd::Publish { repository, tag } => release::run_publish(repository, tag).await,
         },
+        Cmd::List { json, repo } => list::run(json, repo).await,
         Cmd::Status => status().await,
         Cmd::Revoke { grant } => revoke(&grant).await,
     }

@@ -118,6 +118,16 @@ pub(crate) enum Cmd {
         #[command(subcommand)]
         what: ReleaseCmd,
     },
+    /// Show what this agent may ask the broker for. Asks no one and changes
+    /// nothing.
+    List {
+        /// Print the broker's answer as JSON.
+        #[arg(long)]
+        json: bool,
+        /// Ask about this repository (`owner/name`) instead of the checkout's.
+        #[arg(long)]
+        repo: Option<String>,
+    },
     /// Show local grants, and the broker's view of this agent's grants and
     /// pending requests.
     Status,
