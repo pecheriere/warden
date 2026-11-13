@@ -11,9 +11,6 @@ All notable changes to this project are recorded here. The format follows
 - `warden list` and `warden prime` need a broker of this version: against an older one,
   `warden list` fails saying to upgrade it, and `warden prime` prints its instructions with
   that note in place of the offers. They need no migration and write no audit entry.
-- A `*_FILE` secret file must be mode `0600` or `0400`, owned by warden's user or root, and not
-  a symbolic link; group-readable files and links were accepted before. See
-  [Upgrading](docs/upgrading.md#secret-files).
 - New audit entries: `release_step_started`, `release_published_changed` and
   `release_published_changed_notified`. An older `warden-server audit verify` refuses a log
   holding one.
@@ -67,6 +64,8 @@ All notable changes to this project are recorded here. The format follows
 
 ### Fixed
 
+- A `*_FILE` secret file is checked and read through the same open file, and a FIFO in its
+  place is refused without waiting on it.
 - A release's commit is checked against the default branch's head by commit id, read from
   the branch's own ref, at the request, on the approval page and at the tag step.
 - Each release step writes a `release_step_started` audit entry, naming what the release key

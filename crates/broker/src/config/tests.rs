@@ -223,6 +223,23 @@ fn strips_the_line_ending_of_a_secret_file() {
 }
 
 #[test]
+fn follows_a_symlink_to_a_secret_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = secret_file(&dir, "token", SECRET.as_bytes(), 0o400);
+    let link = dir.path().join("link");
+    symlink(&path, &link).unwrap();
+    let config = token_from_file(link.to_str().unwrap()).unwrap();
+    assert_eq!(connect(&config).token.expose_secret(), SECRET);
+}
+
+#[test]
+fn accepts_group_access_to_a_secret_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = secret_file(&dir, "token", SECRET.as_bytes(), 0o440);
+    assert!(token_from_file(&path).is_ok());
+}
+
+#[test]
 fn plain_variable_still_works_when_the_file_variable_is_blank() {
     let config = Config::from_lookup(lookup(&[
         ("WARDEN_OP_CONNECT_TOKEN", SECRET),
@@ -290,8 +307,8 @@ fn refuses_a_directory() {
 }
 
 #[test]
-fn refuses_a_file_group_or_other_users_can_access() {
-    for mode in [0o404, 0o402, 0o401, 0o644, 0o640, 0o440, 0o420, 0o410] {
+fn refuses_a_file_other_users_can_access() {
+    for mode in [0o404, 0o402, 0o401, 0o644] {
         let dir = tempfile::tempdir().unwrap();
         let path = secret_file(&dir, "token", SECRET.as_bytes(), mode);
         let err = token_from_file(&path).unwrap_err();
@@ -299,27 +316,27 @@ fn refuses_a_file_group_or_other_users_can_access() {
             err,
             ConfigError::Invalid {
                 var: TOKEN_FILE,
-                reason: "the file must not be accessible to group or other users"
+                reason: "the file must not be accessible to other users"
             },
             "{mode:o}"
         );
     }
 }
 
+/// A FIFO is refused without waiting for a writer to open it.
 #[test]
-fn refuses_a_symbolic_link() {
+fn refuses_a_fifo_without_blocking() {
     let dir = tempfile::tempdir().unwrap();
-    let target = secret_file(&dir, "token", SECRET.as_bytes(), 0o400);
-    let link = dir.path().join("link");
-    symlink(&target, &link).unwrap();
-    let err = token_from_file(link.to_str().unwrap()).unwrap_err();
-    assert_eq!(
-        err,
-        ConfigError::Invalid {
-            var: TOKEN_FILE,
-            reason: "must not be a symbolic link"
-        }
-    );
+    let path = dir.path().join("fifo");
+    let made = std::process::Command::new("mkfifo")
+        .arg("-m")
+        .arg("600")
+        .arg(&path)
+        .status()
+        .unwrap();
+    assert!(made.success());
+    let err = token_from_file(path.to_str().unwrap()).unwrap_err();
+    assert!(is_invalid_token_file(&err), "{err}");
 }
 
 #[test]

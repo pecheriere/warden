@@ -101,16 +101,6 @@ with care, as warden is not running and has not started on the new version yet:
 
 Run it again with `docker compose exec` once warden is up.
 
-## Secret files
-
-From the next release, a file named by a `*_FILE` variable (the Connect token and
-the notifier secrets) must be private to its owner: mode `0600` or `0400`, with no
-group access, and owned by the user warden runs as or by root. A symbolic link
-in its place is refused too; name the file itself. Earlier versions accepted a
-group-readable file and followed a link. warden checks and reads the same open
-file, and refuses to start, naming the variable, if the file does not qualify.
-The systemd service in the deployment guide already uses mode `0400`.
-
 ## Plain http URLs
 
 From 0.9.0, warden refuses to start when `WARDEN_OP_CONNECT_URL`,

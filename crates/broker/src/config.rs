@@ -4,7 +4,7 @@ use std::fmt;
 use std::fs::File;
 use std::io::{self, Read as _};
 use std::net::SocketAddr;
-use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Component, Path, PathBuf};
 
 use rustix::fs::{Mode, OFlags};
@@ -518,45 +518,32 @@ fn github_token_max_window(
 }
 
 /// The secret in the file at `path`, which `var` names: one line, without its
-/// line ending. It must be a regular file, not a link, owned by the user warden
-/// runs as or by root, that no group or other user can access. The checks are on
-/// the open file and the read is from it, so the file checked is the file read.
+/// line ending. It must be a regular file that other users cannot access; group
+/// access is allowed, as systemd shows a credential it grants through an ACL with
+/// group bits. The checks are on the open file and the read is from it, so the
+/// file checked is the file read.
 fn read_secret_file(var: &'static str, path: &Path) -> Result<Zeroizing<String>, ConfigError> {
     let unreadable = |e: io::Error| ConfigError::SecretFile {
         var,
         kind: e.kind(),
     };
     let invalid = |reason| ConfigError::Invalid { var, reason };
-    // Never follow a link, and never block opening something that is not a
-    // regular file: that is refused below.
+    // Never block opening something that is not a regular file, such as a
+    // FIFO: that is refused below.
     let file = File::from(
         rustix::fs::open(
             path,
-            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+            OFlags::RDONLY | OFlags::NONBLOCK | OFlags::CLOEXEC,
             Mode::empty(),
         )
-        .map_err(|e| {
-            if e == rustix::io::Errno::LOOP {
-                invalid("must not be a symbolic link")
-            } else {
-                unreadable(e.into())
-            }
-        })?,
+        .map_err(|e| unreadable(e.into()))?,
     );
     let meta = file.metadata().map_err(unreadable)?;
     if !meta.is_file() {
         return Err(invalid("must name a regular file"));
     }
-    let owner = meta.uid();
-    if owner != 0 && owner != rustix::process::geteuid().as_raw() {
-        return Err(invalid(
-            "the file must be owned by the server's user or root",
-        ));
-    }
-    if meta.permissions().mode() & 0o077 != 0 {
-        return Err(invalid(
-            "the file must not be accessible to group or other users",
-        ));
+    if meta.permissions().mode() & 0o007 != 0 {
+        return Err(invalid("the file must not be accessible to other users"));
     }
     // Allocated once at its largest, so that growing it leaves no copy of the
     // secret behind for `Zeroizing` to miss.
