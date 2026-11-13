@@ -6,6 +6,8 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-12
+
 ### Upgrading
 
 - New migration `0011_scoped_github_tokens`, applied at startup. As with every migration, rolling back means
