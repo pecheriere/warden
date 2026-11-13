@@ -17,6 +17,9 @@ All notable changes to this project are recorded here. The format follows
 
 ### Changed
 
+- A proxied API call may not set more routing and client-address headers: the `X-Forwarded-*`,
+  `X-Original-*`, `X-Rewrite-*`, `X-Envoy-*` and `X-Override-*` families, `X-Client-IP`,
+  `True-Client-IP`, `CF-Connecting-IP` and the other `*-Client-IP` and `*-Connecting-IP` names.
 - The clients for 1Password Connect, the notifiers and the health probe no longer use a proxy
   named in `HTTP_PROXY`, `HTTPS_PROXY` or `ALL_PROXY`; a deployment that reached them through
   one needs a direct route.

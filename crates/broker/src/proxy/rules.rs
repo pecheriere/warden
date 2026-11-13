@@ -86,30 +86,68 @@ const SCHEME_PREFIX: &str = "https://";
 /// `Accept-Encoding`, `Range` and `If-Range` would let the response carry the
 /// secret compressed or in fragments that redaction cannot see; the method
 /// and URL overrides make some servers apply another method or path than the
-/// one checked; the forwarding and host-override headers (`Via` included)
-/// make some servers (and the proxies in front of them) route to another
-/// virtual host or path prefix, or trust another client.
-const REFUSED_HEADERS: [&str; 19] = [
+/// one checked; the forwarding, host-override and client-address headers (`Via`
+/// included) make some servers (and the proxies in front of them) route to
+/// another virtual host or path prefix, or trust another client.
+const REFUSED_HEADERS: [&str; 33] = [
     "accept-encoding",
     "range",
     "if-range",
-    "x-http-method-override",
-    "x-http-method",
-    "x-method-override",
-    "x-original-url",
-    "x-rewrite-url",
     "forwarded",
-    "x-forwarded-host",
-    "x-forwarded-for",
-    "x-forwarded-proto",
-    "x-forwarded-port",
-    "x-real-ip",
-    "x-forwarded-server",
-    "x-forwarded-prefix",
-    "x-host",
-    "x-original-host",
     "via",
+    "x-host",
+    "x-method-override",
+    "x-real-ip",
+    "x-client-ip",
+    "x-cluster-client-ip",
+    "x-originating-ip",
+    "x-remote-ip",
+    "x-remote-addr",
+    "client-ip",
+    "true-client-ip",
+    "fastly-client-ip",
+    "cf-connecting-ip",
+    "cf-connecting-ipv6",
+    "cf-pseudo-ipv4",
+    "x-azure-clientip",
+    "x-azure-socketip",
+    "x-appengine-user-ip",
+    "x-scheme",
+    "x-url-scheme",
+    "front-end-https",
+    "x-rewrite-url",
+    "x-override-url",
+    "x-proxyuser-ip",
+    "x-true-client-ip",
+    "x-real-host",
+    "x-site-host",
+    "x-wap-network-client-ip",
+    "x-http-host-override",
 ];
+
+/// Prefixes of header names an agent may not set, for the families of routing
+/// and override headers that front proxies and frameworks add names to
+/// (`X-Forwarded-Uri`, `X-Original-URL`, `X-Envoy-Original-Path`, ...).
+const REFUSED_PREFIXES: [&str; 6] = [
+    "x-forwarded-",
+    "x-original-",
+    "x-rewrite-",
+    "x-envoy-",
+    "x-override-",
+    "x-http-method",
+];
+
+/// Suffixes of header names an agent may not set: the client-address headers
+/// that CDNs and proxies name after themselves (`CF-Connecting-IP`).
+const REFUSED_SUFFIXES: [&str; 3] = ["-client-ip", "-connecting-ip", "-clientip"];
+
+/// Whether an agent may not set the header called `name` (lower case, as
+/// [`HeaderName`] holds it), by name, prefix or suffix.
+fn is_refused_header(name: &str) -> bool {
+    REFUSED_HEADERS.contains(&name)
+        || REFUSED_PREFIXES.iter().any(|p| name.starts_with(p))
+        || REFUSED_SUFFIXES.iter().any(|s| name.ends_with(s))
+}
 
 /// The most headers a call may carry.
 const MAX_HEADERS: usize = 100;
@@ -187,10 +225,7 @@ fn check_headers(policy: &ApiSecretPolicy, raw: &[(String, String)]) -> Result<H
         }
         let name = HeaderName::from_bytes(name.as_bytes())
             .map_err(|_| Refusal::Header("invalid header name".to_owned()))?;
-        if name == policy.header
-            || is_reserved_header(&name)
-            || REFUSED_HEADERS.contains(&name.as_str())
-        {
+        if name == policy.header || is_reserved_header(&name) || is_refused_header(name.as_str()) {
             return Err(Refusal::Header(format!("\"{name}\" may not be set")));
         }
         let value = HeaderValue::from_str(value)
@@ -521,6 +556,21 @@ mod tests {
             "X-Method-Override",
             "X-Original-URL",
             "x-rewrite-url",
+            "X-Original-URI",
+            "X-Forwarded-Uri",
+            "X-Forwarded-Path",
+            "X-Forwarded-Scheme",
+            "X-Forwarded-Ssl",
+            "X-Envoy-Original-Path",
+            "X-Override-URL",
+            "X-Client-IP",
+            "True-Client-IP",
+            "CF-Connecting-IP",
+            "X-Cluster-Client-IP",
+            "X-Original-Forwarded-For",
+            "Fastly-Client-IP",
+            "X-Azure-ClientIP",
+            "Client-IP",
         ] {
             assert!(
                 matches!(
@@ -531,6 +581,21 @@ mod tests {
             );
         }
         assert_eq!(super::OUTBOUND_ACCEPT_ENCODING, "identity");
+    }
+
+    #[test]
+    fn ordinary_headers_are_not_caught_by_the_families() {
+        let p = policy("/", &[Method::GET]);
+        for name in [
+            "X-Request-Id",
+            "X-Api-Version",
+            "X-Forward",
+            "X-Origin",
+            "User-Agent",
+            "Idempotency-Key",
+        ] {
+            assert!(check(&p, &with_header(name, "x"), MAX).is_ok(), "{name}");
+        }
     }
 
     #[test]

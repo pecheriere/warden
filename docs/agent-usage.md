@@ -810,8 +810,10 @@ The broker refuses, with a message that names the rule (exit 1):
 - headers you may not set: `Host`, `Content-Length`, `Connection` and other
   hop-by-hop headers, the secret's own header, `Accept-Encoding`, `Range`,
   `If-Range`, method or URL override headers, and forwarding or
-  host-override headers (`Forwarded`, `Via`, `X-Forwarded-*`, `X-Real-IP`,
-  `X-Host`, `X-Original-Host`).
+  host-override headers (`Forwarded`, `Via`, `X-Forwarded-*`, `X-Original-*`,
+  `X-Rewrite-*`, `X-Envoy-*`, `X-Override-*`, `X-Real-IP`, `X-Host`) and
+  client-address headers (`X-Client-IP`, `True-Client-IP`, `CF-Connecting-IP`,
+  `*-Client-IP`).
 
 Redirects are not followed; a 3xx comes back to you as is. Responses over
 the broker's size limit (1 MiB by default) or compressed are an error, and
