@@ -132,13 +132,7 @@ fn automatic_needs_exactly_one_repository() {
 
 #[test]
 fn automatic_dir_refuses_control_characters() {
-    for dir in [
-        "/work/a\nb",
-        "/work/a\u{202e}b",
-        "/work/a\u{2028}b",
-        "/work/a\u{3164}b",
-        &"d".repeat(513),
-    ] {
+    for dir in ["/work/a\nb", "/work/a\u{202e}b", &"d".repeat(513)] {
         let value = json!({
             "kind": "github_token",
             "repositories": ["example-owner/a"],
@@ -152,6 +146,32 @@ fn automatic_dir_refuses_control_characters() {
         "automatic": {"by": "git_credential", "dir": "d".repeat(512)},
     });
     assert!(serde_json::from_value::<Access>(long_enough).is_ok());
+}
+
+/// A directory sent now may not hold a separator or a blank filler; one stored
+/// before that rule still reads.
+#[test]
+fn automatic_dir_refuses_separators_only_when_new() {
+    for dir in ["/work/a\u{2028}b", "/work/a\u{3164}b"] {
+        let automatic = || AutomaticRequest {
+            by: AutomaticCaller::GitCredential,
+            dir: Some(dir.to_owned()),
+        };
+        let repositories = vec![RepoName::try_from("example-owner/a".to_owned()).unwrap()];
+        assert!(
+            GithubTokenAccess::new(repositories, Some(automatic())).is_err(),
+            "{dir:?}"
+        );
+        let stored = json!({
+            "kind": "github_token",
+            "repositories": ["example-owner/a"],
+            "automatic": {"by": "git_credential", "dir": dir},
+        });
+        let Access::GithubToken(access) = serde_json::from_value::<Access>(stored).unwrap() else {
+            panic!("not a GitHub token request");
+        };
+        assert!(access.check_new().is_err(), "{dir:?}");
+    }
 }
 
 #[test]

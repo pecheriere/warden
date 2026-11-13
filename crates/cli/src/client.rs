@@ -226,6 +226,9 @@ impl Client {
     /// # Errors
     /// If the server is unreachable or refuses.
     pub async fn create(&self, req: &CreateRequest) -> Result<CreatedResponse, CallError> {
+        // The broker checks this too; refusing here says so without a round trip.
+        req.check_new()
+            .map_err(|e| CallError::Refused(e.to_string()))?;
         let resp = self
             .call(
                 Method::POST,

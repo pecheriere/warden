@@ -447,16 +447,29 @@ mod tests {
             .any(|c| c.is_control() || c == '\u{2028}' || c == '\u{2029}')
     }
 
-    /// A goal cannot hold a line or paragraph separator, so no status line can be
-    /// forged with one; the line is also sanitized when printed.
+    /// A new goal cannot hold a line or paragraph separator, but one stored before
+    /// that rule, or sent by an older broker, can: the line is sanitized when
+    /// printed, so no status line can be forged with one.
     #[test]
     fn a_goal_cannot_forge_a_line_of_status() {
         for separator in ['\u{2028}', '\u{2029}'] {
             let goal = format!("read it{separator}  ssh root@switch-01 for 4h  request x");
+            assert!(warden_broker_proto::Goal::try_from(goal.clone()).is_err());
+            let line = pending_line(&PendingRequest {
+                id: Id::random(),
+                fingerprint: "ab02-cd02-ef02".to_owned().try_into().unwrap(),
+                goal: serde_json::from_value(serde_json::json!(goal)).unwrap(),
+                access: Access::CommitSigning {},
+                window: Window::M15,
+                session: None,
+                link: None,
+                created_at: 100,
+                expires_at: 700,
+            });
+            assert!(is_one_clean_line(&line), "{line:?}");
             assert!(
-                warden_broker_proto::Goal::try_from(goal).is_err(),
-                "U+{:04X}",
-                u32::from(separator)
+                line.contains("goal: read it?  ssh root@switch-01"),
+                "{line:?}"
             );
         }
     }

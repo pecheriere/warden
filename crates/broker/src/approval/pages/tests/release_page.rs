@@ -60,7 +60,7 @@ fn approve_page_shows_release_facts() {
 
 #[test]
 fn approve_page_escapes_changelog() {
-    let hostile = "<script>alert(1)</script>\n\u{1b}[31mred & \"quoted\"\u{7}\tkept\r\u{202e}\u{200b}\u{e0041}\u{2062}\u{ad}\u{2028}\u{2029}\u{180e}\u{206a}\u{fff9}\u{3164}\u{2800}\u{fe0f}";
+    let hostile = "<script>alert(1)</script>\n\u{1b}[31mred & \"quoted\"\u{7}\tkept\r\u{202e}\u{200b}\u{e0041}\u{2062}\u{ad}\u{2028}\u{2029}\u{180e}\u{206a}\u{fff9}\u{3164}\u{2800}\u{fe0d}";
     let mut facts = release_facts(Some(hostile));
     facts.commit_title = "<img src=x onerror=1> \u{1b}[2J".to_owned();
     let html = page(facts);
@@ -76,7 +76,7 @@ fn approve_page_escapes_changelog() {
     assert!(html.contains(r"\u{d}"), "{html}");
     assert!(html.contains(r"\u{202e}\u{200b}"), "{html}");
     assert!(
-        html.contains(r"\u{e0041}\u{2062}\u{ad}\u{2028}\u{2029}\u{180e}\u{206a}\u{fff9}\u{3164}\u{2800}\u{fe0f}"),
+        html.contains(r"\u{e0041}\u{2062}\u{ad}\u{2028}\u{2029}\u{180e}\u{206a}\u{fff9}\u{3164}\u{2800}\u{fe0d}"),
         "{html}"
     );
     assert!(

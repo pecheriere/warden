@@ -596,7 +596,10 @@ These were recorded during implementation and are accepted for this release.
   read through one open handle, once, at startup.
 - **Goals are free text.** The goal is a single line of at most 500 characters
   without control characters, line or paragraph separators or invisible characters
-  (bidi overrides, zero-width characters, blank fillers). The owner decides on
+  (bidi overrides, zero-width characters, blank fillers), checked when a request
+  arrives; requests stored by an earlier version are read with its rules, so that one
+  cannot stop the pages, the relay or the CLI's lists, and the status lines the
+  CLI prints replace such characters. The owner decides on
   the goal alone, and a prompt-injected agent can write a misleading goal. The
   fingerprint check, the narrow user and the short window limit the damage.
 

@@ -48,10 +48,12 @@ All notable changes to this project are recorded here. The format follows
   one needs a direct route.
 - The release approval page and the commit title shown from GitHub hide the same characters a
   goal may not hold, decided by one shared check.
-- A goal, a session label and the directory of an automatic GitHub request are refused if
-  they hold a line or paragraph separator or an invisible filler (Hangul fillers, variation
-  selectors, the blank braille pattern), as they already were for control and format
-  characters.
+- A new request's goal, session label and automatic GitHub request directory are refused if
+  they hold a line or paragraph separator or an invisible filler (Hangul fillers, the
+  variation selectors other than the emoji and text presentation selectors U+FE0E and
+  U+FE0F, the blank braille pattern), as they already were for control and format
+  characters. Requests stored before still load under the earlier rules, and the CLI still
+  lists them.
 - The broker signs a release manifest only if every plain file name in it carries the
   release's version as a component (`warden-1.2.3-x86_64.tar.gz`, `warden_1.2.3_amd64.deb`);
   a name without it is refused, as an image reference with another tag already was.

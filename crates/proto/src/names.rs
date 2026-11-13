@@ -4,9 +4,9 @@
 use std::fmt;
 use std::str::FromStr;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
-use crate::{ParseError, check_free_text};
+use crate::{FreeTextCheck, ParseError, check_new_free_text, check_stored_free_text};
 
 fn is_name(s: &str, first: impl Fn(u8) -> bool, rest: impl Fn(u8) -> bool) -> bool {
     let bytes = s.as_bytes();
@@ -109,24 +109,48 @@ string_newtype!(UnixUser);
 /// Unicode whitespace, single line (no control characters, no line or paragraph
 /// separators), and free of invisible characters (general category Cf: bidi
 /// overrides and isolates, zero-width characters, BOM, soft hyphen, tags, and
-/// the blank fillers, see `is_hidden_char`), which could
+/// the blank fillers, see [`is_hidden_char`](crate::is_hidden_char)), which could
 /// make the text the owner reads differ from what was sent. The stored value
 /// is trimmed.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
+///
+/// [`TryFrom`] and [`FromStr`](std::str::FromStr) apply all of these rules, for a
+/// goal written now. Deserializing applies only the rules of earlier versions (no
+/// control or Cf characters), so that a stored request still loads; whatever
+/// takes a goal from an agent checks it with
+/// [`CreateRequest::check_new`](crate::CreateRequest::check_new).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(into = "String")]
 pub struct Goal(String);
 
-impl TryFrom<String> for Goal {
-    type Error = ParseError;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
+impl Goal {
+    fn parse(value: &str, check: FreeTextCheck) -> Result<Self, ParseError> {
         let trimmed = value.trim();
         let chars = trimmed.chars().count();
         if chars == 0 || chars > 500 {
             return Err(ParseError::new("goal", "must be 1 to 500 characters"));
         }
-        check_free_text("goal", trimmed)?;
+        check("goal", trimmed)?;
         Ok(Self(trimmed.to_owned()))
+    }
+
+    /// Checks the goal with the rules for a goal written now.
+    pub(crate) fn check_new(&self) -> Result<(), ParseError> {
+        check_new_free_text("goal", &self.0)
+    }
+}
+
+impl TryFrom<String> for Goal {
+    type Error = ParseError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(&value, check_new_free_text)
+    }
+}
+
+impl<'de> Deserialize<'de> for Goal {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        Self::parse(&value, check_stored_free_text).map_err(serde::de::Error::custom)
     }
 }
 string_newtype!(Goal);

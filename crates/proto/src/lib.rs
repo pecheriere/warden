@@ -103,7 +103,9 @@ fn is_lower_hex(s: &str, len: usize) -> bool {
 /// order mark, the tag characters), a line or paragraph separator, or another
 /// default-ignorable or blank filler code point (the Hangul fillers, the
 /// combining grapheme joiner, the variation selectors, the blank braille
-/// pattern).
+/// pattern). The text and emoji presentation selectors, U+FE0E and U+FE0F, are
+/// not hidden: they only choose how the character before them is drawn, and
+/// emoji text holds them.
 ///
 /// Every place that shows such text decides by this one function, so the lists
 /// cannot drift apart.
@@ -125,20 +127,41 @@ pub fn is_hidden_char(c: char) -> bool {
                 | '\u{2065}'
                 | '\u{2800}'
                 | '\u{3164}'
-                | '\u{fe00}'..='\u{fe0f}'
+                | '\u{fe00}'..='\u{fe0d}'
                 | '\u{ffa0}'
                 | '\u{fff0}'..='\u{fff8}'
                 | '\u{e0000}'..='\u{e0fff}'
         )
 }
 
-/// Refuses control characters, invisible characters and line or paragraph
-/// separators (see [`is_hidden_char`]) in text that an agent writes for the owner
-/// to read, which is one line.
-fn check_free_text(what: &'static str, text: &str) -> Result<(), ParseError> {
+/// A check of free text: which field it is for, and the text.
+type FreeTextCheck = fn(&'static str, &str) -> Result<(), ParseError>;
+
+/// The rules free text is read with: no control characters and no invisible
+/// format characters (general category Cf). Stored requests and the broker's
+/// answers are read with these, the rules of earlier versions, so that a request
+/// accepted then still loads.
+fn check_stored_free_text(what: &'static str, text: &str) -> Result<(), ParseError> {
     if text.chars().any(char::is_control) {
         return Err(ParseError::new(what, "must not contain control characters"));
     }
+    if text
+        .chars()
+        .any(|c| c.general_category() == GeneralCategory::Format)
+    {
+        return Err(ParseError::new(
+            what,
+            "must not contain invisible format characters",
+        ));
+    }
+    Ok(())
+}
+
+/// The rules free text an agent sends is checked with, for the owner to read as
+/// one line: those of [`check_stored_free_text`], and no line or paragraph
+/// separator or other character [`is_hidden_char`] names.
+fn check_new_free_text(what: &'static str, text: &str) -> Result<(), ParseError> {
+    check_stored_free_text(what, text)?;
     if text.chars().any(|c| {
         matches!(
             c.general_category(),
@@ -259,6 +282,27 @@ pub struct CreateRequest {
     /// fingerprint when present.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link: Option<SessionLink>,
+}
+
+impl CreateRequest {
+    /// Checks the free text in a request an agent sends now (the goal, the session
+    /// label and the directory of an automatic GitHub request) with the rules for
+    /// new text. Deserializing applies only the more lenient rules stored requests
+    /// are read with, so whatever takes a request from an agent calls this.
+    ///
+    /// # Errors
+    ///
+    /// The first field that fails, without quoting it.
+    pub fn check_new(&self) -> Result<(), ParseError> {
+        self.goal.check_new()?;
+        if let Some(session) = &self.session {
+            session.check_new()?;
+        }
+        if let Access::GithubToken(access) = &self.access {
+            access.check_new()?;
+        }
+        Ok(())
+    }
 }
 
 /// Request or grant identifier: 32 lowercase hex characters.
@@ -424,5 +468,7 @@ pub struct ApiError {
     pub error: String,
 }
 
+#[cfg(test)]
+mod free_text_tests;
 #[cfg(test)]
 mod tests;

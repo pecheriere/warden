@@ -298,6 +298,10 @@ async fn create_request(
     AuthedAgent(agent): AuthedAgent,
     ApiJson(req): ApiJson<CreateRequest>,
 ) -> Result<(StatusCode, Json<CreatedResponse>), Failure> {
+    // Parsing applies the rules stored requests are read with; a new request
+    // meets the stricter ones too.
+    req.check_new()
+        .map_err(|e| Failure::Client(StatusCode::BAD_REQUEST, e.to_string()))?;
     let created = state.requests.create(&agent, req).await?;
     tracing::info!(agent = %agent, id = %created.id, "request created");
     Ok((StatusCode::CREATED, Json(created)))

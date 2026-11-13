@@ -7,7 +7,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::release::RepoName;
-use crate::{ParseError, check_free_text};
+use crate::{FreeTextCheck, ParseError, check_new_free_text, check_stored_free_text};
 
 /// The most repositories one request or grant may name.
 pub const MAX_REPOSITORIES: usize = 10;
@@ -77,12 +77,12 @@ pub struct AutomaticRequest {
 }
 
 impl AutomaticRequest {
-    fn check(&self) -> Result<(), ParseError> {
+    fn check(&self, check: FreeTextCheck) -> Result<(), ParseError> {
         if let Some(dir) = &self.dir {
             if dir.len() > MAX_DIR_BYTES {
                 return Err(ParseError::new("directory", "is too long"));
             }
-            check_free_text("directory", dir)?;
+            check("directory", dir)?;
         }
         Ok(())
     }
@@ -114,13 +114,14 @@ impl TryFrom<RawGithubTokenAccess> for GithubTokenAccess {
     type Error = ParseError;
 
     fn try_from(raw: RawGithubTokenAccess) -> Result<Self, Self::Error> {
-        Self::new(raw.repositories, raw.automatic)
+        Self::build(raw.repositories, raw.automatic, check_stored_free_text)
     }
 }
 
 impl GithubTokenAccess {
     /// Checks the list: at most [`MAX_REPOSITORIES`], no repeat ignoring case,
-    /// and `automatic` only with exactly one repository.
+    /// and `automatic` only with exactly one repository, its directory checked
+    /// with the rules for text sent now.
     ///
     /// # Errors
     ///
@@ -128,6 +129,16 @@ impl GithubTokenAccess {
     pub fn new(
         repositories: Vec<RepoName>,
         automatic: Option<AutomaticRequest>,
+    ) -> Result<Self, ParseError> {
+        Self::build(repositories, automatic, check_new_free_text)
+    }
+
+    /// The checks of [`new`](Self::new), with `check` for the directory: a stored
+    /// request is read with the rules of earlier versions.
+    fn build(
+        repositories: Vec<RepoName>,
+        automatic: Option<AutomaticRequest>,
+        check: FreeTextCheck,
     ) -> Result<Self, ParseError> {
         if repositories.len() > MAX_REPOSITORIES {
             return Err(ParseError::new("repositories", "has too many entries"));
@@ -146,12 +157,20 @@ impl GithubTokenAccess {
                     "must name exactly one repository",
                 ));
             }
-            automatic.check()?;
+            automatic.check(check)?;
         }
         Ok(Self {
             repositories,
             automatic,
         })
+    }
+
+    /// Checks the directory of an automatic request with the rules for text sent
+    /// now.
+    pub(crate) fn check_new(&self) -> Result<(), ParseError> {
+        self.automatic
+            .as_ref()
+            .map_or(Ok(()), |automatic| automatic.check(check_new_free_text))
     }
 
     /// Whether it names no repository: a request stored before grants were scoped.

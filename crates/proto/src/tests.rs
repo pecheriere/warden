@@ -107,7 +107,7 @@ fn goal_rejects_line_separators_and_blank_fillers() {
         '\u{034F}',
         '\u{180E}',
         '\u{206A}',
-        '\u{FE0F}',
+        '\u{FE00}',
         '\u{E0100}',
     ] {
         assert!(
