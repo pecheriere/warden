@@ -106,9 +106,10 @@ impl TryFrom<String> for UnixUser {
 string_newtype!(UnixUser);
 
 /// Human-readable purpose of a request: 1 to 500 characters after trimming
-/// Unicode whitespace, single line (no control characters), and free of
-/// invisible format characters (general category Cf: bidi overrides and
-/// isolates, zero-width characters, BOM, soft hyphen, tags, ...), which could
+/// Unicode whitespace, single line (no control characters, no line or paragraph
+/// separators), and free of invisible characters (general category Cf: bidi
+/// overrides and isolates, zero-width characters, BOM, soft hyphen, tags, and
+/// the blank fillers, see `is_hidden_char`), which could
 /// make the text the owner reads differ from what was sent. The stored value
 /// is trimmed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

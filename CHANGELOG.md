@@ -14,6 +14,10 @@ All notable changes to this project are recorded here. The format follows
 
 ### Changed
 
+- A goal, a session label and the directory of an automatic GitHub request are refused if
+  they hold a line or paragraph separator or an invisible filler (Hangul fillers, variation
+  selectors, the blank braille pattern), as they already were for control and format
+  characters.
 - The broker signs a release manifest only if every plain file name in it carries the
   release's version as a component (`warden-1.2.3-x86_64.tar.gz`, `warden_1.2.3_amd64.deb`);
   a name without it is refused, as an image reference with another tag already was.

@@ -591,10 +591,10 @@ These were recorded during implementation and are accepted for this release.
   user. A `_FILE` keeps them out, and may allow group access. It is read once at
   startup.
 - **Goals are free text.** The goal is a single line of at most 500 characters
-  without control characters or invisible format characters (bidi overrides,
-  zero-width characters). The owner decides on the goal alone, and a
-  prompt-injected agent can write a misleading goal. The fingerprint check,
-  the narrow user and the short window limit the damage.
+  without control characters, line or paragraph separators or invisible characters
+  (bidi overrides, zero-width characters, blank fillers). The owner decides on
+  the goal alone, and a prompt-injected agent can write a misleading goal. The
+  fingerprint check, the narrow user and the short window limit the damage.
 
 - **A session label is a claim.** It has the rules of a goal, at most 64 characters
   on one line, and the same limit: nothing checks it. Sessions of one agent run as

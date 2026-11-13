@@ -96,19 +96,60 @@ fn is_lower_hex(s: &str, len: usize) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
-/// Refuses control characters and invisible format characters (general category
-/// Cf) in text that an agent writes for the owner to read.
+/// Whether `c` does not show as itself in text an agent writes for the owner to
+/// read: a control character, an invisible format character (general category
+/// Cf: bidirectional controls, zero-width characters, the soft hyphen, the byte
+/// order mark, the tag characters), a line or paragraph separator, or another
+/// default-ignorable or blank filler code point (the Hangul fillers, the
+/// combining grapheme joiner, the variation selectors, the blank braille
+/// pattern).
+///
+/// Every place that shows such text decides by this one function, so the lists
+/// cannot drift apart.
+#[must_use]
+pub fn is_hidden_char(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c.general_category(),
+            GeneralCategory::Format
+                | GeneralCategory::LineSeparator
+                | GeneralCategory::ParagraphSeparator
+        )
+        || matches!(
+            c,
+            '\u{34f}'
+                | '\u{115f}'..='\u{1160}'
+                | '\u{17b4}'..='\u{17b5}'
+                | '\u{180b}'..='\u{180f}'
+                | '\u{2065}'
+                | '\u{2800}'
+                | '\u{3164}'
+                | '\u{fe00}'..='\u{fe0f}'
+                | '\u{ffa0}'
+                | '\u{fff0}'..='\u{fff8}'
+                | '\u{e0000}'..='\u{e0fff}'
+        )
+}
+
+/// Refuses control characters, invisible characters and line or paragraph
+/// separators (see [`is_hidden_char`]) in text that an agent writes for the owner
+/// to read, which is one line.
 fn check_free_text(what: &'static str, text: &str) -> Result<(), ParseError> {
     if text.chars().any(char::is_control) {
         return Err(ParseError::new(what, "must not contain control characters"));
     }
-    if text
-        .chars()
-        .any(|c| c.general_category() == GeneralCategory::Format)
-    {
+    if text.chars().any(|c| {
+        matches!(
+            c.general_category(),
+            GeneralCategory::LineSeparator | GeneralCategory::ParagraphSeparator
+        )
+    }) {
+        return Err(ParseError::new(what, "must be one line"));
+    }
+    if text.chars().any(is_hidden_char) {
         return Err(ParseError::new(
             what,
-            "must not contain invisible format characters",
+            "must not contain invisible characters",
         ));
     }
     Ok(())

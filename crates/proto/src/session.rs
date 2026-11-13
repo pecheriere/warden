@@ -8,7 +8,6 @@ use std::fmt;
 use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
-use unicode_properties::{GeneralCategory, UnicodeGeneralCategory as _};
 use url::{Host, Url};
 
 use super::{ParseError, check_free_text};
@@ -41,14 +40,6 @@ impl TryFrom<String> for SessionLabel {
             return Err(ParseError::new(WHAT, "must be 1 to 64 characters"));
         }
         check_free_text(WHAT, trimmed)?;
-        if trimmed.chars().any(|c| {
-            matches!(
-                c.general_category(),
-                GeneralCategory::LineSeparator | GeneralCategory::ParagraphSeparator
-            )
-        }) {
-            return Err(ParseError::new(WHAT, "must be one line"));
-        }
         Ok(Self(trimmed.to_owned()))
     }
 }
