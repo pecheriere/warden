@@ -11,6 +11,12 @@ All notable changes to this project are recorded here. The format follows
 - New audit entry: `release_step_started`. An older `warden-server audit verify` refuses a
   log holding one.
 
+### Changed
+
+- The broker signs a release manifest only if every plain file name in it carries the
+  release's version as a component (`warden-1.2.3-x86_64.tar.gz`, `warden_1.2.3_amd64.deb`);
+  a name without it is refused, as an image reference with another tag already was.
+
 ### Fixed
 
 - A release's commit is checked against the default branch's head by commit id, read from

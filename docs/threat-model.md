@@ -1078,8 +1078,14 @@ This section covers the request, the approval and the tag, manifest and publish 
   owner's, and what it costs is calls on the owner's App.
 - **The broker signs only a manifest that passes fixed rules.** The agent builds the manifest and
   the broker signs what it sent, so the rules are the guard: the grant's file name, lines of a
-  lowercase SHA-256 digest and a name, plain file names or image references at the approved
-  version only, no duplicates, 64 KiB at most. The signature is in the namespace the owner's item
+  lowercase SHA-256 digest and a name, plain file names that carry the approved version as a
+  component or image references tagged with it, no duplicates, 64 KiB at most. So a manifest
+  signed for one version cannot list another version's files. The signed bytes name neither the
+  tag nor the repository, and that format is what existing verifiers check, so the binding is
+  through the names only: a name carrying `1.2.3` is also accepted when it continues with a
+  pre-release suffix (`-rc.1`), which the name rule cannot tell from a platform or package
+  release suffix (`-1.x86_64`), and the repository is told apart only by its release key.
+  Verifiers fetch the manifest from the release they want. The signature is in the namespace the owner's item
   names, which tag signatures (`git`) and commit signatures never share. The broker cannot know
   whether a digest is the digest of the right artifact: the owner approved the release, and the
   verifier trusts the key, so the digests are the agent's claim, as with any build the agent runs.

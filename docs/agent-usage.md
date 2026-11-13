@@ -562,8 +562,9 @@ warden release publish example-owner/example-repo v1.2.3
 - **`sign-manifest`** sends the file you built. Its base name must be the file name the owner
   approved. The manifest is lines of `<64 lowercase hex digits>  <name>`, each ending in a line
   feed, at most 64 KiB (a larger file is refused on your machine, and nothing is sent), with no
-  name twice. A name is a plain file name, or an image reference tagged with the release's
-  version, such as `ghcr.io/example-owner/example-repo:1.2.3`. The broker signs what you sent and
+  name twice. A name is a plain file name that carries the release's version, such as
+  `warden-1.2.3-x86_64-unknown-linux-gnu.tar.gz` or `warden_1.2.3_amd64.deb`, or an image
+  reference tagged with it, such as `ghcr.io/example-owner/example-repo:1.2.3`. The broker signs what you sent and
   cannot know whether a digest is that of the right artifact, so run your own checks on the
   artifacts first. It attaches the manifest and its `.sig` to the **draft** release of the tag,
   so create the draft first (your release workflow does). A manifest that breaks a rule, or a

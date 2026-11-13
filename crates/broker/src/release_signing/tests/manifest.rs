@@ -29,7 +29,58 @@ fn accepts_warden_manifest() {
 
 #[test]
 fn accepts_a_single_file_line() {
-    assert_eq!(check(&format!("{DIGEST_A}  a_b-c+d.1\n")), Ok(()));
+    assert_eq!(check(&format!("{DIGEST_A}  a_b-c+d_1.2.3.x\n")), Ok(()));
+}
+
+#[test]
+fn accepts_file_names_that_carry_the_version() {
+    for good in [
+        "1.2.3",
+        "warden-1.2.3",
+        "warden-1.2.3.tar.gz",
+        "warden_1.2.3_amd64.deb",
+        "warden-1.2.3-1.x86_64.rpm",
+        "warden-server-1.2.3-aarch64-apple-darwin.tar.gz",
+        "x-0.0.1-1.2.3-y",
+    ] {
+        assert_eq!(check(&format!("{DIGEST_A}  {good}\n")), Ok(()), "{good}");
+    }
+    assert_eq!(
+        check_manifest(
+            "x-1.2.3-rc.1-SHA256SUMS",
+            "1.2.3-rc.1",
+            "x-1.2.3-rc.1-SHA256SUMS",
+            format!("{DIGEST_A}  x-1.2.3-rc.1-linux.tar.gz\n").as_bytes()
+        ),
+        Ok(())
+    );
+}
+
+#[test]
+fn refuses_file_names_without_the_version() {
+    for bad in [
+        "warden.tar.gz",
+        "warden-1.2.4-x86_64.tar.gz",
+        "warden-11.2.3.tar.gz",
+        "warden-1.2.30.tar.gz",
+        "warden-1.2.3.4.tar.gz",
+        "warden.1.2.3.tar.gz",
+        "warden-1.2.3+build.tar.gz",
+        "warden1.2.3.tar.gz",
+    ] {
+        assert_eq!(
+            check(&format!("{DIGEST_A}  {bad}\n")),
+            Err(ManifestError::BadName { line: 1 }),
+            "{bad}"
+        );
+    }
+    // A later line is checked the same way.
+    assert_eq!(
+        check(&format!(
+            "{DIGEST_A}  warden-1.2.3.tar.gz\n{DIGEST_B}  warden-0.9.0.tar.gz\n"
+        )),
+        Err(ManifestError::BadName { line: 2 })
+    );
 }
 
 #[test]
@@ -50,7 +101,7 @@ fn refuses_oversized() {
     let mut exact = String::new();
     let mut i = 0_u32;
     while exact.len() + 80 <= 65_536 {
-        writeln!(exact, "{DIGEST_A}  f{i}").unwrap();
+        writeln!(exact, "{DIGEST_A}  f{i}-1.2.3").unwrap();
         i += 1;
     }
     assert!(exact.len() <= 65_536);
@@ -148,7 +199,9 @@ fn refuses_image_with_other_tag() {
 #[test]
 fn refuses_duplicate_name() {
     assert_eq!(
-        check(&format!("{DIGEST_A}  a\n{DIGEST_B}  b\n{DIGEST_B}  a\n")),
+        check(&format!(
+            "{DIGEST_A}  a-1.2.3\n{DIGEST_B}  b-1.2.3\n{DIGEST_B}  a-1.2.3\n"
+        )),
         Err(ManifestError::DuplicateName { line: 3 })
     );
 }
@@ -162,7 +215,7 @@ fn refuses_empty() {
 #[test]
 fn refuses_blank_lines() {
     assert_eq!(
-        check(&format!("{DIGEST_A}  a\n\n")),
+        check(&format!("{DIGEST_A}  a-1.2.3\n\n")),
         Err(ManifestError::BadLine { line: 2 })
     );
 }

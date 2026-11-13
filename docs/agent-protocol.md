@@ -1121,9 +1121,13 @@ The manifest is refused unless all of this holds:
 - At most 64 KiB, UTF-8, at least one line, every line ending with a line feed (no carriage
   returns).
 - Each line is 64 lowercase hex digits, two spaces and a name.
-- A name is a file name (`A-Z a-z 0-9 . _ + -`, not `.` or `..`) or an image reference
-  `<registry>/<path>:<version>` of lowercase `a-z 0-9 . _ -` segments whose tag is exactly the
-  release's version.
+- A name is a file name (`A-Z a-z 0-9 . _ + -`, not `.` or `..`) that carries the release's
+  version as a component, or an image reference `<registry>/<path>:<version>` of lowercase
+  `a-z 0-9 . _ -` segments whose tag is exactly the release's version. A file name carries the
+  version when the version starts it or follows `-` or `_`, and ends it or is followed by `-`,
+  `_`, or a `.` that is not followed by a digit: `warden-1.2.3-x86_64.tar.gz`,
+  `warden_1.2.3_amd64.deb` and `warden-1.2.3-1.x86_64.rpm` carry `1.2.3`, `warden.tar.gz` and
+  `warden-1.2.3.4.tar.gz` do not.
 - No name appears twice.
 
 The step is claimed once the checks pass and the tag has a draft release; a refusal before that
