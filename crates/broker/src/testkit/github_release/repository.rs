@@ -270,6 +270,7 @@ impl Repository {
             }
             ("GET", false, ["compare", range]) => self.compare(range, query("page")),
             ("GET", false, ["git", "ref", "tags", tag]) => self.ref_answer(tag),
+            ("GET", false, ["git", "ref", "heads", branch @ ..]) => self.head_answer(branch),
             ("GET", false, ["git", "tags", sha]) => {
                 self.tags.get(*sha).map_or_else(not_found, |t| {
                     let tagger = t.tagger.as_ref().map(|(name, email, seconds)| {
@@ -336,14 +337,17 @@ impl Repository {
         let Some((base, head)) = range.split_once("...") else {
             return not_found();
         };
-        if head != self.default_branch || !self.commits.contains_key(base) {
+        let Some(head) = self.resolve(head) else {
+            return not_found();
+        };
+        if !self.commits.contains_key(base) {
             return not_found();
         }
-        let status = if base == self.head {
+        let status = if base == head {
             "identical"
-        } else if self.is_ancestor(base, &self.head) {
+        } else if self.is_ancestor(base, head) {
             "ahead"
-        } else if self.is_ancestor(&self.head, base) {
+        } else if self.is_ancestor(head, base) {
             "behind"
         } else {
             "diverged"
@@ -356,6 +360,38 @@ impl Repository {
             Vec::new()
         };
         json_answer(200, &json!({"status": status, "files": files}))
+    }
+
+    /// The commit `name` stands for in a compare: a commit id, or a name looked up
+    /// as Git does, tags before branches, so that a tag named like the default
+    /// branch wins over it.
+    fn resolve<'a>(&'a self, name: &'a str) -> Option<&'a str> {
+        if self.commits.contains_key(name) {
+            return Some(name);
+        }
+        if let Some(mut sha) = self
+            .refs
+            .get(&format!("refs/tags/{name}"))
+            .map(String::as_str)
+        {
+            while let Some(tag) = self.tags.get(sha) {
+                sha = &tag.object;
+            }
+            return Some(sha);
+        }
+        (name == self.default_branch).then_some(self.head.as_str())
+    }
+
+    /// `git/ref/heads/<branch>`: the default branch is the only branch there is.
+    fn head_answer(&self, segments: &[&str]) -> Scripted {
+        let branch = segments.join("/");
+        if branch != self.default_branch {
+            return not_found();
+        }
+        json_answer(
+            200,
+            &json!({"ref": format!("refs/heads/{branch}"), "object": {"sha": self.head, "type": "commit"}}),
+        )
     }
 
     fn ref_answer(&self, tag: &str) -> Scripted {

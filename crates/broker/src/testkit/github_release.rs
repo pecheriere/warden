@@ -15,9 +15,9 @@
 //!   [`TOKEN`], limited to what the request asked for. Other installation ids
 //!   belong to the plain token route of the upstream;
 //! - on an installed repository `/repos/<owner>/<name>`: `GET` of the repository,
-//!   `git/commits/<sha>`, `compare/<base>...<branch>`, `git/ref/tags/<tag>`,
-//!   `git/tags/<sha>`, `contents/<path>?ref=<sha>`, `tags`, `releases`; `POST` of
-//!   `git/tags` and `git/refs`; `PATCH` of `releases/<id>`; `DELETE` of
+//!   `git/commits/<sha>`, `compare/<base>...<head>`, `git/ref/tags/<tag>`,
+//!   `git/ref/heads/<branch>`, `git/tags/<sha>`, `contents/<path>?ref=<sha>`,
+//!   `tags`, `releases`; `POST` of `git/tags` and `git/refs`; `PATCH` of `releases/<id>`; `DELETE` of
 //!   `releases/assets/<id>`;
 //! - `POST /uploads/repos/<owner>/<name>/releases/<id>/assets?name=<name>`: an
 //!   asset upload, which only this path takes, as GitHub's uploads host has its

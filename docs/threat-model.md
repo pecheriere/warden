@@ -1049,7 +1049,9 @@ This section covers the request, the approval and the tag, manifest and publish 
   asked, and again as the owner decides. The page shows those facts, with the agent's text
   escaped, control characters as escapes and the changelog cut at 16 KiB with a note. A request
   for a commit off the default branch, or a tag that exists on another commit or under another
-  key, is refused before it is made. Nothing GitHub said is quoted in an error, a log line or an
+  key, is refused before it is made. The default branch's head is read from its own ref
+  (`refs/heads/<branch>`) and compared with the commit by commit id, so a tag named like the
+  branch cannot stand for it. Nothing GitHub said is quoted in an error, a log line or an
   audit entry.
 - **The grant is bound to the key and the App.** It holds a digest of the facts and the key; a
   step is refused once what the broker reads no longer matches it.

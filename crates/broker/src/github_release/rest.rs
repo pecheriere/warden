@@ -230,9 +230,10 @@ fn title(message: &str) -> String {
         .collect()
 }
 
-/// Whether `name` is a branch name that is safe to put in a compare path: no
-/// control or space characters, none of git's forbidden ones, no `..` or `@{`,
-/// and not starting or ending with `/` or `.`.
+/// Whether `name` is a branch name that is safe to put in a ref path, one segment
+/// per component: no control or space characters, none of git's forbidden ones,
+/// no `..`, `@{` or empty component, no component starting with `.`, and not
+/// ending with `/` or `.`.
 fn is_plain_branch(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 255
@@ -241,6 +242,7 @@ fn is_plain_branch(name: &str) -> bool {
         && !name.contains("..")
         && !name.contains("@{")
         && !name.contains("//")
+        && !name.contains("/.")
         && name
             .chars()
             .all(|c| !c.is_control() && !" ~^:?*[\\".contains(c))
@@ -355,15 +357,27 @@ impl ReleaseClient<'_> {
 
     /// Whether `id` is the head of the default branch or one of its ancestors.
     ///
+    /// The branch's head is read from its exact ref, `refs/heads/<branch>`, and
+    /// compared by commit id: a name in a compare could stand for a tag of the same
+    /// name.
+    ///
     /// # Errors
-    /// A [`GithubError`] from either call, or [`GithubError::Unreadable`] for a
-    /// branch name or comparison status that is not understood.
+    /// A [`GithubError`] from any call, or [`GithubError::Unreadable`] for a branch
+    /// name, branch ref or comparison status that is not understood.
     pub async fn on_default_branch(&self, id: &CommitId) -> Result<bool, GithubError> {
         let repository: RepositoryAnswer = self.get(&[], &[]).await?;
-        if !is_plain_branch(&repository.default_branch) {
+        let branch = repository.default_branch;
+        if !is_plain_branch(&branch) {
             return Err(GithubError::Unreadable);
         }
-        let range = format!("{id}...{}", repository.default_branch);
+        let mut path = vec!["git", "ref", "heads"];
+        path.extend(branch.split('/'));
+        let head: RefAnswer = self.get(&path, &[]).await?;
+        if head.name != format!("refs/heads/{branch}") || head.object.kind != "commit" {
+            return Err(GithubError::Unreadable);
+        }
+        let head = object_id(head.object.sha)?;
+        let range = format!("{id}...{head}");
         // The status and the counts are on every page, but the list of changed
         // files, with their patches, is only on page 1 whatever `per_page` is (931
         // KB for a real compare). Page 2 of one-commit pages has no files.

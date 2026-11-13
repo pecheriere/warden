@@ -6,6 +6,11 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- A release's commit is checked against the default branch's head by commit id, read from
+  the branch's own ref, at the request, on the approval page and at the tag step.
+
 ## [0.13.0] - 2026-11-12
 
 ### Upgrading
