@@ -132,8 +132,9 @@ doctor` when it runs; neither prints its content. `serve` refuses to start, and
 doctor fails its `config` check, naming the `_FILE` variable, when:
 
 - both forms of one secret are set;
-- the file is missing or unreadable, or is not a regular file;
-- other users have any access to it (mode bits `0o007`; group access is allowed);
+- the file is missing or unreadable, is not a regular file, or is a symbolic link;
+- it is owned by neither the user warden runs as nor root;
+- group or other users have any access to it (mode bits `0o077`: use `0600` or `0400`);
 - it is empty, not valid UTF-8, larger than 32 KiB or more than one line. A
   line ending at the end of the file is removed.
 

@@ -588,8 +588,9 @@ These were recorded during implementation and are accepted for this release.
 - **Secrets in the environment.** Unless given through a `_FILE` variable (see
   [Configuration](configuration.md#secrets-in-files)), the Connect token and the
   notifier secrets are in the process environment, readable by root and the same
-  user. A `_FILE` keeps them out, and may allow group access. It is read once at
-  startup.
+  user. A `_FILE` keeps them out. The file must be a regular file, not a link, owned by
+  warden's user or root and private to it (no group or other access), and is checked
+  and read through one open handle, once, at startup.
 - **Goals are free text.** The goal is a single line of at most 500 characters
   without control characters, line or paragraph separators or invisible characters
   (bidi overrides, zero-width characters, blank fillers). The owner decides on

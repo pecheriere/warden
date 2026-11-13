@@ -8,6 +8,9 @@ All notable changes to this project are recorded here. The format follows
 
 ### Upgrading
 
+- A `*_FILE` secret file must be mode `0600` or `0400`, owned by warden's user or root, and not
+  a symbolic link; group-readable files and links were accepted before. See
+  [Upgrading](docs/upgrading.md#secret-files).
 - New audit entries: `release_step_started`, `release_published_changed` and
   `release_published_changed_notified`. An older `warden-server audit verify` refuses a log
   holding one.
