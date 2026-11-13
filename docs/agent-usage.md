@@ -41,8 +41,9 @@ In short:
    `warden login` command for the agent's machine.
 3. Install the CLI there and run that command. `warden doctor` then checks
    the setup ([what it checks](configuration.md#checking-an-agent-machine)).
-4. Paste [the instructions](agent-instructions.md) into the agent's `AGENTS.md`
-   or `CLAUDE.md`.
+4. Give the agent [the instructions](agent-instructions.md): a session-start
+   hook that runs `warden prime --brief`, or the one-line rule, as
+   [Instructions to give an agent](#instructions-to-give-an-agent) says.
 
 The rest of this section gives the details.
 
@@ -1046,6 +1047,42 @@ never try to get around warden by any other route.
 
 ## Instructions to give an agent
 
-[Instructions for an agent](agent-instructions.md) is a block to paste into an
-agent's `AGENTS.md` or `CLAUDE.md`: how to ask, how to write a goal, how to
-choose a window, when to revoke and what to do when denied.
+[Instructions for an agent](agent-instructions.md) says how to ask, how to write
+a goal, how to choose a window, when to revoke and what to do when denied. The
+CLI carries a copy of it: `warden prime` prints it with what this broker offers
+the agent (as `warden list` prints it), leaving out the sections for what the
+broker does not offer, and in a GitHub checkout adds what it offers for that
+repository. `warden prime --brief` prints the short form: about ten lines that
+name what warden covers here, say never to use other credentials or another way
+in, and say to run `warden prime` before the first request. It does not ask
+about the repository, so it makes one call to the broker.
+
+```sh
+warden prime
+warden prime --brief
+```
+
+Give the instructions to an agent one of three ways:
+
+- **A session-start hook** that runs `warden prime --brief`, for example a
+  Claude Code `SessionStart` hook. Use it with a key that signs without a
+  prompt, such as a dedicated agent socket as `warden login` sets up: every
+  call is signed, and a key that prompts for each signature would prompt at
+  every session start.
+- **One rule** in the agent's `AGENTS.md` or `CLAUDE.md`, for an agent with no
+  hooks or with a key that prompts:
+
+  ```markdown
+  Run `warden prime` before a task that needs an SSH host, an API secret, GitHub, commit signing or a release.
+  ```
+
+- **The block itself**, pasted into `AGENTS.md` or `CLAUDE.md`, for an agent
+  with no shell access at session start.
+
+Both forms exit 0 whatever the broker does, so a hook never fails because of
+it, and give the broker 3 seconds in all. When the broker cannot be reached,
+refuses the login or is too old to list what it offers, they print the rules
+without the offers and one line saying why, such as "warden: the broker cannot
+be reached: run `warden doctor`, and do not go around it." Before `warden login`
+has been run, they print only one line saying warden is installed but not set
+up.

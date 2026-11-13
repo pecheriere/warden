@@ -128,6 +128,15 @@ pub(crate) enum Cmd {
         #[arg(long)]
         repo: Option<String>,
     },
+    /// Print instructions for an agent: when and how to ask warden for access,
+    /// with what this broker offers.
+    Prime {
+        /// Print the short form, for a session-start hook: what warden covers
+        /// here, and the rules in a few lines. Does not ask about the checkout's
+        /// repository.
+        #[arg(long)]
+        brief: bool,
+    },
     /// Show local grants, and the broker's view of this agent's grants and
     /// pending requests.
     Status,

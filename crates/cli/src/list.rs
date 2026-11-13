@@ -77,14 +77,19 @@ fn failed(error: &CallError) -> Exit {
 }
 
 fn too_old() -> Exit {
-    Exit::new(
-        EXIT_ERROR,
-        format!(
-            "this broker is too old to list what it offers; upgrade it to {}",
-            env!("CARGO_PKG_VERSION")
-        ),
+    Exit::new(EXIT_ERROR, too_old_message())
+}
+
+/// Why a broker without the offers routes lists nothing.
+pub fn too_old_message() -> String {
+    format!(
+        "this broker is too old to list what it offers; upgrade it to {}",
+        env!("CARGO_PKG_VERSION")
     )
 }
+
+/// What `render` says when the broker offers nothing.
+pub const NOTHING: &str = "The broker offers this agent nothing.";
 
 /// Text for a person or an agent; sections with nothing in them are left out.
 /// Everything the broker supplied is made safe to print.
@@ -142,7 +147,8 @@ pub fn render(offers: &Offers, repo: Option<&RepositoryOffer>) -> String {
         let _ = writeln!(out, "  Releases: {}", release_text(repo.release));
     }
     if out.is_empty() {
-        out.push_str("The broker offers this agent nothing.\n");
+        out.push_str(NOTHING);
+        out.push('\n');
     }
     out
 }

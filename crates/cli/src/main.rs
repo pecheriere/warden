@@ -16,6 +16,7 @@ mod http;
 mod install;
 mod list;
 mod login;
+mod prime;
 mod recover;
 mod release;
 mod request;
@@ -109,8 +110,9 @@ async fn main() -> ExitCode {
         Ok(cli) => cli,
         Err(e) => return parse_failure_exit(&e),
     };
-    // Doctor changes nothing, so not even the housekeeping runs before it.
-    if !matches!(cli.command, Cmd::Doctor { .. }) {
+    // Doctor and prime change nothing, so not even the housekeeping runs before
+    // them.
+    if !matches!(cli.command, Cmd::Doctor { .. } | Cmd::Prime { .. }) {
         cleanup_state(unix_now());
     }
     match run(cli.command).await {
@@ -239,6 +241,11 @@ async fn run(cmd: Cmd) -> Result<()> {
             ReleaseCmd::Publish { repository, tag } => release::run_publish(repository, tag).await,
         },
         Cmd::List { json, repo } => list::run(json, repo).await,
+        // It needs no configuration, and exits 0 whatever happens.
+        Cmd::Prime { brief } => {
+            prime::run(brief).await;
+            Ok(())
+        }
         Cmd::Status => status().await,
         Cmd::Revoke { grant } => revoke(&grant).await,
     }

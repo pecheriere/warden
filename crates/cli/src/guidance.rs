@@ -378,8 +378,9 @@ mod tests {
 
     /// Every `warden` command line in `doc`, with its continuation lines.
     fn commands(doc: &str) -> Vec<String> {
-        const SUBCOMMANDS: [&str; 8] = [
-            "login", "request", "ssh", "http", "status", "revoke", "doctor", "release",
+        const SUBCOMMANDS: [&str; 10] = [
+            "login", "request", "ssh", "http", "status", "revoke", "doctor", "release", "prime",
+            "list",
         ];
         let mut found = Vec::new();
         let mut lines = doc.lines();

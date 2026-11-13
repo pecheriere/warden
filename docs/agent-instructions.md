@@ -1,14 +1,44 @@
 # Instructions for an agent
 
-Paste the block below into the agent's `AGENTS.md` or `CLAUDE.md`, once the
-agent's machine is set up (see [Agent usage](agent-usage.md#one-time-setup)).
-The agent needs nothing else to ask for access. The reasoning behind these
-rules is in [Agent usage](agent-usage.md#rules-for-requesting-access), and
+`warden prime` prints the instructions below for an agent, from the copy built
+into the installed CLI. In place of the `warden:offers` marker it puts what the
+broker offers this agent, as `warden list` prints it. It leaves out the
+sections for what the broker does not offer, and in a git checkout of a GitHub
+repository it adds what the broker offers for that repository. Once the agent's
+machine is set up (see [Agent usage](agent-usage.md#one-time-setup)), the agent
+needs nothing else to ask for access. The reasoning behind these rules is in
+[Agent usage](agent-usage.md#rules-for-requesting-access), and
 [Examples](agent-examples.md) walks through an SSH deployment and an API call.
 
-Add the targets and secrets this agent may use where the block says so: it
-cannot list them, and it should not guess. If several sessions of this agent run
-on one machine, also see [Telling sessions apart](agent-usage.md#telling-sessions-apart).
+## Giving them to an agent
+
+- **A session-start hook**, for an agent whose key signs without a prompt (a
+  dedicated agent socket, as `warden login` sets up). The hook runs:
+
+  ```sh
+  warden prime --brief
+  ```
+
+  It prints [the short form](#the-short-form), about ten lines naming what
+  warden covers here, and asks the broker one question.
+- **One rule**, for an agent with no hooks, or with a key that prompts for every
+  signature. Put this line in the agent's `AGENTS.md` or `CLAUDE.md`:
+
+  ```markdown
+  Run `warden prime` before a task that needs an SSH host, an API secret, GitHub, commit signing or a release.
+  ```
+
+- **Pasting the block**, the fallback for an agent with no shell access at
+  session start: paste the block below into its `AGENTS.md` or `CLAUDE.md`.
+
+`warden list` shows the agent what it may ask for, so it does not have to
+guess. If several sessions of this agent run on one machine, also see
+[Telling sessions apart](agent-usage.md#telling-sessions-apart).
+
+The HTML comments in the block are for `warden prime`: `warden:section <name>`
+and `warden:end` wrap a part it prints only when the broker offers that kind of
+access, and `warden:offers` is where the offers go. They render to nothing in
+the agent's file.
 
 ````markdown
 ## Privileged access: warden
@@ -17,18 +47,23 @@ Reach SSH hosts and HTTP APIs that need a secret only through `warden`. A
 person decides each request on their phone. Never use other credentials,
 and never look for another way in.
 
-Available here: <the targets and users, and the secrets, this agent may ask for>
+What you may ask for here, as `warden list` prints it:
+
+<!-- warden:offers -->
 
 ### Asking for access
 
 Ask right before a task needs it, once per task, for only what that task needs.
 
+<!-- warden:section ssh -->
 SSH, as the least privileged user that can do the work:
 
 ```sh
 warden request ssh <target> --user <user> --for 15m --goal "<what and why>"
 ```
+<!-- warden:end -->
 
+<!-- warden:section api -->
 An API, read-only unless you must change something:
 
 ```sh
@@ -41,6 +76,7 @@ path:
 ```sh
 warden request api <secret> --methods POST --path <prefix> --for 15m --goal "<what and why>"
 ```
+<!-- warden:end -->
 
 `warden request` blocks until the person decides, for up to 11 minutes. Run it
 so it can wait that long, in the background if your tools time out sooner, and
@@ -122,6 +158,7 @@ warden http <secret> <METHOD> <url> --fail
 secret never reaches you, so do not try to read it. `warden status` lists
 your grants.
 
+<!-- warden:section signing -->
 ### Commits, if this machine signs through warden
 
 If `warden setup git` was run here, git commits are signed by the broker with no prompt,
@@ -136,7 +173,9 @@ warden request signing --goal "<which agent, and what it commits to>"
 If it fails because the broker cannot be reached, stop and tell the person. Do not turn
 signing off, and do not commit another way, to get past this. A signature says warden signed
 for you, not that anyone reviewed your change.
+<!-- warden:end -->
 
+<!-- warden:section github -->
 ### GitHub, if this machine uses warden for it
 
 If `warden setup github` was run here, `git` and `gh` get a token for GitHub from warden
@@ -157,7 +196,9 @@ still open a new issue on a public repository the App is installed on, and assum
 recall a token already minted, so keep to the repository your task is about, and post nowhere
 else. If a call says more than one grant covers the repository, stop and tell the person: they
 revoke one.
+<!-- warden:end -->
 
+<!-- warden:section release -->
 ### Releases, if the person asked you to make one
 
 Ask for the one release you were told to make, with `<sha>` the full 40-character commit id,
@@ -178,6 +219,7 @@ warden release publish <owner/name> <tag>
 Run `sign-manifest` once the draft release exists. A refusal is final for that step: tell the
 person what it said instead of trying another way, and never publish the draft
 yourself with another credential.
+<!-- warden:end -->
 
 ### When you are finished
 
@@ -212,6 +254,24 @@ warden doctor
 A denial is an answer. Never get around it or an unreachable broker: no other
 credentials, no other route, no splitting a denied request into smaller ones,
 and no rewording the goal to get a different answer. Stop and tell the person.
+````
+
+## The short form
+
+`warden prime --brief` prints this, for a session-start hook:
+
+````markdown
+<!-- warden:section brief -->
+## Privileged access: warden
+
+Privileged access here goes through `warden`: a person approves each request on
+their phone. It covers:
+
+<!-- warden:offers -->
+
+Never use other credentials, and never look for another way in.
+Run `warden prime` before your first request: it prints how to ask.
+<!-- warden:end -->
 ````
 
 ## What this has and has not been tested on
