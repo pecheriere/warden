@@ -821,11 +821,16 @@ holds decisions and grants. The broker's own log notes that an agent listed offe
 ```
 
 - A target or secret the owner marked `list=name` appears with `destination` or
-  `origin` set to `null`; one marked `list=hidden` is absent. Hiding changes only what
+  `origin` set to `null`; one marked `list=hidden`, or with an invalid `list` value, is
+  absent. Hiding changes only what
   is listed, never what can be requested. A relay target shows its host and port when
   listed in full, although the agent never connects there.
 - `github.max_window` is present only when a GitHub App is configured. No repository is
   named: the broker does not list the repositories it covers.
+- A part the broker could not read is named in `unavailable` and the rest stands. Only
+  when SSH targets, API secrets and commit signing all fail, the three parts every
+  backend reads from its store, is the answer `503` `BACKEND_UNAVAILABLE`, like the
+  other agent calls.
 - `releases.available` is true when a release signing key and a release GitHub App
   both exist. No repository is named.
 - `unavailable` names the parts that could not be read (`ssh_targets`, `api_secrets`,

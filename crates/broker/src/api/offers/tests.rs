@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use axum::http::StatusCode;
 use serde_json::Value;
 use ssh_key::rand_core::OsRng;
@@ -6,6 +8,8 @@ use warden_broker_proto::Window;
 use warden_broker_proto::offers::{OfferPart, Offers, SshModeName};
 use zeroize::Zeroizing;
 
+use crate::config::LocalSettings;
+use crate::policy::local::LocalBackend;
 use crate::policy::{ApiSecretPolicy, Listing, ReleaseAppKey, ReleaseSigningKey, SshTarget};
 use crate::policy::{RelayCredential, SshMode};
 use crate::testkit::github_app::RSA2048_PKCS8;
@@ -155,15 +159,19 @@ async fn github_and_signing_flags() {
             false,
         )
     };
-    broker.backend.add_release_key(signing());
-    assert!(!offers(&broker, &key).await.releases.available);
-    broker.backend.set_release_app(Some(
+    let release_app = || {
         ReleaseAppKey::new(
             "987654".to_owned(),
             std::str::from_utf8(RSA2048_PKCS8).unwrap(),
         )
-        .unwrap(),
-    ));
+        .unwrap()
+    };
+    broker.backend.set_release_app(Some(release_app()));
+    assert!(!offers(&broker, &key).await.releases.available);
+    broker.backend.set_release_app(None);
+    broker.backend.add_release_key(signing());
+    assert!(!offers(&broker, &key).await.releases.available);
+    broker.backend.set_release_app(Some(release_app()));
     assert!(offers(&broker, &key).await.releases.available);
     broker.backend.replace_release_keys(signing());
     broker.backend.set_release_app(None);
@@ -222,6 +230,55 @@ async fn all_unavailable_is_backend_unavailable() {
     assert_eq!(resp.status, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(resp.json()["error"], crate::requests::BACKEND_UNAVAILABLE);
     assert!(!resp.body.contains("192.0.2.99"), "{}", resp.body);
+}
+
+#[tokio::test]
+async fn the_stores_parts_failing_together_is_backend_unavailable() {
+    let (broker, key) = broker().await;
+    broker.backend.set_target_outage(Some(BACKEND_DOWN));
+    broker.backend.set_api_outage(Some(BACKEND_DOWN));
+    broker.backend.set_commit_signing_outage(Some(BACKEND_DOWN));
+
+    let resp = broker.api_get(&key, "/v1/offers").await;
+
+    assert_eq!(resp.status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(resp.json()["error"], crate::requests::BACKEND_UNAVAILABLE);
+}
+
+#[tokio::test]
+async fn two_of_the_stores_parts_failing_names_both() {
+    let (broker, key) = broker().await;
+    broker.backend.set_target_outage(Some(BACKEND_DOWN));
+    broker.backend.set_commit_signing_outage(Some(BACKEND_DOWN));
+
+    let got = offers(&broker, &key).await;
+
+    assert_eq!(
+        got.unavailable,
+        [OfferPart::SshTargets, OfferPart::CommitSigning]
+    );
+}
+
+#[tokio::test]
+async fn an_unreadable_local_policy_is_backend_unavailable() {
+    let dir = tempfile::tempdir().unwrap();
+    let settings = LocalSettings {
+        policy_file: dir.path().join("missing-policy.toml"),
+        secrets_dir: dir.path().join("missing-secrets"),
+    };
+    let broker =
+        TestBroker::with_secret_backend(Arc::new(LocalBackend::unaudited(&settings))).await;
+    let key = broker.add_agent("bot").await;
+
+    let resp = broker.api_get(&key, "/v1/offers").await;
+
+    assert_eq!(
+        resp.status,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "{}",
+        resp.body
+    );
+    assert_eq!(resp.json()["error"], crate::requests::BACKEND_UNAVAILABLE);
 }
 
 #[tokio::test]

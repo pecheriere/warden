@@ -3,7 +3,8 @@
 //! It decides no access, asks no one, creates no request and is not an audited
 //! request: the audit log records decisions and grants. Every source is read fresh
 //! from the backend. A source that cannot be read is named in `unavailable` and the
-//! rest of the answer stands; only when no source can be read is the answer the
+//! rest of the answer stands; only when the targets, the API secrets and commit
+//! signing, the parts every backend reads from its store, all fail is the answer the
 //! `BACKEND_UNAVAILABLE` error the other agent calls give.
 //!
 //! The listing view of a target or secret has no field for a host key, a relay
@@ -21,9 +22,6 @@ use crate::AppState;
 use crate::identity::AuthedAgent;
 use crate::policy::{ApiSecretPolicy, PolicyError, SshMode, SshTarget};
 use crate::requests::RequestError;
-
-/// How many parts [`Offers`] reads from the backend.
-const PARTS: usize = 5;
 
 pub(super) async fn list(
     State(state): State<AppState>,
@@ -58,7 +56,17 @@ pub(super) async fn list(
         },
     );
 
-    if read.unavailable.len() == PARTS {
+    // Every backend reads targets, API secrets and the commit signing key from its
+    // store; the local one answers GitHub and releases without reading anything. So
+    // only these three failing together means the backend cannot be read at all.
+    if [
+        OfferPart::SshTargets,
+        OfferPart::ApiSecrets,
+        OfferPart::CommitSigning,
+    ]
+    .iter()
+    .all(|part| read.unavailable.contains(part))
+    {
         return Err(Failure::Request(RequestError::Unavailable(
             read.details.join("; "),
         )));
