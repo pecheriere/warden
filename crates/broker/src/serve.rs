@@ -19,9 +19,12 @@ use tokio::sync::{Semaphore, watch};
 use tokio::task::JoinSet;
 
 /// Most connections the agent API listener holds open at once. Behind
-/// Tailscale Serve each request in flight is one connection, and agents hold
-/// at most [`crate::load::MAX_WAITS_PER_AGENT`] long-polls each, so a normal
-/// deployment stays far below this. With [`APPROVAL_CONNECTIONS`] and the
+/// Tailscale Serve each request in flight is one connection, and an agent holds
+/// at most [`crate::load::MAX_WAITS_PER_AGENT`] long-polls. A few agents stay far
+/// below this, but the two caps do not compose for many: 16 agents each at that
+/// many waits fill it, and idle keep-alive connections count until the header
+/// read timeout closes them. A full listener refuses new connections, so it
+/// fails closed, and the approval UI has its own cap. With [`APPROVAL_CONNECTIONS`] and the
 /// default relay and proxy limits, the process stays within the usual limit of
 /// 1024 open files.
 pub const API_CONNECTIONS: usize = 256;

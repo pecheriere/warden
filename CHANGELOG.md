@@ -14,6 +14,11 @@ All notable changes to this project are recorded here. The format follows
 - New audit entries: `release_step_started`, `release_published_changed` and
   `release_published_changed_notified`. An older `warden-server audit verify` refuses a log
   holding one.
+- The clients for 1Password Connect, the notifiers and the health probe no longer use a proxy
+  named in `HTTP_PROXY`, `HTTPS_PROXY` or `ALL_PROXY`; a deployment that reached them through
+  one needs a direct route. See [Upgrading](docs/upgrading.md#proxies-and-http2).
+- The listeners serve HTTP/1.1 only: a client that spoke HTTP/2 to them directly (h2c) must
+  use HTTP/1.1. Tailscale Serve and the CLI already do.
 
 ### Added
 
@@ -43,9 +48,6 @@ All notable changes to this project are recorded here. The format follows
 - A proxied API call may not set more routing and client-address headers: the `X-Forwarded-*`,
   `X-Original-*`, `X-Rewrite-*`, `X-Envoy-*` and `X-Override-*` families, `X-Client-IP`,
   `True-Client-IP`, `CF-Connecting-IP` and the other `*-Client-IP` and `*-Connecting-IP` names.
-- The clients for 1Password Connect, the notifiers and the health probe no longer use a proxy
-  named in `HTTP_PROXY`, `HTTPS_PROXY` or `ALL_PROXY`; a deployment that reached them through
-  one needs a direct route.
 - The release approval page and the commit title shown from GitHub hide the same characters a
   goal may not hold, decided by one shared check.
 - A new request's goal, session label and automatic GitHub request directory are refused if
@@ -59,7 +61,6 @@ All notable changes to this project are recorded here. The format follows
   a name without it is refused, as an image reference with another tag already was.
 - Each listener caps its open connections (256 for the agent API, 64 for the approval UI)
   and closes those beyond it, and drops a connection whose request headers take over 120 s.
-  The listeners serve HTTP/1.1 only.
 - Signed request bodies read before their signature is checked share a 32 MiB budget; a body
   that does not fit is a 503. An agent may have 16 status long-polls waiting at once; one
   more is a 429, which `warden request` retries.

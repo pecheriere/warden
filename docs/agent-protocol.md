@@ -496,7 +496,9 @@ that it is the expected key, as `-Y verify` with an allowed-signers file does
   an answer, which reaches the agent through Tailscale Serve as a 502. Request
   headers must arrive within 120 seconds of the broker starting to wait for
   them, which also closes a keep-alive connection idle that long. Connections
-  are HTTP/1.1.
+  are HTTP/1.1. The two caps do not add up for many agents: 16 agents each with
+  16 status long-polls waiting fill the agent API's 256 connections, and further
+  connections are closed until some end.
 - **Identifiers.** Request and grant ids are 32 lowercase hex characters.
   A malformed id in a path is `400 {"error":"invalid id"}`.
 - **Times** are Unix seconds (integers).

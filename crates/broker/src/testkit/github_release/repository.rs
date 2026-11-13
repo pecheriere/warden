@@ -399,8 +399,7 @@ impl Repository {
     }
 
     /// The commit `name` stands for in a compare: a commit id, or a name looked up
-    /// as Git does, tags before branches, so that a tag named like the default
-    /// branch wins over it.
+    /// as Git does, tags before branches.
     fn resolve<'a>(&'a self, name: &'a str) -> Option<&'a str> {
         if self.commits.contains_key(name) {
             return Some(name);

@@ -342,7 +342,8 @@ change.
     ends idle keep-alive connections; behind Serve, which forwards only
     complete request heads, this matters only for a listener reached without
     it. What remains: a compromised agent, or a peer naming a known agent,
-    can fill the agent API's share, and other agents get 502s or 503s until
+    can fill the agent API's share (the body budget, for one, takes 16 slow
+    bodies declared at the 2 MiB limit of a proxied call), and other agents get 502s or 503s until
     it eases. That is availability of the agent API only, and fails closed:
     no access is given, and the owner can still open the approval UI and
     revoke.
@@ -1084,8 +1085,7 @@ This section covers the request, the approval and the tag, manifest and publish 
   escaped, control characters as escapes and the changelog cut at 16 KiB with a note. A request
   for a commit off the default branch, or a tag that exists on another commit or under another
   key, is refused before it is made. The default branch's head is read from its own ref
-  (`refs/heads/<branch>`) and compared with the commit by commit id, so a tag named like the
-  branch cannot stand for it. Nothing GitHub said is quoted in an error, a log line or an
+  (`refs/heads/<branch>`) and compared with the commit by commit id. Nothing GitHub said is quoted in an error, a log line or an
   audit entry.
 - **The grant is bound to the key and the App.** It holds a digest of the facts and the key; a
   step is refused once what the broker reads no longer matches it.

@@ -343,8 +343,7 @@ impl ReleaseClient<'_> {
     /// Whether `id` is the head of the default branch or one of its ancestors.
     ///
     /// The branch's head is read from its exact ref, `refs/heads/<branch>`, and
-    /// compared by commit id: a name in a compare could stand for a tag of the same
-    /// name.
+    /// the comparison names both commits by id.
     ///
     /// # Errors
     /// A [`GithubError`] from any call, or [`GithubError::Unreadable`] for a branch
