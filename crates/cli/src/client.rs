@@ -120,6 +120,7 @@ mod offers;
 mod release;
 
 pub(crate) use github::{require_scoped, scoped_or_refuse};
+pub(crate) use offers::{OffersError, read as read_offer};
 
 impl Client {
     /// A client for the API at `base`, authenticating with `auth`.

@@ -6,9 +6,10 @@
 /// How much of an item `warden list` shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Listing {
-    /// The item and where it points.
+    /// The item, what may be requested of it, and where it points.
     Full,
-    /// The item's name and kind only.
+    /// The item and what may be requested of it (users, longest window and
+    /// mode, or methods, path prefix and longest window), not where it points.
     Name,
     /// Nothing.
     Hidden,

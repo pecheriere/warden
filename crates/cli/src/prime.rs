@@ -7,6 +7,7 @@
 mod template;
 
 use std::collections::HashSet;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -14,7 +15,7 @@ use tokio::time::{Instant, timeout_at};
 use warden_broker_proto::offers::{OfferPart, Offers, RepositoryOffer};
 use warden_broker_proto::release::RepoName;
 
-use crate::client::{CallError, Client};
+use crate::client::{CallError, Client, OffersError, read_offer};
 use crate::{config, list};
 use template::{DOC, Section, Template};
 
@@ -26,8 +27,12 @@ const NOT_SET_UP: &str =
     "warden is installed here but not set up: `warden login` has not been run.";
 const UNREACHABLE: &str =
     "warden: the broker cannot be reached: run `warden doctor`, and do not go around it.";
-const REFUSED: &str =
-    "warden: the broker refused this agent's login: run `warden doctor`, and do not go around it.";
+const TIMED_OUT: &str =
+    "warden: the broker did not answer within 3 s: run `warden doctor`, and do not go around it.";
+const BROKER_ERROR: &str = "warden: the broker cannot read its policy now: run `warden doctor`, \
+                            and do not go around it.";
+const REFUSED: &str = "warden: the broker refused this agent's call or gave an answer this CLI \
+                       cannot read: run `warden doctor`, and do not go around it.";
 const UNUSABLE: &str = "warden: the configuration here cannot be used: run `warden doctor`, and \
                         do not go around it.";
 
@@ -60,10 +65,9 @@ enum Answer {
 pub async fn run(brief: bool) {
     let dir = std::env::current_dir().ok();
     let setup = setup_from(config::config_path());
-    print!(
-        "{}",
-        output(setup, dir.as_deref(), brief, OFFERS_TIMEOUT).await
-    );
+    let text = output(setup, dir.as_deref(), brief, OFFERS_TIMEOUT).await;
+    // A closed stdout leaves no one to tell, and prime exits 0 whatever happens.
+    let _ = std::io::stdout().lock().write_all(text.as_bytes());
 }
 
 /// The text for `setup`, run in `dir`: the brief section with `brief`,
@@ -95,6 +99,7 @@ async fn output(setup: Setup, dir: Option<&Path>, brief: bool, limit: Duration) 
     match answer {
         Answer::Offered(offers, _) if brief => template.brief(&brief_offers(&offers)),
         Answer::Offered(offers, repository) => {
+            let repository = repository.map(list::Repository::Offer);
             template.full(&kept(&offers), &list::render(&offers, repository.as_ref()))
         }
         Answer::Missing(reason) if brief => template.brief(&reason),
@@ -103,32 +108,41 @@ async fn output(setup: Setup, dir: Option<&Path>, brief: bool, limit: Duration) 
 }
 
 /// Asks the broker what it offers, and what it offers for `repo`, all within
-/// `limit`. Past it, the broker counts as unreachable; a repository answer that
+/// `limit`. Past it, the broker gets a line of its own; a repository answer that
 /// does not come in time, or fails, is left out.
 async fn ask(client: &Client, repo: Option<&RepoName>, limit: Duration) -> Answer {
     let deadline = Instant::now() + limit;
-    let offers = match timeout_at(deadline, client.offers()).await {
-        Ok(Ok(Some(offers))) => offers,
+    let body = match timeout_at(deadline, client.offers()).await {
+        Ok(Ok(Some(body))) => body,
         Ok(Ok(None)) => return Answer::Missing(format!("warden: {}.", list::too_old_message())),
-        Ok(Err(CallError::Unavailable(_))) | Err(_) => {
+        Ok(Err(OffersError::Call(CallError::Unavailable(_)))) => {
             return Answer::Missing(UNREACHABLE.to_owned());
         }
-        Ok(Err(_)) => return Answer::Missing(REFUSED.to_owned()),
+        Ok(Err(OffersError::Broker(_))) => return Answer::Missing(BROKER_ERROR.to_owned()),
+        Ok(Err(OffersError::Call(_))) => return Answer::Missing(REFUSED.to_owned()),
+        Err(_) => return Answer::Missing(TIMED_OUT.to_owned()),
+    };
+    let Ok(offers) = read_offer(&body) else {
+        return Answer::Missing(REFUSED.to_owned());
     };
     let repository = match repo {
         Some(repo) => timeout_at(deadline, client.repository_offer(repo))
             .await
             .ok()
             .and_then(Result::ok)
-            .flatten(),
+            .flatten()
+            .and_then(|body| read_offer(&body).ok()),
         None => None,
     };
     Answer::Offered(offers, repository)
 }
 
 /// The sections for what the broker offers, or might: a part it could not
-/// read keeps its section.
+/// read keeps its section, and a part this CLI does not know keeps them all.
 fn kept(offers: &Offers) -> HashSet<Section> {
+    if offers.unavailable.contains(&OfferPart::Unknown) {
+        return Section::ALL.into();
+    }
     let unknown = |part| offers.unavailable.contains(&part);
     [
         (
@@ -199,6 +213,9 @@ fn brief_offers(offers: &Offers) -> String {
         } else if on {
             lines.push(format!("{label}: on"));
         }
+    }
+    if unreadable(OfferPart::Unknown) {
+        lines.push("Other offers: could not be read".to_owned());
     }
     if lines.is_empty() {
         list::NOTHING.to_owned()

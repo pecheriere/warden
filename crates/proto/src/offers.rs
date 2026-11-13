@@ -2,8 +2,9 @@
 //! GitHub, signing and release capabilities it may ask for. They carry names
 //! and limits only, never a credential, a host key or a secret value.
 //!
-//! Unknown fields are ignored on purpose, so an older client still reads the
-//! answer of a newer broker.
+//! Unknown fields are ignored on purpose, and every enum has an `Unknown`
+//! variant for a value it does not know, so an older client still reads the
+//! answer of a newer broker. The broker never sends `Unknown`.
 
 use serde::{Deserialize, Serialize};
 
@@ -58,6 +59,9 @@ pub enum SshModeName {
     Cert,
     /// The broker relays the connection.
     Relay,
+    /// A value this version does not know, from a newer broker.
+    #[serde(other)]
+    Unknown,
 }
 
 /// The host and port of a target.
@@ -115,6 +119,9 @@ pub enum OfferPart {
     CommitSigning,
     /// `releases`.
     Releases,
+    /// A value this version does not know, from a newer broker.
+    #[serde(other)]
+    Unknown,
 }
 
 /// What the broker offers for one repository, as
@@ -152,6 +159,9 @@ pub enum GithubTokenStatus {
     NotConfigured,
     /// The broker could not tell.
     Unavailable,
+    /// A value this version does not know, from a newer broker.
+    #[serde(other)]
+    Unknown,
 }
 
 /// Whether a repository can be released.
@@ -166,6 +176,9 @@ pub enum ReleaseStatus {
     NoReleaseApp,
     /// The broker could not tell.
     Unavailable,
+    /// A value this version does not know, from a newer broker.
+    #[serde(other)]
+    Unknown,
 }
 
 #[cfg(test)]
@@ -239,6 +252,28 @@ mod tests {
             r#""configured": true, "newer": 2,"#,
         );
         serde_json::from_str::<Offers>(&with_extra).unwrap();
+    }
+
+    #[test]
+    fn unknown_values_are_read() {
+        let newer = OFFERS
+            .replace(r#""mode": "relay""#, r#""mode": "tunnel""#)
+            .replace(
+                r#""unavailable": ["api_secrets"]"#,
+                r#""unavailable": ["api_secrets", "webhooks"]"#,
+            );
+        let offers: Offers = serde_json::from_str(&newer).unwrap();
+        assert_eq!(offers.ssh_targets[1].mode, SshModeName::Unknown);
+        assert_eq!(
+            offers.unavailable,
+            [OfferPart::ApiSecrets, OfferPart::Unknown]
+        );
+        let newer = REPOSITORY
+            .replace(r#""covered""#, r#""suspended""#)
+            .replace(r#""ready""#, r#""frozen""#);
+        let offer: RepositoryOffer = serde_json::from_str(&newer).unwrap();
+        assert_eq!(offer.github_token, GithubTokenStatus::Unknown);
+        assert_eq!(offer.release, ReleaseStatus::Unknown);
     }
 
     #[test]

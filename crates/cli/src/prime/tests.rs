@@ -6,12 +6,16 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use warden_broker_proto::Window;
 use warden_broker_proto::offers::{
-    ApiSecretOffer, Availability, GithubOffer, GithubTokenStatus, Offers, ReleaseStatus,
+    ApiSecretOffer, Availability, GithubOffer, GithubTokenStatus, OfferPart, Offers, ReleaseStatus,
     RepositoryOffer, SshModeName, SshTargetOffer,
 };
 use zeroize::Zeroizing;
 
-use super::{NOT_SET_UP, OFFERS_TIMEOUT, Setup, UNREACHABLE, UNUSABLE, output, setup_from};
+use super::template::Section;
+use super::{
+    BROKER_ERROR, NOT_SET_UP, OFFERS_TIMEOUT, REFUSED, Setup, TIMED_OUT, UNREACHABLE, UNUSABLE,
+    brief_offers, kept, output, setup_from,
+};
 use crate::client::{Auth, Client};
 
 /// Words only the GitHub, signing, release, SSH and API sections hold.
@@ -253,8 +257,53 @@ async fn broker_hangs_returns_within_timeout() {
     // A short limit keeps the test quick; the command finishing at all is the check.
     let text = output(ready(&url), None, false, Duration::from_millis(100)).await;
     assert_all_rules(&text);
-    assert!(text.contains(&format!("\n{UNREACHABLE}\n")), "{text}");
-    assert!(UNREACHABLE.contains("cannot be reached") && UNREACHABLE.contains("warden doctor"));
+    assert!(text.contains(&format!("\n{TIMED_OUT}\n")), "{text}");
+    assert!(TIMED_OUT.contains("within 3 s") && TIMED_OUT.contains("warden doctor"));
+}
+
+/// A broker that answers every call with `status` and `body`.
+async fn answering(status: u16, body: &'static str) -> url::Url {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = url::Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+    tokio::spawn(async move {
+        while let Ok((mut conn, _)) = listener.accept().await {
+            let mut buf = [0_u8; 4096];
+            let _ = conn.read(&mut buf).await;
+            let resp = format!(
+                "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\n\
+                 content-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = conn.write_all(resp.as_bytes()).await;
+        }
+    });
+    url
+}
+
+#[tokio::test]
+async fn each_failure_has_its_own_line() {
+    for (status, body, line) in [
+        (503, r#"{"error":"backend unavailable"}"#, BROKER_ERROR),
+        (500, "", BROKER_ERROR),
+        (401, r#"{"error":"unauthorized"}"#, REFUSED),
+        (200, r#"{"ssh_targets":"no"}"#, REFUSED),
+    ] {
+        let url = answering(status, body).await;
+        let text = prime(ready(&url), None, false).await;
+        assert_all_rules(&text);
+        assert!(text.contains(&format!("\n{line}\n")), "{status}: {text}");
+        assert!(!text.contains(UNREACHABLE), "{status}: {text}");
+    }
+    assert!(BROKER_ERROR.contains("cannot read its policy now"));
+    assert!(REFUSED.contains("refused this agent's call or gave an answer this CLI cannot read"));
+}
+
+#[test]
+fn an_unknown_unavailable_part_keeps_every_section() {
+    let mut offers = empty();
+    offers.unavailable = vec![OfferPart::Unknown];
+    assert_eq!(kept(&offers), Section::ALL.into());
+    assert_eq!(brief_offers(&offers), "Other offers: could not be read");
 }
 
 #[tokio::test]

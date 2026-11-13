@@ -12,7 +12,7 @@ use warden_broker_proto::offers::{
 };
 use warden_broker_proto::release::RepoName;
 
-use crate::client::{CallError, Client};
+use crate::client::{Client, OffersError, read_offer};
 use crate::github_repo;
 use crate::{EXIT_ERROR, EXIT_USAGE, Exit};
 
@@ -34,45 +34,72 @@ pub async fn run(as_json: bool, repo: Option<String>) -> Result<()> {
             .and_then(|dir| checkout_repository(&dir)),
     };
     let (_, client) = crate::client()?;
-    let (offers, repository) = fetch(&client, repo.as_ref()).await?;
+    let fetched = fetch(&client, repo.as_ref()).await?;
+    if let Some(Err(e)) = &fetched.repository {
+        eprintln!("warden: warning: the answer about this repository could not be read: {e}");
+    }
     if as_json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&json_output(&offers, repository.as_ref()))?
-        );
+        println!("{}", serde_json::to_string_pretty(&json_output(&fetched))?);
     } else {
+        let offers: Offers = read_offer(&fetched.offers).map_err(|e| failed(&e))?;
+        let repository = match (repo, fetched.repository) {
+            (Some(name), Some(answer)) => Some(
+                answer
+                    .ok()
+                    .and_then(|body| read_offer(&body).ok())
+                    .map_or(Repository::Unreadable(name), Repository::Offer),
+            ),
+            _ => None,
+        };
         print!("{}", render(&offers, repository.as_ref()));
     }
     Ok(())
 }
 
-/// What `--json` prints.
-fn json_output(offers: &Offers, repository: Option<&RepositoryOffer>) -> serde_json::Value {
-    json!({ "offers": offers, "repository": repository })
+/// The broker's answers as it sent them.
+#[derive(Debug)]
+struct Fetched {
+    /// The body of `GET /v1/offers`.
+    offers: serde_json::Value,
+    /// The body of the repository call, or why it failed; `None` when no
+    /// repository was asked about, or the broker has no such route.
+    repository: Option<Result<serde_json::Value, OffersError>>,
+}
+
+/// What the broker answered about one repository, for the text output.
+pub enum Repository {
+    Offer(RepositoryOffer),
+    /// The call failed, or its answer could not be read.
+    Unreadable(RepoName),
+}
+
+/// What `--json` prints: the broker's bodies as received, so fields this CLI
+/// does not know are kept. An unreadable repository answer is `null`.
+fn json_output(fetched: &Fetched) -> serde_json::Value {
+    let repository = match &fetched.repository {
+        Some(Ok(body)) => body.clone(),
+        Some(Err(_)) | None => serde_json::Value::Null,
+    };
+    json!({ "offers": fetched.offers, "repository": repository })
 }
 
 /// What the broker offers, and what it offers for `repo`. A broker without the
-/// route is an error that says to upgrade it.
-async fn fetch(
-    client: &Client,
-    repo: Option<&RepoName>,
-) -> Result<(Offers, Option<RepositoryOffer>)> {
+/// offers route is an error that says to upgrade it; only that call failing is
+/// an error, as the repository answer is one line of the output.
+async fn fetch(client: &Client, repo: Option<&RepoName>) -> Result<Fetched> {
     let offers = client
         .offers()
         .await
         .map_err(|e| failed(&e))?
         .ok_or_else(too_old)?;
     let repository = match repo {
-        Some(repo) => client
-            .repository_offer(repo)
-            .await
-            .map_err(|e| failed(&e))?,
+        Some(repo) => client.repository_offer(repo).await.transpose(),
         None => None,
     };
-    Ok((offers, repository))
+    Ok(Fetched { offers, repository })
 }
 
-fn failed(error: &CallError) -> Exit {
+fn failed(error: &impl std::fmt::Display) -> Exit {
     Exit::new(EXIT_ERROR, error.to_string())
 }
 
@@ -83,7 +110,7 @@ fn too_old() -> Exit {
 /// Why a broker without the offers routes lists nothing.
 pub fn too_old_message() -> String {
     format!(
-        "this broker is too old to list what it offers; upgrade it to {}",
+        "this broker is too old to list what it offers; upgrade it to at least {}",
         env!("CARGO_PKG_VERSION")
     )
 }
@@ -94,7 +121,7 @@ pub const NOTHING: &str = "The broker offers this agent nothing.";
 /// Text for a person or an agent; sections with nothing in them are left out.
 /// Everything the broker supplied is made safe to print.
 #[must_use]
-pub fn render(offers: &Offers, repo: Option<&RepositoryOffer>) -> String {
+pub fn render(offers: &Offers, repo: Option<&Repository>) -> String {
     let mut out = String::new();
     let unreadable = |part| offers.unavailable.contains(&part);
 
@@ -132,19 +159,28 @@ pub fn render(offers: &Offers, repo: Option<&RepositoryOffer>) -> String {
     } else if offers.releases.available {
         out.push_str("Releases: available\n");
     }
-    if let Some(repo) = repo {
-        let _ = writeln!(out, "This repository ({}):", repo.repository);
-        let _ = writeln!(out, "  GitHub tokens: {}", token_text(repo.github_token));
-        let _ = writeln!(
-            out,
-            "  Commit signing: {}",
-            if repo.commit_signing {
-                "available"
-            } else {
-                "not available"
-            }
-        );
-        let _ = writeln!(out, "  Releases: {}", release_text(repo.release));
+    if offers.unavailable.contains(&OfferPart::Unknown) {
+        out.push_str("Other offers: could not be read\n");
+    }
+    match repo {
+        Some(Repository::Offer(repo)) => {
+            let _ = writeln!(out, "This repository ({}):", repo.repository);
+            let _ = writeln!(out, "  GitHub tokens: {}", token_text(repo.github_token));
+            let _ = writeln!(
+                out,
+                "  Commit signing: {}",
+                if repo.commit_signing {
+                    "available"
+                } else {
+                    "not available"
+                }
+            );
+            let _ = writeln!(out, "  Releases: {}", release_text(repo.release));
+        }
+        Some(Repository::Unreadable(name)) => {
+            let _ = writeln!(out, "This repository ({name}): could not be read");
+        }
+        None => {}
     }
     if out.is_empty() {
         out.push_str(NOTHING);
@@ -157,6 +193,7 @@ const fn mode_text(mode: SshModeName) -> &'static str {
     match mode {
         SshModeName::Cert => "cert",
         SshModeName::Relay => "relay",
+        SshModeName::Unknown => "unknown",
     }
 }
 
@@ -199,7 +236,7 @@ const fn token_text(status: GithubTokenStatus) -> &'static str {
         GithubTokenStatus::Covered => "the GitHub App covers it",
         GithubTokenStatus::NotCovered => "the GitHub App does not cover it",
         GithubTokenStatus::NotConfigured => "no GitHub App is configured",
-        GithubTokenStatus::Unavailable => "could not be read",
+        GithubTokenStatus::Unavailable | GithubTokenStatus::Unknown => "could not be read",
     }
 }
 
@@ -208,7 +245,7 @@ const fn release_text(status: ReleaseStatus) -> &'static str {
         ReleaseStatus::Ready => "ready",
         ReleaseStatus::NoKey => "no release signing key names it",
         ReleaseStatus::NoReleaseApp => "no release App is configured",
-        ReleaseStatus::Unavailable => "could not be read",
+        ReleaseStatus::Unavailable | ReleaseStatus::Unknown => "could not be read",
     }
 }
 

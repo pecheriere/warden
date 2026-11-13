@@ -110,9 +110,7 @@ async fn main() -> ExitCode {
         Ok(cli) => cli,
         Err(e) => return parse_failure_exit(&e),
     };
-    // Doctor and prime change nothing, so not even the housekeeping runs before
-    // them.
-    if !matches!(cli.command, Cmd::Doctor { .. } | Cmd::Prime { .. }) {
+    if runs_housekeeping(&cli.command) {
         cleanup_state(unix_now());
     }
     match run(cli.command).await {
@@ -138,6 +136,15 @@ fn parse_failure_exit(e: &clap::Error) -> ExitCode {
     } else {
         ExitCode::SUCCESS
     }
+}
+
+/// Whether the housekeeping runs before `cmd`. Doctor, list and prime change
+/// nothing, so not even the housekeeping runs before them.
+const fn runs_housekeeping(cmd: &Cmd) -> bool {
+    !matches!(
+        cmd,
+        Cmd::Doctor { .. } | Cmd::List { .. } | Cmd::Prime { .. }
+    )
 }
 
 /// Best-effort housekeeping before every command: stop the agents of ended
@@ -378,5 +385,25 @@ mod tests {
             Some(1)
         );
         assert_eq!(super::EXIT_NO_GRANT, 5);
+    }
+
+    /// The commands that say they change nothing skip the housekeeping too.
+    #[test]
+    fn read_only_commands_skip_housekeeping() {
+        use clap::Parser as _;
+
+        use crate::cli::Cli;
+
+        for (args, runs) in [
+            (&["warden", "doctor"][..], false),
+            (&["warden", "prime"], false),
+            (&["warden", "prime", "--brief"], false),
+            (&["warden", "list"], false),
+            (&["warden", "list", "--json"], false),
+            (&["warden", "status"], true),
+        ] {
+            let cli = Cli::try_parse_from(args).unwrap();
+            assert_eq!(super::runs_housekeeping(&cli.command), runs, "{args:?}");
+        }
     }
 }

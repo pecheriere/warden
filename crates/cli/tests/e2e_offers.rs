@@ -260,3 +260,27 @@ async fn e2e_list_repo_and_prime() {
     }
     assert_eq!(s.github_calls(), 1);
 }
+
+/// `prime` exits 0 even when its output has nowhere to go: a session-start hook
+/// that closed the pipe must not see a failure.
+#[test]
+fn e2e_prime_exits_0_with_stdout_closed() {
+    let root = tempfile::tempdir().unwrap();
+    let (reader, writer) = std::io::pipe().unwrap();
+    // Closed before the command starts, so every write it makes fails.
+    drop(reader);
+    for args in [&["prime"][..], &["prime", "--brief"]] {
+        let status = Command::new(env!("CARGO_BIN_EXE_warden"))
+            .env("XDG_CONFIG_HOME", root.path().join("config"))
+            .env("XDG_STATE_HOME", root.path().join("state"))
+            .env_remove("WARDEN_AGENT_KEY")
+            .stdin(Stdio::null())
+            .stdout(writer.try_clone().unwrap())
+            .stderr(Stdio::null())
+            .current_dir(root.path())
+            .args(args)
+            .status()
+            .unwrap();
+        assert_eq!(status.code(), Some(0), "{args:?}");
+    }
+}

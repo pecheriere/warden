@@ -8,8 +8,8 @@ use warden_broker_proto::offers::{
 };
 use zeroize::Zeroizing;
 
-use super::{checkout_repository, fetch, json_output, render, run};
-use crate::client::{Auth, Client};
+use super::{Fetched, Repository, checkout_repository, fetch, json_output, render, run};
+use crate::client::{Auth, Client, OffersError, read_offer};
 use crate::{EXIT_ERROR, EXIT_USAGE, Exit};
 
 fn empty() -> Offers {
@@ -120,6 +120,32 @@ fn render_marks_unavailable_parts() {
     assert!(text.contains("Releases: could not be read\n"), "{text}");
     assert!(text.contains("SSH targets:\n"), "{text}");
     assert!(!text.contains("GitHub tokens"), "{text}");
+    assert!(!text.contains("Other offers"), "{text}");
+}
+
+#[test]
+fn render_unknown_values() {
+    let mut offers = empty();
+    offers.unavailable = vec![OfferPart::Unknown];
+    let mut newer = target("switch-01", None);
+    newer.mode = SshModeName::Unknown;
+    offers.ssh_targets = vec![newer];
+    let text = render(&offers, None);
+    assert!(
+        text.contains("  switch-01: users deploy, admin, up to 1h, unknown\n"),
+        "{text}"
+    );
+    assert!(text.contains("Other offers: could not be read\n"), "{text}");
+}
+
+#[test]
+fn render_unreadable_repository() {
+    let repo = Repository::Unreadable("example-org/example-repo".parse().unwrap());
+    let text = render(&empty(), Some(&repo));
+    assert_eq!(
+        text,
+        "This repository (example-org/example-repo): could not be read\n"
+    );
 }
 
 #[test]
@@ -135,9 +161,11 @@ fn render_repository_section() {
             "no GitHub App is configured",
         ),
         (GithubTokenStatus::Unavailable, "could not be read"),
+        (GithubTokenStatus::Unknown, "could not be read"),
     ];
     for (status, words) in cases {
-        let text = render(&empty(), Some(&repository(status, ReleaseStatus::Ready)));
+        let repo = Repository::Offer(repository(status, ReleaseStatus::Ready));
+        let text = render(&empty(), Some(&repo));
         assert!(
             text.starts_with("This repository (example-org/example-repo):\n"),
             "{text}"
@@ -153,12 +181,11 @@ fn render_repository_section() {
         (ReleaseStatus::NoKey, "no release signing key names it"),
         (ReleaseStatus::NoReleaseApp, "no release App is configured"),
         (ReleaseStatus::Unavailable, "could not be read"),
+        (ReleaseStatus::Unknown, "could not be read"),
     ];
     for (status, words) in cases {
-        let text = render(
-            &empty(),
-            Some(&repository(GithubTokenStatus::Covered, status)),
-        );
+        let repo = Repository::Offer(repository(GithubTokenStatus::Covered, status));
+        let text = render(&empty(), Some(&repo));
         assert!(text.contains(&format!("  Releases: {words}\n")), "{text}");
     }
 }
@@ -266,7 +293,11 @@ async fn old_broker_exits_1_with_upgrade_hint() {
     let exit = error.downcast_ref::<Exit>().unwrap();
     assert_eq!(exit.code, EXIT_ERROR);
     assert!(exit.message.contains("too old"), "{}", exit.message);
-    assert!(exit.message.contains("upgrade"), "{}", exit.message);
+    assert!(
+        exit.message.contains("upgrade it to at least"),
+        "{}",
+        exit.message
+    );
 
     let refused = client(&answering(401, r#"{"error":"agent revoked"}"#).await);
     let error = fetch(&refused, None).await.unwrap_err();
@@ -286,15 +317,74 @@ async fn bad_repo_flag_exits_64() {
 }
 
 #[test]
-fn json_shape() {
-    let offers = empty();
-    let none = json_output(&offers, None);
-    assert_eq!(none["offers"], serde_json::to_value(&offers).unwrap());
+fn json_prints_the_bodies_as_received() {
+    let offers = serde_json::json!({ "ssh_targets": [], "newer": { "x": 1 } });
+    let none = json_output(&Fetched {
+        offers: offers.clone(),
+        repository: None,
+    });
+    assert_eq!(none["offers"], offers);
     assert!(none["repository"].is_null());
-    let repo = repository(GithubTokenStatus::Covered, ReleaseStatus::Ready);
-    let some = json_output(&offers, Some(&repo));
-    assert_eq!(some["repository"], serde_json::to_value(&repo).unwrap());
-    assert_eq!(some["repository"]["github_token"], "covered");
+    let repo = serde_json::json!({ "github_token": "suspended", "newer": true });
+    let some = json_output(&Fetched {
+        offers: offers.clone(),
+        repository: Some(Ok(repo.clone())),
+    });
+    assert_eq!(some["repository"], repo);
+    let failed = json_output(&Fetched {
+        offers,
+        repository: Some(Err(OffersError::Broker("broker error (503)".to_owned()))),
+    });
+    assert!(failed["repository"].is_null());
+}
+
+/// A broker that answers `GET /v1/offers` with `offers` and every other call with `status`.
+async fn offers_then(offers: &'static str, status: u16) -> url::Url {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        while let Ok((mut conn, _)) = listener.accept().await {
+            let mut buf = [0_u8; 4096];
+            let n = conn.read(&mut buf).await.unwrap_or(0);
+            let request = String::from_utf8_lossy(&buf[..n]).into_owned();
+            let (status, body) = if request.starts_with("GET /v1/offers ") {
+                (200, offers)
+            } else {
+                (status, r#"{"error":"backend unavailable"}"#)
+            };
+            let resp = format!(
+                "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\n\
+                 content-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = conn.write_all(resp.as_bytes()).await;
+        }
+    });
+    url::Url::parse(&format!("http://{addr}/")).unwrap()
+}
+
+const EMPTY_OFFERS: &str = r#"{"ssh_targets":[],"api_secrets":[],"github":{"configured":false,"max_window":null},
+    "commit_signing":{"available":false},"releases":{"available":false},"unavailable":[]}"#;
+
+#[tokio::test]
+async fn a_failed_repository_call_is_not_an_error() {
+    let repo = "example-org/example-repo".parse().unwrap();
+    for status in [500, 503, 401] {
+        let broker = client(&offers_then(EMPTY_OFFERS, status).await);
+        let fetched = fetch(&broker, Some(&repo)).await.unwrap();
+        assert_eq!(read_offer::<Offers>(&fetched.offers), Ok(empty()));
+        assert!(matches!(fetched.repository, Some(Err(_))), "{status}");
+    }
+}
+
+#[tokio::test]
+async fn a_5xx_from_the_offers_call_is_a_broker_error() {
+    let broker = client(&answering(503, r#"{"error":"backend unavailable"}"#).await);
+    let error = broker.offers().await.unwrap_err();
+    assert!(matches!(error, OffersError::Broker(_)), "{error:?}");
+    let error = fetch(&broker, None).await.unwrap_err();
+    assert_eq!(error.downcast_ref::<Exit>().unwrap().code, EXIT_ERROR);
 }
 
 #[tokio::test]
@@ -308,7 +398,8 @@ async fn client_reads_both_offers_routes() {
         )
         .await,
     );
-    assert_eq!(offers.offers().await, Ok(Some(empty())));
+    let body = offers.offers().await.unwrap().unwrap();
+    assert_eq!(read_offer::<Offers>(&body), Ok(empty()));
     let repo = "example-org/example-repo".parse().unwrap();
     let answer = client(
         &answering(
@@ -320,7 +411,8 @@ async fn client_reads_both_offers_routes() {
     );
     let mut expected = repository(GithubTokenStatus::NotCovered, ReleaseStatus::NoKey);
     expected.commit_signing = false;
-    assert_eq!(answer.repository_offer(&repo).await, Ok(Some(expected)));
+    let body = answer.repository_offer(&repo).await.unwrap().unwrap();
+    assert_eq!(read_offer::<RepositoryOffer>(&body), Ok(expected));
     let old = client(&answering(404, "").await);
     assert_eq!(old.repository_offer(&repo).await, Ok(None));
 }
