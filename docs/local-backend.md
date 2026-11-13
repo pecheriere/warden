@@ -174,7 +174,9 @@ key, OpenSSH or PKCS#8) and `password_file`. A certificate target names neither.
 
 Optional: `list = "full"`, `"name"` or `"hidden"`, with the meaning in
 [SSH target](1password-items.md#ssh-target). It decides listing only, never access.
-Unlike a 1Password item, which lists a bad value as `hidden`, a policy file with any
+Left out, or set blank (`list = ""`), it means `full`, as on a 1Password item; on an
+`[api_secrets.<name>]` entry a blank `list` is refused like any blank optional setting
+(below). Unlike a 1Password item, which lists a bad value as `hidden`, a policy file with any
 other value stops the server from starting, like any other bad setting, and
 `warden-server doctor` names the entry and the field.
 

@@ -6,6 +6,35 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Upgrading
+
+- `warden list` and `warden prime` need a broker of this version: against an older one,
+  `warden list` fails saying to upgrade it, and `warden prime` prints its instructions with
+  that note in place of the offers. No migration and no new audit entry.
+
+### Added
+
+- `warden list [--json] [--repo <owner/name>]` shows what this agent may ask for: SSH
+  targets with their users, longest window, mode and destination; API secrets with their
+  methods, path prefix, longest window and origin; whether GitHub tokens, commit signing and
+  releases are available; and, in a git checkout of a GitHub repository or with `--repo`, what
+  warden offers for that repository (#246).
+- `warden prime [--brief]` prints the instructions for an agent from the copy of
+  `docs/agent-instructions.md` built into the CLI, with what the broker offers in place of
+  the list and without the sections for what it does not offer. `--brief` prints about ten
+  lines for a session-start hook. Both always exit 0, and give the broker 3 seconds (#246).
+- An optional `list` field on SSH target and API secret items, and key on local backend
+  entries: `full` (the default), `name` (leave out where it points) or `hidden` (leave it out
+  of `warden list`). It decides listing only, never access. A 1Password item with any other
+  value is not listed; the local backend refuses such a policy file (#246).
+- Agent routes `GET /v1/offers`, what the agent may ask for, and
+  `GET /v1/offers/repository/{owner}/{name}`, whether GitHub tokens, commit signing and
+  releases work for one repository, cached for 5 minutes. Neither asks anyone, gives access
+  or is audited. Any agent key can now learn the names and, by default, the destinations of
+  what warden covers, and asking about a repository mints a token at GitHub that the broker
+  drops, which is not limited yet: see the
+  [threat model](docs/threat-model.md#what-an-agent-can-learn-about-what-warden-covers) (#246).
+
 ## [0.13.0] - 2026-11-12
 
 ### Upgrading
