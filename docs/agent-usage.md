@@ -608,7 +608,9 @@ warden release publish example-owner/example-repo v1.2.3
   not in place as the owner approved it (an annotated tag on that commit, signed by the release
   key), when the draft no longer holds the manifest and signature the broker attached, or when
   the release is not a draft. Releases are immutable on GitHub: a release published without its
-  manifest can never gain one.
+  manifest can never gain one. If the release GitHub published does not match what the broker
+  checked, the call fails with `409` after publishing, the broker tells the owner, and the
+  release stays public: do not call again, tell the owner.
 
 An example session for a repository that only needs a signed tag (no `manifest` in its release
 item, and its own workflow publishes):
