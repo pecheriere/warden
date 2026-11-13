@@ -326,7 +326,7 @@ verify one. On another platform, build it with Rust 1.99 or later. For an older
 release, which has no binaries, use its tag in the same command:
 
 ```sh
-cargo install --locked --git https://github.com/pecheriere/warden --tag v0.12.0 warden-broker-cli
+cargo install --locked --git https://github.com/pecheriere/warden --tag v0.13.0 warden-broker-cli
 ```
 
 | Command | What it does |
