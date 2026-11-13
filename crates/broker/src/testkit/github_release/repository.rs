@@ -26,6 +26,10 @@ pub(super) struct Repository {
     /// Changes made just before the next publish, as a write by someone else that
     /// lands between a caller's checks and its publish would be.
     before_publish: Vec<Change>,
+    /// How many tag reads fail once the next publish is done, and how many
+    /// still fail now.
+    tag_reads_failing_after_publish: u32,
+    failing_tag_reads: u32,
 }
 
 /// A change [`Repository::before_publish`] makes.
@@ -199,6 +203,10 @@ impl Repository {
             .push(Change::Asset(name.to_owned(), bytes.to_vec()));
     }
 
+    pub(super) fn fail_tag_reads_after_publish(&mut self, count: u32) {
+        self.tag_reads_failing_after_publish = count;
+    }
+
     pub(super) fn move_tag_before_publish(&mut self, tag: &str, commit: &str) {
         self.before_publish
             .push(Change::Tag(tag.to_owned(), commit.to_owned()));
@@ -290,7 +298,14 @@ impl Repository {
                 })
             }
             ("GET", false, ["compare", range]) => self.compare(range, query("page")),
-            ("GET", false, ["git", "ref", "tags", tag]) => self.ref_answer(tag),
+            ("GET", false, ["git", "ref", "tags", tag]) => {
+                if self.failing_tag_reads > 0 {
+                    self.failing_tag_reads -= 1;
+                    json_answer(502, &json!({"message": "Server Error"}))
+                } else {
+                    self.ref_answer(tag)
+                }
+            }
             ("GET", false, ["git", "ref", "heads", branch @ ..]) => self.head_answer(branch),
             ("GET", false, ["git", "tags", sha]) => {
                 self.tags.get(*sha).map_or_else(not_found, |t| {
@@ -486,6 +501,7 @@ impl Repository {
         let Ok(request) = serde_json::from_slice::<Value>(body) else {
             return invalid("not JSON");
         };
+        self.failing_tag_reads = std::mem::take(&mut self.tag_reads_failing_after_publish);
         for change in std::mem::take(&mut self.before_publish) {
             match change {
                 Change::Tag(tag, commit) => {

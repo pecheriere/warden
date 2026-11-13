@@ -73,7 +73,8 @@ All notable changes to this project are recorded here. The format follows
 - Each release step writes a `release_step_started` audit entry, naming what the release key
   signed, before it changes GitHub, and goes no further if the entry cannot be written.
 - After publishing a release, the broker compares the manifest, its signature and the tag it
-  was published with to what it checked, and records and tells the owner when they differ.
+  was published with to what it checked, and records and tells the owner when they differ,
+  answering the call with a 409 that says not to call again.
 
 ## [0.13.0] - 2026-11-12
 

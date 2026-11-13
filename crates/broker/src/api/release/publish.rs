@@ -42,8 +42,9 @@ const FILES_DIFFER: &str = "the draft's files are not the ones signed";
 /// GitHub gave no digest for one of the two files, so they cannot be compared.
 const NO_DIGESTS: &str = "GitHub did not report the files' digests";
 /// The release was published, but not as it was checked.
-const PUBLISHED_CHANGED: &str =
-    "the release was published, but its files or tag changed after they were checked";
+/// A 409, not a 5xx: the step is done, and calling again cannot help.
+const PUBLISHED_CHANGED: &str = "the release was published, but its files or tag changed after \
+                                 they were checked; do not call again, tell the owner";
 
 /// What can differ after the publish, as the audit entry and the owner's notice
 /// say it.
@@ -153,7 +154,14 @@ async fn changed_since_checked(
     {
         return Some(FILES_CHANGED);
     }
-    match github.tag_target(&release.grant().tag).await {
+    let tag = &release.grant().tag;
+    // Read once more before saying it could not be read: a passing GitHub error
+    // should not alarm the owner.
+    let read = match github.tag_target(tag).await {
+        Err(_) => github.tag_target(tag).await,
+        read => read,
+    };
+    match read {
         Ok(Some(tag)) if tag.object_sha == tag_object => None,
         Ok(_) => Some(TAG_CHANGED),
         Err(_) => Some(TAG_UNREADABLE),
@@ -229,7 +237,7 @@ async fn run(
             .requests
             .release_published_changed(agent, &release, reason)
             .await;
-        return Err(refused(StatusCode::BAD_GATEWAY, PUBLISHED_CHANGED));
+        return Err(refused(StatusCode::CONFLICT, PUBLISHED_CHANGED));
     }
     tracing::info!(agent = %agent, grant = %release.grant_id(), "release published");
     Ok(PublishResponse {

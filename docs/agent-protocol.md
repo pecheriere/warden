@@ -1287,6 +1287,7 @@ last step is done.
 | `409` | `the manifest has not been signed` | The grant has a manifest step that did not finish; nothing was used |
 | `409` | `the draft's files are not the ones signed` | The manifest or its signature is missing from the draft or differs from what the broker attached; nothing was used |
 | `409` | `GitHub did not report the files' digests` | The files cannot be compared; nothing was used |
+| `409` | `the release was published, but its files or tag changed after they were checked; do not call again, tell the owner` | The release is public, but read back after the publish, its manifest, its signature or its tag differed from what the broker checked; the broker records it and tells the owner. The step is used |
 | `400` | `the request body is not valid` | Nothing was used |
 | `400` | `releases are not configured on this broker` | No release key for the repository, or no release App |
 | `503` | `GitHub could not complete the step; try again later` | GitHub failed; if it failed after the claim, the step stays used |

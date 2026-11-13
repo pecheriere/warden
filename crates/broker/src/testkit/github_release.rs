@@ -155,6 +155,12 @@ impl GithubReleaseFake {
         self.with(repo, |r| r.move_tag_before_publish(tag, commit));
     }
 
+    /// Once `repo`'s next release is published, answer its next `count` tag reads
+    /// with a server error, as a passing GitHub failure would.
+    pub fn fail_tag_reads_after_publish(&self, repo: &RepoName, count: u32) {
+        self.with(repo, |r| r.fail_tag_reads_after_publish(count));
+    }
+
     /// The id the ref `refs/tags/<tag>` points at.
     #[must_use]
     pub fn ref_target(&self, repo: &RepoName, tag: &str) -> Option<String> {

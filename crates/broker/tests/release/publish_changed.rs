@@ -56,12 +56,7 @@ async fn a_tag_moved_before_the_publish_is_recorded_and_refused() {
         .github_release()
         .move_tag_before_publish(&repo(REPO), TAG, PARENT);
     let response = publish(&h).await;
-    assert_eq!(
-        response.status,
-        StatusCode::BAD_GATEWAY,
-        "{}",
-        response.body
-    );
+    assert_eq!(response.status, StatusCode::CONFLICT, "{}", response.body);
     // It is published all the same, and recorded as such.
     let fake = h.upstream.github_release();
     assert!(!fake.release(&repo(REPO), draft).unwrap().draft);
@@ -96,14 +91,40 @@ async fn a_manifest_replaced_before_the_publish_is_recorded_and_refused() {
         b"something else\n",
     );
     let response = publish(&h).await;
-    assert_eq!(
-        response.status,
-        StatusCode::BAD_GATEWAY,
-        "{}",
-        response.body
-    );
+    assert_eq!(response.status, StatusCode::CONFLICT, "{}", response.body);
     assert_eq!(
         reasons(&h),
         ["its manifest or signature is not the one signed"]
     );
+}
+
+/// One failed read of the tag after the publish is read again, and does not ring
+/// the owner.
+#[tokio::test]
+async fn one_failed_tag_read_after_the_publish_is_retried() {
+    let h = harness(Shape::PublishOnly).await;
+    let _draft = ready(&h).await;
+    h.upstream
+        .github_release()
+        .fail_tag_reads_after_publish(&repo(REPO), 1);
+    let response = publish(&h).await;
+    assert_eq!(response.status, StatusCode::OK, "{}", response.body);
+    assert_eq!(reasons(&h), [] as [String; 0]);
+}
+
+#[tokio::test]
+async fn a_tag_that_cannot_be_read_back_is_recorded_and_refused() {
+    let h = harness(Shape::PublishOnly).await;
+    let _draft = ready(&h).await;
+    h.upstream
+        .github_release()
+        .fail_tag_reads_after_publish(&repo(REPO), 2);
+    let response = publish(&h).await;
+    assert_eq!(response.status, StatusCode::CONFLICT, "{}", response.body);
+    assert!(
+        response.body.contains("do not call again"),
+        "{}",
+        response.body
+    );
+    assert_eq!(reasons(&h), ["its tag could not be read back"]);
 }
