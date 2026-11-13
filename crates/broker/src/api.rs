@@ -87,6 +87,10 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/grants", agent(get(list_grants), BODY_LIMIT))
         .route("/v1/offers", agent(get(offers::list), BODY_LIMIT))
         .route(
+            "/v1/offers/repository/{owner}/{name}",
+            agent(get(offers::repository::answer), BODY_LIMIT),
+        )
+        .route(
             "/v1/commit-signing/key",
             agent(get(commit_signing::public_key), BODY_LIMIT),
         )

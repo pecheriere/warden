@@ -7,7 +7,7 @@ specified. Interfaces with a reference of their own are linked, not repeated.
 
 | Interface | Who uses it | Reference |
 |---|---|---|
-| Agent API (HTTPS, through Serve), including `GET /v1/offers` (what an agent may request) and the release steps `POST /v1/release/{tag,manifest,publish}` | Agents | [Agent protocol](agent-protocol.md), a complete specification with test vectors |
+| Agent API (HTTPS, through Serve), including `GET /v1/offers` (what an agent may request), `GET /v1/offers/repository/{owner}/{name}` (whether GitHub tokens, commit signing and releases work for one repository) and the release steps `POST /v1/release/{tag,manifest,publish}` | Agents | [Agent protocol](agent-protocol.md), a complete specification with test vectors |
 | SSH relay (SSH, through a Serve TCP forward) | Agents | [Below](#ssh-relay), and [using a relay grant](agent-protocol.md#relay-grants-kindrelay) |
 | Approval UI (HTTPS, through Serve) | The owner's browser | [Below](#approval-ui) |
 | `warden-server` commands | The operator | [Server commands](configuration.md#server-commands) |
@@ -25,7 +25,7 @@ specified. Interfaces with a reference of their own are linked, not repeated.
 |---|---|---|---|
 | 1Password Connect API | Policy, secrets, the CA key, the commit signing key, the release signing keys, the GitHub App and the release App | `GET` requests, with the token as a bearer | [Deployment](deployment.md#3-1password) |
 | Home Assistant webhook, ntfy | Notifications | The agent, the access, a stated session label, a shortened goal, a link | [Notifications](notifications.md) |
-| `api.github.com` | Minting GitHub tokens | A JWT signed with the App's key, as a bearer, in a `POST` to the installation's access tokens with the fixed permissions | [GitHub tokens](github-app.md) |
+| `api.github.com` | Minting GitHub tokens, and asking whether the installation covers a repository an agent names (the answer is kept for 5 minutes) | A JWT signed with the App's key, as a bearer, in a `POST` to the installation's access tokens with the fixed permissions, or with `metadata: read` only for that one repository, whose token is dropped unused | [GitHub tokens](github-app.md) |
 | `api.github.com`, `uploads.github.com` | [Releases](agent-usage.md#releases) the owner approved: reading the commit, the tag, the changelog and the draft, creating the tag, attaching the manifest and publishing the draft | A JWT signed with the release App's key, then calls with the installation token it got (`contents: write`, `metadata: read`, for the one repository). No call sends a token to the agent. | [The release App](github-app.md#the-release-app) |
 | API origins | Proxied calls | The agent's call, with the secret in the policy's header | [HTTP proxy mode](design.md#83-http-proxy-mode-secret-injection) |
 | Relay targets | Relayed sessions | An SSH login with the item's credential | [SSH relay mode](design.md#82-ssh-relay-mode) |

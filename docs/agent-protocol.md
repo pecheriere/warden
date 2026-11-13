@@ -516,6 +516,7 @@ that it is the expected key, as `-Y verify` with an allowed-signers file does
 | `POST /v1/requests/{id}/cancel` | Withdraw a pending request. |
 | `GET /v1/grants` | The agent's live grants. |
 | `GET /v1/offers` | What the agent may request: targets, API secrets, GitHub, commit signing, releases. |
+| `GET /v1/offers/repository/{owner}/{name}` | Whether GitHub tokens, commit signing and releases work for one repository. |
 | `POST /v1/grants/{id}/revoke` | End a grant. |
 | `POST /v1/grants/{id}/http` | Make an HTTPS call with an `api` grant. |
 | `GET /v1/commit-signing/key` | The public half of the broker's commit signing key. |
@@ -836,9 +837,59 @@ holds decisions and grants. The broker's own log notes that an agent listed offe
 - `unavailable` names the parts that could not be read (`ssh_targets`, `api_secrets`,
   `github`, `commit_signing`, `releases`). The other parts are complete, and a part
   named there is empty or `false`, which means unknown, not absent.
-- `503` `{"error":"secret backend unavailable"}` when none of the five parts could be
-  read, and section 5.
+- `503` `{"error":"secret backend unavailable"}` when SSH targets, API secrets and
+  commit signing all failed, and section 5.
 - The answer carries no host key, relay credential or secret value.
+
+### `GET /v1/offers/repository/{owner}/{name}`
+
+What this agent may ask for in one repository, the one it works in. Signed; no body.
+Like `GET /v1/offers`, it decides no access, asks no one, notifies no one, creates no
+request and is not in the audit log; the broker's own log notes the agent and the
+repository. Nothing lists every repository: the agent names one, and the broker
+answers for that one.
+
+`owner/name` must be a repository name as `POST /v1/github-token` takes it (owner
+`^[A-Za-z0-9][A-Za-z0-9-]{0,38}$`, name `^[A-Za-z0-9._-]{1,100}$`, not `.` or `..`),
+checked before anything else is read.
+
+`200`:
+
+```json
+{
+  "repository": "example-org/example-repo",
+  "github_token": "covered",
+  "commit_signing": true,
+  "release": "ready"
+}
+```
+
+- `github_token`: whether the agent GitHub App's installation covers the repository.
+  The broker asks GitHub for a token limited to reading that repository's metadata,
+  as it does to resolve the repositories of a `github` request, and drops it unused.
+  - `covered`: GitHub issued it.
+  - `not_covered`: GitHub answered that the installation cannot reach the repository
+    (`422`, or a token for the same name under another owner).
+  - `not_configured`: no GitHub App is configured.
+  - `unavailable`: the broker could not tell: GitHub could not be reached, refused the
+    App (`401`, `403`, `404`, a rate limit, `5xx`), answered something it did not
+    understand, or the App could not be read.
+- `commit_signing`: whether a commit signing key is configured, the same for every
+  repository and repeated here so that one answer is enough.
+- `release`:
+  - `ready`: a release signing key names this repository and a release GitHub App
+    exists. Whether GitHub trusts the key, and the signers file and tag ruleset, are
+    not checked.
+  - `no_key`: no release signing key names this repository.
+  - `no_release_app`: a key names it but no release GitHub App is configured.
+  - `unavailable`: the release signing keys or the release App could not be read.
+- An answer is kept for 5 minutes per repository, so asking again within that time
+  does not ask GitHub again and may not show a change made meanwhile. An answer whose
+  `github_token` or `release` is `unavailable` is not kept.
+- `400` `{"error":"..."}` when `owner/name` is not a repository name.
+- `503` `{"error":"secret backend unavailable"}` when the commit signing key's presence
+  could not be read, and section 5.
+- The answer carries no token, repository id, key or secret value.
 
 ### `POST /v1/grants/{id}/revoke`
 

@@ -20,6 +20,7 @@ use crate::audit::AuditLog;
 use crate::config::Config;
 use crate::github_app::GithubApi;
 use crate::identity::TailscaleServeIdentity;
+use crate::offers_cache::RepositoryOfferCache;
 use crate::policy::SecretBackend;
 use crate::proxy::ProxyLimits;
 use crate::relay::{RelayEndpoint, RelayLimits, host_key};
@@ -533,6 +534,7 @@ impl TestBroker {
             passkeys: Arc::new(passkeys),
             audience,
             github: limits.github_api.clone(),
+            repository_offers: Arc::new(RepositoryOfferCache::new()),
         };
         let (api_router, router) = crate::build_routers(state.clone());
         Self {

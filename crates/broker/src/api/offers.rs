@@ -153,5 +153,7 @@ fn api_offers(secrets: &[ApiSecretPolicy]) -> Vec<ApiSecretOffer> {
         .collect()
 }
 
+pub(super) mod repository;
+
 #[cfg(test)]
 mod tests;
