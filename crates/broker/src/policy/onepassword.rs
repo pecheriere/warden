@@ -105,6 +105,9 @@ impl OnePasswordConnect {
     pub fn new(url: Url, token: SecretString, vault: String) -> Self {
         let client = reqwest::Client::builder()
             .timeout(TIMEOUT)
+            // The token and the secrets it returns go to the configured Connect
+            // server only, never to a proxy named in the environment.
+            .no_proxy()
             // The bearer token must never follow a redirect to another host.
             .redirect(reqwest::redirect::Policy::none())
             .build()

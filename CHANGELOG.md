@@ -14,6 +14,9 @@ All notable changes to this project are recorded here. The format follows
 
 ### Changed
 
+- The clients for 1Password Connect, the notifiers and the health probe no longer use a proxy
+  named in `HTTP_PROXY`, `HTTPS_PROXY` or `ALL_PROXY`; a deployment that reached them through
+  one needs a direct route.
 - The release approval page and the commit title shown from GitHub hide the same characters a
   goal may not hold, decided by one shared check.
 - A goal, a session label and the directory of an automatic GitHub request are refused if

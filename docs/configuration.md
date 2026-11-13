@@ -10,6 +10,11 @@ and `warden` (the agent's CLI). For how to put them together, see
 refuses to start, naming the variable, when one is missing or invalid.
 Values are never echoed in errors.
 
+The broker's own HTTP clients (1Password Connect, the notifiers and the health
+probe) ignore `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` and `NO_PROXY`: a proxy named
+in the environment never sees the Connect token or the secrets it returns, and a
+proxy is not supported for these connections.
+
 ### Required
 
 | Variable | Meaning |

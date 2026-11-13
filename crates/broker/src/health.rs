@@ -52,6 +52,8 @@ pub fn probe_target(listen: SocketAddr) -> SocketAddr {
 pub async fn probe(listen: SocketAddr) -> Result<()> {
     let target = probe_target(listen);
     let client = reqwest::Client::builder()
+        // The probe asks the local listener, never through a proxy.
+        .no_proxy()
         .timeout(TIMEOUT)
         .redirect(reqwest::redirect::Policy::none())
         .build()
