@@ -315,17 +315,23 @@ async fn no_secret_in_response() {
         );
     }
     let parsed: Value = resp.json();
-    let target_keys: Vec<&str> = parsed["ssh_targets"][0]
-        .as_object()
-        .unwrap()
-        .keys()
-        .map(String::as_str)
-        .collect();
-    for key in target_keys {
-        assert!(
-            ["name", "users", "max_window", "mode", "destination"].contains(&key),
-            "{key}"
-        );
+    for (list, allowed) in [
+        (
+            "ssh_targets",
+            &["name", "users", "max_window", "mode", "destination"][..],
+        ),
+        (
+            "api_secrets",
+            &["name", "origin", "methods", "path_prefix", "max_window"][..],
+        ),
+    ] {
+        let entries = parsed[list].as_array().unwrap();
+        assert!(!entries.is_empty(), "{list}");
+        for entry in entries {
+            for key in entry.as_object().unwrap().keys() {
+                assert!(allowed.contains(&key.as_str()), "{list}: {key}");
+            }
+        }
     }
     assert_eq!(broker.backend.target("nas").mode, SshMode::Relay);
 }
