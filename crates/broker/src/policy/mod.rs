@@ -14,6 +14,7 @@ use zeroize::Zeroizing;
 mod api;
 mod commit_signing_key;
 mod github_app;
+mod listing;
 pub mod local;
 pub mod onepassword;
 mod release_app;
@@ -26,6 +27,7 @@ pub use commit_signing_key::{
     check_separate_from_ca,
 };
 pub use github_app::{GithubAppKey, GithubAppProbe, GithubTokenPolicy};
+pub use listing::Listing;
 pub use local::{LocalBackend, LocalProbe};
 pub use onepassword::{CaProbe, OnePasswordConnect, VaultProbe};
 pub use release_app::{ReleaseAppKey, ReleaseAppProbe};
@@ -69,6 +71,8 @@ pub struct SshTarget {
     pub max_window: Window,
     /// Public host keys of the target (any OpenSSH algorithm).
     pub host_keys: Vec<PublicKey>,
+    /// Whether `warden list` shows this target. Never part of the digest.
+    pub listing: Listing,
 }
 
 impl SshTarget {

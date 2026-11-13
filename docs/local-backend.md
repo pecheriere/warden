@@ -172,11 +172,17 @@ The name follows `^[a-z0-9][a-z0-9-]{0,31}$`. Required: `address`, `mode`, `user
 A relay target names exactly one of `private_key_file` (an unencrypted Ed25519
 key, OpenSSH or PKCS#8) and `password_file`. A certificate target names neither.
 
+Optional: `list = "full"`, `"name"` or `"hidden"`, with the meaning in
+[SSH target](1password-items.md#ssh-target). It decides listing only, never access.
+Unlike a 1Password item, which lists a bad value as `hidden`, a policy file with any
+other value stops the server from starting, like any other bad setting, and
+`warden-server doctor` names the entry and the field.
+
 ### `[api_secrets.<name>]`
 
 The name follows the same pattern. Required: `website`, `credential_file` and
 `max_window`. Optional: `header`, `format`, `methods` (a list), `path_prefix` and
-`ca_pem`. See [API secret](1password-items.md#api-secret).
+`ca_pem` and `list` (see above). See [API secret](1password-items.md#api-secret).
 
 An optional setting you leave out takes its default. **One you set blank is
 refused**, unlike a blank field of a 1Password item, so that `path_prefix = ""`

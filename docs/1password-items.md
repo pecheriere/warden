@@ -33,6 +33,7 @@ error.
 | `host_keys`  | One or more OpenSSH public key lines (`ssh-ed25519 AAAA...`), newline-separated. Any key algorithm is accepted: these are the target's host keys. warden does not check an RSA key's length, so pin one of at least 2048 bits. They are pinned: there is no trust on first use. Required for both modes; for relay targets the onward connection negotiates only the algorithms of these keys. |
 | `private_key` | Relay targets only: the private key warden logs in to the target with. See below. |
 | `password`    | Relay targets only: the password warden logs in to the target with. See below. |
+| `list`        | Optional: `full` (the default), `name` or `hidden`. `list` decides what `warden list` shows and nothing else: an item with any value, `hidden` included, can still be requested. `full` shows the item and where it points, `name` shows its name and kind only, `hidden` shows nothing. Absent or blank means `full`. Values are lower case; anything else is listed as `hidden`. |
 
 ### Relay targets
 
@@ -82,6 +83,7 @@ mode        cert
 users       build-agent
 max_window  1h
 host_keys   ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... root@web-01
+list        name
 ```
 
 How to set up the target host itself is in [SSH targets](ssh-targets.md).
@@ -109,6 +111,7 @@ without a website is unusable. Only someone who can edit the item in
 | `methods`     | no       | Comma-separated HTTP methods, uppercase (`GET, POST`). Default `GET`. The most any request can be granted. |
 | `path_prefix` | no       | Only paths under this prefix may be called. The widest any request can be granted. Must start with `/`; no `?`, `#`, `\`, spaces, `//`, `.` or `..` segments. Default `/`. |
 | `ca_pem`      | no       | One or more PEM CA certificates (`-----BEGIN CERTIFICATE-----`). When set, the server certificate must chain to one of them and the system roots are not used. |
+| `list`        | no       | `full` (the default), `name` or `hidden`. `list` decides what `warden list` shows and nothing else: an item with any value, `hidden` included, can still be requested. `full` shows the item and where it points, `name` shows its name and kind only, `hidden` shows nothing. Absent or blank means `full`. Values are lower case; anything else is listed as `hidden`. |
 
 An optional field that is absent or blank takes its default. A required
 field that is absent, blank or malformed makes the item unusable, with an
@@ -127,6 +130,7 @@ credential   ••••••••••••••••
 max_window   30m
 methods      GET, POST
 path_prefix  /api/
+list         name
 ```
 
 This lets an approved agent call `GET` and `POST` on

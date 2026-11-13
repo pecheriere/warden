@@ -1,7 +1,7 @@
 //! API secret items: parsing, validation and fresh reads.
 
 use serde_json::{Value, json};
-use warden_broker::policy::{ApiSecretPolicy, PolicyError, SecretBackend, ValueFormat};
+use warden_broker::policy::{ApiSecretPolicy, Listing, PolicyError, SecretBackend, ValueFormat};
 use warden_broker_proto::{SecretName, Window};
 use wiremock::MockServer;
 
@@ -479,4 +479,38 @@ async fn fake_backend_serves_api_secrets() {
     fake.set_api_secret(policy, "rotated-credential-value");
     let (_, value) = fake.api_secret_with_value(&secret("github")).await.unwrap();
     assert_eq!(value.expose(), "rotated-credential-value");
+}
+
+async fn api_listed(value: Option<&str>) -> Result<ApiSecretPolicy, PolicyError> {
+    let mut item = api_item();
+    set_field(&mut item, "list", value);
+    api_with(&item).await
+}
+
+#[tokio::test]
+async fn api_secret_list_field_is_read() {
+    assert_eq!(api_listed(None).await.unwrap().listing, Listing::Full);
+    assert_eq!(
+        api_listed(Some("name")).await.unwrap().listing,
+        Listing::Name
+    );
+    assert_eq!(
+        api_listed(Some("hidden")).await.unwrap().listing,
+        Listing::Hidden
+    );
+    assert_eq!(api_listed(Some("  ")).await.unwrap().listing, Listing::Full);
+}
+
+#[tokio::test]
+async fn api_invalid_list_keeps_item_usable() {
+    let p = api_listed(Some("yes")).await.unwrap();
+    assert_eq!(p.listing, Listing::Invalid);
+    assert_eq!(p.origin.ascii_serialization(), "https://api.example.com");
+}
+
+#[tokio::test]
+async fn api_list_does_not_change_destination_digest() {
+    let plain = api_listed(None).await.unwrap();
+    let hidden = api_listed(Some("hidden")).await.unwrap();
+    assert_eq!(plain.destination_digest(), hidden.destination_digest());
 }

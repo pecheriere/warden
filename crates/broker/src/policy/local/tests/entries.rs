@@ -7,7 +7,7 @@ use super::{
     API_ENTRY, CREDENTIAL, PASSWORD, Setup, assert_invalid, cert_entry, ed25519_pem, host_key,
     secret, target,
 };
-use crate::policy::{PolicyError, RelayCredential, SecretBackend, SshMode};
+use crate::policy::{Listing, PolicyError, RelayCredential, SecretBackend, SshMode};
 
 #[tokio::test]
 async fn reads_a_certificate_target() {
@@ -295,4 +295,31 @@ async fn unknown_names_are_not_found() {
         setup.backend.api_secret(&secret("absent")).await,
         Err(PolicyError::UnknownSecret(_))
     ));
+}
+
+#[tokio::test]
+async fn local_list_field_is_read() {
+    let target_entry = cert_entry() + "list = \"name\"\n";
+    let setup = Setup::new(&target_entry);
+    let found = setup.backend.ssh_target(&target("web-01")).await.unwrap();
+    assert_eq!(found.listing, Listing::Name);
+
+    let setup = Setup::new(&(API_ENTRY.to_owned() + "list = \"hidden\"\n"));
+    let found = setup.backend.api_secret(&secret("home-api")).await.unwrap();
+    assert_eq!(found.listing, Listing::Hidden);
+
+    let setup = Setup::new(&cert_entry());
+    let found = setup.backend.ssh_target(&target("web-01")).await.unwrap();
+    assert_eq!(found.listing, Listing::Full);
+}
+
+#[tokio::test]
+async fn local_non_string_list_refuses_file() {
+    let setup = Setup::new(&(cert_entry() + "list = true\n"));
+    let error = setup
+        .backend
+        .ssh_target(&target("web-01"))
+        .await
+        .unwrap_err();
+    assert!(matches!(error, PolicyError::Unavailable(_)), "{error:?}");
 }

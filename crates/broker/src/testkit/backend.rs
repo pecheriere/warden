@@ -14,7 +14,7 @@ use zeroize::Zeroizing;
 
 use super::{NAS_HOST, PI_HOST};
 use crate::policy::{
-    ApiSecretPolicy, CaKey, CommitSigningKey, GithubAppKey, PolicyError, RelayCredential,
+    ApiSecretPolicy, CaKey, CommitSigningKey, GithubAppKey, Listing, PolicyError, RelayCredential,
     ReleaseAppKey, ReleaseSigningKey, SecretBackend, SecretValue, SshMode, SshTarget, ValueFormat,
     check_distinct, not_a_relay_target,
 };
@@ -106,6 +106,7 @@ impl FakeBackend {
                 .collect(),
             max_window: Window::H1,
             host_keys: vec![host_key],
+            listing: Listing::Full,
         }
     }
 
@@ -129,6 +130,7 @@ impl FakeBackend {
             users: vec![UnixUser::try_from("backup".to_owned()).expect("valid user")],
             max_window: Window::H1,
             host_keys: vec![host_key],
+            listing: Listing::Full,
         }
     }
 
@@ -188,6 +190,7 @@ impl FakeBackend {
             path_prefix: "/".to_owned(),
             ca_pem: None,
             max_window: Window::H1,
+            listing: Listing::Full,
         }
     }
 
