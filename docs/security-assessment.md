@@ -1,6 +1,6 @@
 # Security assessment
 
-**Date: 2026-11-12. Covers release 0.13.0, reviewed at `main` commit `a401590`. The
+**Date: 2026-11-13. Covers release 0.13.0, reviewed at `main` commit `a401590`. The
 release adds repository-scoped GitHub grants (risks 1 and 2, F24) and signs its manifest
 through the broker (risk 12, below). The review for the previous release, 0.12.0, checked the ranked risks and findings against the changes
 since 0.11.0: phone-approved releases (risks 1, 2 and 12). An agent can ask the owner to
