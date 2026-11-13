@@ -60,7 +60,8 @@ const DIGEST_LEN: usize = 64;
 /// Check that `bytes` is the manifest the grant covers: named `expected_name`, as
 /// asked for in `name`, and made of lines `<64 lowercase hex>  <name>` that each
 /// end with a line feed. A name is a plain file name (`[A-Za-z0-9._+-]+`, not `.`
-/// or `..`) that carries `version` as a component (see [`carries_version`]), or an
+/// or `..`) that carries `version` as a component (set off from the rest of the
+/// name by `-`, `_` or the ends of the name), or an
 /// image reference `<registry>/<path>:<version>` with lowercase `[a-z0-9._-]`
 /// segments, where the tag is exactly `version`. No name appears twice, and there
 /// is at least one line. So every name the signed bytes hold is bound to the
