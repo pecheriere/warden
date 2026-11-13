@@ -2,12 +2,12 @@
 
 use serde_json::json;
 use ssh_key::PrivateKey;
-use warden_broker::policy::{PolicyError, SecretBackend, SshMode};
+use warden_broker::policy::{Listing, PolicyError, SecretBackend, SshMode};
 use warden_broker_proto::{UnixUser, Window};
 
 use crate::{
     ITEM_PI, THROWAWAY_ECDSA, THROWAWAY_RSA, backend, connect_mock, fill, host_key_line, list,
-    mount_item, mount_items, target, with_targets,
+    mount_item, mount_items, set_field, target, with_targets,
 };
 
 #[tokio::test]
@@ -191,4 +191,47 @@ async fn undecodable_target_item_does_not_echo_its_content() {
         .unwrap_err();
     assert!(matches!(&err, PolicyError::Unavailable(_)), "{err:?}");
     assert!(!err.to_string().contains("s3cr3t"), "value echoed: {err}");
+}
+
+const PI_ID: &str = "pi00000000000000000000000a";
+
+/// The `pi` target read from an item whose `list` field is `value` (absent
+/// for `None`).
+async fn pi_listed(value: Option<&str>) -> Result<warden_broker::policy::SshTarget, PolicyError> {
+    let server = connect_mock().await;
+    mount_items(&server, &list()).await;
+    let mut item = fill(ITEM_PI, "{{HOST_KEY}}", &host_key_line());
+    set_field(&mut item, "list", value);
+    mount_item(&server, PI_ID, &item).await;
+    backend(&server).ssh_target(&target("pi")).await
+}
+
+#[tokio::test]
+async fn target_list_field_is_read() {
+    assert_eq!(pi_listed(None).await.unwrap().listing, Listing::Full);
+    assert_eq!(
+        pi_listed(Some("name")).await.unwrap().listing,
+        Listing::Name
+    );
+    assert_eq!(
+        pi_listed(Some(" hidden ")).await.unwrap().listing,
+        Listing::Hidden
+    );
+}
+
+#[tokio::test]
+async fn invalid_list_keeps_item_usable() {
+    let t = pi_listed(Some("Full")).await.unwrap();
+    assert_eq!(t.listing, Listing::Invalid);
+    assert_eq!(t.host, "192.0.2.10");
+}
+
+#[tokio::test]
+async fn list_does_not_change_destination_digest() {
+    let plain = pi_listed(None).await.unwrap();
+    let hidden = pi_listed(Some("hidden")).await.unwrap();
+    // Each call generates its own host key, so compare with the key fixed.
+    let mut same = plain.clone();
+    same.listing = hidden.listing;
+    assert_eq!(plain.destination_digest(), same.destination_digest());
 }

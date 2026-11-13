@@ -22,7 +22,7 @@ use ssh_key::rand_core::OsRng;
 use ssh_key::{Algorithm, LineEnding, PrivateKey, PublicKey};
 use tempfile::TempDir;
 use tokio::io::AsyncWriteExt as _;
-use warden_broker::policy::{RelayCredential, SshMode, SshTarget};
+use warden_broker::policy::{Listing, RelayCredential, SshMode, SshTarget};
 use warden_broker::relay::RelayLimits;
 use warden_broker::testkit::TestBroker;
 use warden_broker::testkit::sshd::{Sshd, SshdLogin, current_user};
@@ -64,6 +64,7 @@ fn nas_pinned(sshd: &Sshd, host_key: PublicKey) -> SshTarget {
         users: vec![UnixUser::try_from(current_user()).unwrap()],
         max_window: Window::H1,
         host_keys: vec![host_key],
+        listing: Listing::Full,
     }
 }
 

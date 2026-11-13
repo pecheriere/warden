@@ -260,7 +260,7 @@ mod tests {
     use warden_broker_proto::{ProxyRequest, SecretName, Window};
 
     use super::{Refusal, check};
-    use crate::policy::{ApiSecretPolicy, ValueFormat};
+    use crate::policy::{ApiSecretPolicy, Listing, ValueFormat};
 
     const MAX: usize = 1024;
 
@@ -274,6 +274,7 @@ mod tests {
             path_prefix: prefix.to_owned(),
             ca_pem: None,
             max_window: Window::H1,
+            listing: Listing::Full,
         }
     }
 

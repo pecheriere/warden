@@ -14,6 +14,7 @@ mod api;
 mod ca;
 mod connect;
 mod github_app;
+mod listing;
 mod relay;
 mod release;
 mod targets;

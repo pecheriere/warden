@@ -20,7 +20,7 @@ use tokio_rustls::rustls::ServerConfig;
 use tokio_rustls::rustls::crypto::aws_lc_rs;
 use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use url::Url;
-use warden_broker::policy::{ApiSecretPolicy, ValueFormat};
+use warden_broker::policy::{ApiSecretPolicy, Listing, ValueFormat};
 use warden_broker_proto::Window;
 use zeroize::Zeroizing;
 
@@ -70,6 +70,7 @@ impl Target {
             path_prefix: "/".to_owned(),
             ca_pem: Some(self.ca_pem.clone()),
             max_window: Window::H1,
+            listing: Listing::Full,
         })
     }
 

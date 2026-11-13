@@ -14,7 +14,9 @@ mod github_token;
 mod guidance;
 mod http;
 mod install;
+mod list;
 mod login;
+mod prime;
 mod recover;
 mod release;
 mod request;
@@ -108,8 +110,7 @@ async fn main() -> ExitCode {
         Ok(cli) => cli,
         Err(e) => return parse_failure_exit(&e),
     };
-    // Doctor changes nothing, so not even the housekeeping runs before it.
-    if !matches!(cli.command, Cmd::Doctor { .. }) {
+    if runs_housekeeping(&cli.command) {
         cleanup_state(unix_now());
     }
     match run(cli.command).await {
@@ -135,6 +136,15 @@ fn parse_failure_exit(e: &clap::Error) -> ExitCode {
     } else {
         ExitCode::SUCCESS
     }
+}
+
+/// Whether the housekeeping runs before `cmd`. Doctor, list and prime change
+/// nothing, so not even the housekeeping runs before them.
+const fn runs_housekeeping(cmd: &Cmd) -> bool {
+    !matches!(
+        cmd,
+        Cmd::Doctor { .. } | Cmd::List { .. } | Cmd::Prime { .. }
+    )
 }
 
 /// Best-effort housekeeping before every command: stop the agents of ended
@@ -237,6 +247,12 @@ async fn run(cmd: Cmd) -> Result<()> {
             } => release::run_sign_manifest(repository, tag, &file).await,
             ReleaseCmd::Publish { repository, tag } => release::run_publish(repository, tag).await,
         },
+        Cmd::List { json, repo } => list::run(json, repo).await,
+        // It needs no configuration, and exits 0 whatever happens.
+        Cmd::Prime { brief } => {
+            prime::run(brief).await;
+            Ok(())
+        }
         Cmd::Status => status().await,
         Cmd::Revoke { grant } => revoke(&grant).await,
     }
@@ -369,5 +385,25 @@ mod tests {
             Some(1)
         );
         assert_eq!(super::EXIT_NO_GRANT, 5);
+    }
+
+    /// The commands that say they change nothing skip the housekeeping too.
+    #[test]
+    fn read_only_commands_skip_housekeeping() {
+        use clap::Parser as _;
+
+        use crate::cli::Cli;
+
+        for (args, runs) in [
+            (&["warden", "doctor"][..], false),
+            (&["warden", "prime"], false),
+            (&["warden", "prime", "--brief"], false),
+            (&["warden", "list"], false),
+            (&["warden", "list", "--json"], false),
+            (&["warden", "status"], true),
+        ] {
+            let cli = Cli::try_parse_from(args).unwrap();
+            assert_eq!(super::runs_housekeeping(&cli.command), runs, "{args:?}");
+        }
     }
 }

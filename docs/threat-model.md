@@ -48,6 +48,10 @@ warden does **not** protect against:
   repository of its grant, can still open issues (and, to be assumed, comment) on public
   repositories, including ones the GitHub App is not installed on, and is a bearer secret the agent has:
   revoking its grant stops new tokens, not that one. See [GitHub tokens](#github-tokens).
+- **Keeping what warden covers from its own agents.** Any enrolled agent can list the
+  targets and API secrets the owner has not hidden, with their addresses by default, and ask
+  whether warden covers a repository it names. See
+  [What an agent can learn about what warden covers](#what-an-agent-can-learn-about-what-warden-covers).
 - **Instant revocation everywhere.** An issued certificate stays valid on
   its target until it expires, and an open login to a certificate target continues
   even after that (issue
@@ -68,7 +72,7 @@ from, not that it is safe for real use.
 | Owner (phone, workstation) | Root of trust. Holds the passkey. Edits the 1Password vault. |
 | The warden host (its root, its container runtime) | Root of trust. Can read everything warden holds and act as warden. |
 | Agent (for example an AI coding agent on the owner's workstation) | Semi-trusted: well-intentioned but may be prompt-injected. Bounded by its stated goal, the approved window, and the targets and users the vault allows. It can request access and use what was granted, never approve it. |
-| warden server | Trusted. Holds a read-only 1Password Connect token in memory, and for short times what it reads with it: the SSH CA private key, from the read at an approval until the certificate is signed, the commit signing key while it signs, the GitHub App's private key while it mints a token, API secrets during a call, and relay login credentials (see below). Compromise of the server is compromise of everything it brokers, so it is hardened accordingly. |
+| warden server | Trusted. Holds a read-only 1Password Connect token in memory, and for short times what it reads with it: the SSH CA private key, from the read at an approval until the certificate is signed, the commit signing key while it signs, the GitHub App's private key while it mints a token, API secrets during a call, and relay login credentials (see below). Answering an agent's question about a repository, it also reads the GitHub App's private key to mint a token it drops, and the release signing items, keys included; and for each `GET /v1/offers` it reads every target and API secret item, so every API secret value and relay credential is read and dropped unused. Compromise of the server is compromise of everything it brokers, so it is hardened accordingly. |
 | 1Password Connect | Trusted secret backend. Reachable only from warden, on its own network, and unable to reach warden's listeners. |
 | Notifiers (Home Assistant Companion, ntfy, push providers) | Untrusted doorbells. They receive the goal text, the session label the agent stated, agent, target and a link to the approval page, and nothing else. They cannot approve anything. Which channels are used is fixed at startup from a compile-time set (`WARDEN_NOTIFY`); agents cannot influence it. |
 | Tailscale | Transport and network-level identity. The tailnet policy is the outer access control. |
@@ -973,7 +977,9 @@ What an attacker gets, and what stops it:
   agent across all its grants: far more
   than the CLI, which keeps each token for its hour, needs, and few enough that a looping
   agent cannot use up the App's rate limit at GitHub, which every agent shares, or fill the
-  audit log. A refused mint does not reach GitHub and is audited as `github_token_refused`.
+  audit log through mints. The repository question of `warden list` and `warden prime` is
+  outside this limit, an open gap described under
+  [What an agent can learn about what warden covers](#what-an-agent-can-learn-about-what-warden-covers). A refused mint does not reach GitHub and is audited as `github_token_refused`.
   A prompt-injected agent gets tokens too, and what a token can do includes pushing branches,
   opening pull requests and editing issues. Pushes to a protected default branch are stopped
   by the repository's rules on GitHub, and not by warden. A repository whose content runs as
@@ -1005,8 +1011,10 @@ What holds:
   residual copies in HTTP client buffers as the other secrets
   ([accepted residual risks](#accepted-residual-risks)). The key is read for each approval
   page and each mint, so it is in memory more often than the CA key. The owner causes the
-  first; an agent causes the others only with an active grant. An agent with no grant cannot
-  make the broker read it.
+  first; an agent causes the others with an active grant, or with no grant by asking whether
+  the App covers a repository, once per repository name every 5 minutes (see
+  [What an agent can learn about what warden covers](#what-an-agent-can-learn-about-what-warden-covers)).
+  That question signs a JWT and mints a token that the broker drops unused.
 - **The key signs only the JWT GitHub asks for, through `aws-lc-rs`.** The `rsa` crate in the
   dependency tree, behind the `RUSTSEC-2023-0071` exemption in `deny.toml`, is never given a
   private key: warden uses it for public keys only, to verify the pinned host keys of relay
@@ -1168,6 +1176,72 @@ This section covers the request, the approval and the tag, manifest and publish 
   commit, which covers the steps left. Approving it ends the earlier grant for the same agent,
   repository and tag in the same transaction, and writes a `grant_revoked` entry for each, so a
   release never has two active grants. Nothing weakens the one-claim rule to avoid this.
+
+## What an agent can learn about what warden covers
+
+`warden list` and `warden prime` ask the broker two questions: `GET /v1/offers`, what this
+agent may ask for, and `GET /v1/offers/repository/{owner}/{name}`, what warden offers for
+one repository. Both take an enrolled agent's key like every agent call, under the same body
+limit and Funnel refusal. Neither asks the owner anything or gives any access.
+
+What it exposes, and why that is accepted:
+
+- **Any agent key gets the names and, by default, the destinations of what warden covers**:
+  for each SSH target its name, users, longest window, mode, host and port (a relay target's
+  too, although the agent never connects there); for each API secret its name, origin,
+  methods, path prefix and longest window; whether a GitHub App is configured and its longest
+  window; whether commit signing and releases are available. An agent on the owner's host can
+  already see the network and its own SSH configuration, so hiding addresses by default
+  protects little, and the listing grants nothing: every request still needs the owner's
+  passkey. A copied agent key gets the same list ([risk 9](security-assessment.md#ranked-risks)).
+- **Nothing secret is in it.** The listing types have no field for a host key, a relay
+  credential, a secret value or a private key, so none can reach the response by accident.
+  Commit signing is answered from whether a key is configured, without reading it. Releases
+  are answered from item summaries, so the list names no repository and reads no release key.
+- **The owner decides what is listed, item by item**, with the `list` field
+  ([1Password items](1password-items.md), [local backend](local-backend.md)): `name` leaves
+  out the host and port or origin, `hidden` leaves the item out. Without the field an item is
+  listed in full. A 1Password item with any other value, or that fails validation, is left
+  out of the list: one bad item must not take the broker down, and its `list` value cannot be
+  trusted. The local backend refuses such a file, like any other bad setting.
+- **`hidden` hides the listing, not the item's existence.** The broker already answers
+  `unknown target` or `unknown API secret` to a request for a name that does not exist, so an
+  agent can test a guess, one call at a time. `list` decides listing only, never access: an
+  agent that knows a hidden item's name can still ask for it, and the owner still decides.
+- **The repository question answers one guess at a time and never enumerates.** The agent
+  names a repository and the broker says whether the agent App's installation covers it,
+  whether commit signing is available, and whether a release signing key names it with a
+  release App configured. Nothing asks GitHub for the installation's list of repositories,
+  and no route lists the repositories warden covers. The answer is the same for every agent.
+- **Neither route is audited.** They decide no access, create no request and notify no one,
+  and the audit log records decisions and grants. The server log records each call with the
+  agent's name, and the repository for the second. An agent that calls them often leaves only
+  those lines.
+
+What it costs:
+
+- **An uncached repository question reads keys with no grant.** To answer, the broker reads
+  the agent App's private key, signs a JWT and mints an installation token at GitHub, which it
+  drops unused, and reads the release signing items, keys included, as a release step does.
+  None of it leaves the broker. Answers are kept in memory for 5 minutes per repository name,
+  up to 256 of them; an answer the broker could not tell is not kept.
+- **Each offers listing reads every target and API secret item.** On 1Password,
+  `GET /v1/offers` lists the vault's items once and reads the body of each target and API
+  secret item, its secret value or relay credential included, which the broker drops unused.
+  Nothing limits how often an agent key calls it, so a key that calls it in a loop keeps the
+  broker and Connect busy and keeps secrets passing through the broker's memory
+  ([#254](https://github.com/pecheriere/warden/issues/254)).
+- **Open: an agent key can spend the agent App's rate limit at GitHub.** The question is not
+  audited and not counted against the 60 tokens an hour per agent. An agent key that cycles
+  through distinct names, including case variants of one name since the cache is keyed on the
+  name as given, makes one token request at GitHub per name. That spends the App's rate limit,
+  which every agent shares, and can delay or fail the token mints of real grants until GitHub
+  resets it. Nothing in warden limits it yet
+  ([#254](https://github.com/pecheriere/warden/issues/254)); the server log shows who asked.
+- **The shared cache can show that someone asked.** It is shared by every agent, so a quick
+  answer can tell an agent that some agent asked about that repository in the last 5
+  minutes. The impact is low: the answer is the same for every agent, and the timing says
+  neither which agent asked nor why.
 
 ## The local secret backend
 

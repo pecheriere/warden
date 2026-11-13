@@ -1,6 +1,7 @@
 //! The real `warden` binary's exit code for a command line it does not run: a
 //! usage error must not read as a denial (exit 2, tested with a real broker in
-//! `e2e_http.rs`), and help and version output is a success.
+//! `e2e_http.rs`), and help and version output is a success. `warden prime`
+//! informs, so it is a success even before `warden login`.
 
 use std::process::{Command, Output, Stdio};
 
@@ -77,5 +78,17 @@ fn version_exits_0_on_stdout() {
             format!("warden {}", env!("CARGO_PKG_VERSION")),
             "{flag}"
         );
+    }
+}
+
+#[test]
+fn prime_without_configuration_exits_0_with_one_line() {
+    for args in [&["prime"][..], &["prime", "--brief"]] {
+        let out = warden(args);
+        assert_eq!(out.status.code(), Some(0), "{args:?}: {}", stderr(&out));
+        assert_eq!(out.stderr, [] as [u8; 0], "{args:?}");
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        assert_eq!(stdout.lines().count(), 1, "{args:?}: {stdout}");
+        assert!(stdout.contains("not set up"), "{args:?}: {stdout}");
     }
 }

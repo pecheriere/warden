@@ -11,6 +11,7 @@ to disk. For APIs, the agent never sees the secret: warden makes the calls.
 Contents:
 
 - [One-time setup](#one-time-setup)
+- [What warden offers here](#what-warden-offers-here)
 - [Rules for requesting access](#rules-for-requesting-access)
 - [Requesting access](#requesting-access)
 - [Using a grant](#using-a-grant)
@@ -40,8 +41,9 @@ In short:
    `warden login` command for the agent's machine.
 3. Install the CLI there and run that command. `warden doctor` then checks
    the setup ([what it checks](configuration.md#checking-an-agent-machine)).
-4. Paste [the instructions](agent-instructions.md) into the agent's `AGENTS.md`
-   or `CLAUDE.md`.
+4. Give the agent [the instructions](agent-instructions.md): a session-start
+   hook that runs `warden prime --brief`, or the one-line rule, as
+   [Instructions to give an agent](#instructions-to-give-an-agent) says.
 
 The rest of this section gives the details.
 
@@ -298,6 +300,39 @@ the agent must run on one of the owner's (untagged) devices.
 The server URL must be `https://`, or plain `http://` to a loopback address.
 The CLI never sets the `Tailscale-User-Login` header: Tailscale Serve adds it
 after authenticating the machine.
+
+## What warden offers here
+
+`warden list` shows what this agent may ask the broker for: the SSH targets
+and their users, the API secrets and their methods, and whether GitHub tokens,
+commit signing and releases are available. It asks no one and changes nothing.
+Sections with nothing in them are left out; a part the broker could not read
+is printed as `could not be read` instead, and the command still exits 0.
+
+```sh
+warden list
+warden list --json
+```
+
+In a git checkout whose `origin` is on `github.com`, it also prints a "this
+repository" section: whether the GitHub App covers the repository, whether
+commit signing is available, and whether the repository can be released.
+`--repo owner/name` asks about another repository, and the section is left out
+for a checkout whose remote is not on GitHub. `--json` prints
+`{"offers": …, "repository": …}` with the broker's answers as it sent them, so
+a field or value newer than this CLI is kept; `repository` is null when there
+is no such section or its answer could not be read. In the text output, a value
+this CLI does not know is printed as `unknown` (an SSH mode) or `could not be
+read`.
+
+A target or secret the owner lists as `name` shows no host or origin; one
+listed as `hidden` does not show at all, but can still be requested. What the
+list shows is what the broker says today, and a request is still decided by
+the owner. Exit 0 on success, also when only the repository answer fails (its
+section says `could not be read`); 1 when the broker cannot be reached, refuses
+the login, fails or is too old to answer `GET /v1/offers` (it says to upgrade
+it), and 64 for a `--repo`
+that is not `owner/name` on `github.com`. See [Exit codes](#exit-codes).
 
 ## Rules for requesting access
 
@@ -1020,6 +1055,43 @@ never try to get around warden by any other route.
 
 ## Instructions to give an agent
 
-[Instructions for an agent](agent-instructions.md) is a block to paste into an
-agent's `AGENTS.md` or `CLAUDE.md`: how to ask, how to write a goal, how to
-choose a window, when to revoke and what to do when denied.
+[Instructions for an agent](agent-instructions.md) says how to ask, how to write
+a goal, how to choose a window, when to revoke and what to do when denied. The
+CLI carries a copy of it: `warden prime` prints it with what this broker offers
+the agent (as `warden list` prints it), leaving out the sections for what the
+broker does not offer, and in a GitHub checkout adds what it offers for that
+repository. `warden prime --brief` prints the short form: about ten lines that
+name what warden covers here, say never to use other credentials or another way
+in, and say to run `warden prime` before the first request. It does not ask
+about the repository, so it makes one call to the broker.
+
+```sh
+warden prime
+warden prime --brief
+```
+
+Give the instructions to an agent one of three ways:
+
+- **A session-start hook** that runs `warden prime --brief`, for example a
+  Claude Code `SessionStart` hook. Use it with a key that signs without a
+  prompt, such as a dedicated agent socket as `warden login` sets up: every
+  call is signed, and a key that prompts for each signature would prompt at
+  every session start.
+- **One rule** in the agent's `AGENTS.md` or `CLAUDE.md`, for an agent with no
+  hooks or with a key that prompts:
+
+  ```markdown
+  Run `warden prime` before a task that needs an SSH host, an API secret, GitHub, commit signing or a release.
+  ```
+
+- **The block itself**, pasted into `AGENTS.md` or `CLAUDE.md`, for an agent
+  with no shell access at session start.
+
+Both forms exit 0 whatever the broker does, so a hook never fails because of
+it, and give the broker 3 seconds in all. When the broker cannot be reached,
+does not answer within those 3 seconds, cannot read its policy, refuses the
+call, sends an answer the CLI cannot read or is too old to list what it offers,
+they print the rules without the offers and one line saying which, such as "warden: the broker cannot
+be reached: run `warden doctor`, and do not go around it." Before `warden login`
+has been run, they print only one line saying warden is installed but not set
+up.

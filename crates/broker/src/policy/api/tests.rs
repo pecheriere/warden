@@ -4,7 +4,7 @@ use http::{HeaderName, Method};
 use url::Url;
 use warden_broker_proto::{ApiGrant, SecretName, Window};
 
-use super::{ApiScope, ApiSecretPolicy, ValueFormat};
+use super::{ApiScope, ApiSecretPolicy, Listing, ValueFormat};
 
 fn api(origin: &str, prefix: &str, methods: &[Method], header: &str) -> ApiSecretPolicy {
     ApiSecretPolicy {
@@ -16,6 +16,7 @@ fn api(origin: &str, prefix: &str, methods: &[Method], header: &str) -> ApiSecre
         path_prefix: prefix.to_owned(),
         ca_pem: None,
         max_window: Window::H1,
+        listing: Listing::Full,
     }
 }
 

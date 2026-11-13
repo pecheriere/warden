@@ -217,7 +217,11 @@ pub fn load_existing() -> Result<Option<Config>> {
     load_existing_from(&config_path()?)
 }
 
-fn load_existing_from(path: &Path) -> Result<Option<Config>> {
+/// The configuration at `path`, or `None` when there is none.
+///
+/// # Errors
+/// If a configuration exists but cannot be read or is invalid.
+pub fn load_existing_from(path: &Path) -> Result<Option<Config>> {
     match load_from(path) {
         Ok(config) => Ok(Some(config)),
         Err(e)

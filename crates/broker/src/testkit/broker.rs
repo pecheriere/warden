@@ -21,6 +21,7 @@ use crate::config::Config;
 use crate::github_app::GithubApi;
 use crate::identity::TailscaleServeIdentity;
 use crate::load::ApiLoad;
+use crate::offers_cache::RepositoryOfferCache;
 use crate::policy::SecretBackend;
 use crate::proxy::ProxyLimits;
 use crate::relay::{RelayEndpoint, RelayLimits, host_key};
@@ -536,6 +537,7 @@ impl TestBroker {
             passkeys: Arc::new(passkeys),
             audience,
             github: limits.github_api.clone(),
+            repository_offers: Arc::new(RepositoryOfferCache::new()),
         };
         let api_load = ApiLoad::default();
         let api_router = crate::api::router(state.clone(), api_load.clone());

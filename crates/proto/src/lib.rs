@@ -62,6 +62,7 @@ pub mod doctor;
 pub mod github_token;
 mod grant;
 mod names;
+pub mod offers;
 pub mod release;
 mod session;
 pub mod signing;
