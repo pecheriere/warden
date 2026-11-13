@@ -11,6 +11,7 @@ use crate::audit::AuditLog;
 use crate::config::Config;
 use crate::github_app::GithubApi;
 use crate::identity::IdentitySource;
+use crate::offers_cache::RepositoryOfferCache;
 use crate::policy::SecretBackend;
 use crate::requests::{Clock, Requests};
 
@@ -29,6 +30,7 @@ pub mod github_release;
 pub mod health;
 pub mod identity;
 pub mod notify;
+pub mod offers_cache;
 pub mod policy;
 pub mod private_files;
 pub mod proxy;
@@ -66,6 +68,8 @@ pub struct AppState {
     pub audience: Audience,
     /// Where GitHub's API is, for minting agent tokens.
     pub github: GithubApi,
+    /// Recent answers of `GET /v1/offers/repository/{owner}/{name}`.
+    pub repository_offers: Arc<RepositoryOfferCache>,
 }
 
 /// The two routers of the broker: the agent API and the approval UI, each

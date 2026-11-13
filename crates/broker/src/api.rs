@@ -33,6 +33,7 @@ use crate::signed;
 
 mod commit_signing;
 mod github_token;
+mod offers;
 mod release;
 
 /// Largest accepted request body, in bytes.
@@ -84,6 +85,11 @@ pub fn router(state: AppState) -> Router {
             agent(post(cancel_request), BODY_LIMIT),
         )
         .route("/v1/grants", agent(get(list_grants), BODY_LIMIT))
+        .route("/v1/offers", agent(get(offers::list), BODY_LIMIT))
+        .route(
+            "/v1/offers/repository/{owner}/{name}",
+            agent(get(offers::repository::answer), BODY_LIMIT),
+        )
         .route(
             "/v1/commit-signing/key",
             agent(get(commit_signing::public_key), BODY_LIMIT),

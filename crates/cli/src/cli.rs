@@ -118,6 +118,25 @@ pub(crate) enum Cmd {
         #[command(subcommand)]
         what: ReleaseCmd,
     },
+    /// Show what this agent may ask the broker for. Asks no one and changes
+    /// nothing.
+    List {
+        /// Print the broker's answer as JSON.
+        #[arg(long)]
+        json: bool,
+        /// Ask about this repository (`owner/name`) instead of the checkout's.
+        #[arg(long)]
+        repo: Option<String>,
+    },
+    /// Print instructions for an agent: when and how to ask warden for access,
+    /// with what this broker offers.
+    Prime {
+        /// Print the short form, for a session-start hook: what warden covers
+        /// here, and the rules in a few lines. Does not ask about the checkout's
+        /// repository.
+        #[arg(long)]
+        brief: bool,
+    },
     /// Show local grants, and the broker's view of this agent's grants and
     /// pending requests.
     Status,

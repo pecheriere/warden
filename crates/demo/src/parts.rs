@@ -130,6 +130,22 @@ impl SecretBackend for DemoBackend {
         let policy = self.find(name)?.clone();
         Ok((policy, SecretValue::new(self.value.clone())))
     }
+
+    async fn list_ssh_targets(&self) -> Result<Vec<SshTarget>, PolicyError> {
+        Ok(Vec::new())
+    }
+
+    async fn list_api_secrets(&self) -> Result<Vec<ApiSecretPolicy>, PolicyError> {
+        Ok(vec![self.policy.clone()])
+    }
+
+    async fn has_release_signing(&self) -> Result<bool, PolicyError> {
+        Ok(false)
+    }
+
+    async fn has_release_app(&self) -> Result<bool, PolicyError> {
+        Ok(false)
+    }
 }
 
 /// Stands in for the notification channels: hands each notification to the

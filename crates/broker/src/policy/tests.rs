@@ -6,7 +6,7 @@ use warden_broker_proto::{TargetName, Window};
 
 use zeroize::Zeroizing;
 
-use super::{SecretValue, SshMode, SshTarget};
+use super::{Listing, SecretValue, SshMode, SshTarget};
 
 fn key() -> PublicKey {
     PrivateKey::random(&mut OsRng, Algorithm::Ed25519)
@@ -24,6 +24,7 @@ fn target(host: &str, port: u16, host_keys: Vec<PublicKey>) -> SshTarget {
         users: Vec::new(),
         max_window: Window::H1,
         host_keys,
+        listing: Listing::Full,
     }
 }
 

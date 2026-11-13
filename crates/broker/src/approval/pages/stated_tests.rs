@@ -6,7 +6,7 @@ use warden_broker_proto::{
 };
 
 use super::{approve, grants, history, pending};
-use crate::policy::{SshMode, SshTarget};
+use crate::policy::{Listing, SshMode, SshTarget};
 use crate::requests::{
     ActiveGrant, Destination, HistoryEntry, LinkHosts, PendingEntry, PendingView,
 };
@@ -61,6 +61,7 @@ fn destination() -> Destination {
         users: vec![user()],
         max_window: Window::H4,
         host_keys: Vec::new(),
+        listing: Listing::Full,
     })
 }
 

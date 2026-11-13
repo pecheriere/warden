@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 use ssh_key::rand_core::OsRng;
 use ssh_key::{Algorithm, LineEnding, PrivateKey};
-use warden_broker::policy::{RelayCredential, SshMode, SshTarget};
+use warden_broker::policy::{Listing, RelayCredential, SshMode, SshTarget};
 use warden_broker::testkit::sshd::{Sshd, SshdLogin, current_user};
 use warden_broker::testkit::{CapturingNotifier, TestBroker};
 use warden_broker_proto::{TargetName, UnixUser, Window};
@@ -47,6 +47,7 @@ async fn setup(login: &SshdLogin, credential: RelayCredential) -> Setup {
             users: vec![UnixUser::try_from(current_user()).unwrap()],
             max_window: Window::H1,
             host_keys: vec![sshd.host_key().clone()],
+            listing: Listing::Full,
         },
         credential,
     );

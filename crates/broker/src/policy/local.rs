@@ -35,7 +35,7 @@ use super::onepassword::{
     ApiItem, ItemUrl, SecretField, TargetItem, parse_api_secret, parse_private_key, parse_target,
 };
 use super::{
-    ApiSecretPolicy, CaKey, CaProbe, CommitSigningKey, CommitSigningProbe, GithubAppKey,
+    ApiSecretPolicy, CaKey, CaProbe, CommitSigningKey, CommitSigningProbe, GithubAppKey, Listing,
     PolicyError, RelayCredential, ReleaseAppKey, ReleaseSigningKey, SecretBackend, SecretValue,
     SshMode, SshTarget, not_a_relay_target,
 };
@@ -43,6 +43,7 @@ use crate::audit::{AuditEvent, AuditLog};
 use crate::config::LocalSettings;
 
 mod files;
+mod listing;
 mod seal;
 
 pub use seal::{ACCESS_NOTE, SealError, SealedPolicy, Unverified, seal_policy_file, seal_text};
@@ -108,6 +109,7 @@ struct TargetEntry {
     host_keys: Option<Vec<String>>,
     private_key_file: Option<String>,
     password_file: Option<String>,
+    list: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -121,6 +123,7 @@ struct ApiEntry {
     methods: Option<Vec<String>>,
     path_prefix: Option<String>,
     ca_pem: Option<String>,
+    list: Option<String>,
 }
 
 fn invalid(item: &str, field: &str, reason: impl Into<String>) -> PolicyError {
@@ -318,6 +321,7 @@ impl Files {
             ("address", entry.address.as_deref()),
             ("mode", entry.mode.as_deref()),
             ("max_window", entry.max_window.as_deref()),
+            ("list", entry.list.as_deref()),
         ]
         .into_iter()
         .filter_map(|(label, value)| value.map(|value| plain_field(label, value)))
@@ -373,6 +377,7 @@ impl Files {
             ("methods", methods.as_deref()),
             ("path_prefix", entry.path_prefix.as_deref()),
             ("ca_pem", entry.ca_pem.as_deref()),
+            ("list", entry.list.as_deref()),
         ] {
             fields.extend(optional_field(item, label, value)?);
         }
@@ -464,6 +469,9 @@ impl Files {
             match self.parse_target(&name, entry) {
                 Ok((target, _credential)) => {
                     cert_targets += usize::from(target.mode == SshMode::Cert);
+                    if target.listing == Listing::Invalid {
+                        problems.push(bad_list(&format!("[targets.{key}]")));
+                    }
                 }
                 Err(e) => problems.push(e.to_string()),
             }
@@ -476,8 +484,12 @@ impl Files {
                 ));
                 continue;
             };
-            if let Err(e) = self.parse_api(&name, entry) {
-                problems.push(e.to_string());
+            match self.parse_api(&name, entry) {
+                Ok((policy, _value)) if policy.listing == Listing::Invalid => {
+                    problems.push(bad_list(&format!("[api_secrets.{key}]")));
+                }
+                Ok(_) => {}
+                Err(e) => problems.push(e.to_string()),
             }
         }
         let ca = match &policy.ca {
@@ -510,6 +522,12 @@ impl Files {
             },
         }
     }
+}
+
+/// The probe's problem for an entry whose `list` is not a known value; the
+/// value itself is never quoted.
+fn bad_list(entry: &str) -> String {
+    format!("{entry}: list must be full, name or hidden")
 }
 
 /// The error for a secret file that was not read. A failure of the system may
@@ -695,6 +713,23 @@ impl SecretBackend for LocalBackend {
     ) -> Result<(ApiSecretPolicy, SecretValue), PolicyError> {
         let name = name.clone();
         self.read(move |files| files.api(&name)).await
+    }
+
+    async fn list_ssh_targets(&self) -> Result<Vec<SshTarget>, PolicyError> {
+        self.read(Files::listed_targets).await
+    }
+
+    async fn list_api_secrets(&self) -> Result<Vec<ApiSecretPolicy>, PolicyError> {
+        self.read(Files::listed_api_secrets).await
+    }
+
+    /// The local backend holds no release keys: that is 1Password only.
+    async fn has_release_signing(&self) -> Result<bool, PolicyError> {
+        Ok(false)
+    }
+
+    async fn has_release_app(&self) -> Result<bool, PolicyError> {
+        Ok(false)
     }
 }
 

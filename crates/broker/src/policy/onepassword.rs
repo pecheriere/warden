@@ -38,6 +38,7 @@ const CA_FIELD_ID: &str = "private_key";
 const TIMEOUT: Duration = Duration::from_secs(5);
 
 mod items;
+mod listing;
 mod probe;
 mod release;
 
@@ -379,8 +380,19 @@ impl OnePasswordConnect {
             .tagged_titled(API_TAG, name.as_str(), "an API secret")
             .await?
             .ok_or_else(|| PolicyError::UnknownSecret(name.as_str().to_owned()))?;
-        check_id(&summary.id)?;
-        let body = self.vault_bytes(&["items", &summary.id]).await?;
+        self.read_api_item(name, &summary.id).await
+    }
+
+    /// Read the item with Connect id `id` and validate it as the API secret
+    /// `name`. The body and the credential stay in `Zeroizing` buffers
+    /// throughout.
+    async fn read_api_item(
+        &self,
+        name: &SecretName,
+        id: &str,
+    ) -> Result<(ApiSecretPolicy, SecretValue), PolicyError> {
+        check_id(id)?;
+        let body = self.vault_bytes(&["items", id]).await?;
         // Never interpolate the serde error: it can quote the credential.
         let item: ApiItem = serde_json::from_slice(&body).map_err(|_| {
             PolicyError::Unavailable(format!(
@@ -401,8 +413,19 @@ impl OnePasswordConnect {
             .tagged_titled(TARGET_TAG, name.as_str(), "a target")
             .await?
             .ok_or_else(|| PolicyError::NotFound(name.as_str().to_owned()))?;
-        check_id(&summary.id)?;
-        let body = self.vault_bytes(&["items", &summary.id]).await?;
+        self.read_target_item(name, &summary.id).await
+    }
+
+    /// Read the item with Connect id `id` and validate it as the SSH target
+    /// `name`. The body and any relay credential stay in `Zeroizing` buffers
+    /// throughout.
+    async fn read_target_item(
+        &self,
+        name: &TargetName,
+        id: &str,
+    ) -> Result<(SshTarget, Option<RelayCredential>), PolicyError> {
+        check_id(id)?;
+        let body = self.vault_bytes(&["items", id]).await?;
         // Never interpolate the serde error: it can quote the credential.
         let item: TargetItem = serde_json::from_slice(&body).map_err(|_| {
             PolicyError::Unavailable(format!(
@@ -528,5 +551,21 @@ impl SecretBackend for OnePasswordConnect {
         name: &SecretName,
     ) -> Result<(ApiSecretPolicy, SecretValue), PolicyError> {
         self.api_item(name).await
+    }
+
+    async fn list_ssh_targets(&self) -> Result<Vec<SshTarget>, PolicyError> {
+        self.listed_targets().await
+    }
+
+    async fn list_api_secrets(&self) -> Result<Vec<ApiSecretPolicy>, PolicyError> {
+        self.listed_api_secrets().await
+    }
+
+    async fn has_release_signing(&self) -> Result<bool, PolicyError> {
+        Ok(!self.tagged(RELEASE_SIGNING_TAG).await?.is_empty())
+    }
+
+    async fn has_release_app(&self) -> Result<bool, PolicyError> {
+        Ok(!self.tagged(RELEASE_APP_TAG).await?.is_empty())
     }
 }

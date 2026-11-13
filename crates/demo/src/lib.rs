@@ -36,6 +36,7 @@ use warden_broker::audit::{self, AuditLog};
 use warden_broker::config::Config;
 use warden_broker::github_app::GithubApi;
 use warden_broker::notify::Doorbell;
+use warden_broker::offers_cache::RepositoryOfferCache;
 use warden_broker::requests::{self, Clock as _, Requests, SystemClock};
 use warden_broker::{AppState, agents, audience, build_routers, store};
 use warden_broker_proto::AgentName;
@@ -424,6 +425,7 @@ impl Prepared {
             passkeys,
             audience,
             github: GithubApi::public(),
+            repository_offers: Arc::new(RepositoryOfferCache::new()),
         };
         let (api, approval) = build_routers(state);
 

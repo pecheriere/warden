@@ -26,7 +26,7 @@ use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs
 use url::Url;
 
 use super::github_release::GithubReleaseFake;
-use crate::policy::{ApiSecretPolicy, ValueFormat};
+use crate::policy::{ApiSecretPolicy, Listing, ValueFormat};
 
 /// Body length served by `/huge` and `/huge-chunked`: twice the default
 /// response limit.
@@ -291,6 +291,7 @@ impl HttpsUpstream {
             path_prefix: "/".to_owned(),
             ca_pem: Some(self.ca_pem.clone()),
             max_window: warden_broker_proto::Window::H1,
+            listing: Listing::Full,
         }
     }
 

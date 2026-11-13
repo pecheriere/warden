@@ -22,6 +22,7 @@ use warden_broker::config::{
 use warden_broker::github_app::GithubApi;
 use warden_broker::identity::TailscaleServeIdentity;
 use warden_broker::notify::{ChannelSettings, Fallback, Notifier};
+use warden_broker::offers_cache::RepositoryOfferCache;
 use warden_broker::policy::local::{ACCESS_NOTE, Unverified, seal_policy_file};
 use warden_broker::policy::{LocalBackend, OnePasswordConnect, SecretBackend};
 use warden_broker::private_files::{self, DirectoryState};
@@ -645,6 +646,7 @@ async fn build_app(config: &Arc<Config>) -> Result<App> {
         passkeys: Arc::new(passkeys),
         audience,
         github,
+        repository_offers: Arc::new(RepositoryOfferCache::new()),
     };
     let (api, approval) = build_routers(state);
     Ok(App {
