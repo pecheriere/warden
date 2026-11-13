@@ -322,10 +322,30 @@ change.
     (the larger of 10 s and the limit at 128 KiB/s: 10 s, or 16 s for
     proxied calls; 408), so a caller naming a known agent cannot hold a
     connection or memory beyond that without a valid signature.
+  - **Many connections at once.** The bounds above hold per connection; these
+    bound how many, so that agents, or a peer naming a known agent without
+    its key, cannot use up the file descriptors and memory the approval UI
+    shares with the agent API in one process, at the moment the owner wants
+    to revoke. Bodies read before their signature is verified share one
+    budget of 32 MiB over all callers, counted at their declared length or
+    the route's limit (503 beyond it, before the body is read). An agent may
+    have at most 16 status long-polls waiting at once (429 beyond that).
+    Each listener caps its open connections, 256 for the agent API and 64
+    for the approval UI, and closes any beyond its cap as soon as it is
+    accepted, so a full agent API leaves the approval UI its own share; both
+    together, with the default relay and proxy limits, stay within the usual
+    limit of 1024 open files (raise it if you raise those limits a lot). Request headers must arrive within 120 s, which also
+    ends idle keep-alive connections; behind Serve, which forwards only
+    complete request heads, this matters only for a listener reached without
+    it. What remains: a compromised agent, or a peer naming a known agent,
+    can fill the agent API's share, and other agents get 502s or 503s until
+    it eases. That is availability of the agent API only, and fails closed:
+    no access is given, and the owner can still open the approval UI and
+    revoke.
   - **Agent names are not secret.** An unauthenticated peer that can reach
     the API can learn whether a name belongs to an enrolled, unrevoked
     key-signed agent: such a name gets a 413 or 408 for an oversized or slow
-    body, any other name a 401. This is accepted: agent names appear in
+    body, or a 503 when the body budget is used up, any other name a 401. This is accepted: agent names appear in
     notifications and logs, and knowing one gives no way to sign.
   - Each refused signed request is logged at warn level with its reason
     (and the agent name once it parsed). A caller can therefore add log

@@ -12,7 +12,7 @@ use axum::extract::{DefaultBodyLimit, FromRequest, Path, Query, Request, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{MethodRouter, get, post};
-use axum::{Json, Router, middleware};
+use axum::{Extension, Json, Router, middleware};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use url::Url;
@@ -26,6 +26,7 @@ use warden_broker_proto::release::MAX_MANIFEST_BYTES;
 use crate::AppState;
 use crate::audit::AuditEvent;
 use crate::identity::{AuthedAgent, refuse_funnel};
+use crate::load::{ApiLoad, WaitSlots};
 use crate::policy::{ApiScope, PolicyError};
 use crate::proxy::{self, CallEnd, CallInfo, CallSlot, GrantChecks, GrantState, Needles};
 use crate::requests::{BACKEND_UNAVAILABLE, RequestError};
@@ -59,14 +60,16 @@ const MAX_AUDIT_URL: usize = 512;
 /// Longest a status request may wait for a change, in seconds.
 const MAX_WAIT_SECS: u64 = 30;
 
-/// Routes of the agent API listener, with `state` applied.
-pub fn router(state: AppState) -> Router {
+/// Routes of the agent API listener, with `state` applied, within the bounds
+/// `load` counts.
+pub fn router(state: AppState, load: ApiLoad) -> Router {
+    let ApiLoad { waits, bodies } = load;
     // An agent route with bodies of at most `limit` bytes. The signature
     // check sits inside the body limit, which it applies when it reads the
     // body, and times the body by the same limit.
     let agent = |route: MethodRouter<AppState>, limit: usize| {
         let verified: MethodRouter<AppState> = route.layer(middleware::from_fn_with_state(
-            signed::SignedRoute::new(state.clone(), limit),
+            signed::SignedRoute::new(state.clone(), limit, bodies.clone()),
             signed::verify,
         ));
         verified.layer(DefaultBodyLimit::max(limit))
@@ -78,7 +81,10 @@ pub fn router(state: AppState) -> Router {
             "/v1/requests",
             agent(post(create_request).get(list_requests), BODY_LIMIT),
         )
-        .route("/v1/requests/{id}", agent(get(request_status), BODY_LIMIT))
+        .route(
+            "/v1/requests/{id}",
+            agent(get(request_status), BODY_LIMIT).layer(Extension(waits)),
+        )
         .route(
             "/v1/requests/{id}/cancel",
             agent(post(cancel_request), BODY_LIMIT),
@@ -307,6 +313,7 @@ struct StatusQuery {
 
 async fn request_status(
     State(state): State<AppState>,
+    Extension(waits): Extension<WaitSlots>,
     AuthedAgent(agent): AuthedAgent,
     Path(id): Path<String>,
     query: Result<Query<StatusQuery>, QueryRejection>,
@@ -325,6 +332,17 @@ async fn request_status(
         ));
     }
     let id = parse_id(&id)?;
+    // Only a call that may wait holds a place; an answer now costs nothing.
+    let _slot = if wait == 0 {
+        None
+    } else {
+        Some(waits.try_acquire(&agent).ok_or_else(|| {
+            Failure::Client(
+                StatusCode::TOO_MANY_REQUESTS,
+                "too many status requests waiting; try again".to_owned(),
+            )
+        })?)
+    };
     let status = state
         .requests
         .status(&agent, &id, Duration::from_secs(wait))

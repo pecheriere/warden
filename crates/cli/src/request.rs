@@ -565,8 +565,9 @@ pub(crate) const fn status_word(status: &RequestStatus) -> &'static str {
     }
 }
 
-/// Long-poll until the request reaches a terminal status. Transport errors
-/// and 5xx answers are retried with exponential backoff (from `first_delay`,
+/// Long-poll until the request reaches a terminal status. Transport errors,
+/// 5xx answers and the 429 for too many waits are retried with exponential
+/// backoff (from `first_delay`,
 /// doubling, at most [`MAX_RETRY_DELAY`]) until `deadline`, with one note on
 /// stderr per failure. Returns why it gave up: a refusal (4xx) or the
 /// deadline.

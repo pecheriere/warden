@@ -28,6 +28,7 @@ mod github_http;
 pub mod github_release;
 pub mod health;
 pub mod identity;
+pub mod load;
 pub mod notify;
 pub mod policy;
 pub mod private_files;
@@ -35,6 +36,7 @@ pub mod proxy;
 pub mod relay;
 pub mod release_signing;
 pub mod requests;
+pub mod serve;
 pub mod signed;
 pub mod ssh_ca;
 pub mod store;
@@ -71,5 +73,8 @@ pub struct AppState {
 /// The two routers of the broker: the agent API and the approval UI, each
 /// with `state` applied. Serve them on separate listeners.
 pub fn build_routers(state: AppState) -> (axum::Router, axum::Router) {
-    (api::router(state.clone()), approval::router(state))
+    (
+        api::router(state.clone(), load::ApiLoad::default()),
+        approval::router(state),
+    )
 }

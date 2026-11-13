@@ -291,16 +291,17 @@ ready to put in the blob.
 ### What the broker checks
 
 In this order, stopping at the first failure. Every failure is a 401,
-except an oversized body (413), a body too slow to arrive (408) and a database
-failure on the broker's side (500):
+except a busy broker (503), an oversized body (413), a body too slow to arrive
+(408) and a database failure on the broker's side (500):
 
 1. The four `Warden-*` headers are present, each once, and well formed;
    `Warden-Signature` is at most 4096 characters; no other `Warden-*` header
    and no `Authorization` header is present.
 2. The agent exists, is not revoked and has a registered signing key.
 3. The timestamp is within 60 seconds of the broker's clock.
-4. The body is read, within the endpoint's size limit and within the time
-   allowed for that limit ([section 5](#5-api-conventions): 10 seconds, or
+4. The body is read, if the broker has room for it now (503 if not, see
+   [section 5](#5-api-conventions)), within the endpoint's size limit and
+   within the time allowed for that limit ([section 5](#5-api-conventions): 10 seconds, or
    16 for `POST /v1/grants/{id}/http`). A larger body is refused with 413,
    and a body still incomplete when the time is up with 408, at this step,
    before the signature is checked.
@@ -485,6 +486,17 @@ that it is the expected key, as `-Y verify` with an allowed-signers file does
   `POST /v1/grants/{id}/http` (2 MiB). A body still incomplete then is
   `408 {"error":"request body timed out"}`, also before the signature is
   checked. Send the body at once: sign it buffered, not streamed slowly.
+- **Load limits.** The broker reads at most 32 MiB of signed request bodies
+  at once before their signatures are checked, over all callers. A body is
+  counted at its `Content-Length`, or at the endpoint's size limit without
+  one; a request with no body is not counted. A body that does not fit is
+  `503 {"error":"broker busy; try again"}` before it is read: retry after a
+  moment. Each listener also caps its open connections (256 for the agent
+  API, 64 for the approval UI) and closes any connection beyond that without
+  an answer, which reaches the agent through Tailscale Serve as a 502. Request
+  headers must arrive within 120 seconds of the broker starting to wait for
+  them, which also closes a keep-alive connection idle that long. Connections
+  are HTTP/1.1.
 - **Identifiers.** Request and grant ids are 32 lowercase hex characters.
   A malformed id in a path is `400 {"error":"invalid id"}`.
 - **Times** are Unix seconds (integers).
@@ -495,8 +507,9 @@ that it is the expected key, as `-Y verify` with an allowed-signers file does
 - **Common statuses** for every signed endpoint: 401 (authentication
   failed, or the agent is revoked; branch on the status, as the body varies,
   see [Rules](#rules)), 408 (body too slow), 413 (body over the limit), 500 `{"error":"internal error"}`, 503 (the broker's secret
-  backend is unavailable: `{"error":"secret backend unavailable"}`; or a
-  short contention, `{"error":"request slot contended; retry"}`). An unknown
+  backend is unavailable: `{"error":"secret backend unavailable"}`; a
+  short contention, `{"error":"request slot contended; retry"}`; or too
+  many bodies being read, `{"error":"broker busy; try again"}`). An unknown
   path is `404 {"error":"not found"}`.
 - **Retrying.** 5xx statuses and transport errors may be retried with
   backoff (the CLI starts at 1 s and doubles up to 15 s), each attempt signed
@@ -767,7 +780,10 @@ sees the outcome.
 
 Errors: `400` for a malformed id or `wait` (`wait must be a whole number of
 seconds from 0 to 30`, `wait must be at most 30 seconds`), `404`
-`{"error":"not found"}` for an unknown id or another agent's request, and
+`{"error":"not found"}` for an unknown id or another agent's request, `429`
+`{"error":"too many status requests waiting; try again"}` when the agent
+already has 16 calls with a non-zero `wait` in flight (retry after a moment:
+one ending frees a place; `wait=0` is never refused for this), and
 section 5.
 
 ### `POST /v1/requests/{id}/cancel`

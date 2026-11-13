@@ -17,6 +17,12 @@ All notable changes to this project are recorded here. The format follows
 - The broker signs a release manifest only if every plain file name in it carries the
   release's version as a component (`warden-1.2.3-x86_64.tar.gz`, `warden_1.2.3_amd64.deb`);
   a name without it is refused, as an image reference with another tag already was.
+- Each listener caps its open connections (256 for the agent API, 64 for the approval UI)
+  and closes those beyond it, and drops a connection whose request headers take over 120 s.
+  The listeners serve HTTP/1.1 only.
+- Signed request bodies read before their signature is checked share a 32 MiB budget; a body
+  that does not fit is a 503. An agent may have 16 status long-polls waiting at once; one
+  more is a 429, which `warden request` retries.
 
 ### Fixed
 

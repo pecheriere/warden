@@ -11,16 +11,17 @@
 //!    (reserved) `Warden-*` header and no `Authorization` header is present;
 //! 2. the agent exists, is not revoked and has a registered signing key;
 //! 3. the timestamp is within [`MAX_CLOCK_SKEW_SECS`] of the broker's clock;
-//! 4. the body is read within the route's body limit (413 beyond it) and
-//!    within the time [`BodyReadTimeout`] allows for that limit (408
-//!    beyond it);
+//! 4. the body fits what is left of the [`BodyBudget`] for bodies read before
+//!    their signature is verified (503 if not), and is read within the
+//!    route's body limit (413 beyond it) and within the time
+//!    [`BodyReadTimeout`] allows for that limit (408 beyond it);
 //! 5. the SSHSIG verifies: namespace [`NAMESPACE`], hash `sha512` or
 //!    `sha256`, made by exactly the registered key, over the canonical
 //!    message rebuilt from the request as received;
 //! 6. the nonce is recorded as new for the agent; only now, so callers that
 //!    cannot sign cannot fill the nonce table.
 //!
-//! Every failure except the body's size and time limits is a 401 with the fixed body
+//! Every failure except the budget and the body's size and time limits is a 401 with the fixed body
 //! `{"error":"unauthorized"}`; the reason is logged, never key material or
 //! signature bytes. A request that passes carries a [`SignedAgent`]
 //! extension and its body, already read, for the handler.
@@ -28,7 +29,7 @@
 use std::num::NonZeroU64;
 use std::time::Duration;
 
-use axum::body::{Body, Bytes};
+use axum::body::{Body, Bytes, HttpBody as _};
 use axum::extract::{FromRequest as _, OriginalUri, Request, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::middleware::Next;
@@ -50,6 +51,7 @@ use warden_broker_proto::{AgentName, ApiError};
 use crate::AppState;
 use crate::agents::{self, AgentError};
 use crate::identity::AuthRejection;
+use crate::load::BodyBudget;
 
 /// Longest accepted `Warden-Signature`, in characters; longer values are
 /// refused before they are decoded. Real signatures are under 400.
@@ -105,14 +107,20 @@ impl BodyReadTimeout {
 pub struct SignedRoute {
     state: AppState,
     body_limit: usize,
+    budget: BodyBudget,
 }
 
 impl SignedRoute {
     /// [`verify`] for a route whose bodies are at most `body_limit` bytes
-    /// (the limit of its [`axum::extract::DefaultBodyLimit`]).
+    /// (the limit of its [`axum::extract::DefaultBodyLimit`]), read within
+    /// `budget` until their signature is verified.
     #[must_use]
-    pub const fn new(state: AppState, body_limit: usize) -> Self {
-        Self { state, body_limit }
+    pub const fn new(state: AppState, body_limit: usize, budget: BodyBudget) -> Self {
+        Self {
+            state,
+            body_limit,
+            budget,
+        }
     }
 }
 
@@ -161,6 +169,8 @@ enum Refusal {
     Body(StatusCode),
     /// The body did not arrive within the route's [`BodyReadTimeout`].
     BodyTimeout,
+    /// The [`BodyBudget`] has no room for the body now.
+    Busy,
     /// The database failed.
     Internal,
 }
@@ -193,6 +203,19 @@ impl Refusal {
                     StatusCode::REQUEST_TIMEOUT,
                     axum::Json(ApiError {
                         error: "request body timed out".to_owned(),
+                    }),
+                )
+                    .into_response()
+            }
+            Self::Busy => {
+                tracing::warn!(
+                    agent = agent.map(tracing::field::display),
+                    "signed request refused: unverified bodies use the whole budget"
+                );
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    axum::Json(ApiError {
+                        error: "broker busy; try again".to_owned(),
                     }),
                 )
                     .into_response()
@@ -378,12 +401,7 @@ pub async fn verify(State(route): State<SignedRoute>, req: Request, next: Next) 
         Err(refusal) => return refusal.into_response(None),
     };
     let agent = headers.agent.clone();
-    let timeout = route
-        .state
-        .config
-        .body_read_timeout
-        .for_limit(route.body_limit);
-    match authenticate(&route.state, headers, timeout, req).await {
+    match authenticate(&route, headers, req).await {
         Ok(req) => next.run(req).await,
         Err(refusal) => refusal.into_response(Some(&agent)),
     }
@@ -392,11 +410,11 @@ pub async fn verify(State(route): State<SignedRoute>, req: Request, next: Next) 
 /// Steps 2 to 6 for a request whose headers parsed; the request to hand on,
 /// with its body and a [`SignedAgent`].
 async fn authenticate(
-    state: &AppState,
+    route: &SignedRoute,
     headers: SignatureHeaders,
-    body_timeout: Duration,
     req: Request,
 ) -> Result<Request, Refusal> {
+    let state = &route.state;
     let SignatureHeaders {
         agent,
         timestamp,
@@ -425,10 +443,20 @@ async fn authenticate(
     }
 
     // 4. The body, within the limit the route's DefaultBodyLimit set and the
-    // time allowed for it. The
-    // body is read through a request carrying the same extensions, so the
-    // limit applies exactly as it would to the handler's extractor.
+    // time allowed for it, and only if the budget of bodies read before their
+    // signature is verified has room for it: as much as its length says, or
+    // the route's limit when it has none. The reservation ends with this
+    // function. The body is read through a request carrying the same
+    // extensions, so the limit applies exactly as it would to the handler's
+    // extractor.
     let (mut parts, body) = req.into_parts();
+    let size = body
+        .size_hint()
+        .upper()
+        .and_then(|upper| usize::try_from(upper).ok())
+        .map_or(route.body_limit, |upper| upper.min(route.body_limit));
+    let _reservation = route.budget.try_reserve(size).ok_or(Refusal::Busy)?;
+    let body_timeout = state.config.body_read_timeout.for_limit(route.body_limit);
     let mut body_req = Request::new(body);
     body_req.extensions_mut().clone_from(&parts.extensions);
     let bytes = tokio::time::timeout(body_timeout, Bytes::from_request(body_req, &()))

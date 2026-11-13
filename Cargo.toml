@@ -25,6 +25,10 @@ warden-demo = { path = "crates/demo", version = "0.13.0" }
 # Async runtime and web
 tokio = { version = "1.54", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time", "process", "fs", "io-util"] }
 axum = "0.8.9"
+# The broker serves its listeners with these directly, for the header read
+# timeout `axum::serve` does not set.
+hyper = { version = "1.12.0", features = ["server", "http1"] }
+hyper-util = { version = "0.1.21", features = ["tokio", "service"] }
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "json"] }
 async-trait = "0.1.92"
 http = "1.5.0"
@@ -119,8 +123,6 @@ http-body-util = { version = "0.1.5", features = ["channel"] }
 proptest = "1.12.0"
 # Reference encoder for the redaction tests.
 percent-encoding = "2.3.2"
-hyper = { version = "1.12.0", features = ["server", "http1"] }
-hyper-util = { version = "0.1.21", features = ["tokio", "service"] }
 # HTTPS test upstream for the proxy: a throwaway CA and leaf certificate, and
 # a TLS listener (aws-lc-rs, the provider reqwest's rustls already uses).
 rcgen = { version = "0.14.10", default-features = false, features = ["aws_lc_rs", "pem"] }
