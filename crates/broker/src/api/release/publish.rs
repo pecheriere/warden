@@ -16,7 +16,7 @@ use warden_broker_proto::release::{PublishResponse, ReleaseTarget};
 use warden_broker_proto::{AgentName, Id};
 
 use super::manifest::{NO_DRAFT, PUBLISHED};
-use super::{Ready, claim, github_failed, prepare, record_refusal, refused};
+use super::{Ready, claim, github_failed, prepare, record_refusal, record_start, refused};
 use crate::AppState;
 use crate::api::{ApiJson, Failure};
 use crate::audit::AuditEvent;
@@ -160,6 +160,7 @@ async fn run(
         check_files(&draft.assets, name, &recorded)?;
     }
     claim(state, agent, &target, &release, step).await?;
+    record_start(state, agent, &release, step, None).await?;
 
     github
         .publish(draft.id)

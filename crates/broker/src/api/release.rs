@@ -5,8 +5,9 @@
 //! looked up for every call. The order is the same for every step: find the grant
 //! (403), check the step is part of it (409), read the key and the App again and
 //! compare them with what the owner approved (409), run the read-only checks, claim
-//! the step (409), act, audit, and end the grant if that was its last step. A step
-//! that fails after its claim stays used. Nothing GitHub said, and nothing about
+//! the step (409), sign if the step signs, write `release_step_started` and check
+//! the grant again, act on GitHub, audit the result, and end the grant if that was
+//! its last step. A step that fails after its claim stays used. Nothing GitHub said, and nothing about
 //! the keys, appears in an error, a log line or the audit log.
 
 mod manifest;
@@ -177,6 +178,43 @@ pub(super) async fn claim(
     })
 }
 
+/// Write the entry that `step` of `release` is about to act on GitHub, then check
+/// that the grant is still active: nothing signed leaves the broker, and GitHub is
+/// not changed, unless both hold. `signed` is what the release key signed for the
+/// step, if anything.
+pub(super) async fn record_start(
+    state: &AppState,
+    agent: &AgentName,
+    release: &ActiveRelease,
+    step: ReleaseStep,
+    signed: Option<String>,
+) -> Result<(), Failure> {
+    let grant = release.grant();
+    state
+        .audit
+        .append(AuditEvent::ReleaseStepStarted {
+            grant_id: release.grant_id().clone(),
+            agent: agent.clone(),
+            repository: grant.repository.clone(),
+            tag: grant.tag.clone(),
+            step: step.name().to_owned(),
+            signed,
+        })
+        .await
+        .map_err(RequestError::from)?;
+    // Writing the log can take long, and a revocation does not wait for it.
+    let still_active = state
+        .requests
+        .active_release(agent, &grant.repository, &grant.tag)
+        .await?
+        .is_some_and(|active| active.grant_id() == release.grant_id());
+    if still_active {
+        Ok(())
+    } else {
+        Err(refused(StatusCode::FORBIDDEN, NO_ACTIVE_GRANT))
+    }
+}
+
 pub(super) fn github_failed(agent: &AgentName, step: ReleaseStep, e: &GithubError) -> Failure {
     // The error's text is fixed and carries nothing GitHub said.
     tracing::warn!(agent = %agent, step = step.name(), error = %e, "a release call to GitHub failed");
@@ -233,6 +271,7 @@ async fn create_tag(
     let expected = tag_object_id(&payload, &signature);
     let tagged_at = jiff::Timestamp::from_second(now)
         .map_err(|_| Failure::Request(RequestError::Internal("the clock is out of range")))?;
+    record_start(state, agent, &release, step, Some(expected.clone())).await?;
     let created = github
         .create_tag(&CreateTag {
             tag: grant.tag.clone(),

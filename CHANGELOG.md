@@ -6,10 +6,17 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Upgrading
+
+- New audit entry: `release_step_started`. An older `warden-server audit verify` refuses a
+  log holding one.
+
 ### Fixed
 
 - A release's commit is checked against the default branch's head by commit id, read from
   the branch's own ref, at the request, on the approval page and at the tag step.
+- Each release step writes a `release_step_started` audit entry, naming what the release key
+  signed, before it changes GitHub, and goes no further if the entry cannot be written.
 
 ## [0.13.0] - 2026-11-12
 

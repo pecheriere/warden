@@ -17,7 +17,9 @@ use warden_broker_proto::release::{
 };
 use warden_broker_proto::{AgentName, Id};
 
-use super::{BAD_BODY, Ready, claim, github_failed, prepare, record_refusal, refused};
+use super::{
+    BAD_BODY, Ready, claim, github_failed, prepare, record_refusal, record_start, refused,
+};
 use crate::AppState;
 use crate::api::{ApiJson, Failure};
 use crate::audit::AuditEvent;
@@ -117,6 +119,8 @@ async fn sign(
     })?;
     let signature_name = format!("{expected_name}.sig");
     drop(key);
+    let sha256 = hex::encode(Sha256::digest(&bytes));
+    record_start(state, agent, &release, step, Some(sha256.clone())).await?;
     for old in draft
         .assets
         .iter()
@@ -136,7 +140,6 @@ async fn sign(
         .await
         .map_err(|e| github_failed(agent, step, &e))?;
 
-    let sha256 = hex::encode(Sha256::digest(&bytes));
     let signature_sha256 = hex::encode(Sha256::digest(signature.as_bytes()));
     state
         .requests

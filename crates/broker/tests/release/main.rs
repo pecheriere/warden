@@ -11,6 +11,7 @@ use warden_broker::testkit::{HttpsUpstream, TestBroker};
 use warden_broker_proto::release::RepoName;
 
 mod approve;
+mod audit_first;
 mod manifest;
 mod publish;
 mod request;

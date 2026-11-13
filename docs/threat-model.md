@@ -193,7 +193,10 @@ change.
   one, adding an agent or changing its key, enrolling or removing a passkey and
   making an enrollment code write their entries before they touch the database. A
   proxied call and a relay session write theirs before anything reaches the target,
-  and then check the grant again. If the entry cannot be written, the action does
+  and then check the grant again. A release step writes `release_step_started` once
+  it has claimed the step and, for the tag and the manifest, once the release key has
+  signed, before the signature leaves the broker and before GitHub is changed; it too
+  then checks the grant again. If the entry cannot be written, the action does
   not happen and the caller gets an error. A bearer agent's row is written first and
   revoked if its entry cannot be written; its key is shown only after that entry, so
   the row cannot be used.
@@ -1066,7 +1069,9 @@ This section covers the request, the approval and the tag, manifest and publish 
 - **A step is claimed once.** Each step is claimed in one database statement before it is done,
   and a claim is never given back, so a repeat, a concurrent call or a retry after a failure does
   not do it twice, and a step that fails stays used. The claim also checks that the grant is not
-  revoked or ended and covers the step, so a revocation while the broker prepares a step stops it.
+  revoked or ended and covers the step, and the grant is checked again once the step's
+  `release_step_started` entry is written, so a revocation while the broker prepares a step
+  stops it. If that entry cannot be written, the step stops there and stays used.
 - **The approve-finish re-check calls GitHub before the passkey assertion.** It mints a release
   App token and reads the commit and the tag. Only someone holding the approval token who has
   started a ceremony reaches it. It is not rate-limited. Accepted: the approval token is the

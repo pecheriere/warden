@@ -338,8 +338,31 @@ pub enum AuditEvent {
         /// How many.
         count: u64,
     },
+    /// The broker is about to act on GitHub for a step of a release, under a
+    /// release grant whose step it has claimed. Written after the release key
+    /// signed, if the step signs, and before anything signed leaves the broker or
+    /// GitHub is changed: the step goes no further, and stays used, if this entry
+    /// cannot be written.
+    ReleaseStepStarted {
+        /// The grant it is done under.
+        grant_id: Id,
+        /// The agent.
+        agent: AgentName,
+        /// The repository.
+        repository: RepoName,
+        /// The tag.
+        tag: ReleaseTag,
+        /// The step: `tag`, `manifest` or `publish`.
+        step: String,
+        /// What the release key signed for the step: the id of the tag object for
+        /// `tag`, the lowercase hex SHA-256 of the manifest for `manifest`. Absent
+        /// for `publish`, which signs nothing.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signed: Option<String>,
+    },
     /// The broker created and pushed the signed tag of a release under a release
-    /// grant. Written once the tag exists; the claim of the step was made before.
+    /// grant. Written once the tag exists; the claim of the step and its
+    /// `release_step_started` entry were made before.
     ReleaseTagCreated {
         /// The grant it was done under.
         grant_id: Id,
@@ -357,7 +380,8 @@ pub enum AuditEvent {
     },
     /// The broker signed the manifest of a release under a release grant and
     /// attached it, with its signature, to the draft release. Written once both
-    /// files are uploaded; the claim of the step was made before.
+    /// files are uploaded; the claim of the step and its `release_step_started`
+    /// entry were made before.
     ReleaseManifestSigned {
         /// The grant it was done under.
         grant_id: Id,
@@ -374,7 +398,7 @@ pub enum AuditEvent {
     },
     /// The broker published the draft release under a release grant. Written
     /// after GitHub confirmed the release is no longer a draft; the claim of the
-    /// step was made before.
+    /// step and its `release_step_started` entry were made before.
     ReleasePublished {
         /// The grant it was done under.
         grant_id: Id,
