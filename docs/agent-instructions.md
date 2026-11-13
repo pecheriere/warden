@@ -47,7 +47,7 @@ Reach SSH hosts and HTTP APIs that need a secret only through `warden`. A
 person decides each request on their phone. Never use other credentials,
 and never look for another way in.
 
-What you may ask for here, as `warden list` prints it:
+What you may ask for here (run `warden list` to see it):
 
 <!-- warden:offers -->
 

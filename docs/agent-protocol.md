@@ -840,6 +840,9 @@ holds decisions and grants. The broker's own log notes that an agent listed offe
 - `503` `{"error":"secret backend unavailable"}` when SSH targets, API secrets and
   commit signing all failed, and section 5.
 - The answer carries no host key, relay credential or secret value.
+- A client ignores fields it does not know, and reads a value it does not know in
+  `mode`, `unavailable`, `github_token` or `release` (from a newer broker) as unknown
+  rather than failing. `warden list --json` prints both answers as they came.
 
 ### `GET /v1/offers/repository/{owner}/{name}`
 

@@ -319,14 +319,19 @@ repository" section: whether the GitHub App covers the repository, whether
 commit signing is available, and whether the repository can be released.
 `--repo owner/name` asks about another repository, and the section is left out
 for a checkout whose remote is not on GitHub. `--json` prints
-`{"offers": …, "repository": …}`, with `repository` null when there is no
-such section.
+`{"offers": …, "repository": …}` with the broker's answers as it sent them, so
+a field or value newer than this CLI is kept; `repository` is null when there
+is no such section or its answer could not be read. In the text output, a value
+this CLI does not know is printed as `unknown` (an SSH mode) or `could not be
+read`.
 
 A target or secret the owner lists as `name` shows no host or origin; one
 listed as `hidden` does not show at all, but can still be requested. What the
 list shows is what the broker says today, and a request is still decided by
-the owner. Exit 0 on success, 1 when the broker cannot be reached, refuses the
-login or is too old to answer (it says to upgrade it), and 64 for a `--repo`
+the owner. Exit 0 on success, also when only the repository answer fails (its
+section says `could not be read`); 1 when the broker cannot be reached, refuses
+the login, fails or is too old to answer `GET /v1/offers` (it says to upgrade
+it), and 64 for a `--repo`
 that is not `owner/name` on `github.com`. See [Exit codes](#exit-codes).
 
 ## Rules for requesting access
@@ -1081,8 +1086,9 @@ Give the instructions to an agent one of three ways:
 
 Both forms exit 0 whatever the broker does, so a hook never fails because of
 it, and give the broker 3 seconds in all. When the broker cannot be reached,
-refuses the login or is too old to list what it offers, they print the rules
-without the offers and one line saying why, such as "warden: the broker cannot
+does not answer within those 3 seconds, cannot read its policy, refuses the
+call, sends an answer the CLI cannot read or is too old to list what it offers,
+they print the rules without the offers and one line saying which, such as "warden: the broker cannot
 be reached: run `warden doctor`, and do not go around it." Before `warden login`
 has been run, they print only one line saying warden is installed but not set
 up.

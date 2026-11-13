@@ -72,7 +72,7 @@ from, not that it is safe for real use.
 | Owner (phone, workstation) | Root of trust. Holds the passkey. Edits the 1Password vault. |
 | The warden host (its root, its container runtime) | Root of trust. Can read everything warden holds and act as warden. |
 | Agent (for example an AI coding agent on the owner's workstation) | Semi-trusted: well-intentioned but may be prompt-injected. Bounded by its stated goal, the approved window, and the targets and users the vault allows. It can request access and use what was granted, never approve it. |
-| warden server | Trusted. Holds a read-only 1Password Connect token in memory, and for short times what it reads with it: the SSH CA private key, from the read at an approval until the certificate is signed, the commit signing key while it signs, the GitHub App's private key while it mints a token, API secrets during a call, and relay login credentials (see below). Compromise of the server is compromise of everything it brokers, so it is hardened accordingly. |
+| warden server | Trusted. Holds a read-only 1Password Connect token in memory, and for short times what it reads with it: the SSH CA private key, from the read at an approval until the certificate is signed, the commit signing key while it signs, the GitHub App's private key while it mints a token, API secrets during a call, and relay login credentials (see below). Answering an agent's question about a repository, it also reads the GitHub App's private key to mint a token it drops, and the release signing items, keys included; and for each `GET /v1/offers` it reads every target and API secret item, so every API secret value and relay credential is read and dropped unused. Compromise of the server is compromise of everything it brokers, so it is hardened accordingly. |
 | 1Password Connect | Trusted secret backend. Reachable only from warden, on its own network, and unable to reach warden's listeners. |
 | Notifiers (Home Assistant Companion, ntfy, push providers) | Untrusted doorbells. They receive the goal text, the session label the agent stated, agent, target and a link to the approval page, and nothing else. They cannot approve anything. Which channels are used is fixed at startup from a compile-time set (`WARDEN_NOTIFY`); agents cannot influence it. |
 | Tailscale | Transport and network-level identity. The tailnet policy is the outer access control. |
@@ -1182,12 +1182,19 @@ What it costs:
   drops unused, and reads the release signing items, keys included, as a release step does.
   None of it leaves the broker. Answers are kept in memory for 5 minutes per repository name,
   up to 256 of them; an answer the broker could not tell is not kept.
+- **Each offers listing reads every target and API secret item.** On 1Password,
+  `GET /v1/offers` lists the vault's items once and reads the body of each target and API
+  secret item, its secret value or relay credential included, which the broker drops unused.
+  Nothing limits how often an agent key calls it, so a key that calls it in a loop keeps the
+  broker and Connect busy and keeps secrets passing through the broker's memory
+  ([#254](https://github.com/pecheriere/warden/issues/254)).
 - **Open: an agent key can spend the agent App's rate limit at GitHub.** The question is not
   audited and not counted against the 60 tokens an hour per agent. An agent key that cycles
   through distinct names, including case variants of one name since the cache is keyed on the
   name as given, makes one token request at GitHub per name. That spends the App's rate limit,
   which every agent shares, and can delay or fail the token mints of real grants until GitHub
-  resets it. Nothing in warden limits it yet; the server log shows who asked.
+  resets it. Nothing in warden limits it yet
+  ([#254](https://github.com/pecheriere/warden/issues/254)); the server log shows who asked.
 - **The shared cache can show that someone asked.** It is shared by every agent, so a quick
   answer can tell an agent that some agent asked about that repository in the last 5
   minutes. The impact is low: the answer is the same for every agent, and the timing says
