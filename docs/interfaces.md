@@ -7,7 +7,7 @@ specified. Interfaces with a reference of their own are linked, not repeated.
 
 | Interface | Who uses it | Reference |
 |---|---|---|
-| Agent API (HTTPS, through Serve), including the release steps `POST /v1/release/{tag,manifest,publish}` | Agents | [Agent protocol](agent-protocol.md), a complete specification with test vectors |
+| Agent API (HTTPS, through Serve), including `GET /v1/offers` (what an agent may request) and the release steps `POST /v1/release/{tag,manifest,publish}` | Agents | [Agent protocol](agent-protocol.md), a complete specification with test vectors |
 | SSH relay (SSH, through a Serve TCP forward) | Agents | [Below](#ssh-relay), and [using a relay grant](agent-protocol.md#relay-grants-kindrelay) |
 | Approval UI (HTTPS, through Serve) | The owner's browser | [Below](#approval-ui) |
 | `warden-server` commands | The operator | [Server commands](configuration.md#server-commands) |

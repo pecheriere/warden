@@ -515,6 +515,7 @@ that it is the expected key, as `-Y verify` with an allowed-signers file does
 | `GET /v1/requests/{id}[?wait=N]` | A request's state; long poll. |
 | `POST /v1/requests/{id}/cancel` | Withdraw a pending request. |
 | `GET /v1/grants` | The agent's live grants. |
+| `GET /v1/offers` | What the agent may request: targets, API secrets, GitHub, commit signing, releases. |
 | `POST /v1/grants/{id}/revoke` | End a grant. |
 | `POST /v1/grants/{id}/http` | Make an HTTPS call with an `api` grant. |
 | `GET /v1/commit-signing/key` | The public half of the broker's commit signing key. |
@@ -792,6 +793,47 @@ first. Signed; no body. `200` with a JSON array of grants, each
 ```json
 [{"grant_id":"5e1c…","not_before":1793091612,"not_after":1793092512,"access":{"kind":"api","secret":"github","origin":"https://api.github.com","methods":["GET","HEAD"],"path_prefix":"/","header":"Authorization","digest":"…"}}]
 ```
+
+### `GET /v1/offers`
+
+What this agent may ask for. Signed; no body. It decides no access, asks no one,
+notifies no one and creates no request, and the audit log does not record it: the log
+holds decisions and grants. The broker's own log notes that an agent listed offers.
+
+`200`:
+
+```json
+{
+  "ssh_targets": [
+    {"name":"web-01","users":["deploy"],"max_window":"1h","mode":"cert",
+     "destination":{"host":"web-01.example.internal","port":22}},
+    {"name":"switch-01","users":["admin"],"max_window":"30m","mode":"relay","destination":null}
+  ],
+  "api_secrets": [
+    {"name":"home-api","origin":"https://home-api.example.internal",
+     "methods":["GET"],"path_prefix":"/api/","max_window":"1h"}
+  ],
+  "github": {"configured":true,"max_window":"30d"},
+  "commit_signing": {"available":true},
+  "releases": {"available":true},
+  "unavailable": ["api_secrets"]
+}
+```
+
+- A target or secret the owner marked `list=name` appears with `destination` or
+  `origin` set to `null`; one marked `list=hidden` is absent. Hiding changes only what
+  is listed, never what can be requested. A relay target shows its host and port when
+  listed in full, although the agent never connects there.
+- `github.max_window` is present only when a GitHub App is configured. No repository is
+  named: the broker does not list the repositories it covers.
+- `releases.available` is true when a release signing key and a release GitHub App
+  both exist. No repository is named.
+- `unavailable` names the parts that could not be read (`ssh_targets`, `api_secrets`,
+  `github`, `commit_signing`, `releases`). The other parts are complete, and a part
+  named there is empty or `false`, which means unknown, not absent.
+- `503` `{"error":"secret backend unavailable"}` when none of the five parts could be
+  read, and section 5.
+- The answer carries no host key, relay credential or secret value.
 
 ### `POST /v1/grants/{id}/revoke`
 
