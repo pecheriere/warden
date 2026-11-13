@@ -324,10 +324,7 @@ async fn a_secret_file_that_cannot_be_used_fails_config_naming_the_variable() {
     let missing = deployment.path("missing-token-file");
     let cases = [
         (missing.as_str(), "entity not found"),
-        (
-            world_readable.as_str(),
-            "accessible to group or other users",
-        ),
+        (world_readable.as_str(), "accessible to other users"),
         (two_lines.as_str(), "single line"),
     ];
     for (file, reason) in cases {
