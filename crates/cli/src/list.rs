@@ -8,7 +8,7 @@ use serde_json::json;
 use warden_broker_proto::doctor::sanitize;
 use warden_broker_proto::offers::{
     ApiSecretOffer, GithubTokenStatus, OfferPart, Offers, ReleaseStatus, RepositoryOffer,
-    SshTargetOffer,
+    SshModeName, SshTargetOffer,
 };
 use warden_broker_proto::release::RepoName;
 
@@ -147,13 +147,21 @@ pub fn render(offers: &Offers, repo: Option<&RepositoryOffer>) -> String {
     out
 }
 
+const fn mode_text(mode: SshModeName) -> &'static str {
+    match mode {
+        SshModeName::Cert => "cert",
+        SshModeName::Relay => "relay",
+    }
+}
+
 fn ssh_line(target: &SshTargetOffer) -> String {
     let users: Vec<String> = target.users.iter().map(ToString::to_string).collect();
     let mut line = format!(
-        "{}: users {}, up to {}",
+        "{}: users {}, up to {}, {}",
         target.name,
         users.join(", "),
-        target.max_window.label()
+        target.max_window.label(),
+        mode_text(target.mode)
     );
     if let Some(destination) = &target.destination {
         let host = sanitize(&destination.host);

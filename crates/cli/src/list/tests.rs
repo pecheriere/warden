@@ -57,6 +57,10 @@ fn render_full_and_name_items() {
             }),
         ),
         target("switch-01", None),
+        SshTargetOffer {
+            mode: SshModeName::Relay,
+            ..target("relay-01", None)
+        },
     ];
     offers.api_secrets = vec![
         ApiSecretOffer {
@@ -83,8 +87,9 @@ fn render_full_and_name_items() {
     assert_eq!(
         render(&offers, None),
         "SSH targets:\n\
-         \x20 web-01: users deploy, admin, up to 1h, web-01.example.internal:22\n\
-         \x20 switch-01: users deploy, admin, up to 1h\n\
+         \x20 web-01: users deploy, admin, up to 1h, cert, web-01.example.internal:22\n\
+         \x20 switch-01: users deploy, admin, up to 1h, cert\n\
+         \x20 relay-01: users deploy, admin, up to 1h, relay\n\
          API secrets:\n\
          \x20 home-api: GET, HEAD under /api/, up to 30m, https://home-api.example.internal\n\
          \x20 hidden-origin: GET under /, up to 15m\n\
