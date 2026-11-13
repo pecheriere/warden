@@ -14,6 +14,8 @@ All notable changes to this project are recorded here. The format follows
 
 ### Changed
 
+- The release approval page and the commit title shown from GitHub hide the same characters a
+  goal may not hold, decided by one shared check.
 - A goal, a session label and the directory of an automatic GitHub request are refused if
   they hold a line or paragraph separator or an invisible filler (Hangul fillers, variation
   selectors, the blank braille pattern), as they already were for control and format

@@ -5,7 +5,7 @@
 
 use maud::{Markup, html};
 use warden_broker_proto::release::{ReleaseGrant, ReleaseSteps};
-use warden_broker_proto::{Access, CreateRequest};
+use warden_broker_proto::{Access, CreateRequest, is_hidden_char};
 
 use super::{icon, warning_icon};
 use crate::requests::{ReleaseFacts, ReleasePolicy, ReleaseProgress};
@@ -22,7 +22,7 @@ pub(super) const LIFETIME: &str = "For at most 1 day, and it ends when the last 
 
 /// `text` with every character that does not show as itself written out as
 /// `\u{..}`: control characters other than the line feed and the tab, and the
-/// characters that reorder or hide text. What is left is safe to read as it is
+/// characters that reorder, hide or blank out text. What is left is safe to read as it is
 /// once escaped as HTML.
 pub(super) fn visible(text: &str) -> String {
     text.chars()
@@ -36,18 +36,11 @@ pub(super) fn visible(text: &str) -> String {
         .collect()
 }
 
-/// Whether `c` is a control character other than `\n` and `\t`, or one that
-/// reorders text (the bidirectional controls), has no width (zero-width
-/// characters, the invisible operators, the soft hyphen, the tag characters and
-/// the byte order mark) or breaks the line (the line and paragraph separators).
+/// Whether `c` does not show as itself: decided by [`is_hidden_char`], the check
+/// that goals are held to, so the two cannot drift apart. The line feed and the
+/// tab stay, as the changelog is shown as it is written.
 fn hides(c: char) -> bool {
-    (c.is_control() && c != '\n' && c != '\t')
-        || matches!(
-            c,
-            '\u{ad}' | '\u{61c}' | '\u{200b}'..='\u{200f}' | '\u{2028}'..='\u{202e}'
-                | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{2069}' | '\u{feff}'
-                | '\u{e0000}'..='\u{e007f}'
-        )
+    c != '\n' && c != '\t' && is_hidden_char(c)
 }
 
 /// The repository, tag and commit a release request names.

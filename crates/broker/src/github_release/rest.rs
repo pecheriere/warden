@@ -203,15 +203,6 @@ fn object_id(sha: String) -> Result<String, GithubError> {
         .map_err(|_| GithubError::Unreadable)
 }
 
-/// Characters that hide or reorder text without showing: zero-width and
-/// direction-changing ones.
-const fn is_invisible(c: char) -> bool {
-    matches!(
-        c,
-        '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{feff}'
-    )
-}
-
 /// The first line of `message`, shown as one line of plain text.
 fn title(message: &str) -> String {
     message
@@ -219,7 +210,7 @@ fn title(message: &str) -> String {
         .next()
         .unwrap_or_default()
         .chars()
-        .filter(|c| !c.is_control() && !is_invisible(*c))
+        .filter(|c| !warden_broker_proto::is_hidden_char(*c))
         .take(MAX_TITLE_CHARS)
         .collect()
 }

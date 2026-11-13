@@ -132,7 +132,13 @@ fn automatic_needs_exactly_one_repository() {
 
 #[test]
 fn automatic_dir_refuses_control_characters() {
-    for dir in ["/work/a\nb", "/work/a\u{202e}b", "/work/a\u{2028}b", "/work/a\u{3164}b", &"d".repeat(513)] {
+    for dir in [
+        "/work/a\nb",
+        "/work/a\u{202e}b",
+        "/work/a\u{2028}b",
+        "/work/a\u{3164}b",
+        &"d".repeat(513),
+    ] {
         let value = json!({
             "kind": "github_token",
             "repositories": ["example-owner/a"],

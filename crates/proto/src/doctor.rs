@@ -190,9 +190,7 @@ impl Report {
 #[must_use]
 pub fn sanitize(text: &str) -> String {
     text.chars()
-        .map(|c| {
-            if is_hidden_char(c) { '?' } else { c }
-        })
+        .map(|c| if is_hidden_char(c) { '?' } else { c })
         .collect()
 }
 
