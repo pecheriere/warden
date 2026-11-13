@@ -8,8 +8,9 @@ All notable changes to this project are recorded here. The format follows
 
 ### Upgrading
 
-- New audit entry: `release_step_started`. An older `warden-server audit verify` refuses a
-  log holding one.
+- New audit entries: `release_step_started`, `release_published_changed` and
+  `release_published_changed_notified`. An older `warden-server audit verify` refuses a log
+  holding one.
 
 ### Changed
 
@@ -23,6 +24,8 @@ All notable changes to this project are recorded here. The format follows
   the branch's own ref, at the request, on the approval page and at the tag step.
 - Each release step writes a `release_step_started` audit entry, naming what the release key
   signed, before it changes GitHub, and goes no further if the entry cannot be written.
+- After publishing a release, the broker compares the manifest, its signature and the tag it
+  was published with to what it checked, and records and tells the owner when they differ.
 
 ## [0.13.0] - 2026-11-12
 

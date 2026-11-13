@@ -409,6 +409,28 @@ pub enum AuditEvent {
         /// The tag of the release.
         tag: ReleaseTag,
     },
+    /// The broker published a release, then found it is not what it checked just
+    /// before: GitHub has no conditional publish, so a write can land in between.
+    /// The owner is told.
+    ReleasePublishedChanged {
+        /// The grant it was done under.
+        grant_id: Id,
+        /// The agent.
+        agent: AgentName,
+        /// The repository.
+        repository: RepoName,
+        /// The tag of the release.
+        tag: ReleaseTag,
+        /// What differs (a fixed phrase, never anything GitHub said).
+        reason: String,
+    },
+    /// The owner was told that a release was published unlike it was checked.
+    ReleasePublishedChangedNotified {
+        /// The grant.
+        grant_id: Id,
+        /// Name of the channel that delivered the notification.
+        channel: String,
+    },
     /// The broker refused a step of a release, or could not finish one it had
     /// claimed.
     ReleaseRefused {

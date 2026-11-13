@@ -1105,6 +1105,15 @@ This section covers the request, the approval and the tag, manifest and publish 
   if it reports none the call is refused. These checks, and that the release is a draft, run
   before the claim. The files other than those two are not checked: the manifest lists them, and
   the digests in it are the agent's claim, as above.
+- **Residual: a write between the checks and the publish.** GitHub has no conditional publish, so
+  anyone with write access to the draft, the agent's routine token included, can replace one of
+  the two files, or delete the tag, after the checks and before the publish (GitHub then creates
+  an unsigned lightweight tag). The broker cannot prevent this. It narrows it to detection: it
+  compares the two files the release was published with, as GitHub's answer to the publish lists
+  them, and the tag object, with what it checked. When they differ it records
+  `release_published_changed`, tells the owner and refuses the call, though the release stays
+  published. Such a release fails verification rather than passing it, so the cost is a burned
+  version, as for the early publish below.
 - **Step calls refused before the claim are not rate-limited.** Each one mints a release App
   token and makes a few GitHub reads before it is refused (a tag that exists, a commit that
   moved, no draft, a swapped file). Only an agent holding an active release grant reaches them, so they cost

@@ -142,6 +142,19 @@ impl GithubReleaseFake {
         self.with(repo, |r| r.add_asset(release, name, bytes));
     }
 
+    /// When `repo`'s next release is published, first replace the bytes of its
+    /// asset `name` with `bytes`, as a write landing just before the publish would.
+    pub fn replace_asset_before_publish(&self, repo: &RepoName, name: &str, bytes: &[u8]) {
+        self.with(repo, |r| r.replace_asset_before_publish(name, bytes));
+    }
+
+    /// When `repo`'s next release is published, first point the tag `tag` at
+    /// `commit` as a lightweight tag, as a write landing just before the publish
+    /// would.
+    pub fn move_tag_before_publish(&self, repo: &RepoName, tag: &str, commit: &str) {
+        self.with(repo, |r| r.move_tag_before_publish(tag, commit));
+    }
+
     /// The id the ref `refs/tags/<tag>` points at.
     #[must_use]
     pub fn ref_target(&self, repo: &RepoName, tag: &str) -> Option<String> {

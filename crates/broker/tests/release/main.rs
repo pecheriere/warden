@@ -14,6 +14,7 @@ mod approve;
 mod audit_first;
 mod manifest;
 mod publish;
+mod publish_changed;
 mod request;
 mod steps;
 mod tag;

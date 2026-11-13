@@ -9,6 +9,7 @@ use warden_broker_proto::release::{ReleaseGrant, ReleaseSteps, ReleaseTag, RepoN
 use warden_broker_proto::{AgentName, GrantAccess, GrantView, Id};
 
 use crate::audit::AuditEvent;
+use crate::notify::Doorbell;
 
 use super::{RequestError, Requests, parse};
 
@@ -336,5 +337,77 @@ impl Requests {
                 AuditEvent::ReleaseRefusalsHeld { agent, count }
             })
             .await;
+    }
+
+    /// Record that the release of `release` was published unlike it was checked,
+    /// for the fixed `reason`, and tell the owner. Nothing here fails the caller:
+    /// the release is published whatever happens to the entry or the notice.
+    pub(crate) async fn release_published_changed(
+        &self,
+        agent: &AgentName,
+        release: &ActiveRelease,
+        reason: &'static str,
+    ) {
+        let grant = release.grant();
+        let event = AuditEvent::ReleasePublishedChanged {
+            grant_id: release.grant_id.clone(),
+            agent: agent.clone(),
+            repository: grant.repository.clone(),
+            tag: grant.tag.clone(),
+            reason: reason.to_owned(),
+        };
+        if let Err(e) = self.audit.append(event).await {
+            tracing::error!(grant = %release.grant_id, error = %e, "could not audit a changed release");
+        }
+        let this = self.clone();
+        let (grant_id, repository, tag) = (
+            release.grant_id.clone(),
+            grant.repository.clone(),
+            grant.tag.clone(),
+        );
+        tokio::spawn(async move {
+            this.notify_published_changed(&grant_id, &repository, &tag, reason)
+                .await;
+        });
+    }
+
+    async fn notify_published_changed(
+        &self,
+        grant: &Id,
+        repository: &RepoName,
+        tag: &ReleaseTag,
+        reason: &str,
+    ) {
+        let mut url = self.public_url.clone();
+        let Ok(mut path) = url.path_segments_mut() else {
+            tracing::error!("public URL cannot be a base; not sending a changed release notice");
+            return;
+        };
+        path.pop_if_empty().push("grants");
+        drop(path);
+        let bell = Doorbell {
+            title: format!("warden: {repository} {tag} was published unlike it was checked"),
+            message: format!(
+                "The broker published it, then found that {reason}. Check the release on \
+                 GitHub before anyone installs it."
+            ),
+            url,
+        };
+        let event = match self.notifier.ring(&bell).await {
+            Ok(channel) => AuditEvent::ReleasePublishedChangedNotified {
+                grant_id: grant.clone(),
+                channel: channel.to_owned(),
+            },
+            Err(e) => {
+                tracing::warn!(grant = %grant, error = %e, "changed release notice failed");
+                AuditEvent::Error {
+                    context: "changed release notice".to_owned(),
+                    message: format!("grant {grant}: {e}"),
+                }
+            }
+        };
+        if let Err(e) = self.audit.append(event).await {
+            tracing::error!(grant = %grant, error = %e, "could not audit a changed release notice");
+        }
     }
 }

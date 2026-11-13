@@ -23,6 +23,17 @@ pub(super) struct Repository {
     files: HashMap<(String, String), Vec<u8>>,
     releases: Vec<StoredRelease>,
     next_id: u64,
+    /// Changes made just before the next publish, as a write by someone else that
+    /// lands between a caller's checks and its publish would be.
+    before_publish: Vec<Change>,
+}
+
+/// A change [`Repository::before_publish`] makes.
+enum Change {
+    /// Replace the bytes of the asset with this name.
+    Asset(String, Vec<u8>),
+    /// Point `refs/tags/<tag>` at this commit, as a lightweight tag.
+    Tag(String, String),
 }
 
 struct Commit {
@@ -181,6 +192,16 @@ impl Repository {
                 name: name.to_owned(),
                 bytes: bytes.to_vec(),
             });
+    }
+
+    pub(super) fn replace_asset_before_publish(&mut self, name: &str, bytes: &[u8]) {
+        self.before_publish
+            .push(Change::Asset(name.to_owned(), bytes.to_vec()));
+    }
+
+    pub(super) fn move_tag_before_publish(&mut self, tag: &str, commit: &str) {
+        self.before_publish
+            .push(Change::Tag(tag.to_owned(), commit.to_owned()));
     }
 
     pub(super) fn ref_target(&self, tag: &str) -> Option<String> {
@@ -465,6 +486,20 @@ impl Repository {
         let Ok(request) = serde_json::from_slice::<Value>(body) else {
             return invalid("not JSON");
         };
+        for change in std::mem::take(&mut self.before_publish) {
+            match change {
+                Change::Tag(tag, commit) => {
+                    self.refs.insert(format!("refs/tags/{tag}"), commit);
+                }
+                Change::Asset(name, bytes) => {
+                    for release in &mut self.releases {
+                        for asset in release.assets.iter_mut().filter(|a| a.name == name) {
+                            asset.bytes.clone_from(&bytes);
+                        }
+                    }
+                }
+            }
+        }
         let Some(release) = self.releases.iter_mut().find(|r| r.id.to_string() == id) else {
             return not_found();
         };

@@ -158,12 +158,6 @@ struct AssetAnswer {
     digest: Option<String>,
 }
 
-#[derive(Deserialize)]
-struct PublishedAnswer {
-    id: u64,
-    draft: bool,
-}
-
 impl TryFrom<AssetAnswer> for Asset {
     type Error = GithubError;
 
@@ -605,26 +599,41 @@ impl ReleaseClient<'_> {
         self.send(request).await.map(drop)
     }
 
-    /// Publish the draft `release`.
+    /// Publish the draft `release` of `tag`, and return the release as GitHub's
+    /// answer shows it once published, with the assets it was published with.
+    ///
+    /// GitHub has no conditional publish, so a caller that checked the draft
+    /// compares these assets with what it checked.
     ///
     /// # Errors
     /// A [`GithubError`], or [`GithubError::Unreadable`] when the answer does
-    /// not say the release is no longer a draft.
-    pub async fn publish(&self, release: u64) -> Result<(), GithubError> {
+    /// not say the release of `tag` is no longer a draft, or its assets are not
+    /// understood.
+    pub async fn publish(&self, release: u64, tag: &ReleaseTag) -> Result<Release, GithubError> {
         let id = release.to_string();
         let url = self.api_url(&["releases", &id], &[])?;
-        let request = Call::json(
-            Method::PATCH,
-            url,
-            Payload::Json(json!({"draft": false}).to_string()),
-            StatusCode::OK,
-        );
-        let answer: PublishedAnswer = parse(&self.send(request).await?)?;
-        if answer.id == release && !answer.draft {
-            Ok(())
-        } else {
-            Err(GithubError::Unreadable)
+        let request = Call {
+            limit: MAX_LARGE_BYTES,
+            ..Call::json(
+                Method::PATCH,
+                url,
+                Payload::Json(json!({"draft": false}).to_string()),
+                StatusCode::OK,
+            )
+        };
+        let answer: ReleaseAnswer = parse(&self.send(request).await?)?;
+        if answer.id != release || answer.draft || answer.tag_name != tag.as_str() {
+            return Err(GithubError::Unreadable);
         }
+        let assets: Vec<AssetAnswer> = parse_value(answer.assets)?;
+        Ok(Release {
+            id: answer.id,
+            draft: answer.draft,
+            assets: assets
+                .into_iter()
+                .map(Asset::try_from)
+                .collect::<Result<_, _>>()?,
+        })
     }
 }
 
