@@ -740,7 +740,9 @@ expired), the broker cannot read the target's policy or the state of grants
 right now, the session could not be recorded, forwarding or a subsystem was
 asked for, or the broker is shutting down. A session also ends after 15
 minutes without traffic, when the target stops reading and the broker gives
-up (`flow control`), or when the window ends. Do not retry in a loop: check
+up (`flow control`), or when the window ends. When a grant reached its daily limit of
+sessions the message is `this grant reached its daily limit of sessions; new sessions fail
+until 00:00 UTC`: retrying before then does not help. Do not retry in a loop: check
 `warden status`, and request again if the grant is gone. A refused start and
 a target that refuses its login look alike to ssh (255); the owner can tell
 them apart in the audit log.

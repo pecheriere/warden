@@ -116,6 +116,13 @@ falls short.
     refused before it starts writes at most 30 entries a minute per agent, the rest
     counted ([`api/proxy_call.rs`](../crates/broker/src/api/proxy_call.rs),
     [`requests/daily_use.rs`](../crates/broker/src/requests/daily_use.rs));
+  - past its daily limit of sessions a relay grant has new sessions refused, and a
+    session refused is written one by one up to 30 a minute per grant, the rest counted
+    ([`requests/daily_use.rs`](../crates/broker/src/requests/daily_use.rs),
+    `relay/server/start.rs`);
+  - refused relay logins are written 5 a minute per address (per /64 network for IPv6)
+    and 10 overall, the rest summed in one entry a minute (`relay/server/conn.rs`,
+    `audit_throttle.rs`);
   - a route that lacks the signature middleware still refuses `Warden-*` headers
     (`AuthedAgent` in [`identity.rs`](../crates/broker/src/identity.rs));
   - `doctor` never counts a check that could not run as passed

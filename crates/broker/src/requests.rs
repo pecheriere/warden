@@ -58,8 +58,8 @@ mod renewal;
 
 pub use self::bus::StatusBus;
 pub use self::commit_signing::{ActiveCommitSigning, SIGNATURES_PER_DAY};
-pub use self::daily_use::CALLS_PER_DAY;
 pub(crate) use self::daily_use::DailyUse;
+pub use self::daily_use::{CALLS_PER_DAY, SESSIONS_PER_DAY};
 pub use self::github_scope::{GithubPending, ReplacedGrant, Resolution, ScopedRepository};
 pub use self::github_token::{ActiveGithubToken, GithubLookup, MINTS_PER_HOUR};
 use self::limits::Refusals;
@@ -462,6 +462,8 @@ pub struct Requests {
     commit_signing_per_day: u32,
     /// Proxied calls per API grant per UTC day.
     proxy_calls_per_day: u32,
+    /// Relay sessions per relay grant per UTC day.
+    relay_sessions_per_day: u32,
     /// Longest GitHub token grant the server allows.
     github_token_max: Window,
     /// GitHub tokens per agent per hour.
@@ -559,6 +561,7 @@ impl Requests {
             commit_signing_max: Window::COMMIT_SIGNING_DEFAULT,
             commit_signing_per_day: SIGNATURES_PER_DAY,
             proxy_calls_per_day: CALLS_PER_DAY,
+            relay_sessions_per_day: SESSIONS_PER_DAY,
             github_token_max: Window::GITHUB_TOKEN_DEFAULT,
             github_token_per_hour: MINTS_PER_HOUR,
             signing_refusals,

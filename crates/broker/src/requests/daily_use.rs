@@ -1,9 +1,9 @@
 //! The daily budget of an API grant: how many calls it may make through the proxy
 //! in a UTC day, counted in the database so that a restart does not reset it. The
-//! columns are generic because a grant has one kind of use; relay sessions will
-//! have their own [`DailyUse`].
+//! columns are generic because a grant has one kind of use: relay grants count
+//! their sessions in them.
 
-use warden_broker_proto::{AgentName, Id, SecretName};
+use warden_broker_proto::{AgentName, Id, SecretName, TargetName};
 
 use super::{RequestError, Requests};
 use crate::audit::AuditEvent;
@@ -15,6 +15,11 @@ use crate::notify::Doorbell;
 /// log's disk in the life of a grant.
 pub const CALLS_PER_DAY: u32 = 10_000;
 
+/// Relay sessions per relay grant per UTC day, unless the server says otherwise. Sessions
+/// refused past it are recorded one by one up to 30 a minute per grant, and
+/// counted beyond that.
+pub const SESSIONS_PER_DAY: u32 = 1_000;
+
 /// What a grant spends its daily budget on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum DailyUse {
@@ -22,6 +27,11 @@ pub(crate) enum DailyUse {
     ProxyCall {
         /// The secret the grant injects.
         secret: SecretName,
+    },
+    /// A session to `target` through the relay.
+    RelaySession {
+        /// The target the grant opens sessions to.
+        target: TargetName,
     },
 }
 
@@ -31,6 +41,14 @@ impl Requests {
     #[must_use]
     pub const fn with_proxy_calls_per_day(mut self, limit: u32) -> Self {
         self.proxy_calls_per_day = limit;
+        self
+    }
+
+    /// Allow each relay grant `limit` sessions per UTC day, instead of
+    /// [`SESSIONS_PER_DAY`].
+    #[must_use]
+    pub const fn with_relay_sessions_per_day(mut self, limit: u32) -> Self {
+        self.relay_sessions_per_day = limit;
         self
     }
 
@@ -48,6 +66,7 @@ impl Requests {
     pub(crate) const fn daily_limit(&self, kind: &DailyUse) -> u32 {
         match kind {
             DailyUse::ProxyCall { .. } => self.proxy_calls_per_day,
+            DailyUse::RelaySession { .. } => self.relay_sessions_per_day,
         }
     }
 
@@ -102,6 +121,11 @@ impl Requests {
                 agent: agent.clone(),
                 limit: self.daily_limit(kind),
             },
+            DailyUse::RelaySession { .. } => AuditEvent::RelaySessionLimitReached {
+                grant_id: grant.clone(),
+                agent: agent.clone(),
+                limit: self.daily_limit(kind),
+            },
         };
         if let Err(e) = self.audit.append(reached).await {
             tracing::error!(grant = %grant, error = %e, "could not audit a daily limit");
@@ -119,25 +143,47 @@ impl Requests {
         };
         path.pop_if_empty().push("grants");
         drop(path);
-        let DailyUse::ProxyCall { secret } = kind;
-        let bell = Doorbell {
-            title: format!("warden: {agent} reached its API call limit"),
-            message: format!(
-                "It made {} calls with {secret} today, so its calls fail until 00:00 UTC. If \
-                 you do not expect this many, revoke its grant.",
-                self.daily_limit(kind)
+        let limit = self.daily_limit(kind);
+        let (title, message) = match kind {
+            DailyUse::ProxyCall { secret } => (
+                format!("warden: {agent} reached its API call limit"),
+                format!(
+                    "It made {limit} calls with {secret} today, so its calls fail until 00:00 \
+                     UTC. If you do not expect this many, revoke its grant."
+                ),
             ),
+            DailyUse::RelaySession { target } => (
+                format!("warden: {agent} reached its relay session limit"),
+                format!(
+                    "It opened {limit} sessions to {target} today, so new sessions fail until \
+                     00:00 UTC. If you do not expect this many, revoke its grant."
+                ),
+            ),
+        };
+        let bell = Doorbell {
+            title,
+            message,
             url,
         };
         let event = match self.notifier.ring(&bell).await {
-            Ok(channel) => AuditEvent::ProxyCallLimitNotified {
-                grant_id: grant.clone(),
-                channel: channel.to_owned(),
+            Ok(channel) => match kind {
+                DailyUse::ProxyCall { .. } => AuditEvent::ProxyCallLimitNotified {
+                    grant_id: grant.clone(),
+                    channel: channel.to_owned(),
+                },
+                DailyUse::RelaySession { .. } => AuditEvent::RelaySessionLimitNotified {
+                    grant_id: grant.clone(),
+                    channel: channel.to_owned(),
+                },
             },
             Err(e) => {
                 tracing::warn!(grant = %grant, error = %e, "daily limit notice failed");
                 AuditEvent::Error {
-                    context: "API call limit notice".to_owned(),
+                    context: match kind {
+                        DailyUse::ProxyCall { .. } => "API call limit notice",
+                        DailyUse::RelaySession { .. } => "relay session limit notice",
+                    }
+                    .to_owned(),
                     message: format!("grant {grant}: {e}"),
                 }
             }

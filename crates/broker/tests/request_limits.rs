@@ -299,6 +299,31 @@ async fn refusals_held_back_are_written_by_the_sweep_even_if_the_agent_stops() {
 }
 
 #[tokio::test]
+async fn the_last_flush_writes_what_was_held_within_the_minute() {
+    let broker = broker().await;
+    let key = broker.add_agent("build-agent").await;
+    created_id(&broker, &key, 0).await;
+    created_id(&broker, &key, 1).await;
+    for _ in 0..3 {
+        assert_eq!(
+            create(&broker, &key, 2).await.status,
+            StatusCode::TOO_MANY_REQUESTS
+        );
+    }
+    broker.state().requests.flush_refusals(false).await;
+    assert_eq!(limited_entries(&broker).len(), 1);
+    // More are refused after that, and a minute has not passed.
+    for _ in 0..2 {
+        assert_eq!(
+            create(&broker, &key, 2).await.status,
+            StatusCode::TOO_MANY_REQUESTS
+        );
+    }
+    broker.state().requests.flush_held_at_shutdown().await;
+    assert_eq!(limited_entries(&broker).len(), 2);
+}
+
+#[tokio::test]
 async fn a_failed_audit_write_still_refuses_and_the_count_is_written_later() {
     let broker = broker().await;
     let key = broker.add_agent("build-agent").await;

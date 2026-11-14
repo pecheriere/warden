@@ -10,6 +10,19 @@ use super::{RequestError, Requests, Scope, begin, parse, revocation};
 use crate::audit::AuditEvent;
 
 impl Requests {
+    /// Write every count held back for a limit, whatever the time, waiting
+    /// for the log at most 2 seconds. Run once more after the
+    /// servers have stopped, since they record refusals while they stop.
+    pub async fn flush_held_at_shutdown(&self) {
+        let flushed = self.flush_refusals(true);
+        if tokio::time::timeout(revocation::WRITE_WAIT, flushed)
+            .await
+            .is_err()
+        {
+            tracing::error!("the audit log did not take the refusal counts at shutdown");
+        }
+    }
+
     /// Expire every pending request past its deadline.
     ///
     /// # Errors
@@ -109,10 +122,7 @@ pub async fn sweep_loop(
             }
             // Any change, or the sender going away, means stop.
             _ = shutdown.changed() => {
-                let flushed = requests.flush_refusals(true);
-                if tokio::time::timeout(revocation::WRITE_WAIT, flushed).await.is_err() {
-                    tracing::error!("the audit log did not take the refusal counts at shutdown");
-                }
+                requests.flush_held_at_shutdown().await;
                 return;
             }
         }

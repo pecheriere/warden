@@ -624,6 +624,7 @@ async fn build_app(config: &Arc<Config>) -> Result<App> {
     .with_commit_signing_max(config.commit_signing_max_window)
     .with_commit_signing_per_day(config.commit_signing_max_per_day)
     .with_proxy_calls_per_day(config.proxy_max_calls_per_day)
+    .with_relay_sessions_per_day(config.relay_max_sessions_per_day)
     .with_github_token_max(config.github_token_max_window)
     .with_link_hosts(config.link_hosts.clone())
     .with_call_limits(config.proxy.max_calls_per_agent, config.proxy.max_calls)
@@ -744,7 +745,11 @@ async fn serve() -> Result<()> {
     };
     // The private key now lives only in the relay's SSH configuration.
     drop(relay_key);
-    let sweeper = tokio::spawn(requests::sweep_loop(requests, SWEEP_EVERY, stop_rx.clone()));
+    let sweeper = tokio::spawn(requests::sweep_loop(
+        requests.clone(),
+        SWEEP_EVERY,
+        stop_rx.clone(),
+    ));
     let relay_done = async {
         if let Some(relay) = relay {
             // The relay returns once stopped and its sessions are recorded.
@@ -800,5 +805,8 @@ async fn serve() -> Result<()> {
     if let Err(e) = sweeper.await {
         tracing::error!(error = %e, "sweeper task failed");
     }
+    // The servers record refusals while they stop, after the sweeper's last
+    // flush may have run: write what they held.
+    requests.flush_held_at_shutdown().await;
     Ok(())
 }

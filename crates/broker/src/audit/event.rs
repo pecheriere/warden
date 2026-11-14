@@ -194,6 +194,17 @@ pub enum AuditEvent {
         /// Refused login attempts.
         attempts: u32,
     },
+    /// Refused relay logins, from every address, were counted over one minute
+    /// instead of recorded one by one.
+    RelayLoginsRefusedHeld {
+        /// How many distinct addresses were counted (addresses beyond the 1024
+        /// held count as one).
+        peers: u64,
+        /// How many connections were refused.
+        connections: u64,
+        /// How many login attempts were refused.
+        attempts: u64,
+    },
     /// The broker signed a commit for an agent. Written before the signature
     /// leaves the broker; it is not given out if this entry cannot be written. It
     /// means warden signed it for that agent, not that anyone reviewed the change.
@@ -478,6 +489,31 @@ pub enum AuditEvent {
         /// The agent.
         agent: AgentName,
         /// How many calls were refused.
+        count: u64,
+    },
+    /// A relay grant reached its limit of sessions for the day. Written once a day
+    /// per grant; the refusals themselves are recorded as usual.
+    RelaySessionLimitReached {
+        /// The grant.
+        grant_id: Id,
+        /// The agent.
+        agent: AgentName,
+        /// The limit.
+        limit: u32,
+    },
+    /// The owner was told that a relay grant reached its daily limit of sessions.
+    RelaySessionLimitNotified {
+        /// The grant.
+        grant_id: Id,
+        /// Name of the channel that delivered the notification.
+        channel: String,
+    },
+    /// Sessions refused for one grant were counted over one minute instead of
+    /// recorded one by one.
+    RelaySessionsRefusedHeld {
+        /// The grant.
+        grant_id: Id,
+        /// How many sessions were refused.
         count: u64,
     },
     /// An agent was added.
