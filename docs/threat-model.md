@@ -276,6 +276,15 @@ change.
   or approved, and relay sessions and proxied calls cannot start. A log that stalls
   holds those up until it answers. Ending access goes on as above. Watch
   the disk that holds the log.
+- **Opening the log does not hold up the server's appends.** Every writer takes the
+  log's file lock for each append and waits 5 s at most for it. A `warden-server`
+  command that opens the log while the server runs verifies it up to its last complete
+  line without the lock, reading one line at a time, and takes the lock only to check
+  what was appended since and to repair a torn tail, so a large log does not stop the
+  server's appends. If the part it verified is shorter under the lock, or its last line
+  changed, the command refuses to open the log: warden only ever cuts a torn line past
+  the last complete one, so something else changed the file. Reading and `audit verify`
+  keep at most one line in memory, and refuse a line over 16 MiB.
 
 ## Authentication of callers
 

@@ -9,7 +9,7 @@
 //! summaries; they must never contain secrets.
 
 use std::fs::{File, TryLockError};
-use std::io::{Read as _, Write as _};
+use std::io::Write as _;
 use std::os::unix::fs::FileExt as _;
 use std::path::Path;
 use std::sync::Arc;
@@ -19,9 +19,11 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
+mod open;
 #[cfg(feature = "testkit")]
 mod stall;
 
+pub use self::open::verify;
 #[cfg(feature = "testkit")]
 pub use self::stall::AppendStall;
 
@@ -91,6 +93,15 @@ pub enum AuditError {
     /// An earlier append failed or was cancelled; restart to repair the log.
     #[error("audit log poisoned by an earlier failed append; restart to repair")]
     Poisoned,
+    /// The log was shorter under the file lock than the prefix already verified
+    /// without it, or the last line of that prefix changed. Only a torn tail
+    /// past the last complete line is ever cut, so something other than warden
+    /// changed the log while it was being opened; it is refused, not repaired.
+    #[error("audit log's first {verified} bytes changed while it was being opened")]
+    PrefixChanged {
+        /// Length of the prefix verified before taking the lock.
+        verified: u64,
+    },
     /// Another writer held the file lock for too long.
     #[error("timed out waiting for the audit log lock")]
     LockTimeout,
@@ -128,67 +139,6 @@ fn parse_canonical(raw: &[u8]) -> Result<Line, String> {
         return Err("not in canonical form".to_owned());
     }
     Ok(line)
-}
-
-/// Verify newline-terminated lines in `bytes`, returning the line count and the last hash.
-///
-/// UTF-8 is validated per line so a failure names the offending line.
-fn verify_bytes(bytes: &[u8]) -> Result<(u64, String), AuditError> {
-    let mut prev = GENESIS.to_owned();
-    let mut count = 0_u64;
-    let body = bytes.strip_suffix(b"\n").unwrap_or(bytes);
-    if body.is_empty() && bytes.is_empty() {
-        return Ok((0, prev));
-    }
-    for raw in body.split(|b| *b == b'\n') {
-        count += 1;
-        let line = parse_canonical(raw).map_err(|reason| AuditError::Malformed {
-            line: count,
-            reason,
-        })?;
-        if line.seq != count {
-            return Err(AuditError::SeqGap {
-                expected: count,
-                found: line.seq,
-            });
-        }
-        let body = Body {
-            seq: line.seq,
-            ts: line.ts,
-            event: &line.event,
-        };
-        if line.prev != prev || compute_hash(&prev, &body)? != line.hash {
-            return Err(AuditError::BrokenChain { seq: line.seq });
-        }
-        prev = line.hash;
-    }
-    Ok((count, prev))
-}
-
-/// Split `bytes` into the newline-terminated head and the unterminated tail.
-fn split_tail(bytes: &[u8]) -> (&[u8], &[u8]) {
-    if bytes.last().is_none_or(|b| *b == b'\n') {
-        return (bytes, &[]);
-    }
-    let head_len = bytes.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
-    bytes.split_at(head_len)
-}
-
-/// Verify the chain in the file at `path`, returning the number of lines.
-///
-/// # Errors
-/// Returns an [`AuditError`] naming the line or sequence number at fault. A
-/// final line without its newline terminator (a torn write) is reported as
-/// [`AuditError::UnterminatedTail`] once the preceding lines verify.
-pub fn verify(path: &Path) -> Result<u64, AuditError> {
-    let bytes = std::fs::read(path)?;
-    let (head, tail) = split_tail(&bytes);
-    let (count, _) = verify_bytes(head)?;
-    if tail.is_empty() {
-        Ok(count)
-    } else {
-        Err(AuditError::UnterminatedTail { bytes: tail.len() })
-    }
 }
 
 /// How long an append waits for another writer to release the file lock.
@@ -316,17 +266,28 @@ fn repair_tail(
             None,
         ));
     }
+    let record = discard_tail(file, &head, len_u64(tail.len()), &Sha256::digest(tail))?;
+    Ok((head, Some(record)))
+}
+
+/// Cut the file back to `head`, dropping a torn tail of `len` bytes whose
+/// SHA-256 is `digest`, and return an event describing it for the caller to
+/// record.
+fn discard_tail(
+    file: &File,
+    head: &Head,
+    len: u64,
+    digest: &[u8],
+) -> Result<AuditEvent, AuditError> {
     file.set_len(head.len)?;
     file.sync_data()?;
-    let record = AuditEvent::Error {
+    Ok(AuditEvent::Error {
         context: "audit".to_owned(),
         message: format!(
-            "discarded torn tail of {} bytes (sha256 {})",
-            tail.len(),
-            hex::encode(Sha256::digest(tail))
+            "discarded torn tail of {len} bytes (sha256 {})",
+            hex::encode(digest)
         ),
-    };
-    Ok((head, Some(record)))
+    })
 }
 
 /// Find the last newline-terminated line of a `len`-byte file by reading
@@ -387,33 +348,6 @@ fn write_event(file: &File, head: &Head, event: &AuditEvent) -> Result<Head, Aud
         hash,
         len: head.len + len_u64(json.len()),
     })
-}
-
-/// Open, lock, verify and repair the log at `path`. Blocking.
-fn open_blocking(path: &Path) -> Result<(File, Head), AuditError> {
-    let file = crate::private_files::open_private_log(path)?;
-    let head = load_locked(&file)?;
-    Ok((file, head))
-}
-
-/// Read, verify and repair the whole log under the file lock. Blocking.
-fn load_locked(file: &File) -> Result<Head, AuditError> {
-    let _lock = FileLock::acquire(file)?;
-    let mut bytes = Vec::new();
-    let mut reader = file;
-    reader.read_to_end(&mut bytes)?;
-    let (body, tail) = split_tail(&bytes);
-    let (seq, hash) = verify_bytes(body)?;
-    let head = Head {
-        seq,
-        hash,
-        len: len_u64(body.len()),
-    };
-    let (mut head, record) = repair_tail(file, head, tail)?;
-    if let Some(record) = record {
-        head = write_event(file, &head, &record)?;
-    }
-    Ok(head)
 }
 
 /// Why a blocking append failed.
@@ -484,18 +418,21 @@ impl AuditLog {
 
     /// Open (creating with mode 0600 if absent) and resume the chain.
     ///
-    /// Under the file lock, an existing log is fully verified first; a log
-    /// with corruption in a complete line or a broken chain is refused. A
-    /// torn final line (crash mid-append) is repaired: a valid one is
+    /// An existing log is fully verified first, streaming: up to its last
+    /// complete line without the file lock, so other writers keep appending
+    /// meanwhile, then under the lock only what they appended since. A log
+    /// with corruption in a complete line or a broken chain is refused, and so
+    /// is one whose verified part changed before the lock was taken. A torn
+    /// final line (crash mid-append) is repaired under the lock: a valid one is
     /// newline-terminated, a partial one is truncated and the repair is
     /// recorded on the chain.
     ///
     /// # Errors
-    /// Returns an [`AuditError`] on I/O failure, lock timeout, or if the
-    /// existing log is invalid.
+    /// Returns an [`AuditError`] on I/O failure, lock timeout, if the existing
+    /// log is invalid, or [`AuditError::PrefixChanged`].
     pub async fn open(path: &Path) -> Result<Self, AuditError> {
         let path = path.to_owned();
-        let (file, head) = tokio::task::spawn_blocking(move || open_blocking(&path))
+        let (file, head) = tokio::task::spawn_blocking(move || open::open_blocking(&path))
             .await
             .map_err(join_error)??;
         Ok(Self::from_parts(file, head))
@@ -596,10 +533,9 @@ mod tests {
             line.hash,
             "c6eb8215a82f820edf38173bbbf9328156ba10a3caabedf2713f026a5a726c68"
         );
-        assert_eq!(
-            verify_bytes(format!("{json}\n").as_bytes()).unwrap(),
-            (1, line.hash)
-        );
+        let (head, _) =
+            open::verify_lines(&mut format!("{json}\n").as_bytes(), Head::genesis()).unwrap();
+        assert_eq!((head.seq, head.hash), (1, line.hash));
     }
 
     /// A log written by 0.12.0 holds mints with no repository. It must still open,
@@ -627,7 +563,8 @@ mod tests {
             hash: hash.clone(),
         };
         let text = format!("{}\n", serde_json::to_string(&line).unwrap());
-        assert_eq!(verify_bytes(text.as_bytes()).unwrap(), (1, hash));
+        let (head, _) = open::verify_lines(&mut text.as_bytes(), Head::genesis()).unwrap();
+        assert_eq!((head.seq, head.hash), (1, hash));
     }
 
     #[test]
