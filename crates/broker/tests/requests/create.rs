@@ -10,7 +10,7 @@ use sqlx::Row as _;
 use warden_broker::audit;
 use warden_broker::notify::{Fallback, Notifier};
 use warden_broker::requests::{Destination, RequestError};
-use warden_broker::testkit::{CapturingNotifier, FailingNotifier};
+use warden_broker::testkit::{CapturingNotifier, FailingNotifier, LongErrorNotifier};
 use warden_broker_proto::{Access, CreatedResponse, RequestStatus, Window, fingerprint};
 
 use super::{
@@ -510,6 +510,58 @@ async fn notify_failure_ends_in_error() {
     .expect("the entry was written");
     // The token was never delivered, but even so it is no longer usable.
     assert_eq!(row_count(&h.pool, "requests").await, 1);
+}
+
+#[tokio::test]
+async fn a_long_notification_error_is_cut_in_its_entry() {
+    // Two-byte characters after an odd number of ASCII bytes, so that the bound
+    // falls inside one.
+    let reason = format!("xx{}", "é".repeat(2000));
+    let notifier = Arc::new(LongErrorNotifier(reason.clone()));
+    let h = harness_with(healthy_connect().await, Some(notifier)).await;
+    let created = h
+        .requests
+        .create(&agent("bot"), pi_request())
+        .await
+        .unwrap();
+    let status = h
+        .requests
+        .status(&agent("bot"), &created.id, Duration::from_secs(30))
+        .await
+        .unwrap();
+    let RequestStatus::Error { message } = status else {
+        panic!("expected error, got {status:?}");
+    };
+    assert!(
+        message.contains(&reason),
+        "the request keeps the whole error"
+    );
+    let entry = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let found = std::fs::read_to_string(&h.audit_path)
+                .unwrap()
+                .lines()
+                .map(|l| serde_json::from_str::<Value>(l).unwrap()["event"].clone())
+                .find(|e| e["type"] == "notify_failed");
+            if let Some(entry) = found {
+                break entry;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the entry was written");
+    let recorded = entry["reason"].as_str().unwrap();
+    let kept = recorded
+        .strip_suffix(" (truncated)")
+        .expect("marked as cut");
+    let full = format!("long-error request failed: {reason}");
+    assert!(full.starts_with(kept), "{recorded}");
+    assert_eq!(
+        kept.len(),
+        511,
+        "cut before the character the bound falls in"
+    );
 }
 
 #[tokio::test]

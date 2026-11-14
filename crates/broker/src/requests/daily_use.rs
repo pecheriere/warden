@@ -6,7 +6,7 @@
 use warden_broker_proto::{AgentName, Id, SecretName, TargetName};
 
 use super::{RequestError, Requests};
-use crate::audit::AuditEvent;
+use crate::audit::{AuditEvent, bounded_text};
 use crate::notify::Doorbell;
 
 /// Proxied calls per API grant per UTC day, unless the server says otherwise. Calls
@@ -184,7 +184,7 @@ impl Requests {
                         DailyUse::RelaySession { .. } => "relay session limit notice",
                     }
                     .to_owned(),
-                    message: format!("grant {grant}: {e}"),
+                    message: bounded_text(format!("grant {grant}: {e}")),
                 }
             }
         };

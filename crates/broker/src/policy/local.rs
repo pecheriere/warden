@@ -39,7 +39,7 @@ use super::{
     PolicyError, RelayCredential, ReleaseAppKey, ReleaseSigningKey, SecretBackend, SecretValue,
     SshMode, SshTarget, not_a_relay_target,
 };
-use crate::audit::{AuditEvent, AuditLog};
+use crate::audit::{AuditEvent, AuditLog, bounded_text};
 use crate::audit_throttle::{Allowance, FlushHeld, Summary, Throttle};
 use crate::config::LocalSettings;
 use crate::requests::{Clock, SystemClock};
@@ -636,7 +636,7 @@ impl LocalBackend {
         };
         let event = AuditEvent::Error {
             context: AUDIT_CONTEXT.to_owned(),
-            message: message.to_owned(),
+            message: bounded_text(message.to_owned()),
         };
         self.throttle
             .record(audit, &(), SystemClock.now(), 1, event)

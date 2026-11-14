@@ -87,6 +87,10 @@ All notable changes to this project are recorded here. The format follows
 - The `outcome` of a `proxy_call` entry is cut to 512 bytes, with ` (truncated)` after it. A
   refusal that quotes a header name the agent chose (up to 64 KiB) was recorded whole; the
   agent still gets the whole message.
+- The reason of `commit_signing_refused`, `github_token_refused`, `release_refused` and
+  `notify_failed` entries and the message of `error` entries are cut to 512 bytes as the log
+  writes them, escapes counted, with ` (truncated)` after them, as a `proxy_call` outcome now is
+  (#273).
 - Counts of refusals beyond the per-minute allowance (`commit_signing_refusals_held`,
   `github_token_refusals_held`, `release_refusals_held`) are written as one entry per agent per
   minute, once the minute that held them is over, instead of at every sweep.
