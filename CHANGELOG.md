@@ -8,6 +8,11 @@ All notable changes to this project are recorded here. The format follows
 
 ### Upgrading
 
+- New migration `0012_daily_use`, applied at startup. As with every migration, rolling back
+  means restoring the backup together with the old version. **The new default limit of 10000
+  proxied calls a day for each API grant can refuse a busy existing grant** with a 429 until
+  00:00 UTC. Raise it with `WARDEN_PROXY_MAX_CALLS_PER_DAY` (up to 1000000) before upgrading
+  if an agent makes more.
 - `warden list` and `warden prime` need a broker of this version: against an older one,
   `warden list` fails saying to upgrade it, and `warden prime` prints its instructions with
   that note in place of the offers. They need no migration and write no audit entry.
@@ -61,6 +66,9 @@ All notable changes to this project are recorded here. The format follows
   a limit) are limited to 30 a minute per agent; the rest are counted and written as one
   `proxy_calls_refused_held` entry per agent per minute, once the minute is over. A call
   that started always has its result entry.
+- The `outcome` of a `proxy_call` entry is cut to 512 bytes, with ` (truncated)` after it. A
+  refusal that quotes a header name the agent chose (up to 64 KiB) was recorded whole; the
+  agent still gets the whole message.
 - Counts of refusals beyond the per-minute allowance (`commit_signing_refusals_held`,
   `github_token_refusals_held`, `release_refusals_held`) are written as one entry per agent per
   minute, once the minute that held them is over, instead of at every sweep.

@@ -277,21 +277,27 @@ change.
   or approved, and relay sessions and proxied calls cannot start. A log that stalls
   holds those up until it answers. Ending access goes on as above. Watch
   the disk that holds the log.
-- **The rate of entries is bounded, so that the log cannot be filled quickly.** The log is
-  append-only and never rotated, so an unbounded source of entries would end in the failure
-  above for every agent. Each source below has a bound, and the table gives the most it
-  can write in a day with the defaults. Sizes are measured from a test log: a `proxy_call`
-  line is about 370 bytes (about 410 for a refusal) and `proxy_call_started` about 310, of
-  which about 150 are the sequence number, time and hash chain; a worst case with the longest
-  URL (512 bytes), method and message is about 1.1 KB. Typical is the measured size times the
-  count; worst case is 1.1 KB times the count.
+- **The size and rate of proxied-call entries are bounded, so that the log cannot be filled
+  quickly.** The log is append-only and never rotated, so an unbounded source of entries
+  would end in the failure above for every agent. The table gives the most proxied calls
+  can write in a day with the defaults. Commit signing, GitHub token and release
+  refusals and local backend errors are limited too, each with its own bound. Sizes are
+  measured from a test log: a `proxy_call` line is about 370 bytes (about 410 for a
+  refusal) and `proxy_call_started` about 310, of which about 150 are the sequence number,
+  time and hash chain. What the agent chooses is cut to a bound before it is recorded: the
+  method to 32 bytes, the URL to 512, and the outcome, which can quote a header name of up
+  to 64 KiB, to 512 bytes plus ` (truncated)` (the agent still gets the whole message). The
+  longest `proxy_call` line is then about 1.4 KB (a refusal with a 64 KiB header name
+  measured 891 bytes with a short URL, and a 512 byte URL and a 32 byte method add about
+  510), taken as 1.5 KB. Typical is the measured size times the count; worst case is
+  1.5 KB times the count.
 
   | Source | Bound | Typical a day | Worst case a day |
   |---|---|---|---|
-  | Proxied calls sent, per API grant | 10000 calls, 2 entries each (`proxy_call_started` and `proxy_call`) | about 7 MB (10000 × 680 bytes) | about 22 MB (20000 × 1.1 KB) |
-  | Proxied calls refused before they start, per agent | 30 entries a minute, plus 1 `proxy_calls_refused_held` summary a minute | about 18 MB (44640 × 410 bytes) | about 50 MB (44640 × 1.1 KB) |
+  | Proxied calls sent, per API grant | 10000 calls, 2 entries each (`proxy_call_started` and `proxy_call`) | about 7 MB (10000 × 680 bytes) | about 30 MB (20000 × 1.5 KB) |
+  | Proxied calls refused before they start, per agent | 30 entries a minute, plus 1 `proxy_calls_refused_held` summary a minute | about 18 MB (44640 × 410 bytes) | about 67 MB (44640 × 1.5 KB) |
 
-  Relay entries are bounded separately. Each API grant takes a phone approval, so the
+  Each API grant takes a phone approval, so the
   per-grant figure multiplies only by the grants the owner approved, and the refused-call
   figure by the agents. Revoking the agent stops every one of them. The bounds keep the log's growth
   to a rate an owner can watch, not to nothing: an owner still needs to watch the disk.
@@ -710,8 +716,9 @@ These were recorded during implementation and are accepted for this release.
   that holds the audit log. It is counted per grant in the database, so a restart does not
   reset it. Past it, calls fail with a 429 until 00:00 UTC and the owner is notified once a
   day per grant, with `proxy_call_limit_reached` (the grant, the limit) and
-  `proxy_call_limit_notified` entries; other grants go on. A call that `proxy::check`
-  refuses (policy, a changed secret, a concurrent-call limit) does not use the budget, and
+  `proxy_call_limit_notified` entries; other grants go on. A call refused before it
+  starts (by `proxy::check`, a changed secret, the calls in flight or an outage of the
+  backend) does not use the budget, and
   its entry is limited instead: at most 30 `proxy_call` entries a minute per agent, with the
   rest counted in one `proxy_calls_refused_held` entry per agent per minute, once the minute
   is over. A call that was sent always keeps both its entries. The limit bounds the log and

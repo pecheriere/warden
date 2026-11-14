@@ -1154,7 +1154,7 @@ Errors:
   the owner with `WARDEN_PROXY_MAX_CALLS_PER_DAY`). Every further call on it fails the same
   way until 00:00 UTC, so do not retry before then. Stop and tell the person. Other grants
   are not affected. Only calls that were sent count; a call refused before it started (a
-  400, a 409 or the concurrent-call 429 above) does not use the budget.
+  400, a 409 before it started, or the concurrent-call 429 above) does not use the budget.
 - `502`, `504`: the upstream failed, timed out (30 s per call), sent a
   compressed or oversized (over 1 MiB by default) response; the message is
   fixed and never quotes the upstream.
