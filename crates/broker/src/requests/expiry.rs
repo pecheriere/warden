@@ -78,8 +78,8 @@ impl Requests {
 }
 
 /// Expire due pending requests, forget expired nonces and record held-back
-/// limit refusals every `every` until `shutdown` changes (or its sender is dropped). Failures are logged
-/// and never end the loop.
+/// limit refusals every `every` until `shutdown` changes (or its sender is
+/// dropped). Failures are logged and never end the loop.
 pub async fn sweep_loop(
     requests: Requests,
     every: Duration,

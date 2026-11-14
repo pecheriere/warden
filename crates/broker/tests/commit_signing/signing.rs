@@ -226,11 +226,31 @@ async fn refused_calls_cannot_fill_the_audit_log() {
         assert_eq!(resp.status, StatusCode::FORBIDDEN, "{}", resp.body);
     }
     assert_eq!(entries(&broker, "commit_signing_refused").len(), 30);
+    broker.clock.advance(60);
     broker.state().requests.flush_refusals(false).await;
     let held = entries(&broker, "commit_signing_refusals_held");
     assert_eq!(held.len(), 1);
     assert_eq!(held[0]["agent"], "bot");
     assert_eq!(held[0]["count"], 5);
+}
+
+#[tokio::test]
+async fn a_held_refusal_count_is_written_once_a_minute() {
+    let broker = TestBroker::new().await;
+    let key = broker.add_agent("bot").await;
+    for _ in 0..31 {
+        let resp = sign(&broker, &key).await;
+        assert_eq!(resp.status, StatusCode::FORBIDDEN, "{}", resp.body);
+    }
+    broker.clock.advance(15);
+    broker.state().requests.flush_refusals(false).await;
+    assert_eq!(entries(&broker, "commit_signing_refusals_held").len(), 0);
+    broker.clock.advance(45);
+    broker.state().requests.flush_refusals(false).await;
+    let held = entries(&broker, "commit_signing_refusals_held");
+    assert_eq!(held.len(), 1);
+    assert_eq!(held[0]["agent"], "bot");
+    assert_eq!(held[0]["count"], 1);
 }
 
 #[tokio::test]

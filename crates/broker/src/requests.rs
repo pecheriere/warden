@@ -24,7 +24,8 @@ use warden_broker_proto::{
 };
 
 use crate::agents::AgentError;
-use crate::audit::{AuditError, AuditLog};
+use crate::audit::{AuditError, AuditEvent, AuditLog};
+use crate::audit_throttle::{Allowance, AuditThrottles, Summary, Throttle};
 use crate::github_app::GithubApi;
 use crate::notify::Notifier;
 use crate::policy::{
@@ -48,7 +49,6 @@ mod github_token;
 mod limits;
 mod link_hosts;
 mod pending;
-mod refusal_throttle;
 mod release;
 mod release_approval;
 mod release_steps;
@@ -63,7 +63,6 @@ use self::limits::Refusals;
 pub use self::limits::{LimitRefusal, RequestLimits};
 pub use self::link_hosts::LinkHosts;
 pub use self::pending::PendingEntry;
-use self::refusal_throttle::RefusalThrottle;
 pub use self::release::{ReleaseFacts, ReleasePolicy};
 pub use self::release_approval::ReleaseProgress;
 pub use self::release_steps::{ActiveRelease, RecordedManifest, ReleaseStep};
@@ -463,15 +462,39 @@ pub struct Requests {
     /// GitHub tokens per agent per hour.
     github_token_per_hour: u32,
     /// What has been recorded of refusals to sign.
-    signing_refusals: Arc<RefusalThrottle>,
+    signing_refusals: Arc<Throttle<AgentName, u64>>,
     /// What has been recorded of refusals to mint GitHub tokens.
-    github_refusals: Arc<RefusalThrottle>,
+    github_refusals: Arc<Throttle<AgentName, u64>>,
     /// What has been recorded of refusals of release steps.
-    release_refusals: Arc<RefusalThrottle>,
+    release_refusals: Arc<Throttle<AgentName, u64>>,
+    /// Every limiter of audited entries, flushed together.
+    throttles: Arc<AuditThrottles>,
     /// Hosts a request may link to.
     link_hosts: LinkHosts,
     /// Where release requests are checked against GitHub.
     github: GithubApi,
+}
+
+/// Refusals one agent may have written one by one per minute; the rest are counted.
+const REFUSALS_PER_MINUTE: u32 = 30;
+
+/// A limiter for the refusals of one kind, registered with `throttles`, whose held
+/// count is written as the entry `held` makes.
+fn refusal_throttle(
+    throttles: &AuditThrottles,
+    what: &'static str,
+    held: fn(AgentName, u64) -> AuditEvent,
+) -> Arc<Throttle<AgentName, u64>> {
+    let throttle = Throttle::new(
+        what,
+        Allowance {
+            per_key: REFUSALS_PER_MINUTE,
+            overall: None,
+        },
+        Summary::PerKey(held),
+    );
+    throttles.register(throttle.clone());
+    throttle
 }
 
 /// Which pending requests an expiry pass looks at.
@@ -498,6 +521,17 @@ impl Requests {
         relay: Option<RelayEndpoint>,
     ) -> Self {
         let calls = ProxyLimits::default();
+        let throttles = Arc::new(AuditThrottles::default());
+        let signing_refusals = refusal_throttle(&throttles, "a refusal to sign", |agent, count| {
+            AuditEvent::CommitSigningRefusalsHeld { agent, count }
+        });
+        let github_refusals = refusal_throttle(&throttles, "a refusal to mint", |agent, count| {
+            AuditEvent::GithubTokenRefusalsHeld { agent, count }
+        });
+        let release_refusals =
+            refusal_throttle(&throttles, "a refusal of a release step", |agent, count| {
+                AuditEvent::ReleaseRefusalsHeld { agent, count }
+            });
         Self {
             pool,
             audit,
@@ -517,12 +551,20 @@ impl Requests {
             commit_signing_per_day: SIGNATURES_PER_DAY,
             github_token_max: Window::GITHUB_TOKEN_DEFAULT,
             github_token_per_hour: MINTS_PER_HOUR,
-            signing_refusals: Arc::default(),
-            github_refusals: Arc::default(),
-            release_refusals: Arc::default(),
+            signing_refusals,
+            github_refusals,
+            release_refusals,
+            throttles,
             link_hosts: LinkHosts::default(),
             github: GithubApi::public(),
         }
+    }
+
+    /// The limiters of audited entries. Register one here to have its held counts
+    /// written with the others, and at shutdown.
+    #[must_use]
+    pub fn audit_throttles(&self) -> &Arc<AuditThrottles> {
+        &self.throttles
     }
 
     /// Check release requests against GitHub at `github`, instead of the public API.
