@@ -40,7 +40,9 @@ use super::{
     SshMode, SshTarget, not_a_relay_target,
 };
 use crate::audit::{AuditEvent, AuditLog};
+use crate::audit_throttle::{Allowance, FlushHeld, Summary, Throttle};
 use crate::config::LocalSettings;
+use crate::requests::{Clock, SystemClock};
 
 mod files;
 mod listing;
@@ -546,6 +548,16 @@ pub struct LocalBackend {
     files: Files,
     /// Where a refusal is recorded. Doctor records nothing.
     audit: Option<Arc<AuditLog>>,
+    /// Holds the count of the refusals beyond the first few of a minute.
+    throttle: Arc<Throttle<(), u64>>,
+}
+
+/// Refusals written one by one in a minute: what the files' state costs the log
+/// is bounded, however often they are read.
+const ERRORS_PER_MINUTE: u32 = 10;
+
+fn errors_held(_: (), count: u64) -> AuditEvent {
+    AuditEvent::LocalBackendErrorsHeld { count }
 }
 
 impl LocalBackend {
@@ -559,6 +571,7 @@ impl LocalBackend {
         let backend = Self {
             files: Self::files(settings),
             audit: Some(audit),
+            throttle: Self::throttle(),
         };
         let problems = backend.probe().await.problems();
         if problems.is_empty() {
@@ -577,7 +590,26 @@ impl LocalBackend {
         Self {
             files: Self::files(settings),
             audit: None,
+            throttle: Self::throttle(),
         }
+    }
+
+    fn throttle() -> Arc<Throttle<(), u64>> {
+        Throttle::new(
+            "an error of the local secret backend",
+            Allowance {
+                per_key: ERRORS_PER_MINUTE,
+                overall: None,
+            },
+            Summary::PerKey(errors_held),
+        )
+    }
+
+    /// What writes the count of the errors that were not recorded one by one. The
+    /// server registers it with the requests, whose sweep and shutdown flush it.
+    #[must_use]
+    pub fn audit_throttle(&self) -> Arc<dyn FlushHeld> {
+        self.throttle.clone()
     }
 
     fn files(settings: &LocalSettings) -> Files {
@@ -606,9 +638,9 @@ impl LocalBackend {
             context: AUDIT_CONTEXT.to_owned(),
             message: message.to_owned(),
         };
-        if let Err(e) = audit.append(event).await {
-            tracing::error!(error = %e, "could not audit a refusal of the local secret backend");
-        }
+        self.throttle
+            .record(audit, &(), SystemClock.now(), 1, event)
+            .await;
     }
 
     /// Run `work` off the async workers, and audit what it refuses. A name that

@@ -11,9 +11,9 @@ All notable changes to this project are recorded here. The format follows
 - `warden list` and `warden prime` need a broker of this version: against an older one,
   `warden list` fails saying to upgrade it, and `warden prime` prints its instructions with
   that note in place of the offers. They need no migration and write no audit entry.
-- New audit entries: `release_step_started`, `release_published_changed` and
-  `release_published_changed_notified`. An older `warden-server audit verify` refuses a log
-  holding one.
+- New audit entries: `release_step_started`, `release_published_changed`,
+  `release_published_changed_notified` and `local_backend_errors_held`. An older
+  `warden-server audit verify` refuses a log holding one.
 - The clients for 1Password Connect, the notifiers and the health probe no longer use a proxy
   named in `HTTP_PROXY`, `HTTPS_PROXY` or `ALL_PROXY`; a deployment that reached them through
   one needs a direct route. See [Upgrading](docs/upgrading.md#proxies-and-http2).
@@ -45,6 +45,9 @@ All notable changes to this project are recorded here. The format follows
 
 ### Changed
 
+- While the local secret backend's files are unusable, at most 10 `error` audit entries a
+  minute are written; the rest are counted in a new `local_backend_errors_held` entry, once
+  a minute, instead of one entry per failed read (#267).
 - Counts of refusals beyond the per-minute allowance (`commit_signing_refusals_held`,
   `github_token_refusals_held`, `release_refusals_held`) are written as one entry per agent per
   minute, once the minute that held them is over, instead of at every sweep.
