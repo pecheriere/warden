@@ -27,8 +27,10 @@ pub use self::open::verify;
 #[cfg(feature = "testkit")]
 pub use self::stall::AppendStall;
 
+mod bounded;
 mod event;
 
+pub(crate) use self::bounded::bounded_text;
 pub use self::event::AuditEvent;
 
 /// `prev` of the first line in a log.

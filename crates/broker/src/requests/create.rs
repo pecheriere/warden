@@ -19,7 +19,7 @@ use super::{
     approval_token, begin, check_ed25519, check_window, commit_signing, github_scope, github_token,
     limits, note_if_not_applied, parse, record, sha256_hex, window_label,
 };
-use crate::audit::AuditEvent;
+use crate::audit::{AuditEvent, bounded_text};
 use crate::notify::{Doorbell, doorbell};
 use crate::policy::SshMode;
 
@@ -458,7 +458,7 @@ impl Requests {
         let failed = AuditEvent::NotifyFailed {
             id: id.clone(),
             channel,
-            reason,
+            reason: bounded_text(reason),
         };
         commit_with_entries(tx, vec![failed], now).await?;
         self.settle_entries().await;

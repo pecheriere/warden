@@ -8,7 +8,7 @@ use sqlx::Row as _;
 use warden_broker_proto::release::{ReleaseGrant, ReleaseSteps, ReleaseTag, RepoName};
 use warden_broker_proto::{AgentName, GrantAccess, GrantView, Id};
 
-use crate::audit::AuditEvent;
+use crate::audit::{AuditEvent, bounded_text};
 use crate::notify::Doorbell;
 
 use super::{RequestError, Requests, parse};
@@ -317,7 +317,7 @@ impl Requests {
             agent: agent.clone(),
             grant_id,
             step: step.to_owned(),
-            reason,
+            reason: bounded_text(reason),
         };
         self.release_refusals
             .record(&self.audit, agent, self.clock.now(), 1, event)
@@ -387,7 +387,7 @@ impl Requests {
                 tracing::warn!(grant = %grant, error = %e, "changed release notice failed");
                 AuditEvent::Error {
                     context: "changed release notice".to_owned(),
-                    message: format!("grant {grant}: {e}"),
+                    message: bounded_text(format!("grant {grant}: {e}")),
                 }
             }
         };

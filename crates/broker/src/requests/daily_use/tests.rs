@@ -1,14 +1,16 @@
 //! The daily use budget of a grant.
 
+use std::path::Path;
 use std::sync::Arc;
 
 use warden_broker_proto::{AgentName, Id, SecretName};
 
 use super::DailyUse;
 use crate::audit::AuditLog;
+use crate::notify::Notifier;
 use crate::requests::Requests;
 use crate::store;
-use crate::testkit::{CapturingNotifier, FakeBackend, ManualClock};
+use crate::testkit::{CapturingNotifier, FakeBackend, LongErrorNotifier, ManualClock};
 
 const DAY: i64 = 86_400;
 
@@ -22,21 +24,12 @@ struct Fixture {
 
 async fn fixture(limit: u32) -> Fixture {
     let dir = tempfile::tempdir().unwrap();
-    let pool = store::open(&dir.path().join("warden.db")).await.unwrap();
     let audit_path = dir.path().join("audit.jsonl");
-    let audit = Arc::new(AuditLog::open(&audit_path).await.unwrap());
     let clock = Arc::new(ManualClock::new(10 * DAY + 5));
     let notifier = Arc::new(CapturingNotifier::new());
-    let requests = Requests::new(
-        pool,
-        audit,
-        Arc::new(FakeBackend::new()),
-        notifier.clone(),
-        "https://warden.example.ts.net/".parse().unwrap(),
-        clock.clone(),
-        None,
-    )
-    .with_proxy_calls_per_day(limit);
+    let requests = open(dir.path(), clock.clone(), notifier.clone())
+        .await
+        .with_proxy_calls_per_day(limit);
     Fixture {
         requests,
         clock,
@@ -44,6 +37,20 @@ async fn fixture(limit: u32) -> Fixture {
         audit_path,
         _dir: dir,
     }
+}
+
+async fn open(dir: &Path, clock: Arc<ManualClock>, notifier: Arc<dyn Notifier>) -> Requests {
+    let pool = store::open(&dir.join("warden.db")).await.unwrap();
+    let audit = Arc::new(AuditLog::open(&dir.join("audit.jsonl")).await.unwrap());
+    Requests::new(
+        pool,
+        audit,
+        Arc::new(FakeBackend::new()),
+        notifier,
+        "https://warden.example.ts.net/".parse().unwrap(),
+        clock,
+        None,
+    )
 }
 
 /// A bare grant row: its request and agent do not matter here.
@@ -172,4 +179,31 @@ async fn a_storage_error_refuses_the_use() {
     let grant = grant(&f.requests, "11111111111111111111111111111111").await;
     f.requests.pool.close().await;
     assert!(f.requests.take_daily_use(&grant, &call()).await.is_err());
+}
+
+#[tokio::test]
+async fn a_long_notice_error_is_cut_in_its_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    let clock = Arc::new(ManualClock::new(10 * DAY + 5));
+    // Each quote takes 2 bytes once written as JSON.
+    let notifier = Arc::new(LongErrorNotifier("\"".repeat(2000)));
+    let requests = open(dir.path(), clock, notifier).await;
+    let grant = grant(&requests, "11111111111111111111111111111111").await;
+    let agent = AgentName::try_from("build-agent".to_owned()).unwrap();
+    requests.notify_daily_limit(&agent, &grant, &call()).await;
+    let log = std::fs::read_to_string(dir.path().join("audit.jsonl")).unwrap();
+    let entry = log
+        .lines()
+        .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap()["event"].clone())
+        .find(|e| e["type"] == "error")
+        .expect("an error entry");
+    assert_eq!(entry["context"], "API call limit notice");
+    let message = entry["message"].as_str().unwrap();
+    let kept = message.strip_suffix(" (truncated)").expect("marked as cut");
+    assert!(
+        kept.starts_with(&format!("grant {grant}: long-error request failed: \"")),
+        "{message}"
+    );
+    let written = serde_json::to_string(kept).unwrap().len() - 2;
+    assert!((511..=512).contains(&written), "{written} bytes: {message}");
 }

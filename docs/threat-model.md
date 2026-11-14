@@ -286,8 +286,9 @@ change.
   410 for a refusal) and `proxy_call_started` about 310, of which about 150 are the
   sequence number, time and hash chain. What the agent chooses is cut to a bound before it
   is recorded: the method to 32 bytes, the URL to 512, and the outcome, which can quote a
-  header name of up to 64 KiB, to 512 bytes plus ` (truncated)` (the agent still gets the
-  whole message). The longest `proxy_call` line is then about 1.4 KB (a refusal with a
+  header name of up to 64 KiB, to 512 bytes as the log writes it (a control character counts
+  for the 6 bytes of its escape) plus ` (truncated)` (the agent still gets the whole
+  message). The longest `proxy_call` line is then about 1.4 KB (a refusal with a
   64 KiB header name measured 891 bytes with a short URL, and a 512 byte URL and a 32 byte
   method add about 510), taken as 1.5 KB. The relay's entries hold only values of a fixed
   size: a target or user name of at most 32 characters, a grant id, an address of at most
@@ -296,8 +297,18 @@ change.
   `relay_session_started` 560 bytes (1560 with a command of 200 control characters, each
   written as 6 bytes), `relay_session_ended` 382, `relay_session_refused` 284 (about 300
   with the longest phrase), `relay_login_refused` 317 (a 32 character name and a 39
-  character address) and the two summaries about 300. Typical is the measured size times
-  the count; worst case is the longest size times the count.
+  character address) and the two summaries about 300. Every other message whose length a
+  caller or an upstream answer sets is cut the same way, to 512 bytes as written plus
+  ` (truncated)`: the reason of `commit_signing_refused`, `github_token_refused`,
+  `release_refused` and `notify_failed`, and the message of an `error` entry. The one
+  exception is the `error` entry that follows an entry written late, which quotes that entry
+  whole and so takes at most about twice its size. The rest of the text in entries is bounded
+  where it is accepted: names, ids, digests and fingerprints of a fixed form, fixed phrases,
+  a request's summary (a goal of at most 500 characters without control characters, so at
+  most 2000 bytes, and a session label of at most 64 characters), and a signed commit's
+  author (at most 1024 bytes without control characters, so at most 2048 once escaped)
+  and at most 64 parent ids. Typical is the measured size times the count; worst case is
+  the longest size times the count.
 
   | Source | Bound | Typical a day | Worst case a day |
   |---|---|---|---|

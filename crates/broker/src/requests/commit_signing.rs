@@ -10,7 +10,7 @@ use sqlx::Row as _;
 use warden_broker_proto::{AgentName, CommitSigningGrant, GrantAccess, GrantView, Id, Window};
 
 use super::{RequestError, Requests, parse};
-use crate::audit::AuditEvent;
+use crate::audit::{AuditEvent, bounded_text};
 use crate::notify::Doorbell;
 use crate::policy::{CommitSigningKey, CommitSigningPolicy, PolicyError, check_separate_from_ca};
 
@@ -132,7 +132,7 @@ impl Requests {
                 tracing::warn!(grant = %grant, error = %e, "signing limit notice failed");
                 AuditEvent::Error {
                     context: "commit signing limit notice".to_owned(),
-                    message: format!("grant {grant}: {e}"),
+                    message: bounded_text(format!("grant {grant}: {e}")),
                 }
             }
         };
@@ -229,7 +229,7 @@ impl Requests {
         let event = AuditEvent::CommitSigningRefused {
             agent: agent.clone(),
             grant_id,
-            reason,
+            reason: bounded_text(reason),
             payload_sha256,
         };
         self.signing_refusals

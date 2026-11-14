@@ -8,7 +8,7 @@ use warden_broker_proto::{AgentName, ApiGrant, GrantAccess, Id, ProxyRequest, Pr
 
 use super::{ApiJson, Failure, POLICY_CHANGED, off_runtime, parse_id};
 use crate::AppState;
-use crate::audit::AuditEvent;
+use crate::audit::{AuditEvent, bounded_text};
 use crate::identity::AuthedAgent;
 use crate::policy::{ApiScope, PolicyError};
 use crate::proxy::{self, CallEnd, CallInfo, CallSlot, GrantChecks, GrantState, Needles};
@@ -19,14 +19,6 @@ const MAX_AUDIT_METHOD: usize = 32;
 
 /// Longest URL (origin and path) recorded in the audit log as sent.
 const MAX_AUDIT_URL: usize = 512;
-
-/// Longest outcome recorded in the audit log, before the marker that says it
-/// was cut. A refusal can quote what the agent sent (a header name of up to
-/// 64 KiB), and the agent gets the whole message; the log gets this much.
-const MAX_AUDIT_OUTCOME: usize = 512;
-
-/// Appended to an outcome that was cut to [`MAX_AUDIT_OUTCOME`].
-const TRUNCATED: &str = " (truncated)";
 
 /// `POST /v1/grants/{id}/http`: make the call in the body with the grant's
 /// API secret and return the redacted response.
@@ -102,16 +94,6 @@ async fn usable_api_grant(
     api_grant_status(state, agent, id)
         .await?
         .map_err(|why| Failure::Client(StatusCode::CONFLICT, why.message().to_owned()))
-}
-
-/// `outcome` as recorded: at most [`MAX_AUDIT_OUTCOME`] bytes, cut on a
-/// character boundary and marked with [`TRUNCATED`] when it was longer.
-fn audit_outcome(mut outcome: String) -> String {
-    if outcome.len() > MAX_AUDIT_OUTCOME {
-        outcome.truncate(outcome.floor_char_boundary(MAX_AUDIT_OUTCOME));
-        outcome.push_str(TRUNCATED);
-    }
-    outcome
 }
 
 /// What a `proxy_call` audit entry records about a call.
@@ -200,7 +182,9 @@ async fn audited_call(
     if let Err(Failure::Request(RequestError::Audit(_))) = &result {
         return result;
     }
-    let outcome = audit_outcome(match &result {
+    // A refusal can quote what the agent sent (a header name of up to 64 KiB), and
+    // the agent gets the whole message; the log gets a bounded part of it.
+    let outcome = bounded_text(match &result {
         Ok(_) => "ok".to_owned(),
         Err(failure) => failure.outcome(),
     });
@@ -420,20 +404,5 @@ mod tests {
         assert_eq!(r.path, fits);
         let r = record(&format!("{origin}{fits}a"));
         assert_eq!((r.url.as_str(), r.path.as_str()), ("invalid", "invalid"));
-    }
-
-    #[test]
-    fn an_outcome_is_cut_to_the_bound_on_a_character_boundary() {
-        assert_eq!(audit_outcome("ok".to_owned()), "ok");
-        let fits = "a".repeat(MAX_AUDIT_OUTCOME);
-        assert_eq!(audit_outcome(fits.clone()), fits);
-        let cut = audit_outcome("a".repeat(MAX_AUDIT_OUTCOME + 1));
-        assert_eq!(cut, format!("{}{TRUNCATED}", "a".repeat(MAX_AUDIT_OUTCOME)));
-        // A two-byte character straddling the bound is dropped whole.
-        let straddling = format!("{}é", "a".repeat(MAX_AUDIT_OUTCOME - 1));
-        assert_eq!(
-            audit_outcome(straddling),
-            format!("{}{TRUNCATED}", "a".repeat(MAX_AUDIT_OUTCOME - 1))
-        );
     }
 }
