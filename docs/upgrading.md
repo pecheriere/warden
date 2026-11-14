@@ -103,7 +103,7 @@ Run it again with `docker compose exec` once warden is up.
 
 ## Proxies and HTTP/2
 
-From the release after 0.13.0, the broker's clients for 1Password Connect, the
+From 0.14.0, the broker's clients for 1Password Connect, the
 notifiers and the health probe ignore `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` and
 `NO_PROXY`. A deployment that reached Connect or a notifier only through a proxy
 needs a direct route before it upgrades. The listeners also serve HTTP/1.1 only:
