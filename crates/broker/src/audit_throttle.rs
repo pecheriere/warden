@@ -8,6 +8,7 @@
 //! are in memory: a restart can at worst lose the counts of the last minute or two.
 
 use std::collections::HashMap;
+use std::fmt::Debug;
 use std::hash::Hash;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
@@ -159,13 +160,18 @@ pub struct Throttle<K, V> {
 
 impl<K, V> Throttle<K, V>
 where
-    K: Clone + Eq + Hash + Send + Sync + 'static,
+    K: Clone + Debug + Eq + Hash + Send + Sync + 'static,
     V: Tally,
 {
     /// A limiter for entries described by `what` in the log of a failed write, with
-    /// `allowance` and the `summary` that writes what is held.
-    #[must_use]
-    pub fn new(what: &'static str, allowance: Allowance, summary: Summary<K, V>) -> Arc<Self> {
+    /// `allowance` and the `summary` that writes what is held. It is not registered:
+    /// use [`AuditThrottles::throttle`] unless the limiter must exist before the
+    /// registry does, and then pass it to [`AuditThrottles::register`] exactly once.
+    pub(crate) fn new(
+        what: &'static str,
+        allowance: Allowance,
+        summary: Summary<K, V>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             what,
             allowance,
@@ -251,7 +257,7 @@ where
             return;
         }
         if let Err(e) = audit.append(event).await {
-            tracing::error!(error = %e, "could not audit {}", self.what);
+            tracing::error!(error = %e, key = ?key, "could not audit {}", self.what);
         }
     }
 
@@ -335,7 +341,7 @@ pub trait FlushHeld: Send + Sync {
 #[async_trait]
 impl<K, V> FlushHeld for Throttle<K, V>
 where
-    K: Clone + Eq + Hash + Send + Sync + 'static,
+    K: Clone + Debug + Eq + Hash + Send + Sync + 'static,
     V: Tally,
 {
     async fn flush(&self, audit: &AuditLog, now: i64, all: bool) {
@@ -343,7 +349,7 @@ where
             Summary::PerKey(event) => {
                 for (key, tally) in self.take_per_key(now, all) {
                     if let Err(e) = audit.append(event(key.clone(), tally)).await {
-                        tracing::error!(error = %e, "could not audit {}", self.what);
+                        tracing::error!(error = %e, key = ?key, "could not audit {}", self.what);
                         self.restore_key(&key, tally);
                     }
                 }
@@ -367,7 +373,30 @@ pub struct AuditThrottles {
 }
 
 impl AuditThrottles {
-    /// Add `throttle` to those flushed.
+    /// A limiter for entries described by `what`, registered here so that what it
+    /// holds is flushed. The way to build one, so none can be left out, except
+    /// for what [`AuditThrottles::register`] says.
+    #[must_use]
+    pub fn throttle<K, V>(
+        &self,
+        what: &'static str,
+        allowance: Allowance,
+        summary: Summary<K, V>,
+    ) -> Arc<Throttle<K, V>>
+    where
+        K: Clone + Debug + Eq + Hash + Send + Sync + 'static,
+        V: Tally,
+    {
+        let throttle = Throttle::new(what, allowance, summary);
+        self.register(throttle.clone());
+        throttle
+    }
+
+    /// Add `throttle` to those flushed. Only for a limiter built with
+    /// `Throttle::new` before the registry existed, such as the local secret
+    /// backend's, which is opened before the requests; register each exactly once,
+    /// or what it holds is never written, or written twice. Every other limiter is
+    /// built by [`AuditThrottles::throttle`].
     pub fn register(&self, throttle: Arc<dyn FlushHeld>) {
         self.throttles
             .lock()

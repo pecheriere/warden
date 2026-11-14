@@ -42,6 +42,15 @@ async fn setup() -> Setup {
 /// before approval) and agent `bot` holding an approved 30m grant for it.
 async fn setup_with(limits: ProxyLimits, edit: impl FnOnce(&mut ApiSecretPolicy)) -> Setup {
     let broker = TestBroker::with_proxy_limits(limits).await;
+    setup_on(broker, edit).await
+}
+
+/// Like [`setup`], with each grant held to `limit` calls a day.
+async fn setup_daily(limit: u32) -> Setup {
+    setup_on(TestBroker::with_proxy_calls_per_day(limit).await, |_| {}).await
+}
+
+async fn setup_on(broker: TestBroker, edit: impl FnOnce(&mut ApiSecretPolicy)) -> Setup {
     let upstream = HttpsUpstream::start().await;
     let mut policy = upstream.policy("svc");
     edit(&mut policy);

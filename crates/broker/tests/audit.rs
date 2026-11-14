@@ -4,7 +4,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 
 use warden_broker::audit::{AuditError, AuditEvent, AuditLog, verify};
-use warden_broker::audit_throttle::{Allowance, Summary, Throttle};
+use warden_broker::audit_throttle::{Allowance, Summary};
 use warden_broker::requests::Clock as _;
 use warden_broker::testkit::TestBroker;
 use warden_broker_proto::{AgentName, Id};
@@ -588,7 +588,7 @@ fn held_by_the_test(agent: AgentName, count: u64) -> AuditEvent {
 async fn shutdown_flushes_every_registered_throttle() {
     let broker = TestBroker::new().await;
     let requests = broker.state().requests.clone();
-    let throttle = Throttle::new(
+    let throttle = requests.audit_throttles().throttle(
         "a test entry",
         Allowance {
             per_key: 1,
@@ -596,7 +596,6 @@ async fn shutdown_flushes_every_registered_throttle() {
         },
         Summary::PerKey(held_by_the_test),
     );
-    requests.audit_throttles().register(throttle.clone());
     let bot = AgentName::try_from("bot".to_owned()).unwrap();
     let now = broker.clock.now();
     for _ in 0..3 {

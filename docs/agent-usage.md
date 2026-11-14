@@ -1022,6 +1022,12 @@ an agent can have 5 requests pending and make 10 new ones per 10 minutes by
 default. The message says how long to wait. Do not retry sooner: reuse a grant
 or a pending request where you can.
 
+An API grant has a daily limit of calls, 10000 by default. Past it, `warden http`
+fails with the broker's 429, `this grant made N calls today, its limit; calls fail until
+00:00 UTC, and the owner was told`, and it does not retry. Stop, do not call again before
+00:00 UTC, and tell the person: a loop of calls is the usual cause, and the owner has
+already been told.
+
 `warden http` exits 0 for any upstream status unless `--fail` is given. A
 refusal or failure by the broker (policy violation, other 409s, timeout, size
 limit) is exit 1 with the broker's message on stderr.

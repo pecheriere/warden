@@ -454,6 +454,32 @@ pub enum AuditEvent {
         /// Name of the channel that delivered the notification.
         channel: String,
     },
+    /// An API grant reached its limit of proxied calls for the day. Written once a
+    /// day per grant; the refusals themselves are recorded as usual.
+    ProxyCallLimitReached {
+        /// The grant.
+        grant_id: Id,
+        /// The agent.
+        agent: AgentName,
+        /// The limit.
+        limit: u32,
+    },
+    /// The owner was told that an API grant reached its daily limit of calls.
+    ProxyCallLimitNotified {
+        /// The grant.
+        grant_id: Id,
+        /// Name of the channel that delivered the notification.
+        channel: String,
+    },
+    /// Calls refused before they started (by policy, a changed secret, the
+    /// calls in flight or the grant's daily limit, or a backend outage), counted
+    /// for one agent over one minute instead of recorded one by one.
+    ProxyCallsRefusedHeld {
+        /// The agent.
+        agent: AgentName,
+        /// How many calls were refused.
+        count: u64,
+    },
     /// An agent was added.
     AgentAdded {
         /// Agent name.
