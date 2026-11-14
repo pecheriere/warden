@@ -6,6 +6,8 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-11-14
+
 ### Upgrading
 
 - New migration `0012_daily_use`, applied at startup. As with every migration, rolling back
