@@ -276,7 +276,11 @@ it; follow it for a real setup.
    ```
 
    Which key to use (and when a bearer key is the right choice) is in
-   [Agent usage](docs/agent-usage.md#one-time-setup).
+   [Agent usage](docs/agent-usage.md#one-time-setup). Then give the agent its
+   instructions: `warden prime` prints them, with what the broker offers it, and
+   `warden list` shows what it may ask for. [Agent instructions](docs/agent-instructions.md)
+   says how to hand them over, with a session-start hook or one line in its
+   `AGENTS.md`.
 
 8. **Request and use access:**
 
@@ -365,7 +369,7 @@ token. See [Agent usage](docs/agent-usage.md#releases),
 | [Local files](docs/local-backend.md) | The weaker backend without 1Password: its policy file, secret files and what it gives up. |
 | [Notifications](docs/notifications.md) | Home Assistant and ntfy. |
 | [Agent usage](docs/agent-usage.md) | Setting up an agent and how it should ask for access. |
-| [Agent instructions](docs/agent-instructions.md) | A block to paste into an agent's `AGENTS.md` or `CLAUDE.md`. |
+| [Agent instructions](docs/agent-instructions.md) | The rules an agent follows to ask for access, which `warden prime` prints with what the broker offers it; a session-start hook, a one-line rule or a block to paste. |
 | [Examples](docs/agent-examples.md) | An SSH deployment and an API call, end to end. |
 | [Agent protocol](docs/agent-protocol.md) | The agent API, for writing another client. |
 | [Verifying a release](docs/verifying-releases.md) | Checking signatures and attestations on the CLI, the image and the tags. |

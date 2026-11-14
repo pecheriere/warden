@@ -158,12 +158,6 @@ struct AssetAnswer {
     digest: Option<String>,
 }
 
-#[derive(Deserialize)]
-struct PublishedAnswer {
-    id: u64,
-    draft: bool,
-}
-
 impl TryFrom<AssetAnswer> for Asset {
     type Error = GithubError;
 
@@ -209,15 +203,6 @@ fn object_id(sha: String) -> Result<String, GithubError> {
         .map_err(|_| GithubError::Unreadable)
 }
 
-/// Characters that hide or reorder text without showing: zero-width and
-/// direction-changing ones.
-const fn is_invisible(c: char) -> bool {
-    matches!(
-        c,
-        '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{feff}'
-    )
-}
-
 /// The first line of `message`, shown as one line of plain text.
 fn title(message: &str) -> String {
     message
@@ -225,14 +210,15 @@ fn title(message: &str) -> String {
         .next()
         .unwrap_or_default()
         .chars()
-        .filter(|c| !c.is_control() && !is_invisible(*c))
+        .filter(|c| !warden_broker_proto::is_hidden_char(*c))
         .take(MAX_TITLE_CHARS)
         .collect()
 }
 
-/// Whether `name` is a branch name that is safe to put in a compare path: no
-/// control or space characters, none of git's forbidden ones, no `..` or `@{`,
-/// and not starting or ending with `/` or `.`.
+/// Whether `name` is a branch name that is safe to put in a ref path, one segment
+/// per component: no control or space characters, none of git's forbidden ones,
+/// no `..`, `@{` or empty component, no component starting with `.`, and not
+/// ending with `/` or `.`.
 fn is_plain_branch(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 255
@@ -241,6 +227,7 @@ fn is_plain_branch(name: &str) -> bool {
         && !name.contains("..")
         && !name.contains("@{")
         && !name.contains("//")
+        && !name.contains("/.")
         && name
             .chars()
             .all(|c| !c.is_control() && !" ~^:?*[\\".contains(c))
@@ -355,15 +342,26 @@ impl ReleaseClient<'_> {
 
     /// Whether `id` is the head of the default branch or one of its ancestors.
     ///
+    /// The branch's head is read from its exact ref, `refs/heads/<branch>`, and
+    /// the comparison names both commits by id.
+    ///
     /// # Errors
-    /// A [`GithubError`] from either call, or [`GithubError::Unreadable`] for a
-    /// branch name or comparison status that is not understood.
+    /// A [`GithubError`] from any call, or [`GithubError::Unreadable`] for a branch
+    /// name, branch ref or comparison status that is not understood.
     pub async fn on_default_branch(&self, id: &CommitId) -> Result<bool, GithubError> {
         let repository: RepositoryAnswer = self.get(&[], &[]).await?;
-        if !is_plain_branch(&repository.default_branch) {
+        let branch = repository.default_branch;
+        if !is_plain_branch(&branch) {
             return Err(GithubError::Unreadable);
         }
-        let range = format!("{id}...{}", repository.default_branch);
+        let mut path = vec!["git", "ref", "heads"];
+        path.extend(branch.split('/'));
+        let head: RefAnswer = self.get(&path, &[]).await?;
+        if head.name != format!("refs/heads/{branch}") || head.object.kind != "commit" {
+            return Err(GithubError::Unreadable);
+        }
+        let head = object_id(head.object.sha)?;
+        let range = format!("{id}...{head}");
         // The status and the counts are on every page, but the list of changed
         // files, with their patches, is only on page 1 whatever `per_page` is (931
         // KB for a real compare). Page 2 of one-commit pages has no files.
@@ -591,26 +589,41 @@ impl ReleaseClient<'_> {
         self.send(request).await.map(drop)
     }
 
-    /// Publish the draft `release`.
+    /// Publish the draft `release` of `tag`, and return the release as GitHub's
+    /// answer shows it once published, with the assets it was published with.
+    ///
+    /// GitHub has no conditional publish, so a caller that checked the draft
+    /// compares these assets with what it checked.
     ///
     /// # Errors
     /// A [`GithubError`], or [`GithubError::Unreadable`] when the answer does
-    /// not say the release is no longer a draft.
-    pub async fn publish(&self, release: u64) -> Result<(), GithubError> {
+    /// not say the release of `tag` is no longer a draft, or its assets are not
+    /// understood.
+    pub async fn publish(&self, release: u64, tag: &ReleaseTag) -> Result<Release, GithubError> {
         let id = release.to_string();
         let url = self.api_url(&["releases", &id], &[])?;
-        let request = Call::json(
-            Method::PATCH,
-            url,
-            Payload::Json(json!({"draft": false}).to_string()),
-            StatusCode::OK,
-        );
-        let answer: PublishedAnswer = parse(&self.send(request).await?)?;
-        if answer.id == release && !answer.draft {
-            Ok(())
-        } else {
-            Err(GithubError::Unreadable)
+        let request = Call {
+            limit: MAX_LARGE_BYTES,
+            ..Call::json(
+                Method::PATCH,
+                url,
+                Payload::Json(json!({"draft": false}).to_string()),
+                StatusCode::OK,
+            )
+        };
+        let answer: ReleaseAnswer = parse(&self.send(request).await?)?;
+        if answer.id != release || answer.draft || answer.tag_name != tag.as_str() {
+            return Err(GithubError::Unreadable);
         }
+        let assets: Vec<AssetAnswer> = parse_value(answer.assets)?;
+        Ok(Release {
+            id: answer.id,
+            draft: answer.draft,
+            assets: assets
+                .into_iter()
+                .map(Asset::try_from)
+                .collect::<Result<_, _>>()?,
+        })
     }
 }
 

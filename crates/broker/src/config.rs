@@ -1,12 +1,13 @@
 //! Server configuration, read from environment variables.
 
 use std::fmt;
-use std::fs::{self, File};
+use std::fs::File;
 use std::io::{self, Read as _};
 use std::net::SocketAddr;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Component, Path, PathBuf};
 
+use rustix::fs::{Mode, OFlags};
 use secrecy::SecretString;
 use url::Url;
 use warden_broker_proto::Window;
@@ -317,6 +318,12 @@ pub struct Config {
     /// `WARDEN_COMMIT_SIGNING_MAX_PER_DAY`, default 5000, 1 to 1000000: signatures per
     /// commit signing grant per UTC day.
     pub commit_signing_max_per_day: u32,
+    /// `WARDEN_PROXY_MAX_CALLS_PER_DAY`, default 10000, 1 to 1000000: proxied calls
+    /// per API grant per UTC day.
+    pub proxy_max_calls_per_day: u32,
+    /// `WARDEN_RELAY_MAX_SESSIONS_PER_DAY`, default 1000, 1 to 1000000: relay sessions
+    /// per relay grant per UTC day.
+    pub relay_max_sessions_per_day: u32,
     /// `WARDEN_GITHUB_TOKEN_MAX_WINDOW`, default `30d`: the longest GitHub token
     /// grant the server allows, `1d`, `7d` or `30d`.
     pub github_token_max_window: Window,
@@ -502,6 +509,28 @@ fn commit_signing_limits(
     Ok((window, per_day))
 }
 
+/// The proxied calls per API grant and the relay sessions per relay grant allowed in
+/// a UTC day, from the environment.
+fn daily_use_limits(
+    get: &impl Fn(&'static str) -> Option<String>,
+) -> Result<(u32, u32), ConfigError> {
+    let calls = bounded_u32(
+        get,
+        "WARDEN_PROXY_MAX_CALLS_PER_DAY",
+        1..=1_000_000,
+        "must be a whole number from 1 to 1000000",
+        crate::requests::CALLS_PER_DAY,
+    )?;
+    let sessions = bounded_u32(
+        get,
+        "WARDEN_RELAY_MAX_SESSIONS_PER_DAY",
+        1..=1_000_000,
+        "must be a whole number from 1 to 1000000",
+        crate::requests::SESSIONS_PER_DAY,
+    )?;
+    Ok((calls, sessions))
+}
+
 /// The longest GitHub token grant, from the environment. Unlike most settings, one
 /// that is set and empty is refused instead of read as unset: it bounds how long an
 /// agent may hold access, so a mistake must not fall back to the default.
@@ -517,14 +546,27 @@ fn github_token_max_window(
 }
 
 /// The secret in the file at `path`, which `var` names: one line, without its
-/// line ending. It must be a regular file that other users cannot access.
+/// line ending. It must be a regular file that other users cannot access; group
+/// access is allowed, as systemd shows a credential it grants through an ACL with
+/// group bits. The checks are on the open file and the read is from it, so the
+/// file checked is the file read.
 fn read_secret_file(var: &'static str, path: &Path) -> Result<Zeroizing<String>, ConfigError> {
     let unreadable = |e: io::Error| ConfigError::SecretFile {
         var,
         kind: e.kind(),
     };
     let invalid = |reason| ConfigError::Invalid { var, reason };
-    let meta = fs::metadata(path).map_err(unreadable)?;
+    // Never block opening something that is not a regular file, such as a
+    // FIFO: that is refused below.
+    let file = File::from(
+        rustix::fs::open(
+            path,
+            OFlags::RDONLY | OFlags::NONBLOCK | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(|e| unreadable(e.into()))?,
+    );
+    let meta = file.metadata().map_err(unreadable)?;
     if !meta.is_file() {
         return Err(invalid("must name a regular file"));
     }
@@ -536,9 +578,7 @@ fn read_secret_file(var: &'static str, path: &Path) -> Result<Zeroizing<String>,
     let mut value = Zeroizing::new(String::with_capacity(
         usize::from(MAX_SECRET_FILE_BYTES) + 1,
     ));
-    File::open(path)
-        .map_err(unreadable)?
-        .take(u64::from(MAX_SECRET_FILE_BYTES) + 1)
+    file.take(u64::from(MAX_SECRET_FILE_BYTES) + 1)
         .read_to_string(&mut value)
         .map_err(|e| match e.kind() {
             io::ErrorKind::InvalidData => invalid("the file is not valid UTF-8"),
@@ -642,6 +682,7 @@ impl Config {
         let proxy = proxy_limits(&get)?;
         let requests = request_limits(&get)?;
         let (commit_signing_max_window, commit_signing_max_per_day) = commit_signing_limits(&get)?;
+        let (proxy_max_calls_per_day, relay_max_sessions_per_day) = daily_use_limits(&get)?;
         let github_token_max_window = github_token_max_window(&lookup)?;
         let link_hosts = get("WARDEN_REQUEST_LINK_HOSTS")
             .map_or_else(
@@ -691,6 +732,8 @@ impl Config {
             requests,
             commit_signing_max_window,
             commit_signing_max_per_day,
+            proxy_max_calls_per_day,
+            relay_max_sessions_per_day,
             github_token_max_window,
             link_hosts,
             relay,

@@ -9,7 +9,7 @@
 //! summaries; they must never contain secrets.
 
 use std::fs::{File, TryLockError};
-use std::io::{Read as _, Write as _};
+use std::io::Write as _;
 use std::os::unix::fs::FileExt as _;
 use std::path::Path;
 use std::sync::Arc;
@@ -18,472 +18,23 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
-use warden_broker_proto::release::{CommitId, ReleaseTag, RepoName};
-use warden_broker_proto::{AgentName, Fingerprint, Id, TargetName, UnixUser};
 
-use crate::proxy::CallEnd;
-
+mod open;
 #[cfg(feature = "testkit")]
 mod stall;
 
+pub use self::open::verify;
 #[cfg(feature = "testkit")]
 pub use self::stall::AppendStall;
 
+mod bounded;
+mod event;
+
+pub(crate) use self::bounded::bounded_text;
+pub use self::event::AuditEvent;
+
 /// `prev` of the first line in a log.
 const GENESIS: &str = "0000000000000000000000000000000000000000000000000000000000000000";
-
-/// Something worth recording in the audit trail.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum AuditEvent {
-    /// An agent asked for access.
-    RequestCreated {
-        /// Request id.
-        id: Id,
-        /// Requesting agent.
-        agent: AgentName,
-        /// Request fingerprint.
-        fingerprint: Fingerprint,
-        /// Free-text summary (never secrets).
-        summary: String,
-        /// The session label the agent stated, if any: its claim, not an
-        /// identity. A string, not the validated type, so that a log stays
-        /// readable whatever later releases accept.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        session: Option<String>,
-    },
-    /// The owner was notified.
-    Notified {
-        /// Request id.
-        id: Id,
-        /// Name of the channel that delivered the notification.
-        channel: String,
-    },
-    /// A notification channel failed.
-    NotifyFailed {
-        /// Request id.
-        id: Id,
-        /// Channel name.
-        channel: String,
-        /// Failure reason.
-        reason: String,
-    },
-    /// The owner approved a request.
-    Approved {
-        /// Request id.
-        id: Id,
-        /// Grant id.
-        grant_id: Id,
-        /// Approved window in seconds.
-        window_secs: u32,
-        /// Passkey that signed the approval.
-        passkey_id: String,
-    },
-    /// The owner denied a request.
-    Denied {
-        /// Request id.
-        id: Id,
-    },
-    /// Requests of an agent were refused for being over its limits, since the
-    /// previous such entry for it. Written for the first refusal, then at most
-    /// once a minute, so that refused requests cannot fill the log.
-    RequestLimited {
-        /// The agent.
-        agent: AgentName,
-        /// Refused because too many of its requests were pending.
-        pending: u64,
-        /// Refused because it made too many new requests.
-        rate: u64,
-    },
-    /// The owner was told that an agent is over its request limits.
-    LimitNotified {
-        /// The agent.
-        agent: AgentName,
-        /// Name of the channel that delivered the notification.
-        channel: String,
-    },
-    /// An agent withdrew its own pending request.
-    RequestCancelled {
-        /// Request id.
-        id: Id,
-        /// The agent that made and cancelled it.
-        agent: AgentName,
-    },
-    /// The owner opened a pending request from the pending screen: it has a new
-    /// approval link, and the one before it stopped working. The token itself is
-    /// never recorded.
-    ApprovalLinkReplaced {
-        /// Request id.
-        id: Id,
-    },
-    /// A request timed out.
-    Expired {
-        /// Request id.
-        id: Id,
-    },
-    /// A certificate was issued. Written with the approval, before anything
-    /// is committed: the certificate is not given out if this entry cannot
-    /// be written.
-    CertIssued {
-        /// Grant id.
-        grant_id: Id,
-        /// Certificate key id.
-        key_id: String,
-        /// Expiry, unix seconds.
-        not_after: i64,
-    },
-    /// A grant was revoked.
-    GrantRevoked {
-        /// Grant id.
-        grant_id: Id,
-        /// Who revoked it.
-        by: String,
-    },
-    /// A proxied HTTP call is about to be sent with an API secret. Written
-    /// before anything leaves the broker; the call is not made if this
-    /// entry cannot be written.
-    ProxyCallStarted {
-        /// Grant id.
-        grant_id: Id,
-        /// Request method.
-        method: String,
-        /// Origin and path of the URL (no query).
-        url: String,
-    },
-    /// An agent asked the broker to make an HTTP call with an API secret.
-    /// Recorded for every call on a usable grant, whether it was refused,
-    /// failed or answered. Never holds the secret or the query string.
-    ProxyCall {
-        /// Grant id.
-        grant_id: Id,
-        /// Request method, or `invalid`.
-        method: String,
-        /// Origin and path of the URL (no query), or `invalid`.
-        url: String,
-        /// Upstream status, if a response arrived.
-        status: Option<u16>,
-        /// Upstream body length, before redaction.
-        response_bytes: u64,
-        /// Secret occurrences removed from the response.
-        redactions: u32,
-        /// `ok`, or the message the agent was given.
-        outcome: String,
-        /// Why the broker stopped the upstream call before it finished, if it
-        /// did. Absent for a call that ran to its end, including one whose
-        /// response was then withheld. `status` and `response_bytes` then say
-        /// how far the answer had come, and the upstream may have acted on the
-        /// call all the same.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        aborted: Option<CallEnd>,
-    },
-    /// A relayed SSH session is about to reach its target. Written before
-    /// the relay opens any connection to the target; the session does not
-    /// start if this entry cannot be written.
-    RelaySessionStarted {
-        /// Grant id.
-        grant_id: Id,
-        /// Target name.
-        target: TargetName,
-        /// Login user on the target.
-        user: UnixUser,
-        /// The command of an `exec` session (at most 200 characters, cut
-        /// with `…`); `None` for a shell.
-        command: Option<String>,
-    },
-    /// A relayed SSH session ended. Follows its `relay_session_started`.
-    RelaySessionEnded {
-        /// Grant id.
-        grant_id: Id,
-        /// Why it ended (a fixed phrase, never secrets).
-        reason: String,
-        /// Bytes the agent sent on to the target.
-        bytes_to_target: u64,
-        /// Bytes the target sent back (stdout and stderr).
-        bytes_from_target: u64,
-        /// The command's exit status, if the target reported one.
-        exit_status: Option<u32>,
-    },
-    /// The relay refused to start a session on an authenticated
-    /// connection: the grant or the target's policy changed since login.
-    RelaySessionRefused {
-        /// Grant id.
-        grant_id: Id,
-        /// Why (a fixed phrase, never secrets).
-        reason: String,
-    },
-    /// A connection to the relay ended without logging in after trying to.
-    /// Holds no key material.
-    RelayLoginRefused {
-        /// The user name asked for (the target), or `<invalid>` if it is
-        /// not a valid target name.
-        user: String,
-        /// The peer's IP address.
-        peer: String,
-        /// Refused login attempts.
-        attempts: u32,
-    },
-    /// The broker signed a commit for an agent. Written before the signature
-    /// leaves the broker; it is not given out if this entry cannot be written. It
-    /// means warden signed it for that agent, not that anyone reviewed the change.
-    CommitSigned {
-        /// Grant it was signed under.
-        grant_id: Id,
-        /// The agent.
-        agent: AgentName,
-        /// The id git gives the commit with this signature, as git lays it out. The
-        /// signature stays valid under another layout, which makes another id: use
-        /// `payload_sha256` to tell whether a commit is this one.
-        commit: String,
-        /// Lowercase hex SHA-256 of what was signed: the commit object without its
-        /// signature header.
-        payload_sha256: String,
-        /// Parent ids, as the commit says.
-        parents: Vec<String>,
-        /// Tree id, as the commit says.
-        tree: String,
-        /// The author header, as the commit says: the agent's word, not checked.
-        author: String,
-        /// `SHA256:…` fingerprint of the key that signed.
-        key_fingerprint: String,
-    },
-    /// The broker refused to sign something for an agent. Holds no payload, only
-    /// its digest, since the agent chose those bytes.
-    CommitSigningRefused {
-        /// The agent.
-        agent: AgentName,
-        /// The active grant it had, if any.
-        grant_id: Option<Id>,
-        /// Why (a fixed phrase, never secrets).
-        reason: String,
-        /// Lowercase hex SHA-256 of the payload, if it could be read.
-        payload_sha256: Option<String>,
-    },
-    /// Refusals to sign for an agent beyond those recorded one by one in a minute,
-    /// counted so that refused calls, which an agent can make as fast as it likes,
-    /// cannot fill the log.
-    CommitSigningRefusalsHeld {
-        /// The agent.
-        agent: AgentName,
-        /// How many.
-        count: u64,
-    },
-    /// The broker minted a GitHub installation token for an agent. Written before
-    /// the token leaves the broker; it is not given out if this entry cannot be
-    /// written. The token itself is never recorded.
-    GithubTokenMinted {
-        /// Grant it was minted under.
-        grant_id: Id,
-        /// The agent.
-        agent: AgentName,
-        /// The installation the token is for.
-        installation_id: u64,
-        /// The permissions the token has, as `name:level`.
-        permissions: Vec<String>,
-        /// When GitHub ends the token, unix seconds.
-        expires_at: i64,
-        /// The repository the token is limited to, as the grant names it. Absent in
-        /// the entries 0.12.0 wrote, which a log still holds; every new mint sets it.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        repository: Option<RepoName>,
-        /// GitHub's id for that repository; absent in the same old entries.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        repository_id: Option<u64>,
-    },
-    /// A GitHub token grant or pending request that named no repository was ended
-    /// at upgrade, because GitHub grants are now scoped to repositories.
-    GithubUnscopedEnded {
-        /// The request: the grant's, or the pending one.
-        request_id: Id,
-        /// The grant that ended; `None` for a pending request.
-        grant_id: Option<Id>,
-    },
-    /// Approving a GitHub token grant ended another of the agent's, because the two
-    /// cover a repository in common.
-    GithubTokenGrantReplaced {
-        /// The grant that ended.
-        grant_id: Id,
-        /// The grant approved in its place.
-        by_grant: Id,
-        /// The ended grant's repositories (by its ids) that the new grant also covers
-        /// by id or by name; empty when the ended grant named none.
-        repository_ids: Vec<u64>,
-    },
-    /// The broker asked GitHub which repositories a GitHub token request names,
-    /// when the owner opened its approval page, with a token that reads metadata
-    /// and is dropped unused.
-    GithubRepositoriesResolved {
-        /// The request.
-        request_id: Id,
-        /// The ids GitHub gave, in the request's order; empty when it cannot reach
-        /// every repository.
-        repository_ids: Vec<u64>,
-        /// Whether the App reaches every repository named.
-        accessible: bool,
-    },
-    /// The broker refused to mint a GitHub token for an agent, or minted one it
-    /// then did not give out because the grant had ended.
-    GithubTokenRefused {
-        /// The agent.
-        agent: AgentName,
-        /// The active grant it had, if any.
-        grant_id: Option<Id>,
-        /// Why (a fixed phrase, never secrets).
-        reason: String,
-    },
-    /// Refusals to mint for an agent beyond those recorded one by one in a minute,
-    /// counted so that refused calls cannot fill the log.
-    GithubTokenRefusalsHeld {
-        /// The agent.
-        agent: AgentName,
-        /// How many.
-        count: u64,
-    },
-    /// The broker created and pushed the signed tag of a release under a release
-    /// grant. Written once the tag exists; the claim of the step was made before.
-    ReleaseTagCreated {
-        /// The grant it was done under.
-        grant_id: Id,
-        /// The agent.
-        agent: AgentName,
-        /// The repository.
-        repository: RepoName,
-        /// The tag.
-        tag: ReleaseTag,
-        /// The commit the tag points at.
-        commit: CommitId,
-        /// The id of the tag object, which the broker computed before GitHub
-        /// created it.
-        object: String,
-    },
-    /// The broker signed the manifest of a release under a release grant and
-    /// attached it, with its signature, to the draft release. Written once both
-    /// files are uploaded; the claim of the step was made before.
-    ReleaseManifestSigned {
-        /// The grant it was done under.
-        grant_id: Id,
-        /// The agent.
-        agent: AgentName,
-        /// The repository.
-        repository: RepoName,
-        /// The tag.
-        tag: ReleaseTag,
-        /// The manifest's file name.
-        name: String,
-        /// Lowercase hex SHA-256 of the manifest signed.
-        sha256: String,
-    },
-    /// The broker published the draft release under a release grant. Written
-    /// after GitHub confirmed the release is no longer a draft; the claim of the
-    /// step was made before.
-    ReleasePublished {
-        /// The grant it was done under.
-        grant_id: Id,
-        /// The agent.
-        agent: AgentName,
-        /// The repository.
-        repository: RepoName,
-        /// The tag of the release.
-        tag: ReleaseTag,
-    },
-    /// The broker refused a step of a release, or could not finish one it had
-    /// claimed.
-    ReleaseRefused {
-        /// The agent.
-        agent: AgentName,
-        /// The active grant it had, if any.
-        grant_id: Option<Id>,
-        /// The step: `tag`, `manifest` or `publish`.
-        step: String,
-        /// Why (a fixed phrase, never secrets or anything GitHub said).
-        reason: String,
-    },
-    /// Refusals of release steps for an agent beyond those recorded one by one in
-    /// a minute, counted so that refused calls cannot fill the log.
-    ReleaseRefusalsHeld {
-        /// The agent.
-        agent: AgentName,
-        /// How many.
-        count: u64,
-    },
-    /// The owner was told that a commit signing grant is about to end.
-    CommitSigningRenewalNotified {
-        /// The grant.
-        grant_id: Id,
-        /// Name of the channel that delivered the notification.
-        channel: String,
-    },
-    /// The owner was told that a GitHub token grant is about to end.
-    GithubTokenRenewalNotified {
-        /// The grant.
-        grant_id: Id,
-        /// Name of the channel that delivered the notification.
-        channel: String,
-    },
-    /// A commit signing grant reached its limit of signatures for the day. Written
-    /// once a day per grant; the refusals themselves are recorded as usual.
-    CommitSigningLimitReached {
-        /// The grant.
-        grant_id: Id,
-        /// The agent.
-        agent: AgentName,
-        /// The limit.
-        limit: u32,
-    },
-    /// The owner was told that a commit signing grant reached its daily limit.
-    CommitSigningLimitNotified {
-        /// The grant.
-        grant_id: Id,
-        /// Name of the channel that delivered the notification.
-        channel: String,
-    },
-    /// An agent was added.
-    AgentAdded {
-        /// Agent name.
-        agent: AgentName,
-    },
-    /// An agent was switched to (or created with) request signing by this
-    /// public key. The key itself is not recorded, only its fingerprint.
-    AgentKeySet {
-        /// Agent name.
-        agent: AgentName,
-        /// The key's `SHA256:…` fingerprint.
-        fingerprint: String,
-    },
-    /// An agent was revoked.
-    AgentRevoked {
-        /// Agent name.
-        agent: AgentName,
-    },
-    /// A one-time passkey enrollment code was made on the host. Neither the
-    /// code nor its hash is recorded.
-    EnrollmentCodeCreated {
-        /// When the code stops working, unix seconds.
-        expires_at: i64,
-    },
-    /// A passkey was enrolled.
-    PasskeyEnrolled {
-        /// Passkey id.
-        passkey_id: String,
-    },
-    /// An approval was refused because the passkey's signature counter did
-    /// not increase: a possible cloned authenticator.
-    PasskeyCounterRegressed {
-        /// Passkey id.
-        passkey_id: String,
-    },
-    /// A passkey was removed.
-    PasskeyRemoved {
-        /// Passkey id.
-        passkey_id: String,
-    },
-    /// An internal error worth recording.
-    Error {
-        /// Where it happened.
-        context: String,
-        /// What happened (never secrets).
-        message: String,
-    },
-}
 
 /// The hashed portion of a line.
 #[derive(Serialize)]
@@ -544,6 +95,26 @@ pub enum AuditError {
     /// An earlier append failed or was cancelled; restart to repair the log.
     #[error("audit log poisoned by an earlier failed append; restart to repair")]
     Poisoned,
+    /// The log was shorter under the file lock than the prefix already verified
+    /// without it, or the last line of that prefix changed. Only a torn tail
+    /// past the last complete line is ever cut, so something other than warden
+    /// changed the log while it was being opened; it is refused, not repaired.
+    #[error("audit log's first {verified} bytes changed while it was being opened")]
+    PrefixChanged {
+        /// Length of the prefix verified before taking the lock.
+        verified: u64,
+    },
+    /// An entry's line would be longer than any line the log reads back. It
+    /// was not written, and the log stays usable.
+    #[error(
+        "audit entry of type {kind} is {bytes} bytes, more than the {MAX_LINE_BYTES} the log can read back; not written"
+    )]
+    EntryTooLarge {
+        /// The event's type, as on its line.
+        kind: String,
+        /// Length of its line, newline excluded.
+        bytes: usize,
+    },
     /// Another writer held the file lock for too long.
     #[error("timed out waiting for the audit log lock")]
     LockTimeout,
@@ -583,66 +154,13 @@ fn parse_canonical(raw: &[u8]) -> Result<Line, String> {
     Ok(line)
 }
 
-/// Verify newline-terminated lines in `bytes`, returning the line count and the last hash.
-///
-/// UTF-8 is validated per line so a failure names the offending line.
-fn verify_bytes(bytes: &[u8]) -> Result<(u64, String), AuditError> {
-    let mut prev = GENESIS.to_owned();
-    let mut count = 0_u64;
-    let body = bytes.strip_suffix(b"\n").unwrap_or(bytes);
-    if body.is_empty() && bytes.is_empty() {
-        return Ok((0, prev));
-    }
-    for raw in body.split(|b| *b == b'\n') {
-        count += 1;
-        let line = parse_canonical(raw).map_err(|reason| AuditError::Malformed {
-            line: count,
-            reason,
-        })?;
-        if line.seq != count {
-            return Err(AuditError::SeqGap {
-                expected: count,
-                found: line.seq,
-            });
-        }
-        let body = Body {
-            seq: line.seq,
-            ts: line.ts,
-            event: &line.event,
-        };
-        if line.prev != prev || compute_hash(&prev, &body)? != line.hash {
-            return Err(AuditError::BrokenChain { seq: line.seq });
-        }
-        prev = line.hash;
-    }
-    Ok((count, prev))
-}
-
-/// Split `bytes` into the newline-terminated head and the unterminated tail.
-fn split_tail(bytes: &[u8]) -> (&[u8], &[u8]) {
-    if bytes.last().is_none_or(|b| *b == b'\n') {
-        return (bytes, &[]);
-    }
-    let head_len = bytes.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
-    bytes.split_at(head_len)
-}
-
-/// Verify the chain in the file at `path`, returning the number of lines.
-///
-/// # Errors
-/// Returns an [`AuditError`] naming the line or sequence number at fault. A
-/// final line without its newline terminator (a torn write) is reported as
-/// [`AuditError::UnterminatedTail`] once the preceding lines verify.
-pub fn verify(path: &Path) -> Result<u64, AuditError> {
-    let bytes = std::fs::read(path)?;
-    let (head, tail) = split_tail(&bytes);
-    let (count, _) = verify_bytes(head)?;
-    if tail.is_empty() {
-        Ok(count)
-    } else {
-        Err(AuditError::UnterminatedTail { bytes: tail.len() })
-    }
-}
+/// Longest line, newline excluded, that the log reads back, and so the
+/// longest it writes. Reading refuses a complete line longer than this as
+/// malformed, so that one line cannot make memory grow with the file; writing
+/// refuses an entry whose line would be longer with
+/// [`AuditError::EntryTooLarge`], before any byte reaches the file, so that
+/// warden never writes a log it could not open again.
+const MAX_LINE_BYTES: usize = 16 * 1024 * 1024;
 
 /// How long an append waits for another writer to release the file lock.
 const LOCK_WAIT: Duration = Duration::from_secs(5);
@@ -769,17 +287,28 @@ fn repair_tail(
             None,
         ));
     }
+    let record = discard_tail(file, &head, len_u64(tail.len()), &Sha256::digest(tail))?;
+    Ok((head, Some(record)))
+}
+
+/// Cut the file back to `head`, dropping a torn tail of `len` bytes whose
+/// SHA-256 is `digest`, and return an event describing it for the caller to
+/// record.
+fn discard_tail(
+    file: &File,
+    head: &Head,
+    len: u64,
+    digest: &[u8],
+) -> Result<AuditEvent, AuditError> {
     file.set_len(head.len)?;
     file.sync_data()?;
-    let record = AuditEvent::Error {
+    Ok(AuditEvent::Error {
         context: "audit".to_owned(),
         message: format!(
-            "discarded torn tail of {} bytes (sha256 {})",
-            tail.len(),
-            hex::encode(Sha256::digest(tail))
+            "discarded torn tail of {len} bytes (sha256 {})",
+            hex::encode(digest)
         ),
-    };
-    Ok((head, Some(record)))
+    })
 }
 
 /// Find the last newline-terminated line of a `len`-byte file by reading
@@ -817,8 +346,14 @@ fn read_last_link(file: &File, len: u64) -> Result<(Head, Vec<u8>), AuditError> 
     }
 }
 
-/// Write `event` as the line after `head` and fsync it.
-fn write_event(file: &File, head: &Head, event: &AuditEvent) -> Result<Head, AuditError> {
+/// Serialize `event` as the line after `head`, newline included, and return
+/// it with the head after it. Writes nothing.
+///
+/// # Errors
+/// [`AuditError::EntryTooLarge`] if the line would be longer than
+/// [`MAX_LINE_BYTES`], which the log could not read back; or if the clock or
+/// serialization fails.
+fn encode_line(head: &Head, event: &AuditEvent) -> Result<(Vec<u8>, Head), AuditError> {
     let ts = unix_now()?;
     let seq = head.seq + 1;
     let hash = compute_hash(&head.hash, &Body { seq, ts, event })?;
@@ -830,49 +365,66 @@ fn write_event(file: &File, head: &Head, event: &AuditEvent) -> Result<Head, Aud
         hash: hash.clone(),
     };
     let mut json = serde_json::to_vec(&line)?;
+    if json.len() > MAX_LINE_BYTES {
+        let kind = event_kind(&json);
+        // The event's content may hold secrets or be huge: only its type and size.
+        tracing::error!(
+            target: "audit",
+            kind,
+            bytes = json.len(),
+            "audit entry longer than the log can read back; not written"
+        );
+        return Err(AuditError::EntryTooLarge {
+            kind: kind.to_owned(),
+            bytes: json.len(),
+        });
+    }
     json.push(b'\n');
-    let mut writer = file;
-    writer.write_all(&json)?;
-    file.sync_data()?;
-    tracing::info!(target: "audit", line = %String::from_utf8_lossy(&json).trim_end());
-    Ok(Head {
+    let next = Head {
         seq,
         hash,
         len: head.len + len_u64(json.len()),
-    })
-}
-
-/// Open, lock, verify and repair the log at `path`. Blocking.
-fn open_blocking(path: &Path) -> Result<(File, Head), AuditError> {
-    let file = crate::private_files::open_private_log(path)?;
-    let head = load_locked(&file)?;
-    Ok((file, head))
-}
-
-/// Read, verify and repair the whole log under the file lock. Blocking.
-fn load_locked(file: &File) -> Result<Head, AuditError> {
-    let _lock = FileLock::acquire(file)?;
-    let mut bytes = Vec::new();
-    let mut reader = file;
-    reader.read_to_end(&mut bytes)?;
-    let (body, tail) = split_tail(&bytes);
-    let (seq, hash) = verify_bytes(body)?;
-    let head = Head {
-        seq,
-        hash,
-        len: len_u64(body.len()),
     };
-    let (mut head, record) = repair_tail(file, head, tail)?;
-    if let Some(record) = record {
-        head = write_event(file, &head, &record)?;
+    Ok((json, next))
+}
+
+/// The event type named on the serialized line `json`, for reporting a line
+/// that is not written.
+fn event_kind(json: &[u8]) -> &str {
+    #[derive(Deserialize)]
+    struct Tagged<'a> {
+        #[serde(borrow)]
+        event: Tag<'a>,
     }
-    Ok(head)
+    #[derive(Deserialize)]
+    struct Tag<'a> {
+        #[serde(rename = "type")]
+        kind: &'a str,
+    }
+    serde_json::from_slice::<Tagged<'_>>(json).map_or("unknown", |t| t.event.kind)
+}
+
+/// Write the encoded line `json` and fsync it.
+fn write_line(file: &File, json: &[u8]) -> Result<(), AuditError> {
+    let mut writer = file;
+    writer.write_all(json)?;
+    file.sync_data()?;
+    tracing::info!(target: "audit", line = %String::from_utf8_lossy(json).trim_end());
+    Ok(())
+}
+
+/// Write `event` as the line after `head` and fsync it.
+fn write_event(file: &File, head: &Head, event: &AuditEvent) -> Result<Head, AuditError> {
+    let (json, next) = encode_line(head, event)?;
+    write_line(file, &json)?;
+    Ok(next)
 }
 
 /// Why a blocking append failed.
 enum Failure {
-    /// Nothing was written: the lock could not be taken, or the file could
-    /// not be read to re-sync. A later append simply tries again.
+    /// Nothing was written: the lock could not be taken, the file could not
+    /// be read to re-sync, or the entry could not be encoded or is too long
+    /// to read back. A later append simply tries again.
     NotWritten(AuditError),
     /// A write or fsync failed; the file tail is untrustworthy.
     Write(AuditError),
@@ -896,7 +448,9 @@ fn append_blocking(file: &File, cached: Head, event: &AuditEvent) -> Result<Head
             head = write_event(file, &head, &record).map_err(Failure::Write)?;
         }
     }
-    write_event(file, &head, event).map_err(Failure::Write)
+    let (json, next) = encode_line(&head, event).map_err(Failure::NotWritten)?;
+    write_line(file, &json).map_err(Failure::Write)?;
+    Ok(next)
 }
 
 struct State {
@@ -937,18 +491,21 @@ impl AuditLog {
 
     /// Open (creating with mode 0600 if absent) and resume the chain.
     ///
-    /// Under the file lock, an existing log is fully verified first; a log
-    /// with corruption in a complete line or a broken chain is refused. A
-    /// torn final line (crash mid-append) is repaired: a valid one is
+    /// An existing log is fully verified first, streaming: up to its last
+    /// complete line without the file lock, so other writers keep appending
+    /// meanwhile, then under the lock only what they appended since. A log
+    /// with corruption in a complete line or a broken chain is refused, and so
+    /// is one whose verified part changed before the lock was taken. A torn
+    /// final line (crash mid-append) is repaired under the lock: a valid one is
     /// newline-terminated, a partial one is truncated and the repair is
     /// recorded on the chain.
     ///
     /// # Errors
-    /// Returns an [`AuditError`] on I/O failure, lock timeout, or if the
-    /// existing log is invalid.
+    /// Returns an [`AuditError`] on I/O failure, lock timeout, if the existing
+    /// log is invalid, or [`AuditError::PrefixChanged`].
     pub async fn open(path: &Path) -> Result<Self, AuditError> {
         let path = path.to_owned();
-        let (file, head) = tokio::task::spawn_blocking(move || open_blocking(&path))
+        let (file, head) = tokio::task::spawn_blocking(move || open::open_blocking(&path))
             .await
             .map_err(join_error)??;
         Ok(Self::from_parts(file, head))
@@ -970,8 +527,10 @@ impl AuditLog {
     ///
     /// # Errors
     /// Returns an [`AuditError`] if the lock cannot be taken within 5 s
-    /// ([`AuditError::LockTimeout`]) or the line cannot be written durably;
-    /// after a failed write or fsync the log is poisoned.
+    /// ([`AuditError::LockTimeout`]), the entry is longer than the log can
+    /// read back ([`AuditError::EntryTooLarge`], nothing written), or the line
+    /// cannot be written durably; after a failed write or fsync the log is
+    /// poisoned.
     pub async fn append(&self, event: AuditEvent) -> Result<(), AuditError> {
         #[cfg(feature = "testkit")]
         self.stall.pass(&event).await;
@@ -999,7 +558,20 @@ impl AuditLog {
 }
 
 #[cfg(test)]
+impl AuditLog {
+    /// A log whose every append fails, on a read-only handle to the empty file at
+    /// `path`, for tests of what a caller does when a write fails. Test only.
+    pub(crate) fn unwritable(path: &Path) -> Self {
+        std::fs::write(path, "").unwrap();
+        let read_only = File::open(path).unwrap();
+        Self::from_parts(read_only, Head::genesis())
+    }
+}
+
+#[cfg(test)]
 mod tests {
+    use warden_broker_proto::Id;
+
     use super::*;
 
     /// Pins the exact on-disk format and hash of one line: changing either
@@ -1036,10 +608,9 @@ mod tests {
             line.hash,
             "c6eb8215a82f820edf38173bbbf9328156ba10a3caabedf2713f026a5a726c68"
         );
-        assert_eq!(
-            verify_bytes(format!("{json}\n").as_bytes()).unwrap(),
-            (1, line.hash)
-        );
+        let mut head = Head::genesis();
+        open::verify_lines(&mut format!("{json}\n").as_bytes(), &mut head).unwrap();
+        assert_eq!((head.seq, head.hash), (1, line.hash));
     }
 
     /// A log written by 0.12.0 holds mints with no repository. It must still open,
@@ -1067,7 +638,9 @@ mod tests {
             hash: hash.clone(),
         };
         let text = format!("{}\n", serde_json::to_string(&line).unwrap());
-        assert_eq!(verify_bytes(text.as_bytes()).unwrap(), (1, hash));
+        let mut head = Head::genesis();
+        open::verify_lines(&mut text.as_bytes(), &mut head).unwrap();
+        assert_eq!((head.seq, head.hash), (1, hash));
     }
 
     #[test]
@@ -1096,5 +669,67 @@ mod tests {
             Err(AuditError::Poisoned)
         ));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "");
+    }
+
+    /// An `Error` event whose line after `head` is exactly `bytes` long,
+    /// newline excluded, when written with the current clock.
+    fn error_event_of_line_len(head: &Head, bytes: usize) -> AuditEvent {
+        let event = |message: String| AuditEvent::Error {
+            context: "test".to_owned(),
+            message,
+        };
+        let line = Line {
+            seq: head.seq + 1,
+            ts: unix_now().unwrap(),
+            prev: head.hash.clone(),
+            event: event(String::new()),
+            hash: GENESIS.to_owned(),
+        };
+        let empty = serde_json::to_vec(&line).unwrap().len();
+        event("x".repeat(bytes - empty))
+    }
+
+    #[tokio::test]
+    async fn an_entry_longer_than_the_log_can_read_back_is_refused_unwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let log = AuditLog::open(&path).await.unwrap();
+        log.append(AuditEvent::Denied { id: Id::random() })
+            .await
+            .unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let head = log.state.lock().await.head.clone();
+
+        let too_long = error_event_of_line_len(&head, MAX_LINE_BYTES + 1);
+        assert!(matches!(
+            log.append(too_long).await,
+            Err(AuditError::EntryTooLarge { ref kind, bytes })
+                if kind == "error" && bytes == MAX_LINE_BYTES + 1
+        ));
+        // Not a byte was written, and the log is not poisoned.
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        log.append(AuditEvent::Denied { id: Id::random() })
+            .await
+            .unwrap();
+        assert_eq!(open::verify(&path).unwrap(), 2);
+        drop(log);
+        AuditLog::open(&path).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_entry_exactly_as_long_as_the_bound_is_written_and_reads_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let log = AuditLog::open(&path).await.unwrap();
+
+        let longest = error_event_of_line_len(&Head::genesis(), MAX_LINE_BYTES);
+        log.append(longest).await.unwrap();
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().len(),
+            len_u64(MAX_LINE_BYTES) + 1
+        );
+        assert_eq!(open::verify(&path).unwrap(), 1);
+        drop(log);
+        AuditLog::open(&path).await.unwrap();
     }
 }

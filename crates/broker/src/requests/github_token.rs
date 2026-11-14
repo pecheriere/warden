@@ -11,7 +11,7 @@ use warden_broker_proto::release::RepoName;
 use warden_broker_proto::{AgentName, GithubTokenGrant, GrantAccess, GrantView, Id, Window};
 
 use super::{RequestError, Requests, parse};
-use crate::audit::AuditEvent;
+use crate::audit::{AuditEvent, bounded_text};
 use crate::policy::GithubTokenPolicy;
 
 /// A usable GitHub token grant, with the repository of it that was asked for.
@@ -171,25 +171,10 @@ impl Requests {
         let event = AuditEvent::GithubTokenRefused {
             agent: agent.clone(),
             grant_id,
-            reason,
+            reason: bounded_text(reason),
         };
         self.github_refusals
-            .record(
-                &self.audit,
-                agent,
-                self.clock.now(),
-                event,
-                "a refusal to mint",
-            )
-            .await;
-    }
-
-    /// Write the refusals to mint held back since the last time.
-    pub(super) async fn flush_github_refusals(&self) {
-        self.github_refusals
-            .flush(&self.audit, "refusals to mint", |agent, count| {
-                AuditEvent::GithubTokenRefusalsHeld { agent, count }
-            })
+            .record(&self.audit, agent, self.clock.now(), 1, event)
             .await;
     }
 }

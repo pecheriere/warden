@@ -30,7 +30,9 @@ use super::{
     approve, cancelled, enroll, grants, history, internal_error, not_found, not_pending,
     unavailable,
 };
-use crate::policy::{ApiSecretPolicy, CommitSigningPolicy, SshMode, SshTarget, ValueFormat};
+use crate::policy::{
+    ApiSecretPolicy, CommitSigningPolicy, Listing, SshMode, SshTarget, ValueFormat,
+};
 use crate::requests::{
     ActiveGrant, Destination, HistoryEntry, LinkHosts, PendingEntry, PendingView,
 };
@@ -113,6 +115,7 @@ fn ssh_destination(mode: SshMode) -> Destination {
         users: vec![UnixUser::try_from("deploy".to_owned()).unwrap()],
         max_window: Window::H4,
         host_keys: Vec::new(),
+        listing: Listing::Full,
     })
 }
 
@@ -126,6 +129,7 @@ fn api_destination() -> Destination {
         path_prefix: "/v1/".to_owned(),
         ca_pem: None,
         max_window: Window::H1,
+        listing: Listing::Full,
     })
 }
 

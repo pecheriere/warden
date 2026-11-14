@@ -8,7 +8,7 @@ use url::Origin;
 use warden_broker_proto::{ApiGrant, READ_ONLY_METHODS, SecretName, Window, under_prefix};
 use zeroize::Zeroizing;
 
-use super::digest_parts;
+use super::{Listing, digest_parts};
 
 /// Most methods one request may name.
 const MAX_REQUESTED_METHODS: usize = 8;
@@ -181,6 +181,8 @@ pub struct ApiSecretPolicy {
     pub ca_pem: Option<String>,
     /// Longest window that may be granted.
     pub max_window: Window,
+    /// Whether `warden list` shows this secret. Never part of the digest.
+    pub listing: Listing,
 }
 
 impl ApiSecretPolicy {

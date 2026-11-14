@@ -141,7 +141,17 @@ fn check_goal(text: &str) {
             "{text:?}"
         );
     }
-    check_json!(Goal, text, parsed);
+    // Deserializing reads stored goals with the rules of earlier versions: it
+    // accepts every goal `TryFrom` does, as it is, and nothing those rules refuse.
+    if let Ok(json) = serde_json::to_string(text) {
+        match serde_json::from_str::<Goal>(&json) {
+            Ok(decoded) => {
+                assert_eq!(decoded.as_str(), trimmed);
+                assert!(!trimmed.chars().any(|c| c.is_control() || is_invisible(c)));
+            }
+            Err(_) => assert!(parsed.is_err(), "{text:?}"),
+        }
+    }
 }
 
 fn check_window(text: &str) {

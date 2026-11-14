@@ -23,6 +23,21 @@ pub(super) struct Repository {
     files: HashMap<(String, String), Vec<u8>>,
     releases: Vec<StoredRelease>,
     next_id: u64,
+    /// Changes made just before the next publish, as a write by someone else that
+    /// lands between a caller's checks and its publish would be.
+    before_publish: Vec<Change>,
+    /// How many tag reads fail once the next publish is done, and how many
+    /// still fail now.
+    tag_reads_failing_after_publish: u32,
+    failing_tag_reads: u32,
+}
+
+/// A change [`Repository::before_publish`] makes.
+enum Change {
+    /// Replace the bytes of the asset with this name.
+    Asset(String, Vec<u8>),
+    /// Point `refs/tags/<tag>` at this commit, as a lightweight tag.
+    Tag(String, String),
 }
 
 struct Commit {
@@ -183,6 +198,20 @@ impl Repository {
             });
     }
 
+    pub(super) fn replace_asset_before_publish(&mut self, name: &str, bytes: &[u8]) {
+        self.before_publish
+            .push(Change::Asset(name.to_owned(), bytes.to_vec()));
+    }
+
+    pub(super) fn fail_tag_reads_after_publish(&mut self, count: u32) {
+        self.tag_reads_failing_after_publish = count;
+    }
+
+    pub(super) fn move_tag_before_publish(&mut self, tag: &str, commit: &str) {
+        self.before_publish
+            .push(Change::Tag(tag.to_owned(), commit.to_owned()));
+    }
+
     pub(super) fn ref_target(&self, tag: &str) -> Option<String> {
         self.refs.get(&format!("refs/tags/{tag}")).cloned()
     }
@@ -269,7 +298,15 @@ impl Repository {
                 })
             }
             ("GET", false, ["compare", range]) => self.compare(range, query("page")),
-            ("GET", false, ["git", "ref", "tags", tag]) => self.ref_answer(tag),
+            ("GET", false, ["git", "ref", "tags", tag]) => {
+                if self.failing_tag_reads > 0 {
+                    self.failing_tag_reads -= 1;
+                    json_answer(502, &json!({"message": "Server Error"}))
+                } else {
+                    self.ref_answer(tag)
+                }
+            }
+            ("GET", false, ["git", "ref", "heads", branch @ ..]) => self.head_answer(branch),
             ("GET", false, ["git", "tags", sha]) => {
                 self.tags.get(*sha).map_or_else(not_found, |t| {
                     let tagger = t.tagger.as_ref().map(|(name, email, seconds)| {
@@ -336,14 +373,17 @@ impl Repository {
         let Some((base, head)) = range.split_once("...") else {
             return not_found();
         };
-        if head != self.default_branch || !self.commits.contains_key(base) {
+        let Some(head) = self.resolve(head) else {
+            return not_found();
+        };
+        if !self.commits.contains_key(base) {
             return not_found();
         }
-        let status = if base == self.head {
+        let status = if base == head {
             "identical"
-        } else if self.is_ancestor(base, &self.head) {
+        } else if self.is_ancestor(base, head) {
             "ahead"
-        } else if self.is_ancestor(&self.head, base) {
+        } else if self.is_ancestor(head, base) {
             "behind"
         } else {
             "diverged"
@@ -356,6 +396,37 @@ impl Repository {
             Vec::new()
         };
         json_answer(200, &json!({"status": status, "files": files}))
+    }
+
+    /// The commit `name` stands for in a compare: a commit id, or a name looked up
+    /// as Git does, tags before branches.
+    fn resolve<'a>(&'a self, name: &'a str) -> Option<&'a str> {
+        if self.commits.contains_key(name) {
+            return Some(name);
+        }
+        if let Some(mut sha) = self
+            .refs
+            .get(&format!("refs/tags/{name}"))
+            .map(String::as_str)
+        {
+            while let Some(tag) = self.tags.get(sha) {
+                sha = &tag.object;
+            }
+            return Some(sha);
+        }
+        (name == self.default_branch).then_some(self.head.as_str())
+    }
+
+    /// `git/ref/heads/<branch>`: the default branch is the only branch there is.
+    fn head_answer(&self, segments: &[&str]) -> Scripted {
+        let branch = segments.join("/");
+        if branch != self.default_branch {
+            return not_found();
+        }
+        json_answer(
+            200,
+            &json!({"ref": format!("refs/heads/{branch}"), "object": {"sha": self.head, "type": "commit"}}),
+        )
     }
 
     fn ref_answer(&self, tag: &str) -> Scripted {
@@ -429,6 +500,21 @@ impl Repository {
         let Ok(request) = serde_json::from_slice::<Value>(body) else {
             return invalid("not JSON");
         };
+        self.failing_tag_reads = std::mem::take(&mut self.tag_reads_failing_after_publish);
+        for change in std::mem::take(&mut self.before_publish) {
+            match change {
+                Change::Tag(tag, commit) => {
+                    self.refs.insert(format!("refs/tags/{tag}"), commit);
+                }
+                Change::Asset(name, bytes) => {
+                    for release in &mut self.releases {
+                        for asset in release.assets.iter_mut().filter(|a| a.name == name) {
+                            asset.bytes.clone_from(&bytes);
+                        }
+                    }
+                }
+            }
+        }
         let Some(release) = self.releases.iter_mut().find(|r| r.id.to_string() == id) else {
             return not_found();
         };

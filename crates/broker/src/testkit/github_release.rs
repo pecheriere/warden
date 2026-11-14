@@ -15,9 +15,9 @@
 //!   [`TOKEN`], limited to what the request asked for. Other installation ids
 //!   belong to the plain token route of the upstream;
 //! - on an installed repository `/repos/<owner>/<name>`: `GET` of the repository,
-//!   `git/commits/<sha>`, `compare/<base>...<branch>`, `git/ref/tags/<tag>`,
-//!   `git/tags/<sha>`, `contents/<path>?ref=<sha>`, `tags`, `releases`; `POST` of
-//!   `git/tags` and `git/refs`; `PATCH` of `releases/<id>`; `DELETE` of
+//!   `git/commits/<sha>`, `compare/<base>...<head>`, `git/ref/tags/<tag>`,
+//!   `git/ref/heads/<branch>`, `git/tags/<sha>`, `contents/<path>?ref=<sha>`,
+//!   `tags`, `releases`; `POST` of `git/tags` and `git/refs`; `PATCH` of `releases/<id>`; `DELETE` of
 //!   `releases/assets/<id>`;
 //! - `POST /uploads/repos/<owner>/<name>/releases/<id>/assets?name=<name>`: an
 //!   asset upload, which only this path takes, as GitHub's uploads host has its
@@ -140,6 +140,25 @@ impl GithubReleaseFake {
     /// If `release` is not one of `repo`'s.
     pub fn add_asset(&self, repo: &RepoName, release: u64, name: &str, bytes: &[u8]) {
         self.with(repo, |r| r.add_asset(release, name, bytes));
+    }
+
+    /// When `repo`'s next release is published, first replace the bytes of its
+    /// asset `name` with `bytes`, as a write landing just before the publish would.
+    pub fn replace_asset_before_publish(&self, repo: &RepoName, name: &str, bytes: &[u8]) {
+        self.with(repo, |r| r.replace_asset_before_publish(name, bytes));
+    }
+
+    /// When `repo`'s next release is published, first point the tag `tag` at
+    /// `commit` as a lightweight tag, as a write landing just before the publish
+    /// would.
+    pub fn move_tag_before_publish(&self, repo: &RepoName, tag: &str, commit: &str) {
+        self.with(repo, |r| r.move_tag_before_publish(tag, commit));
+    }
+
+    /// Once `repo`'s next release is published, answer its next `count` tag reads
+    /// with a server error, as a passing GitHub failure would.
+    pub fn fail_tag_reads_after_publish(&self, repo: &RepoName, count: u32) {
+        self.with(repo, |r| r.fail_tag_reads_after_publish(count));
     }
 
     /// The id the ref `refs/tags/<tag>` points at.

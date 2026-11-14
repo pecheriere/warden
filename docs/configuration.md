@@ -10,6 +10,11 @@ and `warden` (the agent's CLI). For how to put them together, see
 refuses to start, naming the variable, when one is missing or invalid.
 Values are never echoed in errors.
 
+The broker's own HTTP clients (1Password Connect, the notifiers and the health
+probe) ignore `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` and `NO_PROXY`: a proxy named
+in the environment never sees the Connect token or the secrets it returns, and a
+proxy is not supported for these connections.
+
 ### Required
 
 | Variable | Meaning |
@@ -45,6 +50,8 @@ Values are never echoed in errors.
 | `WARDEN_REQUEST_LIMIT_WINDOW_SECS` | `600` (10 minutes) | Length of that sliding window, 60 to 3600 seconds. |
 | `WARDEN_COMMIT_SIGNING_MAX_WINDOW` | `30d` | The longest [commit signing](threat-model.md#commit-signing) grant: `1d`, `7d`, `30d` or `90d`. Lowering it does not shorten grants already made. It cannot apply to anything else: no other grant can pass 4 hours. |
 | `WARDEN_COMMIT_SIGNING_MAX_PER_DAY` | `5000` | Signatures per commit signing grant per UTC day, 1 to 1000000. At the limit commits fail until the next day, and warden tries once to notify the owner. See [the threat model](threat-model.md#commit-signing). |
+| `WARDEN_PROXY_MAX_CALLS_PER_DAY` | `10000` | Proxied calls per API grant per UTC day, 1 to 1000000. At the limit calls fail until the next day, and warden tries once to notify the owner. See [the threat model](threat-model.md#proxy-mode-residual-risks). |
+| `WARDEN_RELAY_MAX_SESSIONS_PER_DAY` | `1000` | Relay sessions per relay grant per UTC day, 1 to 1000000. At the limit new sessions are refused until the next day, and warden tries once to notify the owner. See [the threat model](threat-model.md#relay-mode-residual-risks). |
 | `WARDEN_GITHUB_TOKEN_MAX_WINDOW` | `30d` | The longest [GitHub token](github-app.md) grant: `1d`, `7d` or `30d`. Anything else is a startup error, and so is a value that is set but empty. Lowering it does not shorten grants already made. It has no effect on the 1-hour life of a token, which is GitHub's. |
 | `WARDEN_REQUEST_LINK_HOSTS` | unset (no links) | The hosts a request may link to, separated by commas. See [Links in requests](#links-in-requests). |
 | `WARDEN_RELAY_PUBLIC_ADDR` | unset | Where agents reach the SSH relay, `host:port`. Unset turns the relay off: requests for relay targets are refused. |
@@ -350,6 +357,8 @@ cargo install --locked --git https://github.com/pecheriere/warden --tag v0.13.0 
 | `warden setup github` | Has git and `gh` take GitHub tokens from warden: points git's global `credential.https://github.com.helper` at warden alone (an empty value first, then `!<warden> git-credential`), sets `credential.https://github.com.useHttpPath` to `true` so that git sends the repository, and writes the `gh` wrapper `~/.local/bin/gh`, which sets `GH_TOKEN` from `warden github token --gh-args -- <gh's arguments>`. Refuses to replace a `gh` it did not write, and warns when `~/.local/bin` is not before the real `gh` on `PATH`. Writes no wrapper if `gh` is not on `PATH`. Run it again after the warden binary moves. Needs no grant. See [GitHub tokens](agent-usage.md#github-tokens). |
 | `warden github token [--repo <owner/name>] [--gh-args -- <gh's arguments>]` | Prints a GitHub token on stdout and nothing else: the cached one for that repository while it has 5 minutes left, otherwise a new one from the broker. With no active grant for the repository it asks the owner for one and waits. The token is for one repository on `github.com`: `--repo`, else `GH_REPO`, else the `origin` remote of the current directory. With `--gh-args`, what follows `--` are `gh`'s arguments and the repository is read from their `-R`/`--repo` instead of `--repo`. When none gives one it prints nothing and exits 1. The `gh` wrapper runs it with `--gh-args`. |
 | `warden doctor [--strict]` | Checks this machine's setup and says what to fix. See [Checking an agent machine](#checking-an-agent-machine). |
+| `warden list [--json] [--repo <owner/name>]` | Shows what this agent may ask the broker for: SSH targets and users, API secrets, and whether GitHub tokens, commit signing and releases are available. In a checkout whose `origin` is on `github.com`, or with `--repo`, it adds what applies to that repository. Asks no one and changes nothing. `--json` prints `{"offers": …, "repository": …}`, the broker's answers as it sent them. Exits 1 when the broker cannot be reached, refuses the login, fails or is too old to answer; a repository answer that fails is a `could not be read` line, not an error. See [What warden offers here](agent-usage.md#what-warden-offers-here). |
+| `warden prime [--brief]` | Prints instructions for an agent: when and how to ask warden for access, from the copy of [Instructions for an agent](agent-instructions.md) built into the CLI, with what this broker offers in place of the list and only the sections for what it offers. In a checkout whose `origin` is on `github.com` it adds what applies to that repository. `--brief` prints the short form for a session-start hook and does not ask about the repository. Gives the broker 3 seconds in all and always exits 0: when the broker cannot be reached, does not answer in time, cannot read its policy, refuses the call or is too old, it prints the rules and a line saying which; with no configuration, one line saying warden is not set up. See [Instructions to give an agent](agent-usage.md#instructions-to-give-an-agent). |
 | `warden status` | Lists the grants on this machine, and the broker's view of this agent's grants and pending requests. |
 | `warden revoke <grant>` | Revokes a grant on the broker and stops its local `ssh-agent`. |
 

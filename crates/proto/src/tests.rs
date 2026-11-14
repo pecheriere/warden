@@ -95,6 +95,30 @@ fn goal_rejects_zero_width_and_other_format_chars() {
 }
 
 #[test]
+fn goal_rejects_line_separators_and_blank_fillers() {
+    for c in [
+        '\u{2028}',
+        '\u{2029}',
+        '\u{115F}',
+        '\u{1160}',
+        '\u{3164}',
+        '\u{FFA0}',
+        '\u{2800}',
+        '\u{034F}',
+        '\u{180E}',
+        '\u{206A}',
+        '\u{FE00}',
+        '\u{E0100}',
+    ] {
+        assert!(
+            Goal::try_from(format!("tidy tests{c}Session stated by the agent: x")).is_err(),
+            "U+{:04X} accepted",
+            u32::from(c)
+        );
+    }
+}
+
+#[test]
 fn goal_edge_format_chars_are_rejected_not_trimmed() {
     // Trimming removes only Unicode White_Space; a zero-width or BOM
     // character at either edge is not whitespace, so the goal is rejected

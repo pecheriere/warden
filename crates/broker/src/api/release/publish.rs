@@ -8,6 +8,12 @@
 //! attached. A refusal for any of
 //! them costs the owner nothing. Nothing GitHub said appears in an error or the
 //! audit log.
+//!
+//! GitHub has no conditional publish, so a write can land between the checks and
+//! the publish. Afterwards the broker compares the files the release was published
+//! with, as GitHub's answer to the publish lists them, and the tag, with what it
+//! checked; when they differ it records `release_published_changed`, tells the
+//! owner and refuses the call, although the release is published.
 
 use axum::Json;
 use axum::extract::State;
@@ -16,11 +22,11 @@ use warden_broker_proto::release::{PublishResponse, ReleaseTarget};
 use warden_broker_proto::{AgentName, Id};
 
 use super::manifest::{NO_DRAFT, PUBLISHED};
-use super::{Ready, claim, github_failed, prepare, record_refusal, refused};
+use super::{Ready, claim, github_failed, prepare, record_refusal, record_start, refused};
 use crate::AppState;
 use crate::api::{ApiJson, Failure};
 use crate::audit::AuditEvent;
-use crate::github_release::{Asset, ReleaseClient};
+use crate::github_release::{Asset, Release, ReleaseClient};
 use crate::identity::AuthedAgent;
 use crate::policy::ReleaseSigningKey;
 use crate::requests::{ActiveRelease, RecordedManifest, ReleaseStep, RequestError};
@@ -35,6 +41,16 @@ const MANIFEST_NOT_SIGNED: &str = "the manifest has not been signed";
 const FILES_DIFFER: &str = "the draft's files are not the ones signed";
 /// GitHub gave no digest for one of the two files, so they cannot be compared.
 const NO_DIGESTS: &str = "GitHub did not report the files' digests";
+/// The release was published, but not as it was checked.
+/// A 409, not a 5xx: the step is done, and calling again cannot help.
+const PUBLISHED_CHANGED: &str = "the release was published, but its files or tag changed after \
+                                 they were checked; do not call again, tell the owner";
+
+/// What can differ after the publish, as the audit entry and the owner's notice
+/// say it.
+const FILES_CHANGED: &str = "its manifest or signature is not the one signed";
+const TAG_CHANGED: &str = "its tag is not the one checked";
+const TAG_UNREADABLE: &str = "its tag could not be read back";
 
 /// `POST /v1/release/publish`. Runs on its own task, so that a disconnecting agent
 /// can neither stop it halfway nor keep it out of the audit log.
@@ -92,14 +108,15 @@ fn check_files(assets: &[Asset], name: &str, recorded: &RecordedManifest) -> Res
 }
 
 /// Refuse unless the tag is in place: made by the tag step when the grant has one,
-/// and an annotated tag on the approved commit that the release key signed.
+/// and an annotated tag on the approved commit that the release key signed. The id
+/// of its tag object.
 async fn check_tag(
     state: &AppState,
     agent: &AgentName,
     github: &ReleaseClient<'_>,
     release: &ActiveRelease,
     key: &ReleaseSigningKey,
-) -> Result<(), Failure> {
+) -> Result<String, Failure> {
     let grant = release.grant();
     if grant.steps.tag
         && !state
@@ -113,14 +130,41 @@ async fn check_tag(
         .tag_target(&grant.tag)
         .await
         .map_err(|e| github_failed(agent, ReleaseStep::Publish, &e))?;
-    let in_place = existing.is_some_and(|tag| {
-        tag.commit.as_ref() == Some(&grant.commit)
-            && tag.raw.as_deref().is_some_and(|raw| key.verifies_tag(raw))
-    });
-    if in_place {
-        Ok(())
-    } else {
-        Err(refused(StatusCode::CONFLICT, TAG_NOT_IN_PLACE))
+    existing
+        .filter(|tag| {
+            tag.commit.as_ref() == Some(&grant.commit)
+                && tag.raw.as_deref().is_some_and(|raw| key.verifies_tag(raw))
+        })
+        .map(|tag| tag.object_sha)
+        .ok_or_else(|| refused(StatusCode::CONFLICT, TAG_NOT_IN_PLACE))
+}
+
+/// What differs between the release as published and what was checked before:
+/// the two files the manifest step attached, as `published` lists them, and the
+/// tag object `tag_object`.
+async fn changed_since_checked(
+    github: &ReleaseClient<'_>,
+    release: &ActiveRelease,
+    published: &Release,
+    manifest: Option<(&str, &RecordedManifest)>,
+    tag_object: &str,
+) -> Option<&'static str> {
+    if let Some((name, recorded)) = manifest
+        && check_files(&published.assets, name, recorded).is_err()
+    {
+        return Some(FILES_CHANGED);
+    }
+    let tag = &release.grant().tag;
+    // Read once more before saying it could not be read: a passing GitHub error
+    // should not alarm the owner.
+    let read = match github.tag_target(tag).await {
+        Err(_) => github.tag_target(tag).await,
+        read => read,
+    };
+    match read {
+        Ok(Some(tag)) if tag.object_sha == tag_object => None,
+        Ok(_) => Some(TAG_CHANGED),
+        Err(_) => Some(TAG_UNREADABLE),
     }
 }
 
@@ -149,20 +193,25 @@ async fn run(
         return Err(refused(StatusCode::CONFLICT, PUBLISHED));
     }
     // The key checks the tag below and is not needed after that.
-    check_tag(state, agent, &github, &release, &key).await?;
+    let tag_object = check_tag(state, agent, &github, &release, &key).await?;
     drop(key);
-    if let Some(name) = &grant.steps.manifest {
-        let recorded = state
-            .requests
-            .recorded_manifest(&release)
-            .await?
-            .ok_or_else(|| refused(StatusCode::CONFLICT, MANIFEST_NOT_SIGNED))?;
-        check_files(&draft.assets, name, &recorded)?;
-    }
+    let recorded = match &grant.steps.manifest {
+        Some(name) => {
+            let recorded = state
+                .requests
+                .recorded_manifest(&release)
+                .await?
+                .ok_or_else(|| refused(StatusCode::CONFLICT, MANIFEST_NOT_SIGNED))?;
+            check_files(&draft.assets, name, &recorded)?;
+            Some((name.as_str(), recorded))
+        }
+        None => None,
+    };
     claim(state, agent, &target, &release, step).await?;
+    record_start(state, agent, &release, step, None).await?;
 
-    github
-        .publish(draft.id)
+    let published = github
+        .publish(draft.id, &grant.tag)
         .await
         .map_err(|e| github_failed(agent, step, &e))?;
     state
@@ -178,6 +227,17 @@ async fn run(
     // If this fails the grant simply runs out its window, which gives no step back.
     if let Err(e) = state.requests.end_if_done(release.grant_id(), now).await {
         tracing::warn!(error = %e, "could not end the release grant");
+    }
+    let manifest = recorded.as_ref().map(|(name, recorded)| (*name, recorded));
+    if let Some(reason) =
+        changed_since_checked(&github, &release, &published, manifest, &tag_object).await
+    {
+        tracing::error!(agent = %agent, grant = %release.grant_id(), reason, "a release was published unlike it was checked");
+        state
+            .requests
+            .release_published_changed(agent, &release, reason)
+            .await;
+        return Err(refused(StatusCode::CONFLICT, PUBLISHED_CHANGED));
     }
     tracing::info!(agent = %agent, grant = %release.grant_id(), "release published");
     Ok(PublishResponse {

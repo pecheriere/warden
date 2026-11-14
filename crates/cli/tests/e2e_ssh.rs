@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use ssh_key::rand_core::OsRng;
 use ssh_key::{Algorithm, LineEnding, PrivateKey};
 use tempfile::TempDir;
-use warden_broker::policy::{SshMode, SshTarget};
+use warden_broker::policy::{Listing, SshMode, SshTarget};
 use warden_broker::testkit::sshd::current_user;
 use warden_broker::testkit::{BaseUrls, CapturingNotifier, TestBroker};
 use warden_broker_proto::{TargetName, UnixUser, Window};
@@ -147,6 +147,7 @@ async fn setup_with_host_target(host_target: &str) -> Setup {
         users: vec![UnixUser::try_from(current_user()).unwrap()],
         max_window: Window::H1,
         host_keys: vec![host_key],
+        listing: Listing::Full,
     });
     let urls = broker.spawn_behind_serve().await;
     let key = broker.add_agent("e2e").await;

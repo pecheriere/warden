@@ -17,8 +17,8 @@ use zeroize::Zeroizing;
 
 use super::MIN_CREDENTIAL_CHARS;
 use crate::policy::{
-    ApiSecretPolicy, PolicyError, RelayCredential, SecretValue, SshMode, SshTarget, ValueFormat,
-    check_path_prefix, is_header_text, is_reserved_header, parse_method,
+    ApiSecretPolicy, Listing, PolicyError, RelayCredential, SecretValue, SshMode, SshTarget,
+    ValueFormat, check_path_prefix, is_header_text, is_reserved_header, parse_method,
 };
 
 /// An SSH target item, decoded so that a relay target's credential never
@@ -185,6 +185,7 @@ pub(in crate::policy) fn parse_target(
     }
 
     let credential = parse_credential(title, mode, &by_label)?;
+    let listing = Listing::parse(by_label.get("list").copied());
 
     let target = SshTarget {
         name: name.clone(),
@@ -194,6 +195,7 @@ pub(in crate::policy) fn parse_target(
         users,
         max_window,
         host_keys,
+        listing,
     };
     Ok((target, credential))
 }
@@ -319,7 +321,7 @@ pub(in crate::policy) fn parse_api_secret(
     name: &SecretName,
     item: &ApiItem,
 ) -> Result<(ApiSecretPolicy, SecretValue), PolicyError> {
-    const LABELS: [&str; 7] = [
+    const LABELS: [&str; 8] = [
         "credential",
         "max_window",
         "header",
@@ -327,6 +329,7 @@ pub(in crate::policy) fn parse_api_secret(
         "methods",
         "path_prefix",
         "ca_pem",
+        "list",
     ];
     let title = name.as_str();
     let fail = |field: &str, reason: &str| invalid(title, field, reason);
@@ -404,6 +407,8 @@ pub(in crate::policy) fn parse_api_secret(
         }
     };
 
+    let listing = Listing::parse(get("list"));
+
     let policy = ApiSecretPolicy {
         name: name.clone(),
         origin,
@@ -413,6 +418,7 @@ pub(in crate::policy) fn parse_api_secret(
         path_prefix,
         ca_pem,
         max_window,
+        listing,
     };
     Ok((policy, value))
 }

@@ -291,16 +291,17 @@ ready to put in the blob.
 ### What the broker checks
 
 In this order, stopping at the first failure. Every failure is a 401,
-except an oversized body (413), a body too slow to arrive (408) and a database
-failure on the broker's side (500):
+except a busy broker (503), an oversized body (413), a body too slow to arrive
+(408) and a database failure on the broker's side (500):
 
 1. The four `Warden-*` headers are present, each once, and well formed;
    `Warden-Signature` is at most 4096 characters; no other `Warden-*` header
    and no `Authorization` header is present.
 2. The agent exists, is not revoked and has a registered signing key.
 3. The timestamp is within 60 seconds of the broker's clock.
-4. The body is read, within the endpoint's size limit and within the time
-   allowed for that limit ([section 5](#5-api-conventions): 10 seconds, or
+4. The body is read, if the broker has room for it now (503 if not, see
+   [section 5](#5-api-conventions)), within the endpoint's size limit and
+   within the time allowed for that limit ([section 5](#5-api-conventions): 10 seconds, or
    16 for `POST /v1/grants/{id}/http`). A larger body is refused with 413,
    and a body still incomplete when the time is up with 408, at this step,
    before the signature is checked.
@@ -485,6 +486,19 @@ that it is the expected key, as `-Y verify` with an allowed-signers file does
   `POST /v1/grants/{id}/http` (2 MiB). A body still incomplete then is
   `408 {"error":"request body timed out"}`, also before the signature is
   checked. Send the body at once: sign it buffered, not streamed slowly.
+- **Load limits.** The broker reads at most 32 MiB of signed request bodies
+  at once before their signatures are checked, over all callers. A body is
+  counted at its `Content-Length`, or at the endpoint's size limit without
+  one; a request with no body is not counted. A body that does not fit is
+  `503 {"error":"broker busy; try again"}` before it is read: retry after a
+  moment. Each listener also caps its open connections (256 for the agent
+  API, 64 for the approval UI) and closes any connection beyond that without
+  an answer, which reaches the agent through Tailscale Serve as a 502. Request
+  headers must arrive within 120 seconds of the broker starting to wait for
+  them, which also closes a keep-alive connection idle that long. Connections
+  are HTTP/1.1. The two caps do not add up for many agents: 16 agents each with
+  16 status long-polls waiting fill the agent API's 256 connections, and further
+  connections are closed until some end.
 - **Identifiers.** Request and grant ids are 32 lowercase hex characters.
   A malformed id in a path is `400 {"error":"invalid id"}`.
 - **Times** are Unix seconds (integers).
@@ -495,8 +509,9 @@ that it is the expected key, as `-Y verify` with an allowed-signers file does
 - **Common statuses** for every signed endpoint: 401 (authentication
   failed, or the agent is revoked; branch on the status, as the body varies,
   see [Rules](#rules)), 408 (body too slow), 413 (body over the limit), 500 `{"error":"internal error"}`, 503 (the broker's secret
-  backend is unavailable: `{"error":"secret backend unavailable"}`; or a
-  short contention, `{"error":"request slot contended; retry"}`). An unknown
+  backend is unavailable: `{"error":"secret backend unavailable"}`; a
+  short contention, `{"error":"request slot contended; retry"}`; or too
+  many bodies being read, `{"error":"broker busy; try again"}`). An unknown
   path is `404 {"error":"not found"}`.
 - **Retrying.** 5xx statuses and transport errors may be retried with
   backoff (the CLI starts at 1 s and doubles up to 15 s), each attempt signed
@@ -515,6 +530,8 @@ that it is the expected key, as `-Y verify` with an allowed-signers file does
 | `GET /v1/requests/{id}[?wait=N]` | A request's state; long poll. |
 | `POST /v1/requests/{id}/cancel` | Withdraw a pending request. |
 | `GET /v1/grants` | The agent's live grants. |
+| `GET /v1/offers` | What the agent may request: targets, API secrets, GitHub, commit signing, releases. |
+| `GET /v1/offers/repository/{owner}/{name}` | Whether GitHub tokens, commit signing and releases work for one repository. |
 | `POST /v1/grants/{id}/revoke` | End a grant. |
 | `POST /v1/grants/{id}/http` | Make an HTTPS call with an `api` grant. |
 | `GET /v1/commit-signing/key` | The public half of the broker's commit signing key. |
@@ -547,7 +564,7 @@ Ask the owner for access. Signed; JSON body:
 
 | Field | Type | Meaning |
 |-------|------|---------|
-| `goal` | string | Why access is needed: what you will do and why, naming the change, issue or error. 1 to 500 characters after trimming whitespace, one line: no control characters and no invisible format characters (Unicode category Cf: bidi controls, zero-width characters, BOM, soft hyphen…). The owner decides on it alone; the notification shows the first 200 characters. |
+| `goal` | string | Why access is needed: what you will do and why, naming the change, issue or error. 1 to 500 characters after trimming whitespace, one line: no control characters, no line or paragraph separators (U+2028, U+2029) and no invisible characters (Unicode category Cf: bidi controls, zero-width characters, BOM, soft hyphen…; the Hangul fillers, the combining grapheme joiner, the variation selectors other than U+FE0E and U+FE0F, which emoji use, and the blank braille pattern). The session label and the working directory of an automatic request follow the same rule. Requests stored by an earlier version, which refused only control and Cf characters (and separators in a label), are still read and answered as they are. The owner decides on it alone; the notification shows the first 200 characters. |
 | `access` | object | What is asked for; see below. |
 | `window` | string | How long the access should last: `15m`, `30m`, `1h` or `4h`, for commit signing, and nothing else, `1d`, `7d`, `30d` or `90d`, and for GitHub tokens, and nothing else, `1d`, `7d` or `30d`. The target's or secret's policy caps it, for commit signing the server's `WARDEN_COMMIT_SIGNING_MAX_WINDOW`, and for GitHub tokens `WARDEN_GITHUB_TOKEN_MAX_WINDOW`. The owner chooses the window when approving, anything up to that cap, so it may be shorter or longer than the one asked for. |
 | `session` | string, optional | The name the session states for itself, shown to the owner as the agent's claim, and written to the notification and the audit log. 1 to 64 characters after trimming whitespace, under the rules of `goal`, and no line or paragraph separators. |
@@ -767,7 +784,10 @@ sees the outcome.
 
 Errors: `400` for a malformed id or `wait` (`wait must be a whole number of
 seconds from 0 to 30`, `wait must be at most 30 seconds`), `404`
-`{"error":"not found"}` for an unknown id or another agent's request, and
+`{"error":"not found"}` for an unknown id or another agent's request, `429`
+`{"error":"too many status requests waiting; try again"}` when the agent
+already has 16 calls with a non-zero `wait` in flight (retry after a moment:
+one ending frees a place; `wait=0` is never refused for this), and
 section 5.
 
 ### `POST /v1/requests/{id}/cancel`
@@ -792,6 +812,105 @@ first. Signed; no body. `200` with a JSON array of grants, each
 ```json
 [{"grant_id":"5e1c…","not_before":1793091612,"not_after":1793092512,"access":{"kind":"api","secret":"github","origin":"https://api.github.com","methods":["GET","HEAD"],"path_prefix":"/","header":"Authorization","digest":"…"}}]
 ```
+
+### `GET /v1/offers`
+
+What this agent may ask for. Signed; no body. It decides no access, asks no one,
+notifies no one and creates no request, and the audit log does not record it: the log
+holds decisions and grants. The broker's own log notes that an agent listed offers.
+
+`200`:
+
+```json
+{
+  "ssh_targets": [
+    {"name":"web-01","users":["deploy"],"max_window":"1h","mode":"cert",
+     "destination":{"host":"web-01.example.internal","port":22}},
+    {"name":"switch-01","users":["admin"],"max_window":"30m","mode":"relay","destination":null}
+  ],
+  "api_secrets": [
+    {"name":"home-api","origin":"https://home-api.example.internal",
+     "methods":["GET"],"path_prefix":"/api/","max_window":"1h"}
+  ],
+  "github": {"configured":true,"max_window":"30d"},
+  "commit_signing": {"available":true},
+  "releases": {"available":true},
+  "unavailable": ["api_secrets"]
+}
+```
+
+- A target or secret the owner marked `list=name` appears with `destination` or
+  `origin` set to `null`; one marked `list=hidden`, or with an invalid `list` value, is
+  absent. Hiding changes only what
+  is listed, never what can be requested. A relay target shows its host and port when
+  listed in full, although the agent never connects there.
+- `github.max_window` is present only when a GitHub App is configured. No repository is
+  named: the broker does not list the repositories it covers.
+- A part the broker could not read is named in `unavailable` and the rest stands. Only
+  when SSH targets, API secrets and commit signing all fail, the three parts every
+  backend reads from its store, is the answer `503` `BACKEND_UNAVAILABLE`, like the
+  other agent calls.
+- `releases.available` is true when a release signing key and a release GitHub App
+  both exist. No repository is named.
+- `unavailable` names the parts that could not be read (`ssh_targets`, `api_secrets`,
+  `github`, `commit_signing`, `releases`). The other parts are complete, and a part
+  named there is empty or `false`, which means unknown, not absent.
+- `503` `{"error":"secret backend unavailable"}` when SSH targets, API secrets and
+  commit signing all failed, and section 5.
+- The answer carries no host key, relay credential or secret value.
+- A client ignores fields it does not know, and reads a value it does not know in
+  `mode`, `unavailable`, `github_token` or `release` (from a newer broker) as unknown
+  rather than failing. `warden list --json` prints both answers as they came.
+
+### `GET /v1/offers/repository/{owner}/{name}`
+
+What this agent may ask for in one repository, the one it works in. Signed; no body.
+Like `GET /v1/offers`, it decides no access, asks no one, notifies no one, creates no
+request and is not in the audit log; the broker's own log notes the agent and the
+repository. Nothing lists every repository: the agent names one, and the broker
+answers for that one.
+
+`owner/name` must be a repository name as `POST /v1/github-token` takes it (owner
+`^[A-Za-z0-9][A-Za-z0-9-]{0,38}$`, name `^[A-Za-z0-9._-]{1,100}$`, not `.` or `..`),
+checked before anything else is read.
+
+`200`:
+
+```json
+{
+  "repository": "example-org/example-repo",
+  "github_token": "covered",
+  "commit_signing": true,
+  "release": "ready"
+}
+```
+
+- `github_token`: whether the agent GitHub App's installation covers the repository.
+  The broker asks GitHub for a token limited to reading that repository's metadata,
+  as it does to resolve the repositories of a `github` request, and drops it unused.
+  - `covered`: GitHub issued it.
+  - `not_covered`: GitHub answered that the installation cannot reach the repository
+    (`422`, or a token for the same name under another owner).
+  - `not_configured`: no GitHub App is configured.
+  - `unavailable`: the broker could not tell: GitHub could not be reached, refused the
+    App (`401`, `403`, `404`, a rate limit, `5xx`), answered something it did not
+    understand, or the App could not be read.
+- `commit_signing`: whether a commit signing key is configured, the same for every
+  repository and repeated here so that one answer is enough.
+- `release`:
+  - `ready`: a release signing key names this repository and a release GitHub App
+    exists. Whether GitHub trusts the key, and the signers file and tag ruleset, are
+    not checked.
+  - `no_key`: no release signing key names this repository.
+  - `no_release_app`: a key names it but no release GitHub App is configured.
+  - `unavailable`: the release signing keys or the release App could not be read.
+- An answer is kept for 5 minutes per repository, so asking again within that time
+  does not ask GitHub again and may not show a change made meanwhile. An answer whose
+  `github_token` or `release` is `unavailable` is not kept.
+- `400` `{"error":"..."}` when `owner/name` is not a repository name.
+- `503` `{"error":"secret backend unavailable"}` when the commit signing key's presence
+  could not be read, and section 5.
+- The answer carries no token, repository id, key or secret value.
 
 ### `POST /v1/grants/{id}/revoke`
 
@@ -989,7 +1108,7 @@ grant covers; pick the grant whose scope covers the call.
 |-------|------|---------|
 | `method` | string | HTTP method, one of the grant's `methods`. |
 | `url` | string | Absolute URL: `https`, exactly the grant's `origin`, a path under `path_prefix` on a segment boundary. Printable ASCII, no spaces, no user info, no fragment; the path has no `.` or `..` segments, `//`, `;`, `\` or encoded separators (`%2e`, `%2f`, `%5c`, `%3b`, `%25`, `%c0`, `%c1`, `%u`, any case). The query is free. |
-| `headers` | array | Request headers, as `[name, value]` pairs: `[["Content-Type","application/json"]]`, at most 100. Not allowed: `Host`, `Content-Length`, `Transfer-Encoding`, `Connection`, `Keep-Alive`, `TE`, `Trailer`, `Upgrade`, `Proxy-*`, the grant's `header`, `Accept-Encoding`, `Range`, `If-Range`, method and URL override headers, forwarding and host-override headers (`Forwarded`, `Via`, `X-Forwarded-*`, `X-Real-IP`, `X-Host`, `X-Original-Host`), and any name or value with CR, LF or NUL. |
+| `headers` | array | Request headers, as `[name, value]` pairs: `[["Content-Type","application/json"]]`, at most 100. Not allowed: `Host`, `Content-Length`, `Transfer-Encoding`, `Connection`, `Keep-Alive`, `TE`, `Trailer`, `Upgrade`, `Proxy-*`, the grant's `header`, `Accept-Encoding`, `Range`, `If-Range`, method and URL override headers, forwarding, host-override and client-address headers (`Forwarded`, `Via`, `X-Forwarded-*`, `X-Original-*`, `X-Rewrite-*`, `X-Envoy-*`, `X-Override-*`, `X-Real-IP`, `X-Host`, `X-Client-IP`, `True-Client-IP`, `CF-Connecting-IP`, `*-Client-IP`, `*-Connecting-IP`), and any name or value with CR, LF or NUL. |
 | `body_b64` | string or null | The request body, **standard base64** (RFC 4648 alphabet with `+` and `/`, `=` padding, no line breaks, no whitespace), at most 1 MiB once decoded. Absent or `null` for no body. |
 
 ```json
@@ -1030,6 +1149,12 @@ Errors:
 - `413`: the JSON body is over 2 MiB.
 - `429` `too many concurrent calls`: at most 4 calls per agent (16 overall)
   may be in flight; wait for one to finish.
+- `429` `this grant made N calls today, its limit; calls fail until 00:00 UTC, and the
+  owner was told`: the grant has used its calls for this UTC day (10000 by default, set by
+  the owner with `WARDEN_PROXY_MAX_CALLS_PER_DAY`). Every further call on it fails the same
+  way until 00:00 UTC, so do not retry before then. Stop and tell the person. Other grants
+  are not affected. Only calls that were sent count; a call refused before it started (a
+  400, a 409 before it started, or the concurrent-call 429 above) does not use the budget.
 - `502`, `504`: the upstream failed, timed out (30 s per call), sent a
   compressed or oversized (over 1 MiB by default) response; the message is
   fixed and never quotes the upstream.
@@ -1121,9 +1246,13 @@ The manifest is refused unless all of this holds:
 - At most 64 KiB, UTF-8, at least one line, every line ending with a line feed (no carriage
   returns).
 - Each line is 64 lowercase hex digits, two spaces and a name.
-- A name is a file name (`A-Z a-z 0-9 . _ + -`, not `.` or `..`) or an image reference
-  `<registry>/<path>:<version>` of lowercase `a-z 0-9 . _ -` segments whose tag is exactly the
-  release's version.
+- A name is a file name (`A-Z a-z 0-9 . _ + -`, not `.` or `..`) that carries the release's
+  version as a component, or an image reference `<registry>/<path>:<version>` of lowercase
+  `a-z 0-9 . _ -` segments whose tag is exactly the release's version. A file name carries the
+  version when the version starts it or follows `-` or `_`, and ends it or is followed by `-`,
+  `_`, or a `.` that is not followed by a digit: `warden-1.2.3-x86_64.tar.gz`,
+  `warden_1.2.3_amd64.deb` and `warden-1.2.3-1.x86_64.rpm` carry `1.2.3`, `warden.tar.gz` and
+  `warden-1.2.3.4.tar.gz` do not.
 - No name appears twice.
 
 The step is claimed once the checks pass and the tag has a draft release; a refusal before that
@@ -1166,6 +1295,7 @@ last step is done.
 | `409` | `the manifest has not been signed` | The grant has a manifest step that did not finish; nothing was used |
 | `409` | `the draft's files are not the ones signed` | The manifest or its signature is missing from the draft or differs from what the broker attached; nothing was used |
 | `409` | `GitHub did not report the files' digests` | The files cannot be compared; nothing was used |
+| `409` | `the release was published, but its files or tag changed after they were checked; do not call again, tell the owner` | The release is public, but read back after the publish, its manifest, its signature or its tag differed from what the broker checked; the broker records it and tells the owner. The step is used |
 | `400` | `the request body is not valid` | Nothing was used |
 | `400` | `releases are not configured on this broker` | No release key for the repository, or no release App |
 | `503` | `GitHub could not complete the step; try again later` | GitHub failed; if it failed after the claim, the step stays used |

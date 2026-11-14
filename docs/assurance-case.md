@@ -77,7 +77,7 @@ trusted, but it is weaker than a signature over the request itself.
 | **B2** Agent to relay | An SSH session | The agent, and anything that reaches the port | Public-key login only, with the approved key; limits before login; one session channel; no forwarding or subsystems | [`relay/server.rs`](../crates/broker/src/relay/server.rs), [`relay/server/handler/protocol.rs`](../crates/broker/src/relay/server/handler/protocol.rs), [`relay/session/limits.rs`](../crates/broker/src/relay/session/limits.rs), [`relay/read_ahead.rs`](../crates/broker/src/relay/read_ahead.rs) |
 | **B3** Browser to approval UI | Pages; WebAuthn ceremonies; deny and revoke | The browser, and anything that reaches the listener | `require_owner`; `require_same_origin_json`; a strict CSP; server-rendered pages that show agent text as text; a passkey to approve | [`approval/mod.rs`](../crates/broker/src/approval/mod.rs), [`approval/pages.rs`](../crates/broker/src/approval/pages.rs), [`approval/warden.js`](../crates/broker/src/approval/warden.js) |
 | **B4** Operator to broker | Settings, `warden-server` commands | None: the host is inside the trust boundary | Validated settings that are never echoed; secret-file checks; changes to agents and passkeys audited | [`config.rs`](../crates/broker/src/config.rs), [`main.rs`](../crates/broker/src/main.rs) |
-| **B5** Broker to Connect | The token out; policy, secrets and the CA key back | Connect is trusted, but its answers are still validated | Fields are parsed and refused when invalid; redirects off; secrets held in wiped memory. TLS only if the URL says so: see [Cleartext](#5-common-weaknesses) | [`policy/onepassword.rs`](../crates/broker/src/policy/onepassword.rs), [`policy/onepassword/items.rs`](../crates/broker/src/policy/onepassword/items.rs) |
+| **B5** Broker to Connect | The token out; policy, secrets and the CA key back | Connect is trusted, but its answers are still validated | Fields are parsed and refused when invalid; redirects off; proxy variables ignored; secrets held in wiped memory. TLS only if the URL says so: see [Cleartext](#5-common-weaknesses) | [`policy/onepassword.rs`](../crates/broker/src/policy/onepassword.rs), [`policy/onepassword/items.rs`](../crates/broker/src/policy/onepassword/items.rs) |
 | **B6** Broker to notifiers | The agent, the access, a stated session label, a shortened goal, a link | The notifier and its push provider | A link alone approves nothing; redirects off; errors drop the URL | [`notify/mod.rs`](../crates/broker/src/notify/mod.rs) |
 | **B7** Broker to API origin | The real secret, the agent's call; the answer | The origin's answer, the agent's call | Rules checked before sending; verified TLS; compressed answers refused; size and time limits; redaction | [`proxy/`](../crates/broker/src/proxy/mod.rs) |
 | **B8** Broker to relay target | The onward login | The target, until its pinned key is proven | Host key checked before the credential is sent; only pinned algorithms; channels opened by the target are refused | [`relay/onward.rs`](../crates/broker/src/relay/onward.rs) |
@@ -110,7 +110,19 @@ falls short.
   - if the grant state cannot be read for 10 s, relay sessions end
     (`FAIL_CLOSED_AFTER` in [`relay/server.rs`](../crates/broker/src/relay/server.rs));
   - if `proxy_call_started` or `relay_session_started` cannot be written, nothing
-    is sent ([`api.rs`](../crates/broker/src/api.rs), `relay/server/start.rs`);
+    is sent ([`api/proxy_call.rs`](../crates/broker/src/api/proxy_call.rs),
+    `relay/server/start.rs`);
+  - past its daily limit of calls an API grant gets a 429 and nothing is sent, and a call
+    refused before it starts writes at most 30 entries a minute per agent, the rest
+    counted ([`api/proxy_call.rs`](../crates/broker/src/api/proxy_call.rs),
+    [`requests/daily_use.rs`](../crates/broker/src/requests/daily_use.rs));
+  - past its daily limit of sessions a relay grant has new sessions refused, and a
+    session refused is written one by one up to 30 a minute per grant, the rest counted
+    ([`requests/daily_use.rs`](../crates/broker/src/requests/daily_use.rs),
+    `relay/server/start.rs`);
+  - refused relay logins are written 5 a minute per address (per /64 network for IPv6)
+    and 10 overall, the rest summed in one entry a minute (`relay/server/conn.rs`,
+    `audit_throttle.rs`);
   - a route that lacks the signature middleware still refuses `Warden-*` headers
     (`AuthedAgent` in [`identity.rs`](../crates/broker/src/identity.rs));
   - `doctor` never counts a check that could not run as passed
@@ -171,7 +183,7 @@ constructed, so code holding the type does not check again.
 |---|---|---|
 | Agent, target and secret names | `^[a-z0-9][a-z0-9-]{0,31}$` | `AgentName`, `TargetName`, `SecretName` in [`proto/src/names.rs`](../crates/proto/src/names.rs) |
 | Unix user | `^[a-z_][a-z0-9_-]{0,31}$` | `UnixUser`, same file |
-| Goal | 1 to 500 characters, no control or Unicode format characters | `Goal`, same file |
+| Goal | 1 to 500 characters, one line, no control, separator or invisible characters | `Goal`, same file |
 | Ids | 32 lowercase hex characters | `Id` in [`proto/src/lib.rs`](../crates/proto/src/lib.rs) |
 | Window | `15m`, `30m`, `1h`, `4h` | `Window` in [`proto/src/window.rs`](../crates/proto/src/window.rs) |
 | SSH public key in a request | One OpenSSH `ssh-ed25519` key | `check_ed25519` in [`requests.rs`](../crates/broker/src/requests.rs) |
@@ -184,7 +196,7 @@ constructed, so code holding the type does not check again.
 | Local policy and secret files | The same validators as 1Password items, plus owner, mode, link, single-file mount and content digest checks on what was opened, each read. A problem refuses the start or the request. | [`policy/local.rs`](../crates/broker/src/policy/local.rs), [`policy/local/files.rs`](../crates/broker/src/policy/local/files.rs), [`policy/local/seal.rs`](../crates/broker/src/policy/local/seal.rs) |
 | Answers from the broker, in the CLI | Control characters removed from messages; hosts checked by `is_safe_host`; host keys parsed and written again | `sanitize` in [`proto/src/doctor.rs`](../crates/proto/src/doctor.rs); [`cli/src/agent.rs`](../crates/cli/src/agent.rs) |
 | `warden-server agent add --server` | `https` (or `http` on loopback), a root URL, a plain host name, because the printed command is pasted in a shell | `parse_agent_api_url` in [`enrollment.rs`](../crates/broker/src/enrollment.rs) |
-| Release request and steps | Repository `owner/name` by the GitHub rules, tag `^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$` of at most 64 characters, commit exactly 40 lowercase hex; a manifest of at most 64 KiB, lines of 64 lowercase hex digits and a plain file name or an image reference at the approved version, no name twice, every line ending in a line feed. Errors name the rule and never quote the manifest or GitHub | `RepoName`, `ReleaseTag`, `CommitId` in [`proto/src/release.rs`](../crates/proto/src/release.rs); `check` in [`release_signing/manifest.rs`](../crates/broker/src/release_signing/manifest.rs) |
+| Release request and steps | Repository `owner/name` by the GitHub rules, tag `^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$` of at most 64 characters, commit exactly 40 lowercase hex; a manifest of at most 64 KiB, lines of 64 lowercase hex digits and a plain file name carrying the approved version as a component or an image reference tagged with it, no name twice, every line ending in a line feed. Errors name the rule and never quote the manifest or GitHub | `RepoName`, `ReleaseTag`, `CommitId` in [`proto/src/release.rs`](../crates/proto/src/release.rs); `check` in [`release_signing/manifest.rs`](../crates/broker/src/release_signing/manifest.rs) |
 | GitHub token requests and grants | Repository `owner/name` by the GitHub rules, one to ten, none twice ignoring case; a mint body of exactly `{"repository": …}`; only parsed ids and validated names are kept from GitHub's answers | [`proto/src/github_token.rs`](../crates/proto/src/github_token.rs), [`requests/github_scope.rs`](../crates/broker/src/requests/github_scope.rs) |
 | Secret files | Regular file, no access for others, one line, at most 32 KiB | `read_secret_file` in [`config.rs`](../crates/broker/src/config.rs) |
 
@@ -217,10 +229,10 @@ such path, which was searched for on the date above.
 | OS command injection (CWE-78) | The CLI runs `ssh` and `ssh-agent` without a shell, with options before `--` and a checked host ([`cli/src/ssh.rs`](../crates/cli/src/ssh.rs)). `warden-server` runs no programs. | |
 | Path traversal (CWE-22) | No path comes from a request. On the proxy, the rules refuse dot segments and encoded separators (`check_url`), and the URL is sent as checked. | |
 | Server-side request forgery (CWE-918) | The origin comes from the vault and must match exactly; redirects are not followed. | The origin's DNS is trusted, within what TLS verifies. |
-| Header injection (CWE-113) | CR, LF and NUL refused; reserved headers refused (`check_headers`). | |
-| Log and terminal injection (CWE-117, CWE-150) | Goals have no control characters. The CLI removes them from what it prints. Logs are structured fields. | |
+| Header injection (CWE-113) | CR, LF and NUL refused; reserved, routing, override and client-address headers refused (`check_headers`). | |
+| Log and terminal injection (CWE-117, CWE-150) | Goals have no control, separator or invisible characters. The CLI removes them from what it prints. Logs are structured fields. | |
 | Unsafe deserialization (CWE-502) | `serde` into typed structures; no code or type names in data. | |
-| Resource exhaustion (CWE-400, CWE-770) | Size and time limits on bodies, proxied calls and relay sessions, with counts per agent and overall; pre-login limits; a nonce is stored only after its signature verifies. | **No limit on how many requests an agent makes or on how many notifications they cause, and the database and audit log grow without bound.** See [the assessment](security-assessment.md#findings-of-this-review). |
+| Resource exhaustion (CWE-400, CWE-770) | Size and time limits on bodies, proxied calls and relay sessions, with counts per agent and overall; pre-login limits; a nonce is stored only after its signature verifies. A budget for bodies read before their signature is checked, a cap on waiting long-polls per agent, a connection cap per listener and a header read timeout keep agents from using up what the approval UI needs. | **No limit on how many requests an agent makes or on how many notifications they cause, and the database and audit log grow without bound.** See [the assessment](security-assessment.md#findings-of-this-review). Nothing limits how many repositories an agent asks about with `GET /v1/offers/repository/{owner}/{name}`, and each uncached one mints a token at GitHub, so an agent key can spend the agent App's rate limit there; nor how often it calls `GET /v1/offers`, each of which reads every target and API secret item, values read and dropped ([threat model](threat-model.md#what-an-agent-can-learn-about-what-warden-covers), [#254](https://github.com/pecheriere/warden/issues/254)). |
 | Time-of-check to time-of-use (CWE-367) | One item read gives both policy and secret. The destination digest is checked at approval and at use. Approval is one conditional `UPDATE`. A public key's binding is checked inside the write transaction. | |
 | Hash truncation (CWE-328) | The 48-bit fingerprint is for people to compare and is not a security check: the approval is tied by token hash and ceremony. | An agent can find two requests with the same fingerprint, so a match proves little if the agent is the attacker. |
 | Timing leaks on secrets (CWE-208) | Bearer keys and approval tokens are looked up by SHA-256 hash, so no secret is compared byte by byte. | Agent names [can be probed](threat-model.md#authentication-of-callers), which is accepted. |

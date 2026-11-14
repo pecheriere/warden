@@ -20,6 +20,8 @@ use crate::audit::AuditLog;
 use crate::config::Config;
 use crate::github_app::GithubApi;
 use crate::identity::TailscaleServeIdentity;
+use crate::load::ApiLoad;
+use crate::offers_cache::RepositoryOfferCache;
 use crate::policy::SecretBackend;
 use crate::proxy::ProxyLimits;
 use crate::relay::{RelayEndpoint, RelayLimits, host_key};
@@ -93,6 +95,8 @@ struct Limits {
     body_read_timeout: BodyReadTimeout,
     commit_signing_max: Window,
     commit_signing_per_day: u32,
+    proxy_calls_per_day: u32,
+    relay_sessions_per_day: u32,
     github_token_max: Window,
     github_token_per_hour: u32,
     github_api: GithubApi,
@@ -106,6 +110,8 @@ impl Default for Limits {
             body_read_timeout: BodyReadTimeout::default(),
             commit_signing_max: Window::COMMIT_SIGNING_DEFAULT,
             commit_signing_per_day: crate::requests::SIGNATURES_PER_DAY,
+            proxy_calls_per_day: crate::requests::CALLS_PER_DAY,
+            relay_sessions_per_day: crate::requests::SESSIONS_PER_DAY,
             github_token_max: Window::GITHUB_TOKEN_DEFAULT,
             github_token_per_hour: crate::requests::MINTS_PER_HOUR,
             github_api: GithubApi::public(),
@@ -122,6 +128,8 @@ pub struct TestBroker {
     state: AppState,
     router: Router,
     api_router: Router,
+    /// The bounds the agent API counts against; hold its slots to test them.
+    api_load: ApiLoad,
     /// The broker's clock.
     pub clock: Arc<ManualClock>,
     /// Captures every doorbell.
@@ -340,6 +348,36 @@ impl TestBroker {
         .await
     }
 
+    /// Like [`TestBroker::new`], with `WARDEN_PROXY_MAX_CALLS_PER_DAY` at this.
+    ///
+    /// # Panics
+    /// If any part of the setup fails.
+    pub async fn with_proxy_calls_per_day(proxy_calls_per_day: u32) -> Self {
+        Self::fresh(
+            Limits {
+                proxy_calls_per_day,
+                ..Limits::default()
+            },
+            Some(format!("{RELAY_PUBLIC_HOST}:{RELAY_PUBLIC_PORT}")),
+        )
+        .await
+    }
+
+    /// Like [`TestBroker::new`], with `WARDEN_RELAY_MAX_SESSIONS_PER_DAY` at this.
+    ///
+    /// # Panics
+    /// If any part of the setup fails.
+    pub async fn with_relay_sessions_per_day(relay_sessions_per_day: u32) -> Self {
+        Self::fresh(
+            Limits {
+                relay_sessions_per_day,
+                ..Limits::default()
+            },
+            Some(format!("{RELAY_PUBLIC_HOST}:{RELAY_PUBLIC_PORT}")),
+        )
+        .await
+    }
+
     /// Like [`TestBroker::new`], accepting links to `hosts` (comma separated).
     ///
     /// # Panics
@@ -506,6 +544,8 @@ impl TestBroker {
         .with_limits(limits.requests)
         .with_commit_signing_max(limits.commit_signing_max)
         .with_commit_signing_per_day(limits.commit_signing_per_day)
+        .with_proxy_calls_per_day(limits.proxy_calls_per_day)
+        .with_relay_sessions_per_day(limits.relay_sessions_per_day)
         .with_github_token_max(limits.github_token_max)
         .with_github_token_per_hour(limits.github_token_per_hour)
         .with_github_api(limits.github_api.clone())
@@ -533,12 +573,16 @@ impl TestBroker {
             passkeys: Arc::new(passkeys),
             audience,
             github: limits.github_api.clone(),
+            repository_offers: Arc::new(RepositoryOfferCache::new()),
         };
-        let (api_router, router) = crate::build_routers(state.clone());
+        let api_load = ApiLoad::default();
+        let api_router = crate::api::router(state.clone(), api_load.clone());
+        let router = crate::approval::router(state.clone());
         Self {
             state,
             router,
             api_router,
+            api_load,
             clock,
             capture,
             backend,

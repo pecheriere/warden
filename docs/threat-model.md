@@ -48,6 +48,10 @@ warden does **not** protect against:
   repository of its grant, can still open issues (and, to be assumed, comment) on public
   repositories, including ones the GitHub App is not installed on, and is a bearer secret the agent has:
   revoking its grant stops new tokens, not that one. See [GitHub tokens](#github-tokens).
+- **Keeping what warden covers from its own agents.** Any enrolled agent can list the
+  targets and API secrets the owner has not hidden, with their addresses by default, and ask
+  whether warden covers a repository it names. See
+  [What an agent can learn about what warden covers](#what-an-agent-can-learn-about-what-warden-covers).
 - **Instant revocation everywhere.** An issued certificate stays valid on
   its target until it expires, and an open login to a certificate target continues
   even after that (issue
@@ -68,7 +72,7 @@ from, not that it is safe for real use.
 | Owner (phone, workstation) | Root of trust. Holds the passkey. Edits the 1Password vault. |
 | The warden host (its root, its container runtime) | Root of trust. Can read everything warden holds and act as warden. |
 | Agent (for example an AI coding agent on the owner's workstation) | Semi-trusted: well-intentioned but may be prompt-injected. Bounded by its stated goal, the approved window, and the targets and users the vault allows. It can request access and use what was granted, never approve it. |
-| warden server | Trusted. Holds a read-only 1Password Connect token in memory, and for short times what it reads with it: the SSH CA private key, from the read at an approval until the certificate is signed, the commit signing key while it signs, the GitHub App's private key while it mints a token, API secrets during a call, and relay login credentials (see below). Compromise of the server is compromise of everything it brokers, so it is hardened accordingly. |
+| warden server | Trusted. Holds a read-only 1Password Connect token in memory, and for short times what it reads with it: the SSH CA private key, from the read at an approval until the certificate is signed, the commit signing key while it signs, the GitHub App's private key while it mints a token, API secrets during a call, and relay login credentials (see below). Answering an agent's question about a repository, it also reads the GitHub App's private key to mint a token it drops, and the release signing items, keys included; and for each `GET /v1/offers` it reads every target and API secret item, so every API secret value and relay credential is read and dropped unused. Compromise of the server is compromise of everything it brokers, so it is hardened accordingly. |
 | 1Password Connect | Trusted secret backend. Reachable only from warden, on its own network, and unable to reach warden's listeners. |
 | Notifiers (Home Assistant Companion, ntfy, push providers) | Untrusted doorbells. They receive the goal text, the session label the agent stated, agent, target and a link to the approval page, and nothing else. They cannot approve anything. Which channels are used is fixed at startup from a compile-time set (`WARDEN_NOTIFY`); agents cannot influence it. |
 | Tailscale | Transport and network-level identity. The tailnet policy is the outer access control. |
@@ -193,7 +197,10 @@ change.
   one, adding an agent or changing its key, enrolling or removing a passkey and
   making an enrollment code write their entries before they touch the database. A
   proxied call and a relay session write theirs before anything reaches the target,
-  and then check the grant again. If the entry cannot be written, the action does
+  and then check the grant again. A release step writes `release_step_started` once
+  it has claimed the step and, for the tag and the manifest, once the release key has
+  signed, before the signature leaves the broker and before GitHub is changed; it too
+  then checks the grant again. If the entry cannot be written, the action does
   not happen and the caller gets an error. A bearer agent's row is written first and
   revoked if its entry cannot be written; its key is shown only after that entry, so
   the row cannot be used.
@@ -251,8 +258,9 @@ change.
   the database means the approval did not take effect, and no certificate left the
   broker.
 - **Written after the fact, and only logged if that fails.** `request_limited`,
-  `limit_notified`, `notified`,
-  `relay_session_ended`, `relay_session_refused` and `relay_login_refused`
+  `limit_notified`, `notified`, `proxy_call_limit_reached`, `proxy_call_limit_notified`,
+  `proxy_calls_refused_held`, `relay_session_ended`, `relay_session_refused`,
+  `relay_sessions_refused_held`, `relay_login_refused` and `relay_logins_refused_held`
   record something that already happened and gave no new access, so nothing can
   be refused any more. The server log has an error when one is lost. A session's
   end is also missing after a crash; its `relay_session_started` is still there.
@@ -269,6 +277,70 @@ change.
   or approved, and relay sessions and proxied calls cannot start. A log that stalls
   holds those up until it answers. Ending access goes on as above. Watch
   the disk that holds the log.
+- **The size and rate of proxied-call and relay entries are bounded, so that the log cannot
+  be filled quickly.** The log is append-only and never rotated, so an unbounded source of
+  entries would end in the failure above for every agent. The table gives the most proxied
+  calls and relay sessions can write in a day with the defaults. Commit signing, GitHub
+  token and release refusals and local backend errors are limited too, each with its own
+  bound. Sizes are measured from a test log: a `proxy_call` line is about 370 bytes (about
+  410 for a refusal) and `proxy_call_started` about 310, of which about 150 are the
+  sequence number, time and hash chain. What the agent chooses is cut to a bound before it
+  is recorded: the method to 32 bytes, the URL to 512, and the outcome, which can quote a
+  header name of up to 64 KiB, to 512 bytes as the log writes it (a control character counts
+  for the 6 bytes of its escape) plus ` (truncated)` (the agent still gets the whole
+  message). The longest `proxy_call` line is then about 1.4 KB (a refusal with a
+  64 KiB header name measured 891 bytes with a short URL, and a 512 byte URL and a 32 byte
+  method add about 510), taken as 1.5 KB. The relay's entries hold only values of a fixed
+  size: a target or user name of at most 32 characters, a grant id, an address of at most
+  39 characters, counts, and a fixed phrase for a reason (at most 41 characters). The one
+  free text is the command of a session, cut to 200 characters. Measured lines are
+  `relay_session_started` 560 bytes (1560 with a command of 200 control characters, each
+  written as 6 bytes), `relay_session_ended` 382, `relay_session_refused` 284 (about 300
+  with the longest phrase), `relay_login_refused` 317 (a 32 character name and a 39
+  character address) and the two summaries about 300. Every other message whose length a
+  caller or an upstream answer sets is cut the same way, to 512 bytes as written plus
+  ` (truncated)`: the reason of `commit_signing_refused`, `github_token_refused`,
+  `release_refused` and `notify_failed`, and the message of an `error` entry. The one
+  exception is the `error` entry that follows an entry written late, which quotes that entry
+  whole and so takes at most about twice its size. The rest of the text in entries is bounded
+  where it is accepted: names, ids, digests and fingerprints of a fixed form, fixed phrases,
+  a request's summary (a goal of at most 500 characters without control characters, so at
+  most 2000 bytes, and a session label of at most 64 characters), and a signed commit's
+  author (at most 1024 bytes without control characters, so at most 2048 once escaped)
+  and at most 64 parent ids. Typical is the measured size times the count; worst case is
+  the longest size times the count.
+
+  | Source | Bound | Typical a day | Worst case a day |
+  |---|---|---|---|
+  | Proxied calls sent, per API grant | 10000 calls, 2 entries each (`proxy_call_started` and `proxy_call`) | about 7 MB (10000 × 680 bytes) | about 30 MB (20000 × 1.5 KB) |
+  | Proxied calls refused before they start, per agent | 30 entries a minute, plus 1 `proxy_calls_refused_held` summary a minute | about 18 MB (44640 × 410 bytes) | about 67 MB (44640 × 1.5 KB) |
+  | Relay sessions started, per grant | 1000 sessions a UTC day (`WARDEN_RELAY_MAX_SESSIONS_PER_DAY`), 2 entries each (`relay_session_started` and `relay_session_ended`) | about 1 MB (1000 × 940 bytes) | about 2 MB (1000 × 1.95 KB) |
+  | Relay sessions refused after login, per grant | 30 entries a minute, plus 1 `relay_sessions_refused_held` summary a minute | about 13 MB (44640 × 290 bytes) | about 13 MB (44640 × 300 bytes) |
+  | Relay logins refused, overall | 5 entries a minute per address (per /64 network for IPv6) and 10 overall, plus 1 `relay_logins_refused_held` summary a minute (its `peers` field at most 1025) | about 5 MB (15840 × 317 bytes) | about 5 MB (15840 × 330 bytes) |
+
+  Each API grant and each relay grant takes a phone approval, so the
+  per-grant figures multiply only by the grants the owner approved, and the refused-call
+  figure by the agents. An IPv4 address that arrives mapped into IPv6 counts as the IPv4
+  address. What the relay holds is kept in memory (at most 1024 addresses) and written once
+  its minute is over and at a clean shutdown, so a crash can lose up to about the last
+  minute and a quarter of it. Revoking the agent stops every one of them. The bounds keep the log's growth
+  to a rate an owner can watch, not to nothing: an owner still needs to watch the disk.
+- **Opening the log does not hold up the server's appends.** Every writer takes the
+  log's file lock for each append and waits 5 s at most for it. A `warden-server`
+  command that opens the log while the server runs verifies it up to its last complete
+  line without the lock, reading one line at a time, and takes the lock only to check
+  what was appended since and to repair a torn tail, so a large log does not stop the
+  server's appends. If the part it verified is shorter under the lock, or its last line
+  changed, the command refuses to open the log: warden only ever cuts a torn line past
+  the last complete one, so something else changed the file. A line that does not verify
+  in the unlocked pass is read again under the lock, which alone decides, so a torn tail
+  repaired meanwhile is not taken for corruption. Reading and `audit verify` keep at most
+  one line in memory, and refuse a line over 16 MiB.
+- **warden does not write an entry it could not read back.** An entry whose line would
+  be over 16 MiB is refused before any byte reaches the log: the action that needed it
+  fails as for any entry that cannot be written, the log stays usable for the next one,
+  and the server log records the entry's type and size, not its content. So a log warden
+  wrote always opens again.
 
 ## Authentication of callers
 
@@ -319,10 +391,31 @@ change.
     (the larger of 10 s and the limit at 128 KiB/s: 10 s, or 16 s for
     proxied calls; 408), so a caller naming a known agent cannot hold a
     connection or memory beyond that without a valid signature.
+  - **Many connections at once.** The bounds above hold per connection; these
+    bound how many, so that agents, or a peer naming a known agent without
+    its key, cannot use up the file descriptors and memory the approval UI
+    shares with the agent API in one process, at the moment the owner wants
+    to revoke. Bodies read before their signature is verified share one
+    budget of 32 MiB over all callers, counted at their declared length or
+    the route's limit (503 beyond it, before the body is read). An agent may
+    have at most 16 status long-polls waiting at once (429 beyond that).
+    Each listener caps its open connections, 256 for the agent API and 64
+    for the approval UI, and closes any beyond its cap as soon as it is
+    accepted, so a full agent API leaves the approval UI its own share; both
+    together, with the default relay and proxy limits, stay within the usual
+    limit of 1024 open files (raise it if you raise those limits a lot). Request headers must arrive within 120 s, which also
+    ends idle keep-alive connections; behind Serve, which forwards only
+    complete request heads, this matters only for a listener reached without
+    it. What remains: a compromised agent, or a peer naming a known agent,
+    can fill the agent API's share (the body budget, for one, takes 16 slow
+    bodies declared at the 2 MiB limit of a proxied call), and other agents get 502s or 503s until
+    it eases. That is availability of the agent API only, and fails closed:
+    no access is given, and the owner can still open the approval UI and
+    revoke.
   - **Agent names are not secret.** An unauthenticated peer that can reach
     the API can learn whether a name belongs to an enrolled, unrevoked
     key-signed agent: such a name gets a 413 or 408 for an oversized or slow
-    body, any other name a 401. This is accepted: agent names appear in
+    body, or a 503 when the body budget is used up, any other name a 401. This is accepted: agent names appear in
     notifications and logs, and knowing one gives no way to sign.
   - Each refused signed request is logged at warn level with its reason
     (and the agent name once it parsed). A caller can therefore add log
@@ -565,13 +658,16 @@ These were recorded during implementation and are accepted for this release.
 - **Secrets in the environment.** Unless given through a `_FILE` variable (see
   [Configuration](configuration.md#secrets-in-files)), the Connect token and the
   notifier secrets are in the process environment, readable by root and the same
-  user. A `_FILE` keeps them out, and may allow group access. It is read once at
-  startup.
+  user. A `_FILE` keeps them out, and may allow group access. It is checked and
+  read through one open handle, once, at startup.
 - **Goals are free text.** The goal is a single line of at most 500 characters
-  without control characters or invisible format characters (bidi overrides,
-  zero-width characters). The owner decides on the goal alone, and a
-  prompt-injected agent can write a misleading goal. The fingerprint check,
-  the narrow user and the short window limit the damage.
+  without control characters, line or paragraph separators or invisible characters
+  (bidi overrides, zero-width characters, blank fillers), checked when a request
+  arrives; requests stored by an earlier version are read with its rules, so that one
+  cannot stop the pages, the relay or the CLI's lists, and the status lines the
+  CLI prints replace such characters. The owner decides on
+  the goal alone, and a prompt-injected agent can write a misleading goal. The
+  fingerprint check, the narrow user and the short window limit the damage.
 
 - **A session label is a claim.** It has the rules of a goal, at most 64 characters
   on one line, and the same limit: nothing checks it. Sessions of one agent run as
@@ -654,6 +750,19 @@ These were recorded during implementation and are accepted for this release.
     redacted and returned, so a response that is cut part-way, which may quote the
     secret, is dropped unread. The agent gets the fixed message, and the audit entry
     holds only the counts.
+- **An API grant has a daily limit of calls**, 10000 per UTC day by default
+  (`WARDEN_PROXY_MAX_CALLS_PER_DAY`), because each call that is sent writes two entries
+  (`proxy_call_started` and `proxy_call`) and a looping agent could otherwise fill the disk
+  that holds the audit log. It is counted per grant in the database, so a restart does not
+  reset it. Past it, calls fail with a 429 until 00:00 UTC and the owner is notified once a
+  day per grant, with `proxy_call_limit_reached` (the grant, the limit) and
+  `proxy_call_limit_notified` entries; other grants go on. A call refused before it
+  starts (by `proxy::check`, a changed secret, the calls in flight or an outage of the
+  backend) does not use the budget, and
+  its entry is limited instead: at most 30 `proxy_call` entries a minute per agent, with the
+  rest counted in one `proxy_calls_refused_held` entry per agent per minute, once the minute
+  is over. A call that was sent always keeps both its entries. The limit bounds the log and
+  does not limit what a grant may do: within it, an agent can make any call the grant allows.
 - **Within the window, the agent can make any allowed call.** Approval is
   bound to an origin, prefix, method set and window, not to individual
   requests. A prompt-injected agent can issue any call the grant permits
@@ -827,8 +936,10 @@ What holds:
   entry that cannot be written all mean no signature. The signature leaves the broker only
   after its entry is written.
 - **Every refusal is recorded.** Beyond 30 a minute per agent they are counted, so refused
-  calls cannot fill the log. A body over the route's 2 MiB limit is refused before the
-  caller is known, and is not recorded, as on every route.
+  calls cannot fill the log; the count is written as one entry per agent per minute, when
+  the minute that held it is over, and at a clean shutdown. Counts are kept in memory, so a
+  crash can lose up to about the last minute and a quarter of them. A body over the route's
+  2 MiB limit is refused before the caller is known, and is not recorded, as on every route.
 - **An agent cannot approve it, and nothing renews by itself.** A grant takes the passkey,
   and so does renewing it. warden notifies the owner a few days before a grant ends, and the
   notification names only the agent.
@@ -949,7 +1060,9 @@ What an attacker gets, and what stops it:
   agent across all its grants: far more
   than the CLI, which keeps each token for its hour, needs, and few enough that a looping
   agent cannot use up the App's rate limit at GitHub, which every agent shares, or fill the
-  audit log. A refused mint does not reach GitHub and is audited as `github_token_refused`.
+  audit log through mints. The repository question of `warden list` and `warden prime` is
+  outside this limit, an open gap described under
+  [What an agent can learn about what warden covers](#what-an-agent-can-learn-about-what-warden-covers). A refused mint does not reach GitHub and is audited as `github_token_refused`.
   A prompt-injected agent gets tokens too, and what a token can do includes pushing branches,
   opening pull requests and editing issues. Pushes to a protected default branch are stopped
   by the repository's rules on GitHub, and not by warden. A repository whose content runs as
@@ -981,8 +1094,10 @@ What holds:
   residual copies in HTTP client buffers as the other secrets
   ([accepted residual risks](#accepted-residual-risks)). The key is read for each approval
   page and each mint, so it is in memory more often than the CA key. The owner causes the
-  first; an agent causes the others only with an active grant. An agent with no grant cannot
-  make the broker read it.
+  first; an agent causes the others with an active grant, or with no grant by asking whether
+  the App covers a repository, once per repository name every 5 minutes (see
+  [What an agent can learn about what warden covers](#what-an-agent-can-learn-about-what-warden-covers)).
+  That question signs a JWT and mints a token that the broker drops unused.
 - **The key signs only the JWT GitHub asks for, through `aws-lc-rs`.** The `rsa` crate in the
   dependency tree, behind the `RUSTSEC-2023-0071` exemption in `deny.toml`, is never given a
   private key: warden uses it for public keys only, to verify the pinned host keys of relay
@@ -1049,7 +1164,8 @@ This section covers the request, the approval and the tag, manifest and publish 
   asked, and again as the owner decides. The page shows those facts, with the agent's text
   escaped, control characters as escapes and the changelog cut at 16 KiB with a note. A request
   for a commit off the default branch, or a tag that exists on another commit or under another
-  key, is refused before it is made. Nothing GitHub said is quoted in an error, a log line or an
+  key, is refused before it is made. The default branch's head is read from its own ref
+  (`refs/heads/<branch>`) and compared with the commit by commit id. Nothing GitHub said is quoted in an error, a log line or an
   audit entry.
 - **The grant is bound to the key and the App.** It holds a digest of the facts and the key; a
   step is refused once what the broker reads no longer matches it.
@@ -1064,15 +1180,23 @@ This section covers the request, the approval and the tag, manifest and publish 
 - **A step is claimed once.** Each step is claimed in one database statement before it is done,
   and a claim is never given back, so a repeat, a concurrent call or a retry after a failure does
   not do it twice, and a step that fails stays used. The claim also checks that the grant is not
-  revoked or ended and covers the step, so a revocation while the broker prepares a step stops it.
+  revoked or ended and covers the step, and the grant is checked again once the step's
+  `release_step_started` entry is written, so a revocation while the broker prepares a step
+  stops it. If that entry cannot be written, the step stops there and stays used.
 - **The approve-finish re-check calls GitHub before the passkey assertion.** It mints a release
   App token and reads the commit and the tag. Only someone holding the approval token who has
   started a ceremony reaches it. It is not rate-limited. Accepted: the approval token is the
   owner's, and what it costs is calls on the owner's App.
 - **The broker signs only a manifest that passes fixed rules.** The agent builds the manifest and
   the broker signs what it sent, so the rules are the guard: the grant's file name, lines of a
-  lowercase SHA-256 digest and a name, plain file names or image references at the approved
-  version only, no duplicates, 64 KiB at most. The signature is in the namespace the owner's item
+  lowercase SHA-256 digest and a name, plain file names that carry the approved version as a
+  component or image references tagged with it, no duplicates, 64 KiB at most. So a manifest
+  signed for one version cannot list another version's files. The signed bytes name neither the
+  tag nor the repository, and that format is what existing verifiers check, so the binding is
+  through the names only: a name carrying `1.2.3` is also accepted when it continues with a
+  pre-release suffix (`-rc.1`), which the name rule cannot tell from a platform or package
+  release suffix (`-1.x86_64`), and the repository is told apart only by its release key.
+  Verifiers fetch the manifest from the release they want. The signature is in the namespace the owner's item
   names, which tag signatures (`git`) and commit signatures never share. The broker cannot know
   whether a digest is the digest of the right artifact: the owner approved the release, and the
   verifier trusts the key, so the digests are the agent's claim, as with any build the agent runs.
@@ -1092,6 +1216,15 @@ This section covers the request, the approval and the tag, manifest and publish 
   if it reports none the call is refused. These checks, and that the release is a draft, run
   before the claim. The files other than those two are not checked: the manifest lists them, and
   the digests in it are the agent's claim, as above.
+- **Residual: a write between the checks and the publish.** GitHub has no conditional publish, so
+  anyone with write access to the draft, the agent's routine token included, can replace one of
+  the two files, or delete the tag, after the checks and before the publish (GitHub then creates
+  an unsigned lightweight tag). The broker cannot prevent this. It narrows it to detection: it
+  compares the two files the release was published with, as GitHub's answer to the publish lists
+  them, and the tag object, with what it checked. When they differ it records
+  `release_published_changed`, tells the owner and refuses the call, though the release stays
+  published. Such a release fails verification rather than passing it, so the cost is a burned
+  version, as for the early publish below.
 - **Step calls refused before the claim are not rate-limited.** Each one mints a release App
   token and makes a few GitHub reads before it is refused (a tag that exists, a commit that
   moved, no draft, a swapped file). Only an agent holding an active release grant reaches them, so they cost
@@ -1126,6 +1259,72 @@ This section covers the request, the approval and the tag, manifest and publish 
   repository and tag in the same transaction, and writes a `grant_revoked` entry for each, so a
   release never has two active grants. Nothing weakens the one-claim rule to avoid this.
 
+## What an agent can learn about what warden covers
+
+`warden list` and `warden prime` ask the broker two questions: `GET /v1/offers`, what this
+agent may ask for, and `GET /v1/offers/repository/{owner}/{name}`, what warden offers for
+one repository. Both take an enrolled agent's key like every agent call, under the same body
+limit and Funnel refusal. Neither asks the owner anything or gives any access.
+
+What it exposes, and why that is accepted:
+
+- **Any agent key gets the names and, by default, the destinations of what warden covers**:
+  for each SSH target its name, users, longest window, mode, host and port (a relay target's
+  too, although the agent never connects there); for each API secret its name, origin,
+  methods, path prefix and longest window; whether a GitHub App is configured and its longest
+  window; whether commit signing and releases are available. An agent on the owner's host can
+  already see the network and its own SSH configuration, so hiding addresses by default
+  protects little, and the listing grants nothing: every request still needs the owner's
+  passkey. A copied agent key gets the same list ([risk 9](security-assessment.md#ranked-risks)).
+- **Nothing secret is in it.** The listing types have no field for a host key, a relay
+  credential, a secret value or a private key, so none can reach the response by accident.
+  Commit signing is answered from whether a key is configured, without reading it. Releases
+  are answered from item summaries, so the list names no repository and reads no release key.
+- **The owner decides what is listed, item by item**, with the `list` field
+  ([1Password items](1password-items.md), [local backend](local-backend.md)): `name` leaves
+  out the host and port or origin, `hidden` leaves the item out. Without the field an item is
+  listed in full. A 1Password item with any other value, or that fails validation, is left
+  out of the list: one bad item must not take the broker down, and its `list` value cannot be
+  trusted. The local backend refuses such a file, like any other bad setting.
+- **`hidden` hides the listing, not the item's existence.** The broker already answers
+  `unknown target` or `unknown API secret` to a request for a name that does not exist, so an
+  agent can test a guess, one call at a time. `list` decides listing only, never access: an
+  agent that knows a hidden item's name can still ask for it, and the owner still decides.
+- **The repository question answers one guess at a time and never enumerates.** The agent
+  names a repository and the broker says whether the agent App's installation covers it,
+  whether commit signing is available, and whether a release signing key names it with a
+  release App configured. Nothing asks GitHub for the installation's list of repositories,
+  and no route lists the repositories warden covers. The answer is the same for every agent.
+- **Neither route is audited.** They decide no access, create no request and notify no one,
+  and the audit log records decisions and grants. The server log records each call with the
+  agent's name, and the repository for the second. An agent that calls them often leaves only
+  those lines.
+
+What it costs:
+
+- **An uncached repository question reads keys with no grant.** To answer, the broker reads
+  the agent App's private key, signs a JWT and mints an installation token at GitHub, which it
+  drops unused, and reads the release signing items, keys included, as a release step does.
+  None of it leaves the broker. Answers are kept in memory for 5 minutes per repository name,
+  up to 256 of them; an answer the broker could not tell is not kept.
+- **Each offers listing reads every target and API secret item.** On 1Password,
+  `GET /v1/offers` lists the vault's items once and reads the body of each target and API
+  secret item, its secret value or relay credential included, which the broker drops unused.
+  Nothing limits how often an agent key calls it, so a key that calls it in a loop keeps the
+  broker and Connect busy and keeps secrets passing through the broker's memory
+  ([#254](https://github.com/pecheriere/warden/issues/254)).
+- **Open: an agent key can spend the agent App's rate limit at GitHub.** The question is not
+  audited and not counted against the 60 tokens an hour per agent. An agent key that cycles
+  through distinct names, including case variants of one name since the cache is keyed on the
+  name as given, makes one token request at GitHub per name. That spends the App's rate limit,
+  which every agent shares, and can delay or fail the token mints of real grants until GitHub
+  resets it. Nothing in warden limits it yet
+  ([#254](https://github.com/pecheriere/warden/issues/254)); the server log shows who asked.
+- **The shared cache can show that someone asked.** It is shared by every agent, so a quick
+  answer can tell an agent that some agent asked about that repository in the last 5
+  minutes. The impact is low: the answer is the same for every agent, and the timing says
+  neither which agent asked nor why.
+
 ## The local secret backend
 
 `WARDEN_SECRET_BACKEND=local` reads targets, API secrets and the SSH CA key from
@@ -1148,7 +1347,11 @@ What is lost, and cannot be regained by any setting:
   from changing what it hands out or where secrets go, but not a compromised host,
   and warden cannot verify that it was done beyond the file's owner and mode.
 - **No record of edits.** 1Password keeps item history and usage reports. warden
-  audits its own refusals, not who changed a file.
+  audits its own refusals, not who changed a file. While the files are unusable, every
+  read is refused, so beyond 10 `error` entries a minute the refusals are counted in
+  `local_backend_errors_held`, written once a minute, and callers cannot fill the log.
+  A count still held when the server stops is written at shutdown; one lost to a crash
+  costs at most the last minute or two of counts.
 - **Policy and secret are two reads.** With 1Password both come from one read of one
   item. Here, a change touching both files is two steps, and a call can fall between
   them: an old credential could go to a new destination. Writing a new secret under

@@ -11,6 +11,7 @@ to disk. For APIs, the agent never sees the secret: warden makes the calls.
 Contents:
 
 - [One-time setup](#one-time-setup)
+- [What warden offers here](#what-warden-offers-here)
 - [Rules for requesting access](#rules-for-requesting-access)
 - [Requesting access](#requesting-access)
 - [Using a grant](#using-a-grant)
@@ -40,8 +41,9 @@ In short:
    `warden login` command for the agent's machine.
 3. Install the CLI there and run that command. `warden doctor` then checks
    the setup ([what it checks](configuration.md#checking-an-agent-machine)).
-4. Paste [the instructions](agent-instructions.md) into the agent's `AGENTS.md`
-   or `CLAUDE.md`.
+4. Give the agent [the instructions](agent-instructions.md): a session-start
+   hook that runs `warden prime --brief`, or the one-line rule, as
+   [Instructions to give an agent](#instructions-to-give-an-agent) says.
 
 The rest of this section gives the details.
 
@@ -298,6 +300,39 @@ the agent must run on one of the owner's (untagged) devices.
 The server URL must be `https://`, or plain `http://` to a loopback address.
 The CLI never sets the `Tailscale-User-Login` header: Tailscale Serve adds it
 after authenticating the machine.
+
+## What warden offers here
+
+`warden list` shows what this agent may ask the broker for: the SSH targets
+and their users, the API secrets and their methods, and whether GitHub tokens,
+commit signing and releases are available. It asks no one and changes nothing.
+Sections with nothing in them are left out; a part the broker could not read
+is printed as `could not be read` instead, and the command still exits 0.
+
+```sh
+warden list
+warden list --json
+```
+
+In a git checkout whose `origin` is on `github.com`, it also prints a "this
+repository" section: whether the GitHub App covers the repository, whether
+commit signing is available, and whether the repository can be released.
+`--repo owner/name` asks about another repository, and the section is left out
+for a checkout whose remote is not on GitHub. `--json` prints
+`{"offers": …, "repository": …}` with the broker's answers as it sent them, so
+a field or value newer than this CLI is kept; `repository` is null when there
+is no such section or its answer could not be read. In the text output, a value
+this CLI does not know is printed as `unknown` (an SSH mode) or `could not be
+read`.
+
+A target or secret the owner lists as `name` shows no host or origin; one
+listed as `hidden` does not show at all, but can still be requested. What the
+list shows is what the broker says today, and a request is still decided by
+the owner. Exit 0 on success, also when only the repository answer fails (its
+section says `could not be read`); 1 when the broker cannot be reached, refuses
+the login, fails or is too old to answer `GET /v1/offers` (it says to upgrade
+it), and 64 for a `--repo`
+that is not `owner/name` on `github.com`. See [Exit codes](#exit-codes).
 
 ## Rules for requesting access
 
@@ -562,8 +597,9 @@ warden release publish example-owner/example-repo v1.2.3
 - **`sign-manifest`** sends the file you built. Its base name must be the file name the owner
   approved. The manifest is lines of `<64 lowercase hex digits>  <name>`, each ending in a line
   feed, at most 64 KiB (a larger file is refused on your machine, and nothing is sent), with no
-  name twice. A name is a plain file name, or an image reference tagged with the release's
-  version, such as `ghcr.io/example-owner/example-repo:1.2.3`. The broker signs what you sent and
+  name twice. A name is a plain file name that carries the release's version, such as
+  `warden-1.2.3-x86_64-unknown-linux-gnu.tar.gz` or `warden_1.2.3_amd64.deb`, or an image
+  reference tagged with it, such as `ghcr.io/example-owner/example-repo:1.2.3`. The broker signs what you sent and
   cannot know whether a digest is that of the right artifact, so run your own checks on the
   artifacts first. It attaches the manifest and its `.sig` to the **draft** release of the tag,
   so create the draft first (your release workflow does). A manifest that breaks a rule, or a
@@ -572,7 +608,9 @@ warden release publish example-owner/example-repo v1.2.3
   not in place as the owner approved it (an annotated tag on that commit, signed by the release
   key), when the draft no longer holds the manifest and signature the broker attached, or when
   the release is not a draft. Releases are immutable on GitHub: a release published without its
-  manifest can never gain one.
+  manifest can never gain one. If the release GitHub published does not match what the broker
+  checked, the call fails with `409` after publishing, the broker tells the owner, and the
+  release stays public: do not call again, tell the owner.
 
 An example session for a repository that only needs a signed tag (no `manifest` in its release
 item, and its own workflow publishes):
@@ -702,7 +740,9 @@ expired), the broker cannot read the target's policy or the state of grants
 right now, the session could not be recorded, forwarding or a subsystem was
 asked for, or the broker is shutting down. A session also ends after 15
 minutes without traffic, when the target stops reading and the broker gives
-up (`flow control`), or when the window ends. Do not retry in a loop: check
+up (`flow control`), or when the window ends. When a grant reached its daily limit of
+sessions the message is `this grant reached its daily limit of sessions; new sessions fail
+until 00:00 UTC`: retrying before then does not help. Do not retry in a loop: check
 `warden status`, and request again if the grant is gone. A refused start and
 a target that refuses its login look alike to ssh (255); the owner can tell
 them apart in the audit log.
@@ -809,8 +849,10 @@ The broker refuses, with a message that names the rule (exit 1):
 - headers you may not set: `Host`, `Content-Length`, `Connection` and other
   hop-by-hop headers, the secret's own header, `Accept-Encoding`, `Range`,
   `If-Range`, method or URL override headers, and forwarding or
-  host-override headers (`Forwarded`, `Via`, `X-Forwarded-*`, `X-Real-IP`,
-  `X-Host`, `X-Original-Host`).
+  host-override headers (`Forwarded`, `Via`, `X-Forwarded-*`, `X-Original-*`,
+  `X-Rewrite-*`, `X-Envoy-*`, `X-Override-*`, `X-Real-IP`, `X-Host`) and
+  client-address headers (`X-Client-IP`, `True-Client-IP`, `CF-Connecting-IP`,
+  `*-Client-IP`).
 
 Redirects are not followed; a 3xx comes back to you as is. Responses over
 the broker's size limit (1 MiB by default) or compressed are an error, and
@@ -982,6 +1024,12 @@ an agent can have 5 requests pending and make 10 new ones per 10 minutes by
 default. The message says how long to wait. Do not retry sooner: reuse a grant
 or a pending request where you can.
 
+An API grant has a daily limit of calls, 10000 by default. Past it, `warden http`
+fails with the broker's 429, `this grant made N calls today, its limit; calls fail until
+00:00 UTC, and the owner was told`, and it does not retry. Stop, do not call again before
+00:00 UTC, and tell the person: a loop of calls is the usual cause, and the owner has
+already been told.
+
 `warden http` exits 0 for any upstream status unless `--fail` is given. A
 refusal or failure by the broker (policy violation, other 409s, timeout, size
 limit) is exit 1 with the broker's message on stderr.
@@ -1017,6 +1065,43 @@ never try to get around warden by any other route.
 
 ## Instructions to give an agent
 
-[Instructions for an agent](agent-instructions.md) is a block to paste into an
-agent's `AGENTS.md` or `CLAUDE.md`: how to ask, how to write a goal, how to
-choose a window, when to revoke and what to do when denied.
+[Instructions for an agent](agent-instructions.md) says how to ask, how to write
+a goal, how to choose a window, when to revoke and what to do when denied. The
+CLI carries a copy of it: `warden prime` prints it with what this broker offers
+the agent (as `warden list` prints it), leaving out the sections for what the
+broker does not offer, and in a GitHub checkout adds what it offers for that
+repository. `warden prime --brief` prints the short form: about ten lines that
+name what warden covers here, say never to use other credentials or another way
+in, and say to run `warden prime` before the first request. It does not ask
+about the repository, so it makes one call to the broker.
+
+```sh
+warden prime
+warden prime --brief
+```
+
+Give the instructions to an agent one of three ways:
+
+- **A session-start hook** that runs `warden prime --brief`, for example a
+  Claude Code `SessionStart` hook. Use it with a key that signs without a
+  prompt, such as a dedicated agent socket as `warden login` sets up: every
+  call is signed, and a key that prompts for each signature would prompt at
+  every session start.
+- **One rule** in the agent's `AGENTS.md` or `CLAUDE.md`, for an agent with no
+  hooks or with a key that prompts:
+
+  ```markdown
+  Run `warden prime` before a task that needs an SSH host, an API secret, GitHub, commit signing or a release.
+  ```
+
+- **The block itself**, pasted into `AGENTS.md` or `CLAUDE.md`, for an agent
+  with no shell access at session start.
+
+Both forms exit 0 whatever the broker does, so a hook never fails because of
+it, and give the broker 3 seconds in all. When the broker cannot be reached,
+does not answer within those 3 seconds, cannot read its policy, refuses the
+call, sends an answer the CLI cannot read or is too old to list what it offers,
+they print the rules without the offers and one line saying which, such as "warden: the broker cannot
+be reached: run `warden doctor`, and do not go around it." Before `warden login`
+has been run, they print only one line saying warden is installed but not set
+up.

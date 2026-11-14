@@ -14,7 +14,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use ssh_key::rand_core::OsRng;
 use ssh_key::{Algorithm, HashAlg, LineEnding, PrivateKey};
 use tempfile::TempDir;
-use warden_broker::policy::{RelayCredential, SshMode, SshTarget};
+use warden_broker::policy::{Listing, RelayCredential, SshMode, SshTarget};
 use warden_broker::test_keys::P256;
 use warden_broker::testkit::sshd::{Sshd, SshdLogin, current_user};
 use warden_broker::testkit::{CapturingNotifier, HttpsUpstream, TestBroker};
@@ -252,6 +252,7 @@ async fn signed_setup() -> Setup {
             users: vec![UnixUser::try_from(current_user()).unwrap()],
             max_window: Window::H1,
             host_keys: vec![sshd.host_key().clone()],
+            listing: Listing::Full,
         },
         RelayCredential::Key(onward.to_openssh(LineEnding::LF).unwrap()),
     );

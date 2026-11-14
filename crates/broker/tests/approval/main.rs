@@ -10,6 +10,7 @@ mod enrollment;
 mod grants;
 mod hardening;
 mod relay;
+mod stored_text;
 
 use std::time::Duration;
 

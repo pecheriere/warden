@@ -5,11 +5,14 @@ use std::time::Duration;
 
 use axum::http::StatusCode;
 use serde_json::json;
-use warden_broker::audit;
+use warden_broker::audit::{self, AuditEvent};
 
 use super::{
     ROTATED, SECRET, assert_clean, audit_events, call_as, get, proxied, proxy_calls, setup,
 };
+
+/// Refusals one agent may have written one by one per minute.
+const ALLOWANCE: usize = 30;
 
 #[tokio::test]
 async fn every_call_audited_without_secret() {
@@ -187,4 +190,103 @@ async fn overlong_path_is_listed_as_invalid() {
     assert!(!live.body.contains("aaaa"), "{}", live.body);
     assert!(live.body.len() < 512, "{}", live.body.len());
     assert_eq!(proxy_calls(&s.broker)[0]["url"], "invalid");
+}
+
+#[tokio::test]
+async fn refused_calls_beyond_the_allowance_are_counted() {
+    let s = setup().await;
+    let url = s.upstream.url("/v1/hello");
+    for _ in 0..ALLOWANCE + 5 {
+        let refused = call_as(&s.broker, &s.key, &s.grant, "DELETE", &url, None).await;
+        assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.body);
+    }
+    assert_eq!(proxy_calls(&s.broker).len(), ALLOWANCE);
+    assert_eq!(
+        audit_events(&s.broker, &["proxy_calls_refused_held"]),
+        [] as [serde_json::Value; 0]
+    );
+    s.broker.state().requests.flush_refusals(true).await;
+    let held = audit_events(&s.broker, &["proxy_calls_refused_held"]);
+    assert_eq!(held.len(), 1);
+    assert_eq!(held[0]["agent"], "bot");
+    assert_eq!(held[0]["count"], 5);
+}
+
+/// The longest `proxy_call` line the audit log may hold, newline excluded:
+/// the fixed part, 32 bytes of method, 512 of URL and 524 of outcome.
+const MAX_CALL_LINE: usize = 1_500;
+
+/// A refusal quotes the agent's header name, which may be 64 KiB. The entry
+/// holds a bounded part of it, so the log's growth does not depend on what
+/// the agent sends.
+#[tokio::test]
+async fn an_overlong_header_name_does_not_make_an_overlong_entry() {
+    let s = setup().await;
+    let name = format!("x-forwarded-{}", "a".repeat(60_000));
+    let resp = s
+        .broker
+        .api_post_json(
+            &s.key,
+            &format!("/v1/grants/{}/http", s.grant),
+            &json!({
+                "method": "GET",
+                "url": s.upstream.url("/v1/hello"),
+                "headers": [[name, "1"]],
+                "body_b64": null,
+            }),
+        )
+        .await;
+    assert_eq!(resp.status, StatusCode::BAD_REQUEST, "{}", resp.body);
+    let calls = proxy_calls(&s.broker);
+    assert_eq!(calls.len(), 1);
+    let outcome = calls[0]["outcome"].as_str().unwrap();
+    assert!(outcome.ends_with(" (truncated)"), "{outcome}");
+    assert!(
+        outcome.starts_with("header refused: \"x-forwarded-aaa"),
+        "{outcome}"
+    );
+    let line = std::fs::read_to_string(s.broker.audit_path())
+        .unwrap()
+        .lines()
+        .find(|line| line.contains("\"proxy_call\""))
+        .unwrap()
+        .len();
+    assert!(line <= MAX_CALL_LINE, "{line} bytes");
+}
+
+/// A call refused after its start was recorded still gets its result entry,
+/// whatever the allowance says: the start must not be left without an end.
+#[tokio::test]
+async fn a_call_refused_after_its_start_still_has_its_result() {
+    let s = setup().await;
+    let url = s.upstream.url("/v1/hello");
+    for _ in 0..ALLOWANCE {
+        let refused = call_as(&s.broker, &s.key, &s.grant, "DELETE", &url, None).await;
+        assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.body);
+    }
+    let stall = s
+        .broker
+        .state()
+        .audit
+        .stall_appends(|event| matches!(event, AuditEvent::ProxyCallStarted { .. }));
+    let call = get(&s, "/delayed");
+    let revoke = async {
+        stall.until_holding(1).await;
+        s.broker
+            .state()
+            .requests
+            .revoke_grant(&s.grant, "owner")
+            .await
+            .unwrap();
+        drop(stall);
+    };
+    let (resp, ()) = tokio::join!(call, revoke);
+    assert_eq!(resp.status, StatusCode::CONFLICT, "{}", resp.body);
+    assert!(s.upstream.received().is_empty());
+    assert_eq!(audit_events(&s.broker, &["proxy_call_started"]).len(), 1);
+    assert_eq!(
+        proxy_calls(&s.broker).len(),
+        ALLOWANCE + 1,
+        "the result is written past the allowance"
+    );
 }

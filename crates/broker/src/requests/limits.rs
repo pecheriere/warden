@@ -25,7 +25,7 @@ use url::Url;
 use warden_broker_proto::AgentName;
 
 use super::{PENDING_TTL_SECS, RequestError, Requests};
-use crate::audit::AuditEvent;
+use crate::audit::{AuditEvent, bounded_text};
 use crate::notify::Doorbell;
 
 /// Longest between audit entries for an agent still being refused, in seconds.
@@ -337,9 +337,9 @@ impl Requests {
     /// Write the refusals held back since the last entry, if a minute has
     /// passed (or whatever the time, if `all`).
     pub async fn flush_refusals(&self, all: bool) {
-        self.flush_signing_refusals().await;
-        self.flush_github_refusals().await;
-        self.flush_release_refusals().await;
+        self.throttles
+            .flush(&self.audit, self.clock.now(), all)
+            .await;
         let due = self.refusals.take_due(self.clock.now(), all);
         for (agent, tally) in due {
             self.write_tally(&agent, tally).await;
@@ -381,7 +381,7 @@ impl Requests {
                 tracing::warn!(agent = %agent, error = %e, "request limit notice failed");
                 AuditEvent::Error {
                     context: "request limit notice".to_owned(),
-                    message: format!("{agent}: {e}"),
+                    message: bounded_text(format!("{agent}: {e}")),
                 }
             }
         };

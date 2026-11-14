@@ -149,16 +149,53 @@ async fn on_default_branch_true_for_the_head_and_its_ancestors() {
     let client = connect(&api).await;
     assert!(client.on_default_branch(&id('3')).await.unwrap());
     assert!(client.on_default_branch(&id('1')).await.unwrap());
+    // The branch is read as a ref and compared by commit id, never by name.
     assert_eq!(
-        requests(&upstream)[..2],
+        requests(&upstream)[..3],
         [
             "GET /repos/example-owner/example-repo".to_owned(),
+            "GET /repos/example-owner/example-repo/git/ref/heads/main".to_owned(),
             format!(
-                "GET /repos/example-owner/example-repo/compare/{}...main?per_page=1&page=2",
+                "GET /repos/example-owner/example-repo/compare/{}...{}?per_page=1&page=2",
+                sha('3'),
                 sha('3')
             ),
         ]
     );
+}
+
+#[tokio::test]
+async fn a_tag_named_like_the_default_branch_does_not_stand_for_it() {
+    let (upstream, api, repo) = fixture().await;
+    history(&upstream);
+    // `4` is not on `main`, but a compare by name would find the tag `main` first.
+    upstream
+        .github_release()
+        .add_lightweight_tag(&repo, "main", &sha('4'));
+    let client = connect(&api).await;
+    assert!(!client.on_default_branch(&id('4')).await.unwrap());
+    assert!(client.on_default_branch(&id('3')).await.unwrap());
+}
+
+#[tokio::test]
+async fn on_default_branch_refuses_a_branch_ref_it_does_not_expect() {
+    let (upstream, api, _repo) = fixture().await;
+    history(&upstream);
+    let client = connect(&api).await;
+    for answer in [
+        json!({"default_branch": "main", "ref": "refs/tags/main", "object": {"sha": sha('3'), "type": "commit"}}),
+        json!({"default_branch": "main", "ref": "refs/heads/main", "object": {"sha": sha('3'), "type": "tag"}}),
+        json!({"default_branch": "main", "ref": "refs/heads/main", "object": {"sha": "main", "type": "commit"}}),
+    ] {
+        upstream
+            .github_release()
+            .answer_everything_with(Scripted::with_body(200, answer.to_string()));
+        assert_eq!(
+            client.on_default_branch(&id('3')).await.unwrap_err(),
+            GithubError::Unreadable,
+            "{answer}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -179,11 +216,13 @@ async fn a_branch_name_cannot_add_path_segments_or_dots() {
         .set_default_branch(&repo, "release/1.x", &sha('3'));
     let client = connect(&api).await;
     assert!(client.on_default_branch(&id('3')).await.unwrap());
-    assert!(requests(&upstream)[1].ends_with(&format!(
-        "/compare/{}...release%2F1.x?per_page=1&page=2",
+    assert!(requests(&upstream)[1].ends_with("/git/ref/heads/release/1.x"));
+    assert!(requests(&upstream)[2].ends_with(&format!(
+        "/compare/{}...{}?per_page=1&page=2",
+        sha('3'),
         sha('3')
     )));
-    for hostile in ["../../x", "a..b", "", "a b", "x\ny", "/x", "x@{y}"] {
+    for hostile in ["../../x", "a..b", "", "a b", "x\ny", "/x", "x@{y}", "a/.b"] {
         upstream
             .github_release()
             .set_default_branch(&repo, hostile, &sha('3'));
@@ -193,8 +232,8 @@ async fn a_branch_name_cannot_add_path_segments_or_dots() {
             "{hostile:?}"
         );
     }
-    // Only the repository was read for them: no compare went out.
-    assert_eq!(requests(&upstream).len(), 2 + 7);
+    // Only the repository was read for them: no ref or compare went out.
+    assert_eq!(requests(&upstream).len(), 3 + 8);
 }
 
 #[tokio::test]

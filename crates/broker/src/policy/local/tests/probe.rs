@@ -109,3 +109,25 @@ async fn a_refused_request_is_audited_but_an_unknown_name_is_not() {
     assert!(log.contains("group or others"), "{log}");
     Setup::assert_no_secret(&log);
 }
+
+#[tokio::test]
+async fn local_bad_list_is_a_probe_problem() {
+    let policy = ca_policy() + "list = \"yes\"\n" + API_ENTRY + "list = \"Hidden\"\n";
+    let setup = Setup::new(&policy);
+    setup.secret("ssh-ca", &ed25519_pem());
+    let problems = setup.backend.probe().await.problems();
+    assert_eq!(problems.len(), 2, "{problems:?}");
+    assert!(
+        problems[0].contains("[targets.web-01]") && problems[0].contains("list"),
+        "{problems:?}"
+    );
+    assert!(
+        problems[1].contains("[api_secrets.home-api]") && problems[1].contains("list"),
+        "{problems:?}"
+    );
+    let shown = problems.join("\n");
+    assert!(
+        !shown.contains("yes") && !shown.contains("Hidden"),
+        "{shown}"
+    );
+}

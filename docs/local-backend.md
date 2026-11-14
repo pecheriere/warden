@@ -172,11 +172,19 @@ The name follows `^[a-z0-9][a-z0-9-]{0,31}$`. Required: `address`, `mode`, `user
 A relay target names exactly one of `private_key_file` (an unencrypted Ed25519
 key, OpenSSH or PKCS#8) and `password_file`. A certificate target names neither.
 
+Optional: `list = "full"`, `"name"` or `"hidden"`, with the meaning in
+[SSH target](1password-items.md#ssh-target). It decides listing only, never access.
+Left out, or set blank (`list = ""`), it means `full`, as on a 1Password item; on an
+`[api_secrets.<name>]` entry a blank `list` is refused like any blank optional setting
+(below). Unlike a 1Password item, which lists a bad value as `hidden`, a policy file with any
+other value stops the server from starting, like any other bad setting, and
+`warden-server doctor` names the entry and the field.
+
 ### `[api_secrets.<name>]`
 
 The name follows the same pattern. Required: `website`, `credential_file` and
 `max_window`. Optional: `header`, `format`, `methods` (a list), `path_prefix` and
-`ca_pem`. See [API secret](1password-items.md#api-secret).
+`ca_pem` and `list` (see above). See [API secret](1password-items.md#api-secret).
 
 An optional setting you leave out takes its default. **One you set blank is
 refused**, unlike a blank field of a 1Password item, so that `path_prefix = ""`
@@ -253,7 +261,9 @@ check and the read.
 
 **At startup**, `warden-server serve` reads the whole policy and every secret it
 names. If anything is invalid, unreadable or too open, or a certificate target has
-no CA, it writes each problem to the audit log and refuses to start.
+no CA, it writes each problem to the audit log and refuses to start. When more than 10
+problems are found, the startup error names all of them but the audit log gets only the
+first 10.
 
 **On every request**, everything is read again and nothing is cached:
 
@@ -265,6 +275,10 @@ no CA, it writes each problem to the audit log and refuses to start.
   refusal is written to the audit log as an `error` event from
   `local secret backend`. Only the entry concerned is affected, unless the policy
   file itself cannot be used, which refuses everything.
+- While the files stay unusable, at most 10 of these `error` entries are written a
+  minute. The rest are counted and written as one `local_backend_errors_held` entry
+  with their number, once a minute, so that reads of unusable files, which
+  `GET /v1/offers` makes three of per call, cannot fill the audit log.
 
 Errors and audit entries name the entry and the setting. They never quote a value,
 a file's content or a line of the policy, and a secret value is held in memory that

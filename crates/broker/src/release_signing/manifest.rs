@@ -40,7 +40,7 @@ pub enum ManifestError {
     },
     /// A name is neither a file name nor an image reference at the release's version.
     #[error(
-        "line {line} names neither a plain file name nor an image reference tagged with the release's version"
+        "line {line} names neither a plain file name carrying the release's version nor an image reference tagged with it"
     )]
     BadName {
         /// The line, counted from 1.
@@ -60,9 +60,12 @@ const DIGEST_LEN: usize = 64;
 /// Check that `bytes` is the manifest the grant covers: named `expected_name`, as
 /// asked for in `name`, and made of lines `<64 lowercase hex>  <name>` that each
 /// end with a line feed. A name is a plain file name (`[A-Za-z0-9._+-]+`, not `.`
-/// or `..`) or an image reference `<registry>/<path>:<version>` with lowercase
-/// `[a-z0-9._-]` segments, where the tag is exactly `version`. No name appears
-/// twice, and there is at least one line.
+/// or `..`) that carries `version` as a component (set off from the rest of the
+/// name by `-`, `_` or the ends of the name), or an
+/// image reference `<registry>/<path>:<version>` with lowercase `[a-z0-9._-]`
+/// segments, where the tag is exactly `version`. No name appears twice, and there
+/// is at least one line. So every name the signed bytes hold is bound to the
+/// release's version, although the bytes name neither the tag nor the repository.
 ///
 /// # Errors
 /// [`ManifestError`], whose message names the rule and a line number only.
@@ -98,7 +101,8 @@ pub fn check(
             .and_then(|rest| rest.strip_prefix("  "))
             .filter(|entry| !entry.is_empty())
             .ok_or(ManifestError::BadLine { line: line_number })?;
-        if !is_file_name(entry) && !is_image_reference(entry, version) {
+        let file = is_file_name(entry) && carries_version(entry, version);
+        if !file && !is_image_reference(entry, version) {
             return Err(ManifestError::BadName { line: line_number });
         }
         if !seen.insert(entry) {
@@ -118,6 +122,25 @@ fn is_file_name(name: &str) -> bool {
         && name
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'+' | b'-'))
+}
+
+/// Whether `version` is a component of the file name `name`: it starts the name or
+/// follows `-` or `_`, and ends the name or is followed by `-`, `_`, or a `.` that
+/// is not followed by a digit. `warden-1.2.3-x86_64.tar.gz`, `warden_1.2.3_amd64.deb`
+/// and `warden-1.2.3-1.x86_64.rpm` carry `1.2.3`; `warden-11.2.3.tar.gz`,
+/// `warden-1.2.3.4.tar.gz` and `warden-1.2.30.tar.gz` do not.
+fn carries_version(name: &str, version: &str) -> bool {
+    name.match_indices(version).any(|(start, _)| {
+        let before = name[..start].bytes().next_back();
+        let mut after = name[start + version.len()..].bytes();
+        let starts = matches!(before, None | Some(b'-' | b'_'));
+        let ends = match after.next() {
+            None | Some(b'-' | b'_') => true,
+            Some(b'.') => !after.next().is_some_and(|b| b.is_ascii_digit()),
+            Some(_) => false,
+        };
+        starts && ends
+    })
 }
 
 /// `<registry>/<path>:<version>`: at least two `/`-separated segments of lowercase
