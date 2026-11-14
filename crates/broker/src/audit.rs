@@ -102,6 +102,17 @@ pub enum AuditError {
         /// Length of the prefix verified before taking the lock.
         verified: u64,
     },
+    /// An entry's line would be longer than any line the log reads back. It
+    /// was not written, and the log stays usable.
+    #[error(
+        "audit entry of type {kind} is {bytes} bytes, more than the {MAX_LINE_BYTES} the log can read back; not written"
+    )]
+    EntryTooLarge {
+        /// The event's type, as on its line.
+        kind: String,
+        /// Length of its line, newline excluded.
+        bytes: usize,
+    },
     /// Another writer held the file lock for too long.
     #[error("timed out waiting for the audit log lock")]
     LockTimeout,
@@ -140,6 +151,14 @@ fn parse_canonical(raw: &[u8]) -> Result<Line, String> {
     }
     Ok(line)
 }
+
+/// Longest line, newline excluded, that the log reads back, and so the
+/// longest it writes. Reading refuses a complete line longer than this as
+/// malformed, so that one line cannot make memory grow with the file; writing
+/// refuses an entry whose line would be longer with
+/// [`AuditError::EntryTooLarge`], before any byte reaches the file, so that
+/// warden never writes a log it could not open again.
+const MAX_LINE_BYTES: usize = 16 * 1024 * 1024;
 
 /// How long an append waits for another writer to release the file lock.
 const LOCK_WAIT: Duration = Duration::from_secs(5);
@@ -325,8 +344,14 @@ fn read_last_link(file: &File, len: u64) -> Result<(Head, Vec<u8>), AuditError> 
     }
 }
 
-/// Write `event` as the line after `head` and fsync it.
-fn write_event(file: &File, head: &Head, event: &AuditEvent) -> Result<Head, AuditError> {
+/// Serialize `event` as the line after `head`, newline included, and return
+/// it with the head after it. Writes nothing.
+///
+/// # Errors
+/// [`AuditError::EntryTooLarge`] if the line would be longer than
+/// [`MAX_LINE_BYTES`], which the log could not read back; or if the clock or
+/// serialization fails.
+fn encode_line(head: &Head, event: &AuditEvent) -> Result<(Vec<u8>, Head), AuditError> {
     let ts = unix_now()?;
     let seq = head.seq + 1;
     let hash = compute_hash(&head.hash, &Body { seq, ts, event })?;
@@ -338,22 +363,66 @@ fn write_event(file: &File, head: &Head, event: &AuditEvent) -> Result<Head, Aud
         hash: hash.clone(),
     };
     let mut json = serde_json::to_vec(&line)?;
+    if json.len() > MAX_LINE_BYTES {
+        let kind = event_kind(&json);
+        // The event's content may hold secrets or be huge: only its type and size.
+        tracing::error!(
+            target: "audit",
+            kind,
+            bytes = json.len(),
+            "audit entry longer than the log can read back; not written"
+        );
+        return Err(AuditError::EntryTooLarge {
+            kind: kind.to_owned(),
+            bytes: json.len(),
+        });
+    }
     json.push(b'\n');
-    let mut writer = file;
-    writer.write_all(&json)?;
-    file.sync_data()?;
-    tracing::info!(target: "audit", line = %String::from_utf8_lossy(&json).trim_end());
-    Ok(Head {
+    let next = Head {
         seq,
         hash,
         len: head.len + len_u64(json.len()),
-    })
+    };
+    Ok((json, next))
+}
+
+/// The event type named on the serialized line `json`, for reporting a line
+/// that is not written.
+fn event_kind(json: &[u8]) -> &str {
+    #[derive(Deserialize)]
+    struct Tagged<'a> {
+        #[serde(borrow)]
+        event: Tag<'a>,
+    }
+    #[derive(Deserialize)]
+    struct Tag<'a> {
+        #[serde(rename = "type")]
+        kind: &'a str,
+    }
+    serde_json::from_slice::<Tagged<'_>>(json).map_or("unknown", |t| t.event.kind)
+}
+
+/// Write the encoded line `json` and fsync it.
+fn write_line(file: &File, json: &[u8]) -> Result<(), AuditError> {
+    let mut writer = file;
+    writer.write_all(json)?;
+    file.sync_data()?;
+    tracing::info!(target: "audit", line = %String::from_utf8_lossy(json).trim_end());
+    Ok(())
+}
+
+/// Write `event` as the line after `head` and fsync it.
+fn write_event(file: &File, head: &Head, event: &AuditEvent) -> Result<Head, AuditError> {
+    let (json, next) = encode_line(head, event)?;
+    write_line(file, &json)?;
+    Ok(next)
 }
 
 /// Why a blocking append failed.
 enum Failure {
-    /// Nothing was written: the lock could not be taken, or the file could
-    /// not be read to re-sync. A later append simply tries again.
+    /// Nothing was written: the lock could not be taken, the file could not
+    /// be read to re-sync, or the entry could not be encoded or is too long
+    /// to read back. A later append simply tries again.
     NotWritten(AuditError),
     /// A write or fsync failed; the file tail is untrustworthy.
     Write(AuditError),
@@ -377,7 +446,9 @@ fn append_blocking(file: &File, cached: Head, event: &AuditEvent) -> Result<Head
             head = write_event(file, &head, &record).map_err(Failure::Write)?;
         }
     }
-    write_event(file, &head, event).map_err(Failure::Write)
+    let (json, next) = encode_line(&head, event).map_err(Failure::NotWritten)?;
+    write_line(file, &json).map_err(Failure::Write)?;
+    Ok(next)
 }
 
 struct State {
@@ -454,8 +525,10 @@ impl AuditLog {
     ///
     /// # Errors
     /// Returns an [`AuditError`] if the lock cannot be taken within 5 s
-    /// ([`AuditError::LockTimeout`]) or the line cannot be written durably;
-    /// after a failed write or fsync the log is poisoned.
+    /// ([`AuditError::LockTimeout`]), the entry is longer than the log can
+    /// read back ([`AuditError::EntryTooLarge`], nothing written), or the line
+    /// cannot be written durably; after a failed write or fsync the log is
+    /// poisoned.
     pub async fn append(&self, event: AuditEvent) -> Result<(), AuditError> {
         #[cfg(feature = "testkit")]
         self.stall.pass(&event).await;
@@ -533,8 +606,8 @@ mod tests {
             line.hash,
             "c6eb8215a82f820edf38173bbbf9328156ba10a3caabedf2713f026a5a726c68"
         );
-        let (head, _) =
-            open::verify_lines(&mut format!("{json}\n").as_bytes(), Head::genesis()).unwrap();
+        let mut head = Head::genesis();
+        open::verify_lines(&mut format!("{json}\n").as_bytes(), &mut head).unwrap();
         assert_eq!((head.seq, head.hash), (1, line.hash));
     }
 
@@ -563,7 +636,8 @@ mod tests {
             hash: hash.clone(),
         };
         let text = format!("{}\n", serde_json::to_string(&line).unwrap());
-        let (head, _) = open::verify_lines(&mut text.as_bytes(), Head::genesis()).unwrap();
+        let mut head = Head::genesis();
+        open::verify_lines(&mut text.as_bytes(), &mut head).unwrap();
         assert_eq!((head.seq, head.hash), (1, hash));
     }
 
@@ -593,5 +667,67 @@ mod tests {
             Err(AuditError::Poisoned)
         ));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "");
+    }
+
+    /// An `Error` event whose line after `head` is exactly `bytes` long,
+    /// newline excluded, when written with the current clock.
+    fn error_event_of_line_len(head: &Head, bytes: usize) -> AuditEvent {
+        let event = |message: String| AuditEvent::Error {
+            context: "test".to_owned(),
+            message,
+        };
+        let line = Line {
+            seq: head.seq + 1,
+            ts: unix_now().unwrap(),
+            prev: head.hash.clone(),
+            event: event(String::new()),
+            hash: GENESIS.to_owned(),
+        };
+        let empty = serde_json::to_vec(&line).unwrap().len();
+        event("x".repeat(bytes - empty))
+    }
+
+    #[tokio::test]
+    async fn an_entry_longer_than_the_log_can_read_back_is_refused_unwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let log = AuditLog::open(&path).await.unwrap();
+        log.append(AuditEvent::Denied { id: Id::random() })
+            .await
+            .unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let head = log.state.lock().await.head.clone();
+
+        let too_long = error_event_of_line_len(&head, MAX_LINE_BYTES + 1);
+        assert!(matches!(
+            log.append(too_long).await,
+            Err(AuditError::EntryTooLarge { ref kind, bytes })
+                if kind == "error" && bytes == MAX_LINE_BYTES + 1
+        ));
+        // Not a byte was written, and the log is not poisoned.
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        log.append(AuditEvent::Denied { id: Id::random() })
+            .await
+            .unwrap();
+        assert_eq!(open::verify(&path).unwrap(), 2);
+        drop(log);
+        AuditLog::open(&path).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_entry_exactly_as_long_as_the_bound_is_written_and_reads_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let log = AuditLog::open(&path).await.unwrap();
+
+        let longest = error_event_of_line_len(&Head::genesis(), MAX_LINE_BYTES);
+        log.append(longest).await.unwrap();
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().len(),
+            len_u64(MAX_LINE_BYTES) + 1
+        );
+        assert_eq!(open::verify(&path).unwrap(), 1);
+        drop(log);
+        AuditLog::open(&path).await.unwrap();
     }
 }

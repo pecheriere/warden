@@ -80,7 +80,8 @@ fn the_lock_is_held_only_for_the_tail() {
     assert_eq!(verified.hash, written.hash);
     assert_eq!(verified.len, written.len);
 
-    // The whole open waits for the lock, and completes once it is released.
+    // Once the lock is released, the whole open completes. (Whether it waited
+    // for the lock is not checked: the opener may start after the release.)
     let opener = {
         let path = path.clone();
         std::thread::spawn(move || open_blocking(&path))
@@ -126,6 +127,56 @@ fn a_line_half_written_in_phase_one_is_read_whole_in_phase_two() {
     assert_eq!(head.hash, after.hash);
     // Nothing was discarded or recorded: the line was complete by phase two.
     assert_eq!(verify(&path).unwrap(), 4);
+}
+
+#[test]
+fn an_error_found_in_phase_one_is_decided_under_the_lock() {
+    // Phase one reads a line spliced by a tail repair racing it: a torn tail,
+    // then a newline from the line written after the repair.
+    let (_dir, path, written) = log_of(3);
+    append_bytes(&path, b"{\"seq\":4,\"ts\":1,\"pre\n");
+    let file = open_log(&path);
+    let verified = verify_prefix(&file).unwrap();
+    assert_eq!(verified.seq, 3);
+    assert_eq!(verified.len, written.len);
+
+    // Under the lock, the file holds what the repair left: valid lines.
+    OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_len(written.len)
+        .unwrap();
+    let (more, after) = entries(&written, 2);
+    append_bytes(&path, &more);
+
+    let head = finish_locked(&file, verified).unwrap();
+    assert_eq!(head.seq, 5);
+    assert_eq!(head.hash, after.hash);
+    assert_eq!(verify(&path).unwrap(), 5);
+}
+
+#[test]
+fn an_error_found_in_phase_one_and_still_there_under_the_lock_is_refused() {
+    let (_dir, path, written) = log_of(3);
+    let (more, _) = entries(&Head::genesis(), 1);
+    append_bytes(&path, b"not an entry\n");
+    append_bytes(&path, &more);
+    let file = open_log(&path);
+    let verified = verify_prefix(&file).unwrap();
+    assert_eq!(verified.seq, 3);
+    assert_eq!(verified.len, written.len);
+
+    let len = fs::metadata(&path).unwrap().len();
+    assert!(matches!(
+        finish_locked(&file, verified),
+        Err(AuditError::Malformed { line: 4, .. })
+    ));
+    assert_eq!(fs::metadata(&path).unwrap().len(), len);
+    assert!(matches!(
+        open_blocking(&path),
+        Err(AuditError::Malformed { line: 4, .. })
+    ));
 }
 
 #[test]

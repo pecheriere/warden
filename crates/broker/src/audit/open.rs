@@ -4,10 +4,13 @@
 //! needs for each append, is held only briefly whatever the log's size:
 //!
 //! 1. Without the lock, [`verify_prefix`] streams the file from the start up to
-//!    its last complete line. Another writer may be appending meanwhile: a
-//!    partial final line is not an error here, it is read again in phase two.
+//!    its last complete line. Another writer may be appending, or repairing a
+//!    torn tail, meanwhile: neither a partial final line nor a line that does
+//!    not continue the chain is an error here. Phase one stops at the last line
+//!    that verifies, and phase two reads on from there.
 //! 2. Under the lock, [`finish_locked`] checks that the verified prefix is still
-//!    there, verifies only what follows it, and repairs a torn tail as before.
+//!    there, verifies every byte that follows it, and repairs a torn tail as
+//!    before. Only an error found here refuses the log.
 //!
 //! Only `repair_tail` ever shortens the file, and only past its last complete
 //! line, so a verified prefix that shrank or whose last line changed was changed
@@ -24,18 +27,12 @@ use std::path::Path;
 use sha2::{Digest as _, Sha256};
 
 use super::{
-    AuditError, Body, FileLock, Head, compute_hash, discard_tail, len_u64, parse_canonical,
-    read_last_link, repair_tail, write_event,
+    AuditError, Body, FileLock, Head, MAX_LINE_BYTES, compute_hash, discard_tail, len_u64,
+    parse_canonical, read_last_link, repair_tail, write_event,
 };
 
 #[cfg(test)]
 mod tests;
-
-/// Longest line read, newline excluded. A complete line longer than this is
-/// refused as malformed, so that one line cannot make memory grow with the
-/// file. No entry comes near it: the largest inputs an entry carries are about
-/// 1 MiB, and JSON escaping at most multiplies them by six.
-const MAX_LINE_BYTES: usize = 16 * 1024 * 1024;
 
 /// What follows the last complete line.
 pub(super) enum Rest {
@@ -135,28 +132,29 @@ fn next_head(head: &Head, raw: &[u8]) -> Result<Head, AuditError> {
 }
 
 /// Verify the complete lines of `reader`, which is positioned at `head.len`,
-/// as the continuation of `head`. Returns the position after the last complete
-/// line and what follows it.
+/// as the continuation of `head`, advancing `head` past each line that
+/// verifies. Returns what follows the last complete line.
 ///
 /// # Errors
 /// [`AuditError::Malformed`], [`AuditError::SeqGap`] or
 /// [`AuditError::BrokenChain`] for the first line that does not continue the
-/// chain, or an I/O error.
+/// chain, or an I/O error. `head` is then the position after the last line
+/// that verified.
 pub(super) fn verify_lines<R: BufRead>(
     reader: &mut R,
-    mut head: Head,
-) -> Result<(Head, Rest), AuditError> {
+    head: &mut Head,
+) -> Result<Rest, AuditError> {
     let mut buf = Vec::new();
     loop {
         match read_line(reader, &mut buf)? {
-            Step::Line => head = next_head(&head, &buf)?,
+            Step::Line => *head = next_head(head, &buf)?,
             Step::LongLine => {
                 return Err(AuditError::Malformed {
                     line: head.seq + 1,
                     reason: format!("longer than {MAX_LINE_BYTES} bytes"),
                 });
             }
-            Step::End(rest) => return Ok((head, rest)),
+            Step::End(rest) => return Ok(rest),
         }
     }
 }
@@ -172,7 +170,8 @@ pub(super) fn verify_lines<R: BufRead>(
 /// [`AuditError::UnterminatedTail`] once the preceding lines verify.
 pub fn verify(path: &Path) -> Result<u64, AuditError> {
     let mut reader = BufReader::new(File::open(path)?);
-    let (head, rest) = verify_lines(&mut reader, Head::genesis())?;
+    let mut head = Head::genesis();
+    let rest = verify_lines(&mut reader, &mut head)?;
     match rest {
         Rest::Nothing => Ok(head.seq),
         Rest::Tail(tail) => Err(AuditError::UnterminatedTail { bytes: tail.len() }),
@@ -191,13 +190,29 @@ pub(super) fn open_blocking(path: &Path) -> Result<(File, Head), AuditError> {
     Ok((file, head))
 }
 
-/// Phase one: verify `file` from its start to its last complete line, without
-/// the file lock. Blocking.
+/// Phase one: verify `file` from its start, without the file lock, and return
+/// the position after the last line that continues the chain. Blocking.
+///
+/// A line that does not continue it is not refused here: another writer
+/// repairing a torn tail meanwhile can splice what this read sees. Phase two
+/// reads again from the returned position under the lock, where nothing can
+/// change, and only its verdict is final.
+///
+/// # Errors
+/// An I/O error, or if an entry cannot be hashed.
 pub(super) fn verify_prefix(file: &File) -> Result<Head, AuditError> {
     let mut reader = file;
     reader.seek(SeekFrom::Start(0))?;
-    let (head, _rest) = verify_lines(&mut BufReader::new(reader), Head::genesis())?;
-    Ok(head)
+    let mut head = Head::genesis();
+    match verify_lines(&mut BufReader::new(reader), &mut head) {
+        Ok(_)
+        | Err(
+            AuditError::Malformed { .. }
+            | AuditError::SeqGap { .. }
+            | AuditError::BrokenChain { .. },
+        ) => Ok(head),
+        Err(e) => Err(e),
+    }
 }
 
 /// Phase two: under the file lock, check that the prefix `verified` in phase
@@ -218,7 +233,8 @@ pub(super) fn finish_locked(file: &File, verified: Head) -> Result<Head, AuditEr
     check_last_line(file, &verified)?;
     let mut reader = file;
     reader.seek(SeekFrom::Start(verified.len))?;
-    let (head, rest) = verify_lines(&mut BufReader::new(reader), verified)?;
+    let mut head = verified;
+    let rest = verify_lines(&mut BufReader::new(reader), &mut head)?;
     let (mut head, record) = match rest {
         Rest::Nothing => (head, None),
         Rest::Tail(tail) => repair_tail(file, head, &tail)?,
