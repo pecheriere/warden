@@ -325,6 +325,8 @@ change.
   its minute is over and at a clean shutdown, so a crash can lose up to about the last
   minute and a quarter of it. Revoking the agent stops every one of them. The bounds keep the log's growth
   to a rate an owner can watch, not to nothing: an owner still needs to watch the disk.
+  Refused relay logins are the one source that needs no key, so a stranger can use all
+  of their bound every day; the other sources need an enrolled agent with an approved grant.
 - **Opening the log does not hold up the server's appends.** Every writer takes the
   log's file lock for each append and waits 5 s at most for it. A `warden-server`
   command that opens the log while the server runs verifies it up to its last complete
@@ -806,6 +808,17 @@ These were recorded during implementation and are accepted for this release.
   mode where it is possible. The credential never reaches the agent, the
   notifiers or the audit log. Give each relay item a credential that is valid
   only for that target and account.
+- **Anyone who can reach the relay port can make it write refused-login entries, and
+  the bound is what stops that filling the log.** A peer needs no key and no grant for
+  this: a connection that offers a key and fails to log in is recorded as
+  `relay_login_refused`. The log is never rotated, and a log that cannot be written
+  stops every request, approval, proxied call and session. So refused logins are
+  limited to 5 entries a minute per address (per /64 network for IPv6) and 10 overall,
+  with one `relay_logins_refused_held` summary a minute counting the rest and the peers
+  behind them. The most they can write is in
+  [the table above](#what-the-audit-log-can-miss), about 5 MB a day. The bound does not
+  stop the peer from connecting, and the entries it holds back are counted, not
+  recorded one by one; to stop it, restrict who can reach the port.
 - **Parts of a password are copied beyond warden's reach.** The SSH library
   takes a password as a `String`, which warden cannot zeroize, and the
   credential also passes through HTTP client buffers (as the CA key does). A
