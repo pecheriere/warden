@@ -212,6 +212,48 @@ async fn refused_calls_beyond_the_allowance_are_counted() {
     assert_eq!(held[0]["count"], 5);
 }
 
+/// The longest `proxy_call` line the audit log may hold, newline excluded:
+/// the fixed part, 32 bytes of method, 512 of URL and 524 of outcome.
+const MAX_CALL_LINE: usize = 1_500;
+
+/// A refusal quotes the agent's header name, which may be 64 KiB. The entry
+/// holds a bounded part of it, so the log's growth does not depend on what
+/// the agent sends.
+#[tokio::test]
+async fn an_overlong_header_name_does_not_make_an_overlong_entry() {
+    let s = setup().await;
+    let name = format!("x-forwarded-{}", "a".repeat(60_000));
+    let resp = s
+        .broker
+        .api_post_json(
+            &s.key,
+            &format!("/v1/grants/{}/http", s.grant),
+            &json!({
+                "method": "GET",
+                "url": s.upstream.url("/v1/hello"),
+                "headers": [[name, "1"]],
+                "body_b64": null,
+            }),
+        )
+        .await;
+    assert_eq!(resp.status, StatusCode::BAD_REQUEST, "{}", resp.body);
+    let calls = proxy_calls(&s.broker);
+    assert_eq!(calls.len(), 1);
+    let outcome = calls[0]["outcome"].as_str().unwrap();
+    assert!(outcome.ends_with(" (truncated)"), "{outcome}");
+    assert!(
+        outcome.starts_with("header refused: \"x-forwarded-aaa"),
+        "{outcome}"
+    );
+    let line = std::fs::read_to_string(s.broker.audit_path())
+        .unwrap()
+        .lines()
+        .find(|line| line.contains("\"proxy_call\""))
+        .unwrap()
+        .len();
+    assert!(line <= MAX_CALL_LINE, "{line} bytes");
+}
+
 /// A call refused after its start was recorded still gets its result entry,
 /// whatever the allowance says: the start must not be left without an end.
 #[tokio::test]
