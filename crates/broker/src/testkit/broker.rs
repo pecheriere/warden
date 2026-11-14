@@ -95,6 +95,7 @@ struct Limits {
     body_read_timeout: BodyReadTimeout,
     commit_signing_max: Window,
     commit_signing_per_day: u32,
+    proxy_calls_per_day: u32,
     github_token_max: Window,
     github_token_per_hour: u32,
     github_api: GithubApi,
@@ -108,6 +109,7 @@ impl Default for Limits {
             body_read_timeout: BodyReadTimeout::default(),
             commit_signing_max: Window::COMMIT_SIGNING_DEFAULT,
             commit_signing_per_day: crate::requests::SIGNATURES_PER_DAY,
+            proxy_calls_per_day: crate::requests::CALLS_PER_DAY,
             github_token_max: Window::GITHUB_TOKEN_DEFAULT,
             github_token_per_hour: crate::requests::MINTS_PER_HOUR,
             github_api: GithubApi::public(),
@@ -344,6 +346,21 @@ impl TestBroker {
         .await
     }
 
+    /// Like [`TestBroker::new`], with `WARDEN_PROXY_MAX_CALLS_PER_DAY` at this.
+    ///
+    /// # Panics
+    /// If any part of the setup fails.
+    pub async fn with_proxy_calls_per_day(proxy_calls_per_day: u32) -> Self {
+        Self::fresh(
+            Limits {
+                proxy_calls_per_day,
+                ..Limits::default()
+            },
+            Some(format!("{RELAY_PUBLIC_HOST}:{RELAY_PUBLIC_PORT}")),
+        )
+        .await
+    }
+
     /// Like [`TestBroker::new`], accepting links to `hosts` (comma separated).
     ///
     /// # Panics
@@ -510,6 +527,7 @@ impl TestBroker {
         .with_limits(limits.requests)
         .with_commit_signing_max(limits.commit_signing_max)
         .with_commit_signing_per_day(limits.commit_signing_per_day)
+        .with_proxy_calls_per_day(limits.proxy_calls_per_day)
         .with_github_token_max(limits.github_token_max)
         .with_github_token_per_hour(limits.github_token_per_hour)
         .with_github_api(limits.github_api.clone())

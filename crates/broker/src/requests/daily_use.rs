@@ -3,16 +3,6 @@
 //! columns are generic because a grant has one kind of use; relay sessions will
 //! have their own [`DailyUse`].
 
-// Only the tests use the budget until the proxied-call path takes it, in the next commit
-// of this pull request, which removes this.
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "used by the proxied-call path in the next commit of this PR"
-    )
-)]
-
 use warden_broker_proto::{AgentName, Id, SecretName};
 
 use super::{RequestError, Requests};
@@ -43,8 +33,18 @@ impl Requests {
         self
     }
 
+    /// Write the entry of a call that was refused before it started, if `agent`'s
+    /// allowance for the minute has room, and count it otherwise: a looping agent
+    /// cannot fill the log with refusals. Cannot change the outcome, which is
+    /// decided already, so a failure to write is logged.
+    pub(crate) async fn record_proxy_refusal(&self, agent: &AgentName, event: AuditEvent) {
+        self.proxy_refusals
+            .record(&self.audit, agent, self.clock.now(), 1, event)
+            .await;
+    }
+
     /// The limit of a day's uses of `kind`.
-    const fn daily_limit(&self, kind: &DailyUse) -> u32 {
+    pub(crate) const fn daily_limit(&self, kind: &DailyUse) -> u32 {
         match kind {
             DailyUse::ProxyCall { .. } => self.proxy_calls_per_day,
         }

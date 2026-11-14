@@ -22,6 +22,14 @@ All notable changes to this project are recorded here. The format follows
 
 ### Added
 
+- A daily call budget for each API grant: 10000 proxied calls per UTC day by default
+  (`WARDEN_PROXY_MAX_CALLS_PER_DAY`, 1 to 1000000). Past it, calls fail with 429 until
+  00:00 UTC, and the owner is told once a day, with the new entries `proxy_call_limit_reached`
+  and `proxy_call_limit_notified`. It is counted in the database, so a restart does not reset
+  it, and calls refused before they start do not use it. New migration `0012_daily_use`,
+  applied at startup; as with every migration, rolling back means restoring the backup
+  together with the old version. An older `warden-server audit verify` refuses a log holding
+  the new entries.
 - `warden list [--json] [--repo <owner/name>]` shows what this agent may ask for: SSH
   targets with their users, longest window, mode and destination; API secrets with their
   methods, path prefix, longest window and origin; whether GitHub tokens, commit signing and
@@ -48,6 +56,10 @@ All notable changes to this project are recorded here. The format follows
 - While the local secret backend's files are unusable, at most 10 `error` audit entries a
   minute are written; the rest are counted in a new `local_backend_errors_held` entry, once
   a minute, instead of one entry per failed read (#267).
+- The entries of proxied calls refused before they start (by the policy, a changed secret, or
+  a limit) are limited to 30 a minute per agent; the rest are counted and written as one
+  `proxy_calls_refused_held` entry per agent per minute, once the minute is over. A call
+  that started always has its result entry.
 - Counts of refusals beyond the per-minute allowance (`commit_signing_refusals_held`,
   `github_token_refusals_held`, `release_refusals_held`) are written as one entry per agent per
   minute, once the minute that held them is over, instead of at every sweep.

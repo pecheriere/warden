@@ -59,6 +59,7 @@ mod renewal;
 pub use self::bus::StatusBus;
 pub use self::commit_signing::{ActiveCommitSigning, SIGNATURES_PER_DAY};
 pub use self::daily_use::CALLS_PER_DAY;
+pub(crate) use self::daily_use::DailyUse;
 pub use self::github_scope::{GithubPending, ReplacedGrant, Resolution, ScopedRepository};
 pub use self::github_token::{ActiveGithubToken, GithubLookup, MINTS_PER_HOUR};
 use self::limits::Refusals;
@@ -471,6 +472,8 @@ pub struct Requests {
     github_refusals: Arc<Throttle<AgentName, u64>>,
     /// What has been recorded of refusals of release steps.
     release_refusals: Arc<Throttle<AgentName, u64>>,
+    /// What has been recorded of proxied calls refused before they started.
+    proxy_refusals: Arc<Throttle<AgentName, u64>>,
     /// Every limiter of audited entries, flushed together.
     throttles: Arc<AuditThrottles>,
     /// Hosts a request may link to.
@@ -534,6 +537,10 @@ impl Requests {
             refusal_throttle(&throttles, "a refusal of a release step", |agent, count| {
                 AuditEvent::ReleaseRefusalsHeld { agent, count }
             });
+        let proxy_refusals =
+            refusal_throttle(&throttles, "a refused proxied call", |agent, count| {
+                AuditEvent::ProxyCallsRefusedHeld { agent, count }
+            });
         Self {
             pool,
             audit,
@@ -557,6 +564,7 @@ impl Requests {
             signing_refusals,
             github_refusals,
             release_refusals,
+            proxy_refusals,
             throttles,
             link_hosts: LinkHosts::default(),
             github: GithubApi::public(),

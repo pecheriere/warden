@@ -5,9 +5,12 @@ use std::time::{Duration, Instant};
 use axum::http::StatusCode;
 use serde_json::Value;
 use warden_broker::proxy::ProxyLimits;
+use warden_broker::requests::Clock as _;
 use warden_broker::testkit::TestResponse;
 
-use super::{Setup, approve_api, call_as, get, proxied, proxy_calls, setup_with};
+use super::{
+    Setup, approve_api, audit_events, call_as, get, proxied, proxy_calls, setup_daily, setup_with,
+};
 
 const TOO_MANY: &str = r#"{"error":"too many concurrent calls"}"#;
 
@@ -122,4 +125,89 @@ async fn slot_released_after_error_and_disconnect() {
         assert!(Instant::now() < deadline, "slot never released");
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+}
+
+const OVER_THE_DAY: &str = r#"{"error":"this grant made 2 calls today, its limit; calls fail until 00:00 UTC, and the owner was told"}"#;
+
+#[tokio::test]
+async fn a_grant_stops_at_its_daily_call_limit_and_the_owner_hears_once() {
+    let s = setup_daily(2).await;
+    // A grant of its own, made a minute before a UTC midnight: it lasts past the
+    // start of the next day, which its window could not otherwise reach.
+    let now = s.broker.clock.now();
+    s.broker.clock.advance(86_400 - 60 - now.rem_euclid(86_400));
+    let key = s.broker.add_agent("late").await;
+    let grant = approve_api(&s.broker, "late", "svc").await;
+    let url = s.upstream.url("/v1/hello");
+    let call = || call_as(&s.broker, &key, &grant, "GET", &url, None);
+    let other_key = s.broker.add_agent("other").await;
+    let other_grant = approve_api(&s.broker, "other", "svc").await;
+    proxied(&call().await);
+    proxied(&call().await);
+    assert_eq!(s.upstream.received().len(), 2);
+
+    let resp = call().await;
+    assert_eq!(resp.status, StatusCode::TOO_MANY_REQUESTS, "{}", resp.body);
+    assert_eq!(resp.body, OVER_THE_DAY);
+    assert_eq!(s.upstream.received().len(), 2, "nothing was sent");
+    let bell = s.broker.capture.next().await;
+    assert_eq!(bell.title, "warden: late reached its API call limit");
+    assert_eq!(call().await.status, StatusCode::TOO_MANY_REQUESTS);
+    let reached = audit_events(&s.broker, &["proxy_call_limit_reached"]);
+    assert_eq!(reached.len(), 1, "once a day");
+    assert_eq!(reached[0]["grant_id"], grant.as_str());
+    assert_eq!(reached[0]["limit"], 2);
+    // The refused calls are in the log, and none of them started.
+    assert_eq!(audit_events(&s.broker, &["proxy_call_started"]).len(), 2);
+    assert_eq!(proxy_calls(&s.broker).len(), 4);
+
+    // Per grant: another agent's calls go on.
+    let theirs = call_as(&s.broker, &other_key, &other_grant, "GET", &url, None).await;
+    assert_eq!(theirs.status, StatusCode::OK, "{}", theirs.body);
+
+    // The next UTC day starts again, and can be told about again.
+    s.broker.clock.advance(120);
+    proxied(&call().await);
+    proxied(&call().await);
+    assert_eq!(call().await.status, StatusCode::TOO_MANY_REQUESTS);
+    let reached = audit_events(&s.broker, &["proxy_call_limit_reached"]);
+    assert_eq!(reached.len(), 2);
+}
+
+#[tokio::test]
+async fn concurrent_calls_at_the_daily_limit_pass_exactly_the_limit() {
+    let s = setup_daily(3).await;
+    let responses = tokio::join!(
+        get(&s, "/v1/hello"),
+        get(&s, "/v1/hello"),
+        get(&s, "/v1/hello"),
+        get(&s, "/v1/hello"),
+        get(&s, "/v1/hello"),
+    );
+    let responses = [
+        responses.0,
+        responses.1,
+        responses.2,
+        responses.3,
+        responses.4,
+    ];
+    let ok = responses
+        .iter()
+        .filter(|r| r.status == StatusCode::OK)
+        .count();
+    assert_eq!(ok, 3);
+    assert_eq!(s.upstream.received().len(), 3);
+}
+
+#[tokio::test]
+async fn refused_calls_do_not_use_the_budget() {
+    let s = setup_daily(2).await;
+    let url = s.upstream.url("/v1/hello");
+    for _ in 0..5 {
+        let refused = call_as(&s.broker, &s.key, &s.grant, "DELETE", &url, None).await;
+        assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.body);
+    }
+    proxied(&get(&s, "/v1/hello").await);
+    proxied(&get(&s, "/v1/hello").await);
+    assert_eq!(s.upstream.received().len(), 2);
 }

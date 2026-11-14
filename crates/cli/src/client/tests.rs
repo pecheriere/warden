@@ -186,6 +186,29 @@ async fn revoked_grant_is_told_apart_from_other_conflicts() {
     ));
 }
 
+/// A grant at its daily call limit gets a 429 that waiting a moment does not lift: it
+/// is a refusal with the broker's words, never an outage to retry.
+#[tokio::test]
+async fn a_proxied_call_over_the_daily_limit_is_refused_not_retried() {
+    let call = warden_broker_proto::ProxyRequest {
+        method: "GET".to_owned(),
+        url: "https://api.example.com/".to_owned(),
+        headers: Vec::new(),
+        body_b64: None,
+    };
+    let body = r#"{"error":"this grant made 2 calls today, its limit; calls fail until 00:00 UTC, and the owner was told"}"#;
+    assert_eq!(
+        client(&answering(429, body).await)
+            .proxy(&Id::random(), &call)
+            .await,
+        Err(CallError::Refused(
+            "broker refused (429 Too Many Requests): this grant made 2 calls today, its limit; \
+             calls fail until 00:00 UTC, and the owner was told"
+                .to_owned()
+        ))
+    );
+}
+
 /// The broker's words reach the terminal only with control, format and
 /// separator characters replaced.
 #[tokio::test]
