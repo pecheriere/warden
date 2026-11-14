@@ -765,7 +765,10 @@ no longer resolves, or a second 404 is reported as unavailable: no retry loop.
   text).
 - The approval UI has a read-only history view.
 - `warden-server audit verify` checks the chain. The server's commands append
-  while the server runs, under a file lock, so there is one chain.
+  while the server runs, under a file lock, so there is one chain. Opening the
+  log verifies it without the lock up to its last complete line, then takes the
+  lock only to verify what was appended since and repair a torn tail; both read
+  one line at a time.
 
 ## 12. State
 
