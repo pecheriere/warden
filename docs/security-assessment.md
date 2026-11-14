@@ -1,6 +1,6 @@
 # Security assessment
 
-**Date: 2026-11-14. Covers release 0.14.0, reviewed at `main` commit `3fdbfeb`. The
+**Date: 2026-11-14. Covers release 0.14.0, reviewed at `main` commit `a34bc79`. The
 release adds `warden list` and `warden prime`, and the audit log's limits (both below).
 The review for 0.13.0 (2026-11-12, at `a401590`) covered repository-scoped GitHub grants
 (risks 1 and 2, F24) and the manifest signed through the broker (risk 12, below). The
