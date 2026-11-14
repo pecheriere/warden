@@ -392,7 +392,11 @@ target; if it cannot be written the session does not start.
 and the exit status. `relay_session_refused` records a start refused after a
 successful login (the grant or the policy changed), and `relay_login_refused`
 a connection that tried to log in and was turned away. Neither holds key
-material.
+material. Both are limited per minute: refused sessions to 30 per grant, refused
+logins to 5 per address (per /64 network for IPv6) and 10 overall; the rest are counted in
+`relay_sessions_refused_held` and `relay_logins_refused_held`, one entry a minute.
+Past its daily limit of sessions (1000 by default) a grant's new sessions are
+refused until 00:00 UTC.
 
 **Configuration.** `WARDEN_RELAY_PUBLIC_ADDR` (`host:port`, required for relay
 targets; when unset, requests for relay targets are refused) is the address
@@ -548,6 +552,12 @@ during the call`). A call that finishes first is checked once more after
 redaction, and its response is discarded if the grant has ended. Stopping a call
 cannot undo what the upstream has already done with it.
 
+**Budget.** Each API grant may send 10000 calls per UTC day
+(`WARDEN_PROXY_MAX_CALLS_PER_DAY`), counted in the database after `proxy::check` passes
+and just before `proxy_call_started` is written. Past it the call is a 429 until
+00:00 UTC, with a `proxy_call_limit_reached` entry and one notification a day per grant
+(`proxy_call_limit_notified`). Calls refused before they start use none of it.
+
 **Audit.** `proxy_call_started` is written **before** the request is sent; if
 it cannot be written, the call is refused and nothing is sent. `proxy_call` is
 written after the call ends, whatever the outcome; if that write fails, the
@@ -560,6 +570,11 @@ revocation's entry: stored in the database first, so the log can neither delay t
 agent's answer nor lose it. The secret never appears. The call
 runs on its own task, so an agent that disconnects can neither stop it halfway
 nor keep it out of the log.
+
+A call refused before it starts (by `proxy::check` or the budget) has no
+`proxy_call_started`, and its `proxy_call` entry goes through a limiter: 30 a minute
+per agent, the rest counted in one `proxy_calls_refused_held` entry per agent per
+minute. A call that did start always writes its result directly.
 
 - **Request/response HTTPS only in v1** (decision). WebSocket and streaming
   APIs are out of scope for v1; diagnostics that need them go through SSH.
@@ -765,7 +780,10 @@ no longer resolves, or a second 404 is reported as unavailable: no retry loop.
   text).
 - The approval UI has a read-only history view.
 - `warden-server audit verify` checks the chain. The server's commands append
-  while the server runs, under a file lock, so there is one chain.
+  while the server runs, under a file lock, so there is one chain. Opening the
+  log verifies it without the lock up to its last complete line, then takes the
+  lock only to verify what was appended since and repair a torn tail; both read
+  one line at a time.
 
 ## 12. State
 

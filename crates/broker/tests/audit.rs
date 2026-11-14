@@ -4,6 +4,9 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 
 use warden_broker::audit::{AuditError, AuditEvent, AuditLog, verify};
+use warden_broker::audit_throttle::{Allowance, Summary};
+use warden_broker::requests::Clock as _;
+use warden_broker::testkit::TestBroker;
 use warden_broker_proto::{AgentName, Id};
 
 fn denied() -> AuditEvent {
@@ -575,4 +578,51 @@ async fn a_torn_tail_longer_than_the_read_window_is_discarded() {
         assert!(text.contains(&format!("discarded torn tail of {TAIL} bytes")));
         assert!(!text.contains("xxx"), "{entries} entries");
     }
+}
+
+fn held_by_the_test(agent: AgentName, count: u64) -> AuditEvent {
+    AuditEvent::ReleaseRefusalsHeld { agent, count }
+}
+
+#[tokio::test]
+async fn shutdown_flushes_every_registered_throttle() {
+    let broker = TestBroker::new().await;
+    let requests = broker.state().requests.clone();
+    let throttle = requests.audit_throttles().throttle(
+        "a test entry",
+        Allowance {
+            per_key: 1,
+            overall: None,
+        },
+        Summary::PerKey(held_by_the_test),
+    );
+    let bot = AgentName::try_from("bot".to_owned()).unwrap();
+    let now = broker.clock.now();
+    for _ in 0..3 {
+        throttle
+            .record(&broker.state().audit, &bot, now, 1, denied())
+            .await;
+    }
+    assert!(
+        !broker
+            .audit_types()
+            .contains(&"release_refusals_held".to_owned())
+    );
+    // A sweep period no test waits for: only the shutdown can write the count.
+    let (stop, stopped) = tokio::sync::watch::channel(false);
+    let sweeper = tokio::spawn(warden_broker::requests::sweep_loop(
+        requests,
+        std::time::Duration::from_secs(3600),
+        stopped,
+    ));
+    stop.send(true).unwrap();
+    sweeper.await.unwrap();
+    let log = fs::read_to_string(broker.audit_path()).unwrap();
+    let held: Vec<serde_json::Value> = log
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap()["event"].clone())
+        .filter(|event| event["type"] == "release_refusals_held")
+        .collect();
+    assert_eq!(held.len(), 1);
+    assert_eq!(held[0]["count"], 2);
 }

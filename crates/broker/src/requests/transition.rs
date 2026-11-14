@@ -12,7 +12,7 @@ use std::fmt::Display;
 use sqlx::{Sqlite, SqlitePool, Transaction};
 
 use super::RequestError;
-use crate::audit::{AuditError, AuditEvent, AuditLog};
+use crate::audit::{AuditError, AuditEvent, AuditLog, bounded_text};
 
 /// Write `events`, which come before `transition` is applied. Call this with no
 /// write transaction open. If a later entry fails, the record says `transition`
@@ -53,7 +53,7 @@ pub(crate) async fn note_if_not_applied<T, E: Display>(
 async fn record_not_committed(audit: &AuditLog, transition: &str, cause: &str) {
     let event = AuditEvent::Error {
         context: "commit".to_owned(),
-        message: format!("{transition} did not take effect: {cause}"),
+        message: bounded_text(format!("{transition} did not take effect: {cause}")),
     };
     if let Err(e) = audit.append(event).await {
         tracing::error!(transition, error = %e, "could not record an uncommitted transition");

@@ -8,12 +8,23 @@ All notable changes to this project are recorded here. The format follows
 
 ### Upgrading
 
+- New migration `0012_daily_use`, applied at startup. As with every migration, rolling back
+  means restoring the backup together with the old version. **The new default limit of 10000
+  proxied calls a day for each API grant can refuse a busy existing grant** with a 429 until
+  00:00 UTC. Raise it with `WARDEN_PROXY_MAX_CALLS_PER_DAY` (up to 1000000) before upgrading
+  if an agent makes more.
+- The new default limit of 1000 relay sessions a day for each relay grant can refuse a busy
+  existing grant until 00:00 UTC. Raise it with `WARDEN_RELAY_MAX_SESSIONS_PER_DAY` (up to
+  1000000) before upgrading if an agent opens more.
 - `warden list` and `warden prime` need a broker of this version: against an older one,
   `warden list` fails saying to upgrade it, and `warden prime` prints its instructions with
   that note in place of the offers. They need no migration and write no audit entry.
-- New audit entries: `release_step_started`, `release_published_changed` and
-  `release_published_changed_notified`. An older `warden-server audit verify` refuses a log
-  holding one.
+- New audit entries: `release_step_started`, `release_published_changed`,
+  `release_published_changed_notified`, `local_backend_errors_held`,
+  `proxy_call_limit_reached`, `proxy_call_limit_notified`, `proxy_calls_refused_held`,
+  `relay_session_limit_reached`, `relay_session_limit_notified`,
+  `relay_sessions_refused_held` and `relay_logins_refused_held`. An older
+  `warden-server audit verify` refuses a log holding one.
 - The clients for 1Password Connect, the notifiers and the health probe no longer use a proxy
   named in `HTTP_PROXY`, `HTTPS_PROXY` or `ALL_PROXY`; a deployment that reached them through
   one needs a direct route. See [Upgrading](docs/upgrading.md#proxies-and-http2).
@@ -22,6 +33,22 @@ All notable changes to this project are recorded here. The format follows
 
 ### Added
 
+- A daily call budget for each API grant: 10000 proxied calls per UTC day by default
+  (`WARDEN_PROXY_MAX_CALLS_PER_DAY`, 1 to 1000000). Past it, calls fail with 429 until
+  00:00 UTC, and the owner is told once a day, with the new entries `proxy_call_limit_reached`
+  and `proxy_call_limit_notified`. It is counted in the database, so a restart does not reset
+  it, and calls refused before they start do not use it. New migration `0012_daily_use`,
+  applied at startup; as with every migration, rolling back means restoring the backup
+  together with the old version. An older `warden-server audit verify` refuses a log holding
+  the new entries.
+- A daily session budget for each relay grant: 1000 sessions per UTC day by default
+  (`WARDEN_RELAY_MAX_SESSIONS_PER_DAY`, 1 to 1000000). Past it, new sessions are refused
+  until 00:00 UTC, and the owner is told once a day, with the new entries
+  `relay_session_limit_reached` and `relay_session_limit_notified`. Refused sessions are
+  written one by one up to 30 a minute for each grant, and counted in
+  `relay_sessions_refused_held` beyond that. It uses the columns of migration `0012_daily_use`,
+  and sessions refused before they start do not use it. An older `warden-server audit verify`
+  refuses a log holding the new entries.
 - `warden list [--json] [--repo <owner/name>]` shows what this agent may ask for: SSH
   targets with their users, longest window, mode and destination; API secrets with their
   methods, path prefix, longest window and origin; whether GitHub tokens, commit signing and
@@ -45,6 +72,26 @@ All notable changes to this project are recorded here. The format follows
 
 ### Changed
 
+- While the local secret backend's files are unusable, at most 10 `error` audit entries a
+  minute are written; the rest are counted in a new `local_backend_errors_held` entry, once
+  a minute, instead of one entry per failed read (#267).
+- Refused relay logins are written 5 a minute per address (per /64 network for IPv6) and
+  10 a minute overall; the rest are summed in one `relay_logins_refused_held` entry a
+  minute, with the number of addresses, connections and attempts.
+- The entries of proxied calls refused before they start (by the policy, a changed secret, or
+  a limit) are limited to 30 a minute per agent; the rest are counted and written as one
+  `proxy_calls_refused_held` entry per agent per minute, once the minute is over. A call
+  that started always has its result entry.
+- The `outcome` of a `proxy_call` entry is cut to 512 bytes, with ` (truncated)` after it. A
+  refusal that quotes a header name the agent chose (up to 64 KiB) was recorded whole; the
+  agent still gets the whole message.
+- The reason of `commit_signing_refused`, `github_token_refused`, `release_refused` and
+  `notify_failed` entries and the message of `error` entries are cut to 512 bytes as the log
+  writes them, escapes counted, with ` (truncated)` after them, as a `proxy_call` outcome now is
+  (#273).
+- Counts of refusals beyond the per-minute allowance (`commit_signing_refusals_held`,
+  `github_token_refusals_held`, `release_refusals_held`) are written as one entry per agent per
+  minute, once the minute that held them is over, instead of at every sweep.
 - A proxied API call may not set more routing and client-address headers: the `X-Forwarded-*`,
   `X-Original-*`, `X-Rewrite-*`, `X-Envoy-*` and `X-Override-*` families, `X-Client-IP`,
   `True-Client-IP`, `CF-Connecting-IP` and the other `*-Client-IP` and `*-Connecting-IP` names.
@@ -67,6 +114,14 @@ All notable changes to this project are recorded here. The format follows
 
 ### Fixed
 
+- Opening the audit log verifies it without holding the file lock, then takes the lock
+  only for what was appended meanwhile, so a `warden-server` command run on a large log
+  no longer makes the running server's audit entries, and the actions that wait for them,
+  fail. Opening and `audit verify` read one line at a time instead of the whole file, and
+  refuse a line over 16 MiB. A log whose verified part changes before the lock is taken
+  is refused. warden refuses to write an entry over 16 MiB, before writing any of it,
+  so that it never writes a log it cannot open again: the action that needed the entry
+  fails, and the log is not poisoned.
 - A `*_FILE` secret file is checked and read through the same open file, and a FIFO in its
   place is refused without waiting on it.
 - A release's commit is checked against the default branch's head by commit id, read from
