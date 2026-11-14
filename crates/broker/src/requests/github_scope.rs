@@ -4,6 +4,7 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use sqlx::Row as _;
+use warden_broker_proto::github_permissions::PermissionSet;
 use warden_broker_proto::github_token::{
     GithubTokenAccess, GrantRepository, GrantScope, OLD_CLIENT,
 };
@@ -88,6 +89,8 @@ pub struct ReplacedGrant {
     pub grant_id: Id,
     /// What it covers.
     pub scope: GrantScope,
+    /// The permissions its tokens have.
+    pub permissions: PermissionSet,
 }
 
 /// What the approval page of a GitHub token request shows and binds.

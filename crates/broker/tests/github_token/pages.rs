@@ -6,7 +6,10 @@ use warden_broker::testkit::TestBroker;
 use warden_broker_proto::Window;
 use warden_broker_proto::github_token::NOT_CONFIGURED;
 
-use super::{configured_on_fake, resolved};
+use warden_broker::policy::GithubPermissionPolicy;
+use warden_broker_proto::github_permissions::PermissionSet;
+
+use super::{configured_on_fake, installation, resolved};
 
 #[tokio::test]
 async fn approval_page_names_app_installation_and_permissions() {
@@ -143,4 +146,82 @@ async fn grants_page_shows_github_token_grant_and_end() {
     let history = broker.get("/history").await;
     assert!(history.body.contains("github token"), "{}", history.body);
     assert!(history.body.contains("30d"), "{}", history.body);
+}
+
+const REPO: &str = "example-owner/example-repo";
+
+fn set(text: &str) -> PermissionSet {
+    PermissionSet::parse(text).unwrap()
+}
+
+/// A request for `REPO` made under `default`, and its approval page's body.
+async fn page_under(
+    default: &str,
+    installation_holds: Option<&[(&str, &str)]>,
+) -> (StatusCode, String) {
+    let (broker, _key, upstream) = configured_on_fake().await;
+    broker
+        .backend
+        .set_github_permissions(Some(GithubPermissionPolicy {
+            default: set(default),
+            allowed_extras: PermissionSet::metadata_only(),
+        }));
+    let (_, token) = broker
+        .create_request(
+            "bot",
+            TestBroker::github_token_request("push the fix", Window::D7, &[REPO]),
+        )
+        .await;
+    upstream.answer_github_installation(installation_holds.map(installation));
+    upstream.script_github_token(resolved(&broker, &[(1001, REPO)]));
+    let page = broker.get(&format!("/approve/{token}")).await;
+    (page.status, page.body)
+}
+
+#[tokio::test]
+async fn page_lists_the_full_set() {
+    let (status, body) = page_under(
+        "checks:read,contents:write,issues:write,pull_requests:write",
+        Some(&[
+            ("checks", "read"),
+            ("contents", "write"),
+            ("issues", "write"),
+            ("metadata", "read"),
+            ("pull_requests", "write"),
+        ]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    for says in ["checks: read", "contents: write", "metadata: read"] {
+        assert!(body.contains(says), "{says}: {body}");
+    }
+    assert!(body.contains(r#"id="approve""#), "{body}");
+}
+
+#[tokio::test]
+async fn page_says_which_permissions_the_app_lacks() {
+    let (status, body) = page_under(
+        "checks:read,contents:write,issues:write,pull_requests:write",
+        Some(&[
+            ("contents", "write"),
+            ("issues", "write"),
+            ("metadata", "read"),
+            ("pull_requests", "write"),
+        ]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.contains("the App does not hold <code>checks:read</code> on GitHub"),
+        "{body}"
+    );
+    assert!(!body.contains(r#"id="approve""#), "{body}");
+}
+
+#[tokio::test]
+async fn page_says_when_installation_unreadable() {
+    let (status, body) = page_under("contents:write,issues:write,pull_requests:write", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("could not read the App"), "{body}");
+    assert!(!body.contains(r#"id="approve""#), "{body}");
 }

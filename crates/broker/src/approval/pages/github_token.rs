@@ -4,13 +4,13 @@
 //! a minted token outlives the grant's revocation.
 
 use maud::{Markup, html};
-use warden_broker_proto::github_permissions::PermissionSet;
+use warden_broker_proto::github_permissions::{Permission, PermissionSet};
 use warden_broker_proto::github_token::{AutomaticCaller, GithubTokenAccess, GrantScope};
 use warden_broker_proto::{Access, AgentName};
 
 use super::{icon, warning_icon};
 use crate::policy::GithubTokenPolicy;
-use crate::requests::{GithubPending, PendingView, ReplacedGrant, Resolution};
+use crate::requests::{GithubPending, InstallationCheck, PendingView, ReplacedGrant, Resolution};
 
 /// What the approval page says instead of offering Approve, when the request names
 /// no repository (a CLI from before grants were scoped) or GitHub says the App cannot
@@ -27,30 +27,66 @@ pub(super) fn not_approvable(view: &PendingView) -> Option<Markup> {
             }
         });
     }
-    if github.resolution != Resolution::NotAccessible {
-        return None;
-    }
-    Some(html! {
-        p.cannot #cannot-approve role="alert" {
-            "This request cannot be approved: the App is not installed on "
-            @for (i, repo) in access.repositories.iter().enumerate() {
-                @if i > 0 { ", " }
-                code { bdi { (repo.as_str()) } }
+    if github.resolution == Resolution::NotAccessible {
+        return Some(html! {
+            p.cannot #cannot-approve role="alert" {
+                "This request cannot be approved: the App is not installed on "
+                @for (i, repo) in access.repositories.iter().enumerate() {
+                    @if i > 0 { ", " }
+                    code { bdi { (repo.as_str()) } }
+                }
+                ", or one of them does not exist."
             }
-            ", or one of them does not exist."
-        }
-    })
+        });
+    }
+    // Only after the repositories: what the installation holds is moot for a
+    // repository the App cannot reach.
+    match &github.installation {
+        InstallationCheck::Holds => None,
+        InstallationCheck::Missing(missing) => Some(html! {
+            p.cannot #cannot-approve role="alert" {
+                "This request cannot be approved: the App does not hold "
+                @for (i, permission) in missing.iter().enumerate() {
+                    @if i > 0 { ", " }
+                    code { (permission.to_string()) }
+                }
+                " on GitHub."
+            }
+        }),
+        InstallationCheck::Unreadable => Some(html! {
+            p.cannot #cannot-approve role="alert" {
+                "This request cannot be approved: the broker could not read the App\u{2019}s \
+                 permissions on GitHub."
+            }
+        }),
+    }
 }
 
-/// The permissions every token has.
-fn permissions() -> Markup {
+/// A permission as the page writes it: `name: level`.
+fn permission(permission: &Permission) -> Markup {
+    html! { code.perm { (permission.name()) ": " (permission.level().as_str()) } }
+}
+
+/// The permissions a token has: the whole set, and how many go beyond the owner's
+/// default.
+fn permissions(set: &PermissionSet, beyond_default: &[Permission]) -> Markup {
     html! {
         span.detail {
             "Permissions: "
-            @for (i, permission) in PermissionSet::legacy().iter().enumerate() {
-                @if i > 0 { ", " }
-                code.perm { (permission.name()) ": " (permission.level().as_str()) }
-            }
+            (permission_list(set))
+        }
+        @if !beyond_default.is_empty() {
+            span.detail { (beyond_default.len()) " beyond the default" }
+        }
+    }
+}
+
+/// The permissions of `set`, comma separated.
+fn permission_list(set: &PermissionSet) -> Markup {
+    html! {
+        @for (i, item) in set.iter().enumerate() {
+            @if i > 0 { ", " }
+            (permission(&item))
         }
     }
 }
@@ -165,6 +201,7 @@ fn replaced(agent: &AgentName, replaces: &[ReplacedGrant]) -> Markup {
                                 }
                             }
                         }
+                        ". Its permissions: " (permission_list(&grant.permissions))
                     }
                 }
             }
@@ -225,7 +262,10 @@ pub(super) fn access(
         @if !repos.is_empty() {
             span.detail { "Mints tokens for " (app(&policy.app_id, policy.installation_id)) }
         }
-        (permissions())
+        // The pending list has no stored set to show, only the approval page does.
+        @if let Some(pending) = pending {
+            (permissions(&pending.permissions.full, &pending.permissions.beyond_default))
+        }
         (automatic(request))
         span.detail {
             "warden mints a token whenever this agent asks, until the grant ends or is revoked, \
@@ -237,7 +277,12 @@ pub(super) fn access(
 /// What an active GitHub token grant gives, for the grants page: its repositories,
 /// one per line. A grant from before grants were scoped mints nothing, so it carries
 /// no warning.
-pub(super) fn grant_access(app_id: &str, installation_id: u64, scope: &GrantScope) -> Markup {
+pub(super) fn grant_access(
+    app_id: &str,
+    installation_id: u64,
+    scope: &GrantScope,
+    granted: &PermissionSet,
+) -> Markup {
     let repos: Vec<Named> = scope
         .list()
         .iter()
@@ -258,7 +303,7 @@ pub(super) fn grant_access(app_id: &str, installation_id: u64, scope: &GrantScop
         } @else {
             span.detail { "Mints tokens for " (app(app_id, installation_id)) }
         }
-        (permissions())
+        (permissions(granted, &[]))
         span.detail { (REVOKING) }
     }
 }
