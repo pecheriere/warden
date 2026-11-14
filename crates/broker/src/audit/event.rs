@@ -197,7 +197,8 @@ pub enum AuditEvent {
     /// Refused relay logins, from every address, were counted over one minute
     /// instead of recorded one by one.
     RelayLoginsRefusedHeld {
-        /// How many distinct addresses were counted.
+        /// How many distinct addresses were counted (addresses beyond the 1024
+        /// held count as one).
         peers: u64,
         /// How many connections were refused.
         connections: u64,

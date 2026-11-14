@@ -305,7 +305,7 @@ change.
   | Proxied calls refused before they start, per agent | 30 entries a minute, plus 1 `proxy_calls_refused_held` summary a minute | about 18 MB (44640 × 410 bytes) | about 67 MB (44640 × 1.5 KB) |
   | Relay sessions started, per grant | 1000 sessions a UTC day (`WARDEN_RELAY_MAX_SESSIONS_PER_DAY`), 2 entries each (`relay_session_started` and `relay_session_ended`) | about 1 MB (1000 × 940 bytes) | about 2 MB (1000 × 1.95 KB) |
   | Relay sessions refused after login, per grant | 30 entries a minute, plus 1 `relay_sessions_refused_held` summary a minute | about 13 MB (44640 × 290 bytes) | about 13 MB (44640 × 300 bytes) |
-  | Relay logins refused, overall | 5 entries a minute per address and 10 overall, plus 1 `relay_logins_refused_held` summary a minute (at most 1025 addresses counted in it) | about 5 MB (15840 × 317 bytes) | about 5 MB (15840 × 330 bytes) |
+  | Relay logins refused, overall | 5 entries a minute per address (per /64 network for IPv6) and 10 overall, plus 1 `relay_logins_refused_held` summary a minute (its `peers` field at most 1025) | about 5 MB (15840 × 317 bytes) | about 5 MB (15840 × 330 bytes) |
 
   Each API grant and each relay grant takes a phone approval, so the
   per-grant figures multiply only by the grants the owner approved, and the refused-call

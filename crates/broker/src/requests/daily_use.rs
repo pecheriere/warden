@@ -15,8 +15,9 @@ use crate::notify::Doorbell;
 /// log's disk in the life of a grant.
 pub const CALLS_PER_DAY: u32 = 10_000;
 
-/// Relay sessions per relay grant per UTC day, unless the server says otherwise. Each
-/// session refused past it costs an audit entry at most once a minute.
+/// Relay sessions per relay grant per UTC day, unless the server says otherwise. Sessions
+/// refused past it are recorded one by one up to 30 a minute per grant, and
+/// counted beyond that.
 pub const SESSIONS_PER_DAY: u32 = 1_000;
 
 /// What a grant spends its daily budget on.
