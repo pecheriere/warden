@@ -164,8 +164,14 @@ where
     V: Tally,
 {
     /// A limiter for entries described by `what` in the log of a failed write, with
-    /// `allowance` and the `summary` that writes what is held.
-    fn new(what: &'static str, allowance: Allowance, summary: Summary<K, V>) -> Arc<Self> {
+    /// `allowance` and the `summary` that writes what is held. It is not registered:
+    /// use [`AuditThrottles::throttle`] unless the limiter must exist before the
+    /// registry does, and then pass it to [`AuditThrottles::register`] exactly once.
+    pub(crate) fn new(
+        what: &'static str,
+        allowance: Allowance,
+        summary: Summary<K, V>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             what,
             allowance,
@@ -368,8 +374,8 @@ pub struct AuditThrottles {
 
 impl AuditThrottles {
     /// A limiter for entries described by `what`, registered here so that what it
-    /// holds is flushed. The only way to build one outside tests, so none can be
-    /// left out.
+    /// holds is flushed. The way to build one, so none can be left out, except
+    /// for what [`AuditThrottles::register`] says.
     #[must_use]
     pub fn throttle<K, V>(
         &self,
@@ -386,8 +392,12 @@ impl AuditThrottles {
         throttle
     }
 
-    /// Add `throttle` to those flushed.
-    fn register(&self, throttle: Arc<dyn FlushHeld>) {
+    /// Add `throttle` to those flushed. Only for a limiter built with
+    /// `Throttle::new` before the registry existed, such as the local secret
+    /// backend's, which is opened before the requests; register each exactly once,
+    /// or what it holds is never written, or written twice. Every other limiter is
+    /// built by [`AuditThrottles::throttle`].
+    pub fn register(&self, throttle: Arc<dyn FlushHeld>) {
         self.throttles
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
