@@ -392,7 +392,11 @@ target; if it cannot be written the session does not start.
 and the exit status. `relay_session_refused` records a start refused after a
 successful login (the grant or the policy changed), and `relay_login_refused`
 a connection that tried to log in and was turned away. Neither holds key
-material.
+material. Both are limited per minute: refused sessions to 30 per grant, refused
+logins to 5 per address and 10 overall; the rest are counted in
+`relay_sessions_refused_held` and `relay_logins_refused_held`, one entry a minute.
+Past its daily limit of sessions (1000 by default) a grant's new sessions are
+refused until 00:00 UTC.
 
 **Configuration.** `WARDEN_RELAY_PUBLIC_ADDR` (`host:port`, required for relay
 targets; when unset, requests for relay targets are refused) is the address

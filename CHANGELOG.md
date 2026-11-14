@@ -18,8 +18,10 @@ All notable changes to this project are recorded here. The format follows
   that note in place of the offers. They need no migration and write no audit entry.
 - New audit entries: `release_step_started`, `release_published_changed`,
   `release_published_changed_notified`, `local_backend_errors_held`,
-  `proxy_call_limit_reached`, `proxy_call_limit_notified` and `proxy_calls_refused_held`. An
-  older `warden-server audit verify` refuses a log holding one.
+  `proxy_call_limit_reached`, `proxy_call_limit_notified`, `proxy_calls_refused_held`,
+  `relay_session_limit_reached`, `relay_session_limit_notified`,
+  `relay_sessions_refused_held` and `relay_logins_refused_held`. An older
+  `warden-server audit verify` refuses a log holding one.
 - The clients for 1Password Connect, the notifiers and the health probe no longer use a proxy
   named in `HTTP_PROXY`, `HTTPS_PROXY` or `ALL_PROXY`; a deployment that reached them through
   one needs a direct route. See [Upgrading](docs/upgrading.md#proxies-and-http2).
@@ -70,6 +72,10 @@ All notable changes to this project are recorded here. The format follows
 - While the local secret backend's files are unusable, at most 10 `error` audit entries a
   minute are written; the rest are counted in a new `local_backend_errors_held` entry, once
   a minute, instead of one entry per failed read (#267).
+- Refused relay logins are written 5 a minute per address and 10 a minute overall; the
+  rest are summed in one `relay_logins_refused_held` entry a minute, with the number of
+  addresses, connections and attempts. Refused relay sessions are limited to 30 a minute
+  per grant, with the rest in `relay_sessions_refused_held`.
 - The entries of proxied calls refused before they start (by the policy, a changed secret, or
   a limit) are limited to 30 a minute per agent; the rest are counted and written as one
   `proxy_calls_refused_held` entry per agent per minute, once the minute is over. A call
