@@ -12,7 +12,7 @@ use aws_lc_rs::signature::RSA_PKCS1_SHA256;
 use rustls_pki_types::PrivateKeyDer;
 use rustls_pki_types::pem::PemObject as _;
 use sha2::{Digest as _, Sha256};
-use warden_broker_proto::github_permissions::PermissionSet;
+use warden_broker_proto::github_permissions::{PermissionError, PermissionSet};
 use warden_broker_proto::github_token::GrantScope;
 use warden_broker_proto::{GithubTokenGrant, Window};
 use zeroize::Zeroizing;
@@ -31,6 +31,68 @@ const APP_ID_FIELD: &str = "app_id";
 const INSTALLATION_ID_FIELD: &str = "installation_id";
 const PRIVATE_KEY_FIELD: &str = "private_key";
 const LABELS: [&str; 3] = [APP_ID_FIELD, INSTALLATION_ID_FIELD, PRIVATE_KEY_FIELD];
+
+/// The optional fields that say what tokens may hold, by label.
+const DEFAULT_PERMISSIONS_FIELD: &str = "default_permissions";
+const EXTRA_PERMISSIONS_FIELD: &str = "extra_permissions";
+const PERMISSION_LABELS: [&str; 2] = [DEFAULT_PERMISSIONS_FIELD, EXTRA_PERMISSIONS_FIELD];
+
+/// What the owner configured on the App item about the permissions of tokens.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GithubPermissionPolicy {
+    /// The set every new grant gets.
+    pub default: PermissionSet,
+    /// The permissions a request may add, each at most at the level held. It holds
+    /// what the owner wrote; `metadata:read` in it is ignored, being always present.
+    pub allowed_extras: PermissionSet,
+}
+
+impl GithubPermissionPolicy {
+    /// What an item with neither field means: today's four permissions as the
+    /// default, and no extras.
+    #[must_use]
+    pub fn legacy() -> Self {
+        Self {
+            default: PermissionSet::legacy(),
+            allowed_extras: PermissionSet::metadata_only(),
+        }
+    }
+}
+
+/// Read the optional permission fields of the App item, matched by label. A missing
+/// `default_permissions` means the legacy set, a missing `extra_permissions` no extras.
+/// A field that is repeated, present but empty, or refused by [`PermissionSet::parse`]
+/// is an error naming the field with a fixed reason: no reason quotes a value.
+///
+/// # Errors
+/// [`PolicyError::GithubApp`] naming the field.
+pub(super) fn parse_permission_fields(
+    title: &str,
+    fields: &[SecretField],
+) -> Result<GithubPermissionPolicy, PolicyError> {
+    let by_label = values_by_label(fields, &PERMISSION_LABELS).map_err(|label| {
+        PolicyError::GithubApp(format!(
+            "item \"{title}\": field \"{label}\" appears more than once"
+        ))
+    })?;
+    let read = |label: &str, absent: PermissionSet| -> Result<PermissionSet, PolicyError> {
+        let Some(value) = by_label.get(label).map(|v| v.trim()) else {
+            return Ok(absent);
+        };
+        if value.is_empty() {
+            return Err(PolicyError::GithubApp(format!(
+                "item \"{title}\": field \"{label}\" is present but empty"
+            )));
+        }
+        PermissionSet::parse(value).map_err(|e: PermissionError| {
+            PolicyError::GithubApp(format!("item \"{title}\": field \"{label}\": {e}"))
+        })
+    };
+    Ok(GithubPermissionPolicy {
+        default: read(DEFAULT_PERMISSIONS_FIELD, PermissionSet::legacy())?,
+        allowed_extras: read(EXTRA_PERMISSIONS_FIELD, PermissionSet::metadata_only())?,
+    })
+}
 
 /// Why an App id is refused. The release App's id follows the same rule.
 const APP_ID_REASON: &str =
@@ -64,6 +126,7 @@ pub struct GithubAppKey {
     app_id: String,
     installation_id: u64,
     key: Arc<KeyPair>,
+    permissions: GithubPermissionPolicy,
 }
 
 impl GithubAppKey {
@@ -84,7 +147,21 @@ impl GithubAppKey {
             app_id,
             installation_id,
             key: parse_rsa_key(pem).map_err(app_error)?,
+            permissions: GithubPermissionPolicy::legacy(),
         })
+    }
+
+    /// The same App, with the permissions its item configures.
+    #[must_use]
+    pub(super) fn with_permissions(mut self, permissions: GithubPermissionPolicy) -> Self {
+        self.permissions = permissions;
+        self
+    }
+
+    /// What the owner configured about the permissions of tokens.
+    #[must_use]
+    pub const fn permissions(&self) -> &GithubPermissionPolicy {
+        &self.permissions
     }
 
     /// The App id, as GitHub's `iss` claim wants it.
@@ -201,12 +278,13 @@ pub(super) fn parse_item(title: &str, fields: &[SecretField]) -> Result<GithubAp
             ))
         })?;
     let pem = Zeroizing::new(field(PRIVATE_KEY_FIELD)?.as_bytes().to_vec());
-    GithubAppKey::new(app_id, installation_id, &pem).map_err(|e| match e {
+    let key = GithubAppKey::new(app_id, installation_id, &pem).map_err(|e| match e {
         PolicyError::GithubApp(reason) if reason.contains("private key") => in_item(
             PolicyError::GithubApp(format!("field \"{PRIVATE_KEY_FIELD}\": {reason}")),
         ),
         other => in_item(other),
-    })
+    })?;
+    Ok(key.with_permissions(parse_permission_fields(title, fields)?))
 }
 
 /// What a GitHub token grant is for: the App and installation tokens are minted

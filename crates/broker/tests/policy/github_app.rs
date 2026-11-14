@@ -1,8 +1,9 @@
 //! The GitHub App item.
 
 use serde_json::{Value, json};
-use warden_broker::policy::{PolicyError, SecretBackend};
+use warden_broker::policy::{GithubAppProbe, GithubPermissionPolicy, PolicyError, SecretBackend};
 use warden_broker::testkit::github_app::{APP_ID, INSTALLATION_ID, RSA2048_PKCS1, RSA2048_PKCS8};
+use warden_broker_proto::github_permissions::PermissionSet;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -208,4 +209,161 @@ async fn github_app_unreadable_item_never_quotes_it() {
         .await;
     let err = backend(&server).github_app().await.unwrap_err();
     assert!(!err.to_string().contains("SECRET"), "{err}");
+}
+
+fn with_permissions(default: Option<&str>, extra: Option<&str>) -> Vec<Value> {
+    let mut fields = full(RSA2048_PKCS8);
+    if let Some(value) = default {
+        fields.push(field("default_permissions", value));
+    }
+    if let Some(value) = extra {
+        fields.push(field("extra_permissions", value));
+    }
+    fields
+}
+
+#[tokio::test]
+async fn permission_fields_missing_mean_legacy_and_no_extras() {
+    let server = with_item(full(RSA2048_PKCS8)).await;
+    let policy = backend(&server).github_permissions().await.unwrap();
+    assert_eq!(policy, GithubPermissionPolicy::legacy());
+    assert_eq!(policy.default, PermissionSet::legacy());
+    assert!(policy.allowed_extras.is_only_metadata());
+    let key = backend(&server).github_app().await.unwrap();
+    assert_eq!(key.permissions(), &policy);
+}
+
+#[tokio::test]
+async fn permission_fields_parse() {
+    let server = with_item(with_permissions(
+        Some("contents:write,pull_requests:write,issues:write,checks:read"),
+        Some("actions:read,statuses:read"),
+    ))
+    .await;
+    let policy = backend(&server).github_permissions().await.unwrap();
+    assert_eq!(
+        policy.default,
+        PermissionSet::parse("checks:read,contents:write,issues:write,pull_requests:write")
+            .unwrap()
+    );
+    assert_eq!(
+        policy.allowed_extras,
+        PermissionSet::parse("actions:read,statuses:read").unwrap()
+    );
+    assert_eq!(
+        backend(&server).github_app().await.unwrap().permissions(),
+        &policy
+    );
+}
+
+#[tokio::test]
+async fn bad_permission_field_makes_the_app_unusable() {
+    // Each value is a typo or a refusal the owner could plausibly make; none may be
+    // quoted back, and the field's label must be named.
+    let bad = [
+        "contents:wirte",
+        "contnets:read",
+        "contents",
+        "contents:read,,issues:read",
+        "contents:read,contents:write",
+        "metadata:write",
+        "contents:admin",
+        "  ",
+        "",
+    ];
+    for label in ["default_permissions", "extra_permissions"] {
+        for value in bad {
+            let mut fields = full(RSA2048_PKCS8);
+            fields.push(field(label, value));
+            let server = with_item(fields).await;
+            for err in [
+                backend(&server).github_permissions().await.unwrap_err(),
+                backend(&server).github_app().await.unwrap_err(),
+            ] {
+                let why = reason(&err);
+                assert!(
+                    why.contains(&format!("field \"{label}\"")),
+                    "{label} {value:?}: {why}"
+                );
+                let quoted = value.trim();
+                assert!(
+                    quoted.is_empty() || !why.contains(quoted),
+                    "{label} {value:?}: echoed in {why}"
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn ceiling_in_allowlist_makes_the_app_unusable() {
+    for ceiling in [
+        "workflows:write",
+        "administration:read",
+        "secrets:read",
+        "organization_plan:read",
+    ] {
+        let server = with_item(with_permissions(None, Some(ceiling))).await;
+        let err = backend(&server).github_permissions().await.unwrap_err();
+        assert!(
+            reason(&err).contains("field \"extra_permissions\""),
+            "{err:?}"
+        );
+        assert!(!reason(&err).contains(ceiling), "{err:?}");
+        let server = with_item(with_permissions(Some(ceiling), None)).await;
+        let err = backend(&server).github_permissions().await.unwrap_err();
+        assert!(
+            reason(&err).contains("field \"default_permissions\""),
+            "{err:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn repeated_permission_label_is_refused() {
+    let mut fields = with_permissions(Some("contents:read"), None);
+    fields.push(field("default_permissions", "issues:read"));
+    let server = with_item(fields).await;
+    let err = backend(&server).github_permissions().await.unwrap_err();
+    assert!(
+        reason(&err).contains("\"default_permissions\" appears more than once"),
+        "{err:?}"
+    );
+}
+
+#[tokio::test]
+async fn github_permissions_does_not_need_the_key() {
+    let mut fields = with_permissions(Some("contents:read"), Some("checks:read"));
+    fields[2] = field("private_key", "SECRET-NOT-A-KEY");
+    let server = with_item(fields).await;
+    let policy = backend(&server).github_permissions().await.unwrap();
+    assert_eq!(
+        policy.default,
+        PermissionSet::parse("contents:read").unwrap()
+    );
+    let err = backend(&server).github_app().await.unwrap_err();
+    assert!(reason(&err).contains("private_key"), "{err:?}");
+}
+
+#[tokio::test]
+async fn github_permissions_absent_app_is_not_configured() {
+    let server = connect_mock().await;
+    mount_items(&server, &summaries(&[])).await;
+    let err = backend(&server).github_permissions().await.unwrap_err();
+    assert!(matches!(err, PolicyError::NoGithubApp), "{err:?}");
+}
+
+#[tokio::test]
+async fn doctor_probe_names_the_bad_permission_field() {
+    let server = with_item(with_permissions(Some("contents:wirte"), None)).await;
+    let GithubAppProbe::Invalid(why) = backend(&server).probe_github_app().await else {
+        panic!("a bad permission field must make the probe fail");
+    };
+    assert!(why.contains("default_permissions"), "{why}");
+    assert!(!why.contains("wirte"), "{why}");
+    let server = with_item(with_permissions(Some("contents:read"), Some("checks:read"))).await;
+    assert!(matches!(
+        backend(&server).probe_github_app().await,
+        GithubAppProbe::Loaded { .. }
+    ));
 }

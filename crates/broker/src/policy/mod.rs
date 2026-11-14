@@ -26,7 +26,7 @@ pub use commit_signing_key::{
     CA_UNREADABLE, CommitSigningKey, CommitSigningPolicy, CommitSigningProbe, SAME_AS_CA,
     check_separate_from_ca,
 };
-pub use github_app::{GithubAppKey, GithubAppProbe, GithubTokenPolicy};
+pub use github_app::{GithubAppKey, GithubAppProbe, GithubPermissionPolicy, GithubTokenPolicy};
 pub use listing::Listing;
 pub use local::{LocalBackend, LocalProbe};
 pub use onepassword::{CaProbe, OnePasswordConnect, VaultProbe};
@@ -330,6 +330,15 @@ pub trait SecretBackend: Send + Sync + 'static {
     /// [`PolicyError::NoGithubApp`] if none is configured,
     /// [`PolicyError::GithubApp`] or [`PolicyError::Unavailable`].
     async fn github_app(&self) -> Result<GithubAppKey, PolicyError>;
+
+    /// The two permission fields of the GitHub App item, parsed and checked, without
+    /// the private key: the default set and the extras a request may add.
+    ///
+    /// # Errors
+    /// [`PolicyError::NoGithubApp`] if none is configured,
+    /// [`PolicyError::GithubApp`] naming a field that cannot be used, or
+    /// [`PolicyError::Unavailable`].
+    async fn github_permissions(&self) -> Result<GithubPermissionPolicy, PolicyError>;
 
     /// Whether a GitHub App is configured, without reading it: what an agent with no
     /// grant can cause.

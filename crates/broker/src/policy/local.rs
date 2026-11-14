@@ -35,9 +35,9 @@ use super::onepassword::{
     ApiItem, ItemUrl, SecretField, TargetItem, parse_api_secret, parse_private_key, parse_target,
 };
 use super::{
-    ApiSecretPolicy, CaKey, CaProbe, CommitSigningKey, CommitSigningProbe, GithubAppKey, Listing,
-    PolicyError, RelayCredential, ReleaseAppKey, ReleaseSigningKey, SecretBackend, SecretValue,
-    SshMode, SshTarget, not_a_relay_target,
+    ApiSecretPolicy, CaKey, CaProbe, CommitSigningKey, CommitSigningProbe, GithubAppKey,
+    GithubPermissionPolicy, Listing, PolicyError, RelayCredential, ReleaseAppKey,
+    ReleaseSigningKey, SecretBackend, SecretValue, SshMode, SshTarget, not_a_relay_target,
 };
 use crate::audit::{AuditEvent, AuditLog, bounded_text};
 use crate::audit_throttle::{Allowance, FlushHeld, Summary, Throttle};
@@ -701,6 +701,10 @@ impl SecretBackend for LocalBackend {
     /// The local backend holds no GitHub App: that is 1Password only, so that a
     /// compromised host does not also hold the key that mints repository tokens.
     async fn github_app(&self) -> Result<GithubAppKey, PolicyError> {
+        Err(PolicyError::NoGithubApp)
+    }
+
+    async fn github_permissions(&self) -> Result<GithubPermissionPolicy, PolicyError> {
         Err(PolicyError::NoGithubApp)
     }
 

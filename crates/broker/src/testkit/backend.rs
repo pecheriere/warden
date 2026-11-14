@@ -14,9 +14,9 @@ use zeroize::Zeroizing;
 
 use super::{NAS_HOST, PI_HOST};
 use crate::policy::{
-    ApiSecretPolicy, CaKey, CommitSigningKey, GithubAppKey, Listing, PolicyError, RelayCredential,
-    ReleaseAppKey, ReleaseSigningKey, SecretBackend, SecretValue, SshMode, SshTarget, ValueFormat,
-    check_distinct, not_a_relay_target,
+    ApiSecretPolicy, CaKey, CommitSigningKey, GithubAppKey, GithubPermissionPolicy, Listing,
+    PolicyError, RelayCredential, ReleaseAppKey, ReleaseSigningKey, SecretBackend, SecretValue,
+    SshMode, SshTarget, ValueFormat, check_distinct, not_a_relay_target,
 };
 
 /// An in-memory [`SecretBackend`]: targets (with relay credentials) and API
@@ -32,6 +32,7 @@ pub struct FakeBackend {
     commit_signing_reads: std::sync::atomic::AtomicUsize,
     github_app: Mutex<Option<GithubAppKey>>,
     github_app_outage: Mutex<Option<String>>,
+    github_permissions: Mutex<Option<GithubPermissionPolicy>>,
     github_app_reads: std::sync::atomic::AtomicUsize,
     release_keys: Mutex<Vec<ReleaseSigningKey>>,
     release_app: Mutex<Option<ReleaseAppKey>>,
@@ -75,6 +76,7 @@ impl FakeBackend {
             commit_signing_reads: std::sync::atomic::AtomicUsize::new(0),
             github_app: Mutex::new(None),
             github_app_outage: Mutex::new(None),
+            github_permissions: Mutex::new(None),
             github_app_reads: std::sync::atomic::AtomicUsize::new(0),
             release_keys: Mutex::new(Vec::new()),
             release_app: Mutex::new(None),
@@ -331,6 +333,18 @@ impl FakeBackend {
         *self.github_app.lock().expect("app lock poisoned") = app;
     }
 
+    /// Replace what [`SecretBackend::github_permissions`] answers (`None`: the
+    /// permissions of the configured App, which is the default).
+    ///
+    /// # Panics
+    /// If the lock is poisoned.
+    pub fn set_github_permissions(&self, permissions: Option<GithubPermissionPolicy>) {
+        *self
+            .github_permissions
+            .lock()
+            .expect("permissions lock poisoned") = permissions;
+    }
+
     /// Add a release signing key for its repository. Like the 1Password backend,
     /// [`SecretBackend::release_signing`] checks all of them together.
     ///
@@ -554,6 +568,22 @@ impl SecretBackend for FakeBackend {
             .lock()
             .map_err(|_| PolicyError::Unavailable("fake backend lock poisoned".to_owned()))?;
         Ok(state != CaState::Absent)
+    }
+
+    async fn github_permissions(&self) -> Result<GithubPermissionPolicy, PolicyError> {
+        Self::outage(&self.github_app_outage)?;
+        let app = self
+            .github_app
+            .lock()
+            .map_err(|_| PolicyError::Unavailable("fake backend lock poisoned".to_owned()))?
+            .clone()
+            .ok_or(PolicyError::NoGithubApp)?;
+        let set = self
+            .github_permissions
+            .lock()
+            .map_err(|_| PolicyError::Unavailable("fake backend lock poisoned".to_owned()))?
+            .clone();
+        Ok(set.unwrap_or_else(|| app.permissions().clone()))
     }
 
     async fn has_github_app(&self) -> Result<bool, PolicyError> {

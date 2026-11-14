@@ -15,8 +15,9 @@ use warden_broker_proto::{SecretName, TargetName};
 use zeroize::Zeroizing;
 
 use super::{
-    ApiSecretPolicy, CaKey, CommitSigningKey, GithubAppKey, PolicyError, RelayCredential,
-    ReleaseAppKey, ReleaseSigningKey, SecretBackend, SecretValue, SshTarget, not_a_relay_target,
+    ApiSecretPolicy, CaKey, CommitSigningKey, GithubAppKey, GithubPermissionPolicy, PolicyError,
+    RelayCredential, ReleaseAppKey, ReleaseSigningKey, SecretBackend, SecretValue, SshTarget,
+    not_a_relay_target,
 };
 
 const TARGET_TAG: &str = "warden:ssh-target";
@@ -42,7 +43,7 @@ mod listing;
 mod probe;
 mod release;
 
-use super::github_app::parse_item as parse_github_app;
+use super::github_app::{parse_item as parse_github_app, parse_permission_fields};
 use items::invalid;
 pub(crate) use items::parse_host_port;
 pub(super) use items::{
@@ -524,6 +525,17 @@ impl SecretBackend for OnePasswordConnect {
     async fn github_app(&self) -> Result<GithubAppKey, PolicyError> {
         match self.tagged_item(GITHUB_APP_TAG, "GitHub App").await {
             Ok((title, item)) => parse_github_app(&title, &item.fields),
+            Err(KeyItemError::Absent) => Err(PolicyError::NoGithubApp),
+            Err(KeyItemError::Unusable(reason)) => Err(PolicyError::GithubApp(reason)),
+            Err(KeyItemError::Backend(e)) => Err(e),
+        }
+    }
+
+    async fn github_permissions(&self) -> Result<GithubPermissionPolicy, PolicyError> {
+        // The item, private key included, is dropped when this call returns; only its
+        // permission fields are parsed.
+        match self.tagged_item(GITHUB_APP_TAG, "GitHub App").await {
+            Ok((title, item)) => parse_permission_fields(&title, &item.fields),
             Err(KeyItemError::Absent) => Err(PolicyError::NoGithubApp),
             Err(KeyItemError::Unusable(reason)) => Err(PolicyError::GithubApp(reason)),
             Err(KeyItemError::Backend(e)) => Err(e),
