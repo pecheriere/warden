@@ -4,7 +4,8 @@
 //! caller that can be refused as fast as it can call must not be able to add an
 //! entry per call. A [`Throttle`] writes the first few entries of a minute, keeps
 //! only a count of the rest, and [`FlushHeld::flush`] writes that count later as one
-//! entry. Counts are in memory: a restart can at worst lose the counts of a minute.
+//! entry once the minute that held it is over, however long the calls go on. Counts
+//! are in memory: a restart can at worst lose the counts of the last minute or two.
 
 use std::collections::HashMap;
 use std::hash::Hash;
@@ -46,8 +47,11 @@ pub enum Summary<K, V> {
     /// cap on how many.
     PerKey(fn(K, V) -> AuditEvent),
     /// One entry for all keys once the limiter's minute is over. The `u64` it gets
-    /// is the number of distinct keys counted: those held, plus one if a key
-    /// that arrived when `max_keys` were held was counted without being added.
+    /// is the number of distinct keys counted: those held during that minute, plus
+    /// one if a key that arrived when `max_keys` were held was counted without
+    /// being added. After a failed write the next entry also counts the keys of
+    /// the one that failed, so a key present in both minutes is counted twice: the
+    /// number of keys can be too high, but the summed tally stays exact.
     Aggregate {
         /// The most distinct keys held at once.
         max_keys: usize,
@@ -63,16 +67,32 @@ struct KeyMinute<V> {
     /// The tally held, with `holding` saying whether anything is.
     held: V,
     holding: bool,
+    /// What an earlier minute held, due to be written at the next flush, with
+    /// `due_holding` saying whether anything is.
+    due: V,
+    due_holding: bool,
 }
 
-impl<V: Default> KeyMinute<V> {
+impl<V: Tally> KeyMinute<V> {
     fn new(now: i64) -> Self {
         Self {
             started_at: now,
             written: 0,
             held: V::default(),
             holding: false,
+            due: V::default(),
+            due_holding: false,
         }
+    }
+
+    /// Start a new minute at `now`: what the old one held becomes due.
+    fn roll_over(&mut self, now: i64) {
+        if std::mem::take(&mut self.holding) {
+            self.due.add(std::mem::take(&mut self.held));
+            self.due_holding = true;
+        }
+        self.started_at = now;
+        self.written = 0;
     }
 }
 
@@ -85,8 +105,37 @@ struct Overall<V> {
     holding: bool,
     /// A key arrived when the map was full and was only counted.
     overflowed: bool,
-    /// Keys of a summary that could not be written, to be counted in the next.
-    carried_keys: u64,
+    /// What earlier minutes held, if anything, due to be written at the next
+    /// flush: the tally and the number of keys counted.
+    due: Option<(V, u64)>,
+}
+
+impl<V: Tally> Overall<V> {
+    /// The keys counted for what is held: those in the map, plus one for overflow.
+    fn counted(&mut self, held_keys: usize) -> u64 {
+        u64::try_from(held_keys)
+            .unwrap_or(u64::MAX)
+            .saturating_add(u64::from(std::mem::take(&mut self.overflowed)))
+    }
+
+    fn add_due(&mut self, tally: V, keys: u64) {
+        let (due, due_keys) = self.due.get_or_insert_with(|| (V::default(), 0));
+        due.add(tally);
+        *due_keys = due_keys.saturating_add(keys);
+    }
+
+    /// Start a new minute at `now`. What the old one held, for an aggregate, becomes
+    /// due with its keys.
+    fn roll_over(&mut self, now: i64, held_keys: usize, aggregate: bool) {
+        if aggregate && std::mem::take(&mut self.holding) {
+            let counted = self.counted(held_keys);
+            let held = std::mem::take(&mut self.held);
+            self.add_due(held, counted);
+        }
+        self.started = true;
+        self.started_at = now;
+        self.written = 0;
+    }
 }
 
 struct Inner<K, V> {
@@ -130,7 +179,7 @@ where
                     held: V::default(),
                     holding: false,
                     overflowed: false,
-                    carried_keys: 0,
+                    due: None,
                 },
             }),
         })
@@ -148,9 +197,13 @@ where
         let mut guard = self.lock();
         let inner = &mut *guard;
         if !inner.overall.started || minute_over(inner.overall.started_at, now) {
-            inner.overall.started = true;
-            inner.overall.started_at = now;
-            inner.overall.written = 0;
+            let aggregate = matches!(self.summary, Summary::Aggregate { .. });
+            inner.overall.roll_over(now, inner.keys.len(), aggregate);
+            if aggregate {
+                // The keys of the minute that is over are counted now.
+                inner.keys.clear();
+                inner.overall.overflowed = false;
+            }
         }
         if let Summary::Aggregate { max_keys, .. } = self.summary
             && !inner.keys.contains_key(key)
@@ -166,8 +219,7 @@ where
             .entry(key.clone())
             .or_insert_with(|| KeyMinute::new(now));
         if minute_over(minute.started_at, now) {
-            minute.started_at = now;
-            minute.written = 0;
+            minute.roll_over(now);
         }
         let overall_room = self
             .allowance
@@ -203,41 +255,55 @@ where
         }
     }
 
-    /// Take what is due: per key, each key whose minute is over (all if `all`),
-    /// and drop the keys whose minute is over and that hold nothing.
+    /// Take what is due: per key, what earlier minutes held, and what the current
+    /// minute holds if it is over (all of it if `all`). Drops the keys whose minute
+    /// is over and that hold nothing.
     fn take_per_key(&self, now: i64, all: bool) -> Vec<(K, V)> {
         let mut inner = self.lock();
         let mut due = Vec::new();
         for (key, minute) in &mut inner.keys {
+            let mut tally = V::default();
+            let mut any = false;
+            if std::mem::take(&mut minute.due_holding) {
+                tally.add(std::mem::take(&mut minute.due));
+                any = true;
+            }
             if minute.holding && (all || minute_over(minute.started_at, now)) {
                 minute.holding = false;
-                due.push((key.clone(), std::mem::take(&mut minute.held)));
+                tally.add(std::mem::take(&mut minute.held));
+                any = true;
+            }
+            if any {
+                due.push((key.clone(), tally));
             }
         }
-        inner
-            .keys
-            .retain(|_, minute| minute.holding || !minute_over(minute.started_at, now));
+        inner.keys.retain(|_, minute| {
+            minute.holding || minute.due_holding || !minute_over(minute.started_at, now)
+        });
         due
     }
 
-    /// Take the aggregate if the limiter's minute is over (or `all`): the number of
-    /// keys and the tally, if anything is held. Starts afresh either way.
-    fn take_aggregate(&self, now: i64, all: bool) -> Option<(u64, V)> {
+    /// Take the aggregates that are due: the number of keys and the tally of each,
+    /// the earlier minutes first, then the current one if its minute is over (or
+    /// `all`). An aggregate's keys are cleared once its minute is over.
+    fn take_aggregate(&self, now: i64, all: bool) -> Vec<(u64, V)> {
         let mut inner = self.lock();
-        let overall = &mut inner.overall;
-        if overall.started && !all && !minute_over(overall.started_at, now) {
-            return None;
+        let mut taken = Vec::new();
+        if let Some((tally, keys)) = inner.overall.due.take() {
+            taken.push((keys, tally));
         }
-        let holding = std::mem::take(&mut overall.holding);
-        let tally = std::mem::take(&mut overall.held);
-        let overflow = u64::from(std::mem::take(&mut overall.overflowed));
-        let carried = std::mem::take(&mut overall.carried_keys);
-        let counted = u64::try_from(inner.keys.len())
-            .unwrap_or(u64::MAX)
-            .saturating_add(overflow)
-            .saturating_add(carried);
-        inner.keys.clear();
-        holding.then_some((counted, tally))
+        let over = inner.overall.started && minute_over(inner.overall.started_at, now);
+        if all || over {
+            let held_keys = inner.keys.len();
+            let overall = &mut inner.overall;
+            if std::mem::take(&mut overall.holding) {
+                let counted = overall.counted(held_keys);
+                taken.push((counted, std::mem::take(&mut overall.held)));
+            }
+            overall.overflowed = false;
+            inner.keys.clear();
+        }
+        taken
     }
 
     fn restore_key(&self, key: &K, tally: V) {
@@ -245,16 +311,16 @@ where
         let minute = inner
             .keys
             .entry(key.clone())
+            // Started at 0, so that its minute is over: the key is dropped once
+            // this is written, and not kept for a minute.
             .or_insert_with(|| KeyMinute::new(0));
-        minute.held.add(tally);
-        minute.holding = true;
+        minute.due.add(tally);
+        minute.due_holding = true;
     }
 
     fn restore_aggregate(&self, counted: u64, tally: V) {
         let mut inner = self.lock();
-        inner.overall.held.add(tally);
-        inner.overall.holding = true;
-        inner.overall.carried_keys = inner.overall.carried_keys.saturating_add(counted);
+        inner.overall.add_due(tally, counted);
     }
 }
 
@@ -283,11 +349,11 @@ where
                 }
             }
             Summary::Aggregate { event, .. } => {
-                if let Some((counted, tally)) = self.take_aggregate(now, all)
-                    && let Err(e) = audit.append(event(counted, tally)).await
-                {
-                    tracing::error!(error = %e, "could not audit {}", self.what);
-                    self.restore_aggregate(counted, tally);
+                for (counted, tally) in self.take_aggregate(now, all) {
+                    if let Err(e) = audit.append(event(counted, tally)).await {
+                        tracing::error!(error = %e, "could not audit {}", self.what);
+                        self.restore_aggregate(counted, tally);
+                    }
                 }
             }
         }

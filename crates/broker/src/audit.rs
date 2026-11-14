@@ -546,6 +546,17 @@ impl AuditLog {
 }
 
 #[cfg(test)]
+impl AuditLog {
+    /// A log whose every append fails, on a read-only handle to the empty file at
+    /// `path`, for tests of what a caller does when a write fails. Test only.
+    pub(crate) fn unwritable(path: &Path) -> Self {
+        std::fs::write(path, "").unwrap();
+        let read_only = File::open(path).unwrap();
+        Self::from_parts(read_only, Head::genesis())
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use warden_broker_proto::Id;
 

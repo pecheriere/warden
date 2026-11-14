@@ -1,4 +1,3 @@
-use std::fs::File;
 use std::sync::Arc;
 
 use tempfile::TempDir;
@@ -122,20 +121,25 @@ async fn overall_allowance_binds_across_keys() {
     assert_eq!(total, 5);
 }
 
+fn aggregate_throttle(
+    max_keys: usize,
+    per_key: u32,
+    overall: Option<u32>,
+) -> Arc<Throttle<u32, u64>> {
+    Throttle::new(
+        "test refusals",
+        Allowance { per_key, overall },
+        Summary::Aggregate {
+            max_keys,
+            event: aggregate,
+        },
+    )
+}
+
 #[tokio::test]
 async fn aggregate_writes_one_summary_for_all_keys() {
     let (dir, log) = open().await;
-    let t: Arc<Throttle<u32, u64>> = Throttle::new(
-        "test refusals",
-        Allowance {
-            per_key: 1,
-            overall: Some(2),
-        },
-        Summary::Aggregate {
-            max_keys: 4,
-            event: aggregate,
-        },
-    );
+    let t = aggregate_throttle(4, 1, Some(2));
     for key in 0..100 {
         t.record(&log, &key, 1000, 1, aggregate(0, 0)).await;
     }
@@ -153,23 +157,94 @@ async fn aggregate_writes_one_summary_for_all_keys() {
 #[tokio::test]
 async fn a_failed_flush_keeps_the_count() {
     let (dir, log) = open().await;
+    let broken_dir = TempDir::new().unwrap();
+    let broken = AuditLog::unwritable(&broken_dir.path().join("audit.jsonl"));
     let t = per_key(1, None);
     let bot = agent("bot");
     for _ in 0..4 {
         record(&t, &log, &bot, 1000).await;
     }
-    // Another holder of the log's file lock makes an append fail, as another
-    // process appending with the lock stuck would.
-    let path = dir.path().join("audit.jsonl");
-    let other = File::options().append(true).open(&path).unwrap();
-    other.lock().unwrap();
-    t.flush(&log, 1060, false).await;
-    other.unlock().unwrap();
+    t.flush(&broken, 1060, false).await;
     assert_eq!(of_type(&dir, "commit_signing_refusals_held").len(), 0);
     t.flush(&log, 1061, false).await;
     let summaries = of_type(&dir, "commit_signing_refusals_held");
     assert_eq!(summaries.len(), 1);
     assert_eq!(summaries[0]["count"], 3);
+    t.flush(&log, 1062, true).await;
+    assert_eq!(of_type(&dir, "commit_signing_refusals_held").len(), 1);
+}
+
+#[tokio::test]
+async fn a_failed_aggregate_flush_keeps_the_tally() {
+    let (dir, log) = open().await;
+    let broken_dir = TempDir::new().unwrap();
+    let broken = AuditLog::unwritable(&broken_dir.path().join("audit.jsonl"));
+    let t = aggregate_throttle(4, 1, Some(2));
+    for key in 0..100 {
+        t.record(&log, &key, 1000, 1, aggregate(0, 0)).await;
+    }
+    t.flush(&broken, 1060, false).await;
+    assert_eq!(entries(&dir).len(), 2);
+    t.flush(&log, 1061, false).await;
+    let events = entries(&dir);
+    assert_eq!(events.len(), 3);
+    assert_eq!(events[2]["message"], "5 98");
+    t.flush(&log, 1062, true).await;
+    assert_eq!(entries(&dir).len(), 3);
+}
+
+#[tokio::test]
+async fn a_sustained_flood_writes_each_minutes_count_once_it_is_over() {
+    let (dir, log) = open().await;
+    let t = per_key(1, None);
+    let bot = agent("bot");
+    for now in 1000..=1200 {
+        record(&t, &log, &bot, now).await;
+        if now == 1090 {
+            t.flush(&log, now, false).await;
+            let summaries = of_type(&dir, "commit_signing_refusals_held");
+            assert_eq!(summaries.len(), 1);
+            assert_eq!(summaries[0]["count"], 59);
+        }
+    }
+    t.flush(&log, 1201, true).await;
+    // 201 records, and one written in each of the minutes from 1000, 1060, 1120
+    // and 1180.
+    let total: u64 = of_type(&dir, "commit_signing_refusals_held")
+        .iter()
+        .map(|event| event["count"].as_u64().unwrap())
+        .sum();
+    assert_eq!(total, 197);
+    t.flush(&log, 1300, true).await;
+    assert_eq!(of_type(&dir, "commit_signing_refusals_held").len(), 2);
+}
+
+#[tokio::test]
+async fn a_sustained_aggregate_flood_writes_each_minutes_summary_once_it_is_over() {
+    let (dir, log) = open().await;
+    let t = aggregate_throttle(3, 1, Some(2));
+    for now in 1000..=1200 {
+        let key = u32::try_from(now).unwrap();
+        t.record(&log, &key, now, 1, aggregate(0, 0)).await;
+        assert!(t.lock().keys.len() <= 3);
+        if now == 1090 {
+            t.flush(&log, now, false).await;
+            let events = entries(&dir);
+            // Two written in each of two minutes, then the summary of the first
+            // minute's other 58, for the three keys held and one more for the rest.
+            assert_eq!(events.len(), 5);
+            assert_eq!(events[4]["message"], "4 58");
+        }
+    }
+    t.flush(&log, 1201, true).await;
+    let tally: u64 = entries(&dir)
+        .iter()
+        .filter_map(|event| event["message"].as_str())
+        .filter(|message| *message != "0 0")
+        .map(|message| message.split(' ').nth(1).unwrap().parse::<u64>().unwrap())
+        .sum();
+    // 201 records, and two written in each of four minutes.
+    assert_eq!(tally, 193);
 }
 
 #[tokio::test]
@@ -194,6 +269,16 @@ async fn a_clock_set_back_starts_a_new_minute() {
     assert!(t.note(&bot, 1000, 1));
     assert!(!t.note(&bot, 1000, 1));
     assert!(t.note(&bot, 900, 1));
+}
+
+#[tokio::test]
+async fn a_clock_set_back_starts_a_new_overall_minute() {
+    let t = per_key(5, Some(2));
+    let (a, b, c) = (agent("a"), agent("b"), agent("c"));
+    assert!(t.note(&a, 1000, 1));
+    assert!(t.note(&b, 1000, 1));
+    assert!(!t.note(&c, 1000, 1));
+    assert!(t.note(&c, 900, 1));
 }
 
 #[tokio::test]
