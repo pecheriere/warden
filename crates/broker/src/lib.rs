@@ -20,6 +20,7 @@ pub mod api;
 pub mod approval;
 pub mod audience;
 pub mod audit;
+pub mod audit_throttle;
 pub mod commit_signing;
 pub mod config;
 pub mod doctor;

@@ -10,8 +10,9 @@ use warden_broker::relay::RelayLimits;
 use warden_broker::requests::Clock as _;
 
 use super::{
-    OpenSsh, TARGET, approved_agent, assert_each_start_ended, await_events, collect, hold_session,
-    key_target, key_target_with, login, reply, text, too_many,
+    OpenSsh, TARGET, approved_agent, assert_each_start_ended, await_events, collect, connect,
+    events_of, hold_session, key_target, key_target_daily, key_target_with, login, random_key,
+    reply, russh_key, text, too_many,
 };
 
 #[tokio::test(flavor = "multi_thread")]
@@ -182,4 +183,145 @@ async fn shutdown_ends_live_sessions_audited() {
     let ended = await_events(&s.broker, "relay_session_ended", 1).await;
     assert_eq!(ended[0]["reason"], "relay shutting down");
     assert_each_start_ended(&s.broker).await;
+}
+
+const SESSION_LIMIT_MESSAGE: &str =
+    "this grant reached its daily limit of sessions; new sessions fail until 00:00 UTC";
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_relay_grant_stops_at_its_daily_session_limit_and_the_owner_hears_once() {
+    let s = key_target_daily(2, RelayLimits::default()).await;
+    // A grant of its own, made a minute before a UTC midnight: it lasts past the
+    // start of the next day, which its window could not otherwise reach.
+    let now = s.broker.clock.now();
+    s.broker.clock.advance(86_400 - 60 - now.rem_euclid(86_400));
+    let agent = approved_agent(&s.broker, "late").await;
+    let other = approved_agent(&s.broker, "other").await;
+    let ssh = OpenSsh::new(&s.broker, s.relay, &agent.key);
+    for _ in 0..2 {
+        let out = ssh.run(&["echo", "ok"]).await;
+        assert_eq!(text(&out.stdout), "ok\n", "{}", text(&out.stderr));
+    }
+
+    let out = ssh.run(&["echo", "ok"]).await;
+    assert_ne!(out.status.code(), Some(0));
+    assert!(
+        text(&out.stderr).contains(SESSION_LIMIT_MESSAGE),
+        "{}",
+        text(&out.stderr)
+    );
+    let bell = s.broker.capture.next().await;
+    assert_eq!(bell.title, "warden: late reached its relay session limit");
+    assert!(
+        bell.message.contains("It opened 2 sessions to nas today"),
+        "{}",
+        bell.message
+    );
+    assert_ne!(ssh.run(&["echo", "ok"]).await.status.code(), Some(0));
+    let reached = await_events(&s.broker, "relay_session_limit_reached", 1).await;
+    assert_eq!(reached.len(), 1, "once a day");
+    assert_eq!(reached[0]["grant_id"], agent.grant_id.as_str());
+    assert_eq!(reached[0]["limit"], 2);
+    // Refused sessions are in the log, and none of them started.
+    assert_eq!(events_of(&s.broker, "relay_session_started").len(), 2);
+    let refused = events_of(&s.broker, "relay_session_refused");
+    assert_eq!(refused.len(), 2);
+    assert_eq!(refused[0]["reason"], "daily_limit");
+
+    // Per grant: another agent's sessions go on.
+    let theirs = OpenSsh::new(&s.broker, s.relay, &other.key)
+        .run(&["echo", "ok"])
+        .await;
+    assert_eq!(text(&theirs.stdout), "ok\n", "{}", text(&theirs.stderr));
+
+    // The next UTC day starts again, and can be told about again.
+    s.broker.clock.advance(120);
+    for _ in 0..2 {
+        let out = ssh.run(&["echo", "ok"]).await;
+        assert_eq!(text(&out.stdout), "ok\n", "{}", text(&out.stderr));
+    }
+    assert_ne!(ssh.run(&["echo", "ok"]).await.status.code(), Some(0));
+    await_events(&s.broker, "relay_session_limit_reached", 2).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn concurrent_sessions_at_the_daily_limit_pass_exactly_the_limit() {
+    let s = key_target_daily(
+        3,
+        RelayLimits {
+            max_sessions_per_grant: 8,
+            ..RelayLimits::default()
+        },
+    )
+    .await;
+    let agent = approved_agent(&s.broker, "bot").await;
+    let ssh = OpenSsh::new(&s.broker, s.relay, &agent.key);
+    let outs = tokio::join!(
+        ssh.run(&["echo", "ok"]),
+        ssh.run(&["echo", "ok"]),
+        ssh.run(&["echo", "ok"]),
+        ssh.run(&["echo", "ok"]),
+        ssh.run(&["echo", "ok"]),
+    );
+    let outs = [outs.0, outs.1, outs.2, outs.3, outs.4];
+    let ok = outs.iter().filter(|o| text(&o.stdout) == "ok\n").count();
+    assert_eq!(ok, 3);
+    assert_eq!(events_of(&s.broker, "relay_session_started").len(), 3);
+    let refused = events_of(&s.broker, "relay_session_refused");
+    assert_eq!(refused.len(), 2);
+    assert!(refused.iter().all(|e| e["reason"] == "daily_limit"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn refused_sessions_beyond_the_allowance_are_counted() {
+    let s = key_target_daily(1, RelayLimits::default()).await;
+    let agent = approved_agent(&s.broker, "bot").await;
+    let ssh = OpenSsh::new(&s.broker, s.relay, &agent.key);
+    let out = ssh.run(&["echo", "ok"]).await;
+    assert_eq!(text(&out.stdout), "ok\n", "{}", text(&out.stderr));
+    for _ in 0..35 {
+        assert_ne!(ssh.run(&["echo", "ok"]).await.status.code(), Some(0));
+    }
+    assert_eq!(events_of(&s.broker, "relay_session_refused").len(), 30);
+    assert_eq!(
+        events_of(&s.broker, "relay_sessions_refused_held"),
+        [] as [serde_json::Value; 0]
+    );
+    s.broker.state().requests.flush_refusals(true).await;
+    let held = events_of(&s.broker, "relay_sessions_refused_held");
+    assert_eq!(held.len(), 1, "{held:?}");
+    assert_eq!(held[0]["grant_id"], agent.grant_id.as_str());
+    assert_eq!(held[0]["count"], 5);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn refused_logins_from_one_address_are_counted_beyond_five_a_minute() {
+    let s = key_target().await;
+    for _ in 0..7 {
+        let mut c = connect(&s.broker, s.relay).await;
+        let auth = c
+            .handle
+            .authenticate_publickey(TARGET, russh_key(&random_key()))
+            .await
+            .unwrap();
+        assert!(!matches!(auth, russh::client::AuthResult::Success));
+        c.handle
+            .disconnect(Disconnect::ByApplication, "", "en")
+            .await
+            .unwrap();
+    }
+    // Stopping the relay returns once every connection has ended and is
+    // recorded or held.
+    s.broker.stop_relay().await;
+    assert_eq!(events_of(&s.broker, "relay_login_refused").len(), 5);
+    assert_eq!(
+        events_of(&s.broker, "relay_logins_refused_held"),
+        [] as [serde_json::Value; 0]
+    );
+    s.broker.state().requests.flush_refusals(true).await;
+    let held = events_of(&s.broker, "relay_logins_refused_held");
+    assert_eq!(held.len(), 1, "{held:?}");
+    assert_eq!(held[0]["peers"], 1);
+    assert_eq!(held[0]["connections"], 2);
+    assert_eq!(held[0]["attempts"], 2);
 }

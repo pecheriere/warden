@@ -126,6 +126,46 @@ fn the_daily_signature_limit_has_a_default_and_a_range() {
 }
 
 #[test]
+fn the_daily_call_limit_has_a_default_and_a_range() {
+    const VAR: &str = "WARDEN_PROXY_MAX_CALLS_PER_DAY";
+    let with = |extra: &[(&str, &str)]| {
+        let mut vars = vec![("WARDEN_OP_CONNECT_TOKEN", SECRET)];
+        vars.extend_from_slice(extra);
+        Config::from_lookup(lookup(&vars))
+    };
+    assert_eq!(with(&[]).unwrap().proxy_max_calls_per_day, 10_000);
+    assert_eq!(with(&[(VAR, "1")]).unwrap().proxy_max_calls_per_day, 1);
+    assert_eq!(
+        with(&[(VAR, "1000000")]).unwrap().proxy_max_calls_per_day,
+        1_000_000
+    );
+    for bad in ["0", "1000001", "many"] {
+        assert!(with(&[(VAR, bad)]).is_err(), "{bad}");
+    }
+}
+
+#[test]
+fn the_daily_session_limit_has_a_default_and_a_range() {
+    const VAR: &str = "WARDEN_RELAY_MAX_SESSIONS_PER_DAY";
+    let with = |extra: &[(&str, &str)]| {
+        let mut vars = vec![("WARDEN_OP_CONNECT_TOKEN", SECRET)];
+        vars.extend_from_slice(extra);
+        Config::from_lookup(lookup(&vars))
+    };
+    assert_eq!(with(&[]).unwrap().relay_max_sessions_per_day, 1000);
+    assert_eq!(with(&[(VAR, "1")]).unwrap().relay_max_sessions_per_day, 1);
+    assert_eq!(
+        with(&[(VAR, "1000000")])
+            .unwrap()
+            .relay_max_sessions_per_day,
+        1_000_000
+    );
+    for bad in ["0", "1000001", "many"] {
+        assert!(with(&[(VAR, bad)]).is_err(), "{bad}");
+    }
+}
+
+#[test]
 fn request_limits_default_and_can_be_set() {
     assert_eq!(request_limits(&[]).unwrap(), RequestLimits::default());
     assert_eq!(

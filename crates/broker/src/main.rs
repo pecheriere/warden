@@ -16,6 +16,7 @@ use tracing_subscriber::EnvFilter;
 use url::Url;
 use warden_broker::approval::passkeys::{self, Passkeys};
 use warden_broker::audit::AuditLog;
+use warden_broker::audit_throttle::FlushHeld;
 use warden_broker::config::{
     BackendSettings, Config, DEFAULT_AUDIENCE_PATH, UrlTransport, parse_public_url,
 };
@@ -535,14 +536,21 @@ struct App {
 }
 
 /// The configured secret backend. The local one is checked whole first, and
-/// an invalid one stops the server.
-async fn secret_backend(config: &Config, audit: &Arc<AuditLog>) -> Result<Arc<dyn SecretBackend>> {
+/// an invalid one stops the server. The local one also returns what holds its
+/// count of errors not yet audited, for the requests to flush.
+async fn secret_backend(
+    config: &Config,
+    audit: &Arc<AuditLog>,
+) -> Result<(Arc<dyn SecretBackend>, Option<Arc<dyn FlushHeld>>)> {
     match &config.backend {
-        BackendSettings::OnePassword(connect) => Ok(Arc::new(OnePasswordConnect::new(
-            connect.url.clone(),
-            connect.token.clone(),
-            connect.vault.clone(),
-        ))),
+        BackendSettings::OnePassword(connect) => Ok((
+            Arc::new(OnePasswordConnect::new(
+                connect.url.clone(),
+                connect.token.clone(),
+                connect.vault.clone(),
+            )),
+            None,
+        )),
         BackendSettings::Local(settings) => {
             tracing::warn!(
                 "secrets come from files on this host: a compromised host gets them, and \
@@ -551,7 +559,8 @@ async fn secret_backend(config: &Config, audit: &Arc<AuditLog>) -> Result<Arc<dy
             let backend = LocalBackend::open(settings, audit.clone())
                 .await
                 .context("the local secret backend is not usable")?;
-            Ok(Arc::new(backend))
+            let throttle = backend.audit_throttle();
+            Ok((Arc::new(backend), Some(throttle)))
         }
     }
 }
@@ -594,7 +603,7 @@ async fn build_app(config: &Arc<Config>) -> Result<App> {
             .await
             .with_context(|| format!("opening audit log {}", config.audit_path.display()))?,
     );
-    let backend = secret_backend(config, &audit).await?;
+    let (backend, backend_throttle) = secret_backend(config, &audit).await?;
     let audience = audience::load_or_create(config.audience_path.clone())
         .await
         .with_context(|| format!("loading the audience {}", config.audience_path.display()))?;
@@ -614,10 +623,15 @@ async fn build_app(config: &Arc<Config>) -> Result<App> {
     .with_limits(config.requests)
     .with_commit_signing_max(config.commit_signing_max_window)
     .with_commit_signing_per_day(config.commit_signing_max_per_day)
+    .with_proxy_calls_per_day(config.proxy_max_calls_per_day)
+    .with_relay_sessions_per_day(config.relay_max_sessions_per_day)
     .with_github_token_max(config.github_token_max_window)
     .with_link_hosts(config.link_hosts.clone())
     .with_call_limits(config.proxy.max_calls_per_agent, config.proxy.max_calls)
     .with_github_api(github.clone());
+    if let Some(throttle) = backend_throttle {
+        requests.audit_throttles().register(throttle);
+    }
     // GitHub grants are scoped to repositories now; the ones stored before name none.
     let unscoped = requests
         .end_unscoped_github()
@@ -731,7 +745,11 @@ async fn serve() -> Result<()> {
     };
     // The private key now lives only in the relay's SSH configuration.
     drop(relay_key);
-    let sweeper = tokio::spawn(requests::sweep_loop(requests, SWEEP_EVERY, stop_rx.clone()));
+    let sweeper = tokio::spawn(requests::sweep_loop(
+        requests.clone(),
+        SWEEP_EVERY,
+        stop_rx.clone(),
+    ));
     let relay_done = async {
         if let Some(relay) = relay {
             // The relay returns once stopped and its sessions are recorded.
@@ -787,5 +805,8 @@ async fn serve() -> Result<()> {
     if let Err(e) = sweeper.await {
         tracing::error!(error = %e, "sweeper task failed");
     }
+    // The servers record refusals while they stop, after the sweeper's last
+    // flush may have run: write what they held.
+    requests.flush_held_at_shutdown().await;
     Ok(())
 }

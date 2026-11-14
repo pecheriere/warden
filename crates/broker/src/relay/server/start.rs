@@ -8,7 +8,7 @@ use warden_broker_proto::Id;
 
 use crate::audit::{AuditEvent, AuditLog};
 use crate::policy::{PolicyError, RelayCredential, SshMode, SshTarget};
-use crate::requests::GrantEnd;
+use crate::requests::{DailyUse, GrantEnd, RelayGrantRecord};
 
 use crate::relay::onward;
 use crate::relay::session::{self, Outcome, Program, PtyRequest, Registration};
@@ -49,9 +49,10 @@ pub(super) async fn refuse_session(
         grant_id: grant_id.clone(),
         reason: reason.to_owned(),
     };
-    if let Err(e) = shared.audit.append(event).await {
-        tracing::error!(grant = %grant_id, error = %e, "relay: could not record a refused session");
-    }
+    shared
+        .session_refusals
+        .record(&shared.audit, grant_id, shared.requests.now(), 1, event)
+        .await;
     message
 }
 
@@ -68,6 +69,12 @@ impl Refusal {
         Self { reason, message }
     }
 }
+
+/// Told to an agent whose grant has no sessions left today.
+const DAILY_LIMIT: Refusal = Refusal::new(
+    "daily_limit",
+    "warden relay: this grant reached its daily limit of sessions; new sessions fail until 00:00 UTC",
+);
 
 /// Check, before anything is recorded, that `login`'s grant is still active
 /// and that its target is still the relay destination the owner approved
@@ -136,6 +143,36 @@ async fn check_session(
     Ok((target, credential))
 }
 
+/// Count one more session against the grant's budget for the day, within
+/// [`GRANT_QUERY_TIMEOUT`]. A count that cannot be had refuses the session.
+async fn take_session(shared: &Shared, grant: &RelayGrantRecord) -> Result<(), Refusal> {
+    let day = DailyUse::RelaySession {
+        target: grant.target.clone(),
+    };
+    let counted = tokio::time::timeout(
+        GRANT_QUERY_TIMEOUT,
+        shared.requests.take_daily_use(&grant.grant_id, &day),
+    )
+    .await;
+    let error = match counted {
+        Ok(Ok(true)) => return Ok(()),
+        Ok(Ok(false)) => {
+            shared
+                .requests
+                .daily_limit_reached(&grant.agent, &grant.grant_id, &day)
+                .await;
+            return Err(DAILY_LIMIT);
+        }
+        Ok(Err(e)) => e.to_string(),
+        Err(_) => format!("no answer within {GRANT_QUERY_TIMEOUT:?}"),
+    };
+    tracing::error!(grant = %grant.grant_id, %error, "relay: could not count a session");
+    Err(Refusal::new(
+        "session count unavailable",
+        session::reason::GRANT_STATE_NOTICE,
+    ))
+}
+
 /// Everything between the agent's `shell`/`exec` and a running session on
 /// the target. Returns the message for the agent on failure.
 ///
@@ -176,6 +213,10 @@ pub(super) async fn open_target(
         Ok(checked) => checked,
         Err(refusal) => return Err(refuse(refusal).await),
     };
+    // Taken last, so that a refused session does not use the budget.
+    if let Err(refusal) = take_session(shared, grant).await {
+        return Err(refuse(refusal).await);
+    }
     // Pre-flight: on record before any byte reaches the target.
     let started = AuditEvent::RelaySessionStarted {
         grant_id: grant.grant_id.clone(),

@@ -20,7 +20,7 @@ use super::create::Attached;
 use super::github_scope::{Resolution, resolution_of};
 use super::transition::detached;
 use super::{Destination, RequestError, Requests, Scope, approval_token, begin, parse};
-use crate::audit::AuditEvent;
+use crate::audit::{AuditEvent, bounded_text};
 use crate::github_app;
 use crate::notify::Doorbell;
 
@@ -454,7 +454,7 @@ impl Requests {
                 self.audit
                     .append(AuditEvent::Error {
                         context: format!("{} renewal notice", kind.name()),
-                        message: format!("grant {grant_id}: {e}"),
+                        message: bounded_text(format!("grant {grant_id}: {e}")),
                     })
                     .await?;
             }

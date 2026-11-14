@@ -80,8 +80,9 @@ async fn relay_refuses_unbound_key_and_inactive_grant() {
     // Only the one accepted session ever reached the target.
     assert_eq!(sshd_connections(&s.sshd), 1, "{}", s.sshd.log());
     assert_eq!(events_of(&s.broker, "relay_session_started").len(), 1);
-    // Refused logins are audited, without key material.
-    let refusals = await_events(&s.broker, "relay_login_refused", 7).await;
+    // Refused logins are audited, without key material: the first five of
+    // this address in the minute one by one, the rest counted.
+    let refusals = await_events(&s.broker, "relay_login_refused", 5).await;
     let users: Vec<&str> = refusals
         .iter()
         .map(|e| e["user"].as_str().unwrap())

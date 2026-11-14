@@ -83,7 +83,19 @@ async fn key_target() -> Setup {
 }
 
 async fn key_target_with(limits: RelayLimits) -> Setup {
-    let broker = TestBroker::new().await;
+    key_target_on(TestBroker::new().await, limits).await
+}
+
+/// Like [`key_target`], with at most `sessions` sessions per grant per day.
+async fn key_target_daily(sessions: u32, limits: RelayLimits) -> Setup {
+    key_target_on(
+        TestBroker::with_relay_sessions_per_day(sessions).await,
+        limits,
+    )
+    .await
+}
+
+async fn key_target_on(broker: TestBroker, limits: RelayLimits) -> Setup {
     let onward = random_key();
     let sshd = Sshd::start(&SshdLogin::Key(onward.public_key().clone()));
     broker

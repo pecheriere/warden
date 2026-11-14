@@ -740,7 +740,9 @@ expired), the broker cannot read the target's policy or the state of grants
 right now, the session could not be recorded, forwarding or a subsystem was
 asked for, or the broker is shutting down. A session also ends after 15
 minutes without traffic, when the target stops reading and the broker gives
-up (`flow control`), or when the window ends. Do not retry in a loop: check
+up (`flow control`), or when the window ends. When a grant reached its daily limit of
+sessions the message is `this grant reached its daily limit of sessions; new sessions fail
+until 00:00 UTC`: retrying before then does not help. Do not retry in a loop: check
 `warden status`, and request again if the grant is gone. A refused start and
 a target that refuses its login look alike to ssh (255); the owner can tell
 them apart in the audit log.
@@ -1021,6 +1023,12 @@ A broker error includes being over the [request limits](configuration.md#request
 an agent can have 5 requests pending and make 10 new ones per 10 minutes by
 default. The message says how long to wait. Do not retry sooner: reuse a grant
 or a pending request where you can.
+
+An API grant has a daily limit of calls, 10000 by default. Past it, `warden http`
+fails with the broker's 429, `this grant made N calls today, its limit; calls fail until
+00:00 UTC, and the owner was told`, and it does not retry. Stop, do not call again before
+00:00 UTC, and tell the person: a loop of calls is the usual cause, and the owner has
+already been told.
 
 `warden http` exits 0 for any upstream status unless `--fail` is given. A
 refusal or failure by the broker (policy violation, other 409s, timeout, size

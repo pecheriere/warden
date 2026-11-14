@@ -1,4 +1,4 @@
-//! Notifiers for tests: one that records every doorbell, one that always fails.
+//! Notifiers for tests: one that records every doorbell, and two that always fail.
 
 use std::sync::Mutex;
 use std::time::Duration;
@@ -98,6 +98,24 @@ impl Notifier for FailingNotifier {
         Err(NotifyError::Status {
             notifier: "failing",
             status: 503,
+        })
+    }
+}
+
+/// Fails every delivery with a transport error whose text is the one given, for
+/// tests of what the audit log keeps of a long error.
+pub struct LongErrorNotifier(pub String);
+
+#[async_trait]
+impl Notifier for LongErrorNotifier {
+    fn name(&self) -> &'static str {
+        "long-error"
+    }
+
+    async fn ring(&self, _d: &Doorbell) -> Result<&'static str, NotifyError> {
+        Err(NotifyError::Request {
+            notifier: "long-error",
+            reason: self.0.clone(),
         })
     }
 }

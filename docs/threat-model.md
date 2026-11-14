@@ -258,8 +258,9 @@ change.
   the database means the approval did not take effect, and no certificate left the
   broker.
 - **Written after the fact, and only logged if that fails.** `request_limited`,
-  `limit_notified`, `notified`,
-  `relay_session_ended`, `relay_session_refused` and `relay_login_refused`
+  `limit_notified`, `notified`, `proxy_call_limit_reached`, `proxy_call_limit_notified`,
+  `proxy_calls_refused_held`, `relay_session_ended`, `relay_session_refused`,
+  `relay_sessions_refused_held`, `relay_login_refused` and `relay_logins_refused_held`
   record something that already happened and gave no new access, so nothing can
   be refused any more. The server log has an error when one is lost. A session's
   end is also missing after a crash; its `relay_session_started` is still there.
@@ -276,6 +277,70 @@ change.
   or approved, and relay sessions and proxied calls cannot start. A log that stalls
   holds those up until it answers. Ending access goes on as above. Watch
   the disk that holds the log.
+- **The size and rate of proxied-call and relay entries are bounded, so that the log cannot
+  be filled quickly.** The log is append-only and never rotated, so an unbounded source of
+  entries would end in the failure above for every agent. The table gives the most proxied
+  calls and relay sessions can write in a day with the defaults. Commit signing, GitHub
+  token and release refusals and local backend errors are limited too, each with its own
+  bound. Sizes are measured from a test log: a `proxy_call` line is about 370 bytes (about
+  410 for a refusal) and `proxy_call_started` about 310, of which about 150 are the
+  sequence number, time and hash chain. What the agent chooses is cut to a bound before it
+  is recorded: the method to 32 bytes, the URL to 512, and the outcome, which can quote a
+  header name of up to 64 KiB, to 512 bytes as the log writes it (a control character counts
+  for the 6 bytes of its escape) plus ` (truncated)` (the agent still gets the whole
+  message). The longest `proxy_call` line is then about 1.4 KB (a refusal with a
+  64 KiB header name measured 891 bytes with a short URL, and a 512 byte URL and a 32 byte
+  method add about 510), taken as 1.5 KB. The relay's entries hold only values of a fixed
+  size: a target or user name of at most 32 characters, a grant id, an address of at most
+  39 characters, counts, and a fixed phrase for a reason (at most 41 characters). The one
+  free text is the command of a session, cut to 200 characters. Measured lines are
+  `relay_session_started` 560 bytes (1560 with a command of 200 control characters, each
+  written as 6 bytes), `relay_session_ended` 382, `relay_session_refused` 284 (about 300
+  with the longest phrase), `relay_login_refused` 317 (a 32 character name and a 39
+  character address) and the two summaries about 300. Every other message whose length a
+  caller or an upstream answer sets is cut the same way, to 512 bytes as written plus
+  ` (truncated)`: the reason of `commit_signing_refused`, `github_token_refused`,
+  `release_refused` and `notify_failed`, and the message of an `error` entry. The one
+  exception is the `error` entry that follows an entry written late, which quotes that entry
+  whole and so takes at most about twice its size. The rest of the text in entries is bounded
+  where it is accepted: names, ids, digests and fingerprints of a fixed form, fixed phrases,
+  a request's summary (a goal of at most 500 characters without control characters, so at
+  most 2000 bytes, and a session label of at most 64 characters), and a signed commit's
+  author (at most 1024 bytes without control characters, so at most 2048 once escaped)
+  and at most 64 parent ids. Typical is the measured size times the count; worst case is
+  the longest size times the count.
+
+  | Source | Bound | Typical a day | Worst case a day |
+  |---|---|---|---|
+  | Proxied calls sent, per API grant | 10000 calls, 2 entries each (`proxy_call_started` and `proxy_call`) | about 7 MB (10000 × 680 bytes) | about 30 MB (20000 × 1.5 KB) |
+  | Proxied calls refused before they start, per agent | 30 entries a minute, plus 1 `proxy_calls_refused_held` summary a minute | about 18 MB (44640 × 410 bytes) | about 67 MB (44640 × 1.5 KB) |
+  | Relay sessions started, per grant | 1000 sessions a UTC day (`WARDEN_RELAY_MAX_SESSIONS_PER_DAY`), 2 entries each (`relay_session_started` and `relay_session_ended`) | about 1 MB (1000 × 940 bytes) | about 2 MB (1000 × 1.95 KB) |
+  | Relay sessions refused after login, per grant | 30 entries a minute, plus 1 `relay_sessions_refused_held` summary a minute | about 13 MB (44640 × 290 bytes) | about 13 MB (44640 × 300 bytes) |
+  | Relay logins refused, overall | 5 entries a minute per address (per /64 network for IPv6) and 10 overall, plus 1 `relay_logins_refused_held` summary a minute (its `peers` field at most 1025) | about 5 MB (15840 × 317 bytes) | about 5 MB (15840 × 330 bytes) |
+
+  Each API grant and each relay grant takes a phone approval, so the
+  per-grant figures multiply only by the grants the owner approved, and the refused-call
+  figure by the agents. An IPv4 address that arrives mapped into IPv6 counts as the IPv4
+  address. What the relay holds is kept in memory (at most 1024 addresses) and written once
+  its minute is over and at a clean shutdown, so a crash can lose up to about the last
+  minute and a quarter of it. Revoking the agent stops every one of them. The bounds keep the log's growth
+  to a rate an owner can watch, not to nothing: an owner still needs to watch the disk.
+- **Opening the log does not hold up the server's appends.** Every writer takes the
+  log's file lock for each append and waits 5 s at most for it. A `warden-server`
+  command that opens the log while the server runs verifies it up to its last complete
+  line without the lock, reading one line at a time, and takes the lock only to check
+  what was appended since and to repair a torn tail, so a large log does not stop the
+  server's appends. If the part it verified is shorter under the lock, or its last line
+  changed, the command refuses to open the log: warden only ever cuts a torn line past
+  the last complete one, so something else changed the file. A line that does not verify
+  in the unlocked pass is read again under the lock, which alone decides, so a torn tail
+  repaired meanwhile is not taken for corruption. Reading and `audit verify` keep at most
+  one line in memory, and refuse a line over 16 MiB.
+- **warden does not write an entry it could not read back.** An entry whose line would
+  be over 16 MiB is refused before any byte reaches the log: the action that needed it
+  fails as for any entry that cannot be written, the log stays usable for the next one,
+  and the server log records the entry's type and size, not its content. So a log warden
+  wrote always opens again.
 
 ## Authentication of callers
 
@@ -685,6 +750,19 @@ These were recorded during implementation and are accepted for this release.
     redacted and returned, so a response that is cut part-way, which may quote the
     secret, is dropped unread. The agent gets the fixed message, and the audit entry
     holds only the counts.
+- **An API grant has a daily limit of calls**, 10000 per UTC day by default
+  (`WARDEN_PROXY_MAX_CALLS_PER_DAY`), because each call that is sent writes two entries
+  (`proxy_call_started` and `proxy_call`) and a looping agent could otherwise fill the disk
+  that holds the audit log. It is counted per grant in the database, so a restart does not
+  reset it. Past it, calls fail with a 429 until 00:00 UTC and the owner is notified once a
+  day per grant, with `proxy_call_limit_reached` (the grant, the limit) and
+  `proxy_call_limit_notified` entries; other grants go on. A call refused before it
+  starts (by `proxy::check`, a changed secret, the calls in flight or an outage of the
+  backend) does not use the budget, and
+  its entry is limited instead: at most 30 `proxy_call` entries a minute per agent, with the
+  rest counted in one `proxy_calls_refused_held` entry per agent per minute, once the minute
+  is over. A call that was sent always keeps both its entries. The limit bounds the log and
+  does not limit what a grant may do: within it, an agent can make any call the grant allows.
 - **Within the window, the agent can make any allowed call.** Approval is
   bound to an origin, prefix, method set and window, not to individual
   requests. A prompt-injected agent can issue any call the grant permits
@@ -858,8 +936,10 @@ What holds:
   entry that cannot be written all mean no signature. The signature leaves the broker only
   after its entry is written.
 - **Every refusal is recorded.** Beyond 30 a minute per agent they are counted, so refused
-  calls cannot fill the log. A body over the route's 2 MiB limit is refused before the
-  caller is known, and is not recorded, as on every route.
+  calls cannot fill the log; the count is written as one entry per agent per minute, when
+  the minute that held it is over, and at a clean shutdown. Counts are kept in memory, so a
+  crash can lose up to about the last minute and a quarter of them. A body over the route's
+  2 MiB limit is refused before the caller is known, and is not recorded, as on every route.
 - **An agent cannot approve it, and nothing renews by itself.** A grant takes the passkey,
   and so does renewing it. warden notifies the owner a few days before a grant ends, and the
   notification names only the agent.
@@ -1267,7 +1347,11 @@ What is lost, and cannot be regained by any setting:
   from changing what it hands out or where secrets go, but not a compromised host,
   and warden cannot verify that it was done beyond the file's owner and mode.
 - **No record of edits.** 1Password keeps item history and usage reports. warden
-  audits its own refusals, not who changed a file.
+  audits its own refusals, not who changed a file. While the files are unusable, every
+  read is refused, so beyond 10 `error` entries a minute the refusals are counted in
+  `local_backend_errors_held`, written once a minute, and callers cannot fill the log.
+  A count still held when the server stops is written at shutdown; one lost to a crash
+  costs at most the last minute or two of counts.
 - **Policy and secret are two reads.** With 1Password both come from one read of one
   item. Here, a change touching both files is two steps, and a call can fall between
   them: an old credential could go to a new destination. Writing a new secret under

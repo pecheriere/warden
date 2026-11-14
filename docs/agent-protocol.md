@@ -1149,6 +1149,12 @@ Errors:
 - `413`: the JSON body is over 2 MiB.
 - `429` `too many concurrent calls`: at most 4 calls per agent (16 overall)
   may be in flight; wait for one to finish.
+- `429` `this grant made N calls today, its limit; calls fail until 00:00 UTC, and the
+  owner was told`: the grant has used its calls for this UTC day (10000 by default, set by
+  the owner with `WARDEN_PROXY_MAX_CALLS_PER_DAY`). Every further call on it fails the same
+  way until 00:00 UTC, so do not retry before then. Stop and tell the person. Other grants
+  are not affected. Only calls that were sent count; a call refused before it started (a
+  400, a 409 before it started, or the concurrent-call 429 above) does not use the budget.
 - `502`, `504`: the upstream failed, timed out (30 s per call), sent a
   compressed or oversized (over 1 MiB by default) response; the message is
   fixed and never quotes the upstream.
