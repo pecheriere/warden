@@ -233,22 +233,7 @@ impl Requests {
             payload_sha256,
         };
         self.signing_refusals
-            .record(
-                &self.audit,
-                agent,
-                self.clock.now(),
-                event,
-                "a refusal to sign",
-            )
-            .await;
-    }
-
-    /// Write the refusals to sign held back since the last time.
-    pub(super) async fn flush_signing_refusals(&self) {
-        self.signing_refusals
-            .flush(&self.audit, "refusals to sign", |agent, count| {
-                AuditEvent::CommitSigningRefusalsHeld { agent, count }
-            })
+            .record(&self.audit, agent, self.clock.now(), 1, event)
             .await;
     }
 }

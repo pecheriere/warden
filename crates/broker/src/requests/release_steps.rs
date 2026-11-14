@@ -320,22 +320,7 @@ impl Requests {
             reason,
         };
         self.release_refusals
-            .record(
-                &self.audit,
-                agent,
-                self.clock.now(),
-                event,
-                "a refusal of a release step",
-            )
-            .await;
-    }
-
-    /// Write the refusals of release steps held back since the last time.
-    pub(super) async fn flush_release_refusals(&self) {
-        self.release_refusals
-            .flush(&self.audit, "refusals of release steps", |agent, count| {
-                AuditEvent::ReleaseRefusalsHeld { agent, count }
-            })
+            .record(&self.audit, agent, self.clock.now(), 1, event)
             .await;
     }
 

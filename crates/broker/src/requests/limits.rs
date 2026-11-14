@@ -337,9 +337,9 @@ impl Requests {
     /// Write the refusals held back since the last entry, if a minute has
     /// passed (or whatever the time, if `all`).
     pub async fn flush_refusals(&self, all: bool) {
-        self.flush_signing_refusals().await;
-        self.flush_github_refusals().await;
-        self.flush_release_refusals().await;
+        self.throttles
+            .flush(&self.audit, self.clock.now(), all)
+            .await;
         let due = self.refusals.take_due(self.clock.now(), all);
         for (agent, tally) in due {
             self.write_tally(&agent, tally).await;
