@@ -489,16 +489,14 @@ fn refusal_throttle(
     what: &'static str,
     held: fn(AgentName, u64) -> AuditEvent,
 ) -> Arc<Throttle<AgentName, u64>> {
-    let throttle = Throttle::new(
+    throttles.throttle(
         what,
         Allowance {
             per_key: REFUSALS_PER_MINUTE,
             overall: None,
         },
         Summary::PerKey(held),
-    );
-    throttles.register(throttle.clone());
-    throttle
+    )
 }
 
 /// Which pending requests an expiry pass looks at.
