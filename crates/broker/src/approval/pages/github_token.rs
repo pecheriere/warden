@@ -4,9 +4,8 @@
 //! a minted token outlives the grant's revocation.
 
 use maud::{Markup, html};
-use warden_broker_proto::github_token::{
-    AutomaticCaller, GithubTokenAccess, GrantScope, PERMISSIONS,
-};
+use warden_broker_proto::github_permissions::PermissionSet;
+use warden_broker_proto::github_token::{AutomaticCaller, GithubTokenAccess, GrantScope};
 use warden_broker_proto::{Access, AgentName};
 
 use super::{icon, warning_icon};
@@ -48,9 +47,9 @@ fn permissions() -> Markup {
     html! {
         span.detail {
             "Permissions: "
-            @for (i, (name, level)) in PERMISSIONS.into_iter().enumerate() {
+            @for (i, permission) in PermissionSet::legacy().iter().enumerate() {
                 @if i > 0 { ", " }
-                code.perm { (name) ": " (level) }
+                code.perm { (permission.name()) ": " (permission.level().as_str()) }
             }
         }
     }

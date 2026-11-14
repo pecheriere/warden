@@ -176,9 +176,9 @@ async fn mint_returns_token_under_grant() {
         minted[0]["permissions"],
         json!([
             "contents:write",
-            "pull_requests:write",
             "issues:write",
-            "metadata:read"
+            "metadata:read",
+            "pull_requests:write"
         ])
     );
     assert_eq!(minted[0]["expires_at"], token["expires_at"]);

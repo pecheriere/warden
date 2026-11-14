@@ -4,6 +4,7 @@ use super::{
     AutomaticCaller, AutomaticRequest, GithubTokenAccess, GithubTokenGrant, GithubTokenRequest,
     GrantRepository, GrantScope, MAX_REPOSITORIES,
 };
+use crate::github_permissions::PermissionSet;
 use crate::release::RepoName;
 use crate::{Access, GrantAccess, InfoResponse};
 
@@ -185,7 +186,9 @@ fn grant_scope_legacy_when_absent() {
     let value = json!({"app_id": "1", "installation_id": 2, "digest": "ab"});
     let grant: GithubTokenGrant = serde_json::from_value(value.clone()).unwrap();
     assert_eq!(grant.repositories, GrantScope::Legacy);
-    assert_eq!(serde_json::to_value(&grant).unwrap(), value);
+    let mut written = value;
+    written["permissions"] = json!("contents:write,issues:write,metadata:read,pull_requests:write");
+    assert_eq!(serde_json::to_value(&grant).unwrap(), written);
     let with_empty =
         json!({"app_id": "1", "installation_id": 2, "digest": "ab", "repositories": []});
     let grant: GithubTokenGrant = serde_json::from_value(with_empty).unwrap();
@@ -202,6 +205,7 @@ fn grant_scope_round_trips_and_refuses_bad_lists() {
         installation_id: 2,
         digest: "ab".to_owned(),
         repositories: scope,
+        permissions: PermissionSet::legacy(),
     });
     let value = serde_json::to_value(&grant).unwrap();
     assert_eq!(
@@ -288,4 +292,28 @@ fn info_without_flag_is_false() {
     }))
     .unwrap();
     assert!(!info.scoped_github_tokens);
+}
+
+#[test]
+fn grant_without_permissions_parses_as_legacy() {
+    let grant: GithubTokenGrant = serde_json::from_value(
+        json!({"app_id": "12345", "installation_id": 678, "digest": "ab12"}),
+    )
+    .unwrap();
+    assert_eq!(grant.permissions, PermissionSet::legacy());
+}
+
+#[test]
+fn response_without_permissions_parses() {
+    let response: super::GithubTokenResponse = serde_json::from_value(json!({
+        "token": "t",
+        "expires_at": 1,
+        "grant_id": crate::Id::random(),
+        "repository": "example-owner/example-repo",
+        "repository_id": 1001,
+    }))
+    .unwrap();
+    assert_eq!(response.permissions, None);
+    let json = serde_json::to_value(&response).unwrap();
+    assert!(json.get("permissions").is_none());
 }

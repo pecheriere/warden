@@ -49,6 +49,7 @@ fn response(token: &str, expires_at: i64, repository: &str, id: u64) -> GithubTo
         grant_id: Id::random(),
         repository: repo(repository),
         repository_id: id,
+        permissions: None,
     }
 }
 

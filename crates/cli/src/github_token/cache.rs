@@ -71,6 +71,7 @@ impl Entry {
             grant_id,
             repository,
             repository_id,
+            permissions: _,
         } = response;
         Self {
             repository,

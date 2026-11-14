@@ -3,7 +3,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use secrecy::ExposeSecret as _;
 use serde_json::{Value, json};
-use warden_broker_proto::github_token::PERMISSIONS;
+use warden_broker_proto::github_permissions::PermissionSet;
 use warden_broker_proto::release::RepoName;
 
 use super::{
@@ -31,7 +31,10 @@ const REPO_ID: u64 = 1001;
 const REPO: &str = "example-owner/example-repo";
 
 fn asked_permissions() -> Vec<(&'static str, &'static str)> {
-    PERMISSIONS.to_vec()
+    PermissionSet::legacy()
+        .iter()
+        .map(|p| (p.name(), p.level().as_str()))
+        .collect()
 }
 
 /// A good answer for [`REPO_ID`], expiring at `expires_at` (Unix seconds).
@@ -126,7 +129,7 @@ async fn mint_names_one_repository_id_with_fixed_permissions_and_headers() {
     assert_eq!(header("x-github-api-version"), "2022-11-28");
     assert!(header("user-agent").starts_with("warden-broker/"));
     let body: Value = serde_json::from_slice(&request.body).unwrap();
-    let expected: serde_json::Map<String, Value> = PERMISSIONS
+    let expected: serde_json::Map<String, Value> = asked_permissions()
         .iter()
         .map(|(name, level)| ((*name).to_owned(), json!(level)))
         .collect();
@@ -295,7 +298,7 @@ fn mint_error_messages_are_fixed() {
 }
 
 fn expected_permissions() -> Value {
-    PERMISSIONS
+    asked_permissions()
         .iter()
         .map(|(name, level)| ((*name).to_owned(), json!(level)))
         .collect::<serde_json::Map<_, _>>()

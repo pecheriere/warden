@@ -12,6 +12,7 @@ use aws_lc_rs::signature::RSA_PKCS1_SHA256;
 use rustls_pki_types::PrivateKeyDer;
 use rustls_pki_types::pem::PemObject as _;
 use sha2::{Digest as _, Sha256};
+use warden_broker_proto::github_permissions::PermissionSet;
 use warden_broker_proto::github_token::GrantScope;
 use warden_broker_proto::{GithubTokenGrant, Window};
 use zeroize::Zeroizing;
@@ -242,6 +243,7 @@ impl GithubTokenPolicy {
             installation_id: self.installation_id,
             digest: self.destination_digest(),
             repositories,
+            permissions: PermissionSet::legacy(),
         }
     }
 }

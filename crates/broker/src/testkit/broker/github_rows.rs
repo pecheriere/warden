@@ -75,6 +75,7 @@ impl TestBroker {
                 installation_id: key.installation_id(),
                 digest: policy.destination_digest(),
                 repositories: scope,
+                permissions: warden_broker_proto::github_permissions::PermissionSet::legacy(),
             }),
         };
         sqlx::query(

@@ -1,13 +1,13 @@
 //! Minting GitHub App installation tokens: the broker signs a short-lived App
 //! JWT with the App's private key and exchanges it at GitHub for a token
-//! limited to [`PERMISSIONS`]. Neither the JWT nor the token is ever logged,
+//! limited to [`PermissionSet::legacy`]. Neither the JWT nor the token is ever logged,
 //! and no error carries text from GitHub, which could echo them.
 
 use http::{Method, StatusCode};
 use reqwest::Client;
 use serde_json::json;
 use url::Url;
-use warden_broker_proto::github_token::PERMISSIONS;
+use warden_broker_proto::github_permissions::PermissionSet;
 use warden_broker_proto::release::RepoName;
 use zeroize::Zeroizing;
 
@@ -132,10 +132,10 @@ fn jwt(key: &GithubAppKey, now: i64) -> Result<Zeroizing<String>, MintError> {
     })?)
 }
 
-fn permissions_body(permissions: &[(&str, &str)]) -> serde_json::Value {
+fn permissions_body(permissions: &PermissionSet) -> serde_json::Value {
     permissions
         .iter()
-        .map(|(name, level)| ((*name).to_owned(), json!(level)))
+        .map(|p| (p.name().to_owned(), json!(p.level().as_str())))
         .collect::<serde_json::Map<_, _>>()
         .into()
 }
@@ -182,7 +182,7 @@ async fn request(
 }
 
 /// Mint an installation token for `key`'s installation with the fixed
-/// [`PERMISSIONS`], limited to the repository with id `repository_id`. `now` is
+/// [`PermissionSet::legacy`], limited to the repository with id `repository_id`. `now` is
 /// Unix seconds. There is no way to mint a token without naming a repository.
 ///
 /// The client trusts the system roots (or the pinned CA), refuses redirects and
@@ -199,7 +199,7 @@ pub async fn mint(
     now: i64,
 ) -> Result<InstallationToken, MintError> {
     let body = json!({
-        "permissions": permissions_body(&PERMISSIONS),
+        "permissions": permissions_body(&PermissionSet::legacy()),
         "repository_ids": [repository_id],
     });
     let answer = request(api, key, &body, now).await?;
@@ -226,7 +226,7 @@ pub async fn resolve(
 ) -> Result<Vec<ResolvedRepository>, MintError> {
     let bare: Vec<&str> = names.iter().map(RepoName::name).collect();
     let body = json!({
-        "permissions": permissions_body(&[("metadata", "read")]),
+        "permissions": permissions_body(&PermissionSet::metadata_only()),
         "repositories": bare,
     });
     request(api, key, &body, now).await?.check_names(names)
@@ -244,7 +244,7 @@ pub async fn current_names(
     now: i64,
 ) -> Result<Vec<ResolvedRepository>, MintError> {
     let body = json!({
-        "permissions": permissions_body(&[("metadata", "read")]),
+        "permissions": permissions_body(&PermissionSet::metadata_only()),
         "repository_ids": ids,
     });
     request(api, key, &body, now).await?.check_ids(ids)

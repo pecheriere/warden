@@ -1,7 +1,8 @@
 //! Unit tests of the wire types.
 
+use crate::github_permissions::PermissionSet;
+use crate::github_token::GithubTokenResponse;
 use crate::github_token::GrantScope;
-use crate::github_token::{GithubTokenResponse, PERMISSIONS};
 use crate::release::RepoName;
 use crate::{
     Access, AgentName, ApiGrant, CreateRequest, CreatedResponse, Fingerprint, Goal, GrantAccess,
@@ -540,6 +541,7 @@ fn github_token_grant_serde_shape() {
         installation_id: 678,
         digest: "ab12".to_owned(),
         repositories: GrantScope::Legacy,
+        permissions: PermissionSet::legacy(),
     });
     let value = serde_json::to_value(&grant).unwrap();
     assert_eq!(
@@ -549,6 +551,7 @@ fn github_token_grant_serde_shape() {
             "app_id": "12345",
             "installation_id": 678,
             "digest": "ab12",
+            "permissions": "contents:write,issues:write,metadata:read,pull_requests:write",
         })
     );
     assert_eq!(serde_json::from_value::<GrantAccess>(value).unwrap(), grant);
@@ -570,15 +573,10 @@ fn github_token_window_parser() {
 }
 
 #[test]
-fn github_token_permissions_are_fixed() {
+fn github_token_legacy_permissions_are_the_four_of_0_14() {
     assert_eq!(
-        PERMISSIONS,
-        [
-            ("contents", "write"),
-            ("pull_requests", "write"),
-            ("issues", "write"),
-            ("metadata", "read"),
-        ]
+        PermissionSet::legacy().to_string(),
+        "contents:write,issues:write,metadata:read,pull_requests:write"
     );
 }
 
@@ -590,6 +588,7 @@ fn github_token_response_debug_redacts() {
         grant_id: Id::random(),
         repository: RepoName::try_from("example-owner/example-repo".to_owned()).unwrap(),
         repository_id: 1001,
+        permissions: None,
     };
     let debug = format!("{response:?}");
     assert!(!debug.contains("ghs_supersecretvalue"), "{debug}");
