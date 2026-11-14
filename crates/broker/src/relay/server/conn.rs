@@ -211,11 +211,12 @@ pub(super) async fn connection(
     }
 }
 
-/// Refused relay logins written one by one per address per minute.
+/// Refused relay logins written one by one per address (per /64 network for
+/// IPv6) per minute.
 const LOGIN_REFUSALS_PER_ADDRESS: u32 = 5;
 /// Refused relay logins written one by one per minute over all addresses.
 const LOGIN_REFUSALS_OVERALL: u32 = 10;
-/// The most distinct addresses held at once for the minute's summary.
+/// The most distinct addresses (or IPv6 networks) held at once for the minute's summary.
 const LOGIN_REFUSAL_ADDRESSES: usize = 1024;
 
 /// What is held for refused logins that were not written one by one.
@@ -233,7 +234,7 @@ impl Tally for LoginTally {
 }
 
 /// The limiter for refused logins, registered with `throttles`: 5 entries a
-/// minute per address and 10 overall, the rest summed in one entry a minute.
+/// minute per address (per /64 network for IPv6) and 10 overall, the rest summed in one entry a minute.
 pub(super) fn login_refusal_throttle(
     throttles: &AuditThrottles,
 ) -> Arc<Throttle<IpAddr, LoginTally>> {
@@ -274,8 +275,21 @@ async fn record_refused_login(shared: &Shared, conn: &Conn, peer: SocketAddr) {
     .await;
 }
 
-/// Record, or hold, one refused login. An IPv4 address that arrives mapped into
-/// IPv6 counts as the IPv4 address, so one host is one address.
+/// The key a refused login is counted under: the IPv4 address, or the /64
+/// network of an IPv6 address. An IPv4 address that arrives mapped into IPv6 is
+/// the IPv4 address.
+fn login_key(peer: IpAddr) -> IpAddr {
+    match peer.to_canonical() {
+        IpAddr::V6(v6) => {
+            let mut octets = v6.octets();
+            octets[8..].fill(0);
+            IpAddr::V6(octets.into())
+        }
+        IpAddr::V4(v4) => IpAddr::V4(v4),
+    }
+}
+
+/// Record, or hold, one refused login, counted under [`login_key`].
 async fn write_refused_login(
     throttle: &Throttle<IpAddr, LoginTally>,
     audit: &AuditLog,
@@ -294,7 +308,7 @@ async fn write_refused_login(
         attempts: u64::from(attempts),
     };
     throttle
-        .record(audit, &peer.to_canonical(), now, tally, event)
+        .record(audit, &login_key(peer), now, tally, event)
         .await;
 }
 
@@ -488,5 +502,33 @@ mod tests {
             write_refused_login(&throttle, &audit, 1_000_000, peer, "web".to_owned(), 1).await;
         }
         assert_eq!(events(&path, "relay_login_refused").len(), 5);
+    }
+
+    #[tokio::test]
+    async fn ipv6_addresses_in_one_64_network_share_an_allowance() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let audit = AuditLog::open(&path).await.unwrap();
+        let throttle = login_refusal_throttle(&AuditThrottles::default());
+        let in_network = |network: u16, host: u16| {
+            std::net::IpAddr::V6(std::net::Ipv6Addr::new(
+                0x2001, 0xdb8, 0, network, 0, 0, 0, host,
+            ))
+        };
+        // Seven logins from seven addresses of one /64 network: five entries.
+        for host in 1..=7 {
+            let peer = in_network(1, host);
+            write_refused_login(&throttle, &audit, 1_000_000, peer, "web".to_owned(), 1).await;
+        }
+        assert_eq!(events(&path, "relay_login_refused").len(), 5);
+        // Another /64 network has an allowance of its own.
+        for host in 1..=7 {
+            let peer = in_network(2, host);
+            write_refused_login(&throttle, &audit, 1_000_000, peer, "web".to_owned(), 1).await;
+        }
+        assert_eq!(events(&path, "relay_login_refused").len(), 10);
+        // The entry names the address itself.
+        let written = events(&path, "relay_login_refused");
+        assert_eq!(written[0]["peer"], "2001:db8:0:1::1");
     }
 }
