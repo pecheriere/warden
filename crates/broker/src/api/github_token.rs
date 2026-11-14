@@ -125,26 +125,32 @@ async fn attempt(
     if !state.requests.take_mint(agent).await? {
         return Err(refused(StatusCode::TOO_MANY_REQUESTS, HOURLY_LIMIT));
     }
-    let minted = github_app::mint(&state.github, &key, repository.id, state.clock.now())
-        .await
-        .map_err(|e| {
-            // The error's text is fixed and carries nothing GitHub said. A token that
-            // was not limited as asked was dropped unread, and nothing is retried.
-            tracing::warn!(agent = %agent, error = %e, "minting a GitHub token failed");
-            match e {
-                github_app::MintError::NotAccessible | github_app::MintError::WrongScope => {
-                    refused(StatusCode::CONFLICT, REPOSITORY_UNREACHABLE)
-                }
-                github_app::MintError::Key
-                | github_app::MintError::Unreachable
-                | github_app::MintError::Refused(_)
-                | github_app::MintError::Malformed
-                | github_app::MintError::TooLarge
-                | github_app::MintError::Compressed => {
-                    refused(StatusCode::SERVICE_UNAVAILABLE, GITHUB_UNAVAILABLE)
-                }
+    let minted = github_app::mint(
+        &state.github,
+        &key,
+        repository.id,
+        &PermissionSet::legacy(),
+        state.clock.now(),
+    )
+    .await
+    .map_err(|e| {
+        // The error's text is fixed and carries nothing GitHub said. A token that
+        // was not limited as asked was dropped unread, and nothing is retried.
+        tracing::warn!(agent = %agent, error = %e, "minting a GitHub token failed");
+        match e {
+            github_app::MintError::NotAccessible | github_app::MintError::WrongScope => {
+                refused(StatusCode::CONFLICT, REPOSITORY_UNREACHABLE)
             }
-        })?;
+            github_app::MintError::Key
+            | github_app::MintError::Unreachable
+            | github_app::MintError::Refused(_)
+            | github_app::MintError::Malformed
+            | github_app::MintError::TooLarge
+            | github_app::MintError::Compressed => {
+                refused(StatusCode::SERVICE_UNAVAILABLE, GITHUB_UNAVAILABLE)
+            }
+        }
+    })?;
 
     let event = AuditEvent::GithubTokenMinted {
         grant_id: grant_id.clone(),
@@ -154,7 +160,7 @@ async fn attempt(
             .iter()
             .map(|p| p.to_string())
             .collect(),
-        expires_at: minted.expires_at,
+        expires_at: minted.token.expires_at,
         repository: Some(repository.name.clone()),
         repository_id: Some(repository.id),
     };
@@ -178,8 +184,8 @@ async fn attempt(
     }
     tracing::info!(agent = %agent, grant = %grant_id, "GitHub token minted");
     Ok(GithubTokenResponse {
-        token: minted.token.expose_secret().to_owned(),
-        expires_at: minted.expires_at,
+        token: minted.token.token.expose_secret().to_owned(),
+        expires_at: minted.token.expires_at,
         grant_id,
         repository: repository.name.clone(),
         repository_id: repository.id,

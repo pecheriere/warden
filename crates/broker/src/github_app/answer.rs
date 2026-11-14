@@ -57,8 +57,12 @@ impl Answer {
     }
 
     /// The token is for exactly `repository_id`, with no permission beyond
-    /// [`PermissionSet::legacy`].
-    pub(super) fn check_minted(&self, repository_id: u64) -> Result<(), MintError> {
+    /// `asked`. Returns the set GitHub says the token holds.
+    pub(super) fn check_minted(
+        &self,
+        repository_id: u64,
+        asked: &PermissionSet,
+    ) -> Result<PermissionSet, MintError> {
         let [only] = self.repositories.as_slice() else {
             return Err(MintError::WrongScope);
         };
@@ -68,17 +72,21 @@ impl Answer {
         if SELECTION_IS_SELECTED && self.selection.as_deref() != Some("selected") {
             return Err(MintError::WrongScope);
         }
-        let asked = PermissionSet::legacy();
-        let within = self.permissions.iter().all(|(name, level)| {
-            format!("{name}:{level}")
-                .parse::<Permission>()
-                .is_ok_and(|got| asked.covers(&got))
-        });
-        if within {
-            Ok(())
-        } else {
-            Err(MintError::WrongScope)
+        let mut entries = Vec::with_capacity(self.permissions.len());
+        for (name, level) in &self.permissions {
+            let got: Permission = format!("{name}:{level}")
+                .parse()
+                .map_err(|_| MintError::WrongScope)?;
+            if !asked.covers(&got) {
+                return Err(MintError::WrongScope);
+            }
+            entries.push(got.to_string());
         }
+        // GitHub always grants metadata:read, as a set always holds it.
+        if entries.is_empty() {
+            return Ok(PermissionSet::metadata_only());
+        }
+        PermissionSet::parse(&entries.join(",")).map_err(|_| MintError::WrongScope)
     }
 
     /// The token reads metadata and nothing else.

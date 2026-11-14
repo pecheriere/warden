@@ -158,6 +158,8 @@ impl Default for Gate {
 /// - `POST /app/installations/<id>/access_tokens`: the next response queued with
 ///   [`HttpsUpstream::script_github_token`] (`500` when none is), held until its
 ///   [`Gate`] opens when it has one;
+/// - `GET /app/installations/<id>`: the next response queued with
+///   [`HttpsUpstream::script_github_installation`] (`500` when none is);
 /// - the routes of [`GithubReleaseFake`], which [`HttpsUpstream::github_release`]
 ///   scripts and records;
 /// - `/gzip`: a body labelled `Content-Encoding: gzip`;
@@ -171,6 +173,7 @@ pub struct HttpsUpstream {
     abandoned: Arc<watch::Sender<u64>>,
     released: Arc<watch::Sender<bool>>,
     scripts: Arc<Mutex<VecDeque<Scripted>>>,
+    installations: Arc<Mutex<VecDeque<Scripted>>>,
     token_calls: Arc<watch::Sender<u64>>,
     github_release: GithubReleaseFake,
     server: AbortHandle,
@@ -194,6 +197,8 @@ struct Shared {
     released: Arc<watch::Sender<bool>>,
     /// Responses for the GitHub token route, oldest first.
     scripts: Arc<Mutex<VecDeque<Scripted>>>,
+    /// Responses for the GitHub installation route, oldest first.
+    installations: Arc<Mutex<VecDeque<Scripted>>>,
     /// How many calls the GitHub token route has received.
     token_calls: Arc<watch::Sender<u64>>,
     /// The fake GitHub of the release client.
@@ -232,6 +237,7 @@ impl HttpsUpstream {
         let abandoned = Arc::new(watch::Sender::new(0));
         let released = Arc::new(watch::Sender::new(false));
         let scripts: Arc<Mutex<VecDeque<Scripted>>> = Arc::default();
+        let installations: Arc<Mutex<VecDeque<Scripted>>> = Arc::default();
         let token_calls = Arc::new(watch::Sender::new(0));
         let github_release = GithubReleaseFake::default();
         let router = Router::new().fallback(handle).with_state(Shared {
@@ -239,6 +245,7 @@ impl HttpsUpstream {
             abandoned: abandoned.clone(),
             released: released.clone(),
             scripts: scripts.clone(),
+            installations: installations.clone(),
             token_calls: token_calls.clone(),
             github_release: github_release.clone(),
         });
@@ -250,6 +257,7 @@ impl HttpsUpstream {
             abandoned,
             released,
             scripts,
+            installations,
             token_calls,
             github_release,
             server,
@@ -328,6 +336,17 @@ impl HttpsUpstream {
     /// If the script lock is poisoned.
     pub fn script_github_token(&self, response: Scripted) {
         self.scripts
+            .lock()
+            .expect("upstream script poisoned")
+            .push_back(response);
+    }
+
+    /// Queue the response for the next call to the GitHub installation route.
+    ///
+    /// # Panics
+    /// If the script lock is poisoned.
+    pub fn script_github_installation(&self, response: Scripted) {
+        self.installations
             .lock()
             .expect("upstream script poisoned")
             .push_back(response);
@@ -435,6 +454,9 @@ async fn handle(State(shared): State<Shared>, req: Request) -> Response {
     if parts.method == http::Method::POST && is_github_token_route(parts.uri.path()) {
         return github_token(&shared).await;
     }
+    if parts.method == http::Method::GET && is_github_installation_route(parts.uri.path()) {
+        return github_installation(&shared).await;
+    }
     match parts.uri.path() {
         "/echo" => echo(&parts.headers, &body),
         "/name-echo" => name_echo(&parts.headers),
@@ -490,6 +512,38 @@ fn is_github_token_route(path: &str) -> bool {
     path.strip_prefix("/app/installations/")
         .and_then(|rest| rest.strip_suffix("/access_tokens"))
         .is_some_and(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()))
+}
+
+fn is_github_installation_route(path: &str) -> bool {
+    path.strip_prefix("/app/installations/")
+        .is_some_and(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// GitHub's installation object with `permissions`, as `(name, level)`.
+///
+/// # Panics
+/// Never: the value is always serialisable.
+#[must_use]
+pub fn installation_json(permissions: &[(&str, &str)]) -> Vec<u8> {
+    let permissions: serde_json::Map<String, serde_json::Value> = permissions
+        .iter()
+        .map(|(name, level)| ((*name).to_owned(), serde_json::json!(level)))
+        .collect();
+    serde_json::to_vec(&serde_json::json!({ "permissions": permissions }))
+        .expect("a JSON value serialises")
+}
+
+/// The next scripted installation response; `500` when none is queued.
+async fn github_installation(shared: &Shared) -> Response {
+    let scripted = shared
+        .installations
+        .lock()
+        .expect("upstream script poisoned")
+        .pop_front();
+    match scripted {
+        Some(scripted) => answer_scripted(scripted).await,
+        None => respond(StatusCode::INTERNAL_SERVER_ERROR, &[], Body::empty()),
+    }
 }
 
 /// The next scripted response, after its gate opens; `500` when none is queued.
