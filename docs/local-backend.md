@@ -273,6 +273,10 @@ no CA, it writes each problem to the audit log and refuses to start.
   refusal is written to the audit log as an `error` event from
   `local secret backend`. Only the entry concerned is affected, unless the policy
   file itself cannot be used, which refuses everything.
+- While the files stay unusable, at most 10 of these `error` entries are written a
+  minute. The rest are counted and written as one `local_backend_errors_held` entry
+  with their number, once a minute, so that reads of unusable files, which
+  `GET /v1/offers` makes three of per call, cannot fill the audit log.
 
 Errors and audit entries name the entry and the setting. They never quote a value,
 a file's content or a line of the policy, and a secret value is held in memory that
