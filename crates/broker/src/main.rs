@@ -745,7 +745,11 @@ async fn serve() -> Result<()> {
     };
     // The private key now lives only in the relay's SSH configuration.
     drop(relay_key);
-    let sweeper = tokio::spawn(requests::sweep_loop(requests, SWEEP_EVERY, stop_rx.clone()));
+    let sweeper = tokio::spawn(requests::sweep_loop(
+        requests.clone(),
+        SWEEP_EVERY,
+        stop_rx.clone(),
+    ));
     let relay_done = async {
         if let Some(relay) = relay {
             // The relay returns once stopped and its sessions are recorded.
@@ -801,5 +805,8 @@ async fn serve() -> Result<()> {
     if let Err(e) = sweeper.await {
         tracing::error!(error = %e, "sweeper task failed");
     }
+    // The servers record refusals while they stop, after the sweeper's last
+    // flush may have run: write what they held.
+    requests.flush_held_at_shutdown().await;
     Ok(())
 }
