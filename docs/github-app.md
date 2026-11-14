@@ -20,9 +20,10 @@ set it up.
   comment or edit issues on B, even though the App is installed on B. What the agent can do
   on the repository is what you installed the App on and the rules you set there: see
   [the three levels](#the-three-levels-per-repository). Issues on public repositories reach further: see below.
-- **Fixed permissions**: `contents` write, `pull_requests` write, `issues` write and
-  `metadata` read. warden asks GitHub for these and nothing else, whatever the App itself may
-  do. No `workflows`, no `administration`.
+- **The permissions you configure**: by default `contents` write, `pull_requests` write,
+  `issues` write and `metadata` read. You can set a different default (see
+  [Permissions](#permissions)). warden asks GitHub for the grant's set and nothing else,
+  whatever the App itself may do. Never `workflows` or `administration`: see the ceiling below.
 - **One hour.** The token lasts as long as GitHub lets it, and the CLI gets a new one when
   less than 5 minutes of the old one remain.
 - **A grant of `1d`, `7d` or `30d`**, 30 days by default, up to
@@ -65,7 +66,44 @@ set it up.
   show it, as the App.
 
 The audit log records each token minted (grant, agent, installation, repository and its id,
-permissions, expiry) and each refusal, never the token. See [the threat model](threat-model.md#github-tokens).
+the permissions GitHub granted, expiry) and each refusal, never the token. See [the threat model](threat-model.md#github-tokens).
+
+## Permissions
+
+A grant holds a set of permissions, fixed when the request is made. Each is `name:level`,
+with `level` `read` or `write` (`write` includes `read`); `admin` is refused, and the set
+always holds `metadata:read`. The owner sets what a request gets in two optional fields of
+the `warden:github-app` item ([1Password items](1password-items.md#github-app)):
+
+- `default_permissions`: the set every request gets. Missing means `contents:write`,
+  `issues:write`, `metadata:read` and `pull_requests:write`, which is what warden granted
+  before this setting existed.
+- `extra_permissions`: the permissions an agent may later ask for on top of the default.
+  warden reads and checks the field now, but no request can ask for an extra yet.
+
+A set is written as `name:level` pairs separated by commas, such as
+`checks:read,contents:write,metadata:read`. The approval page lists the set, so you see it
+before you approve.
+
+**The ceiling.** No configuration lifts these, and a field that names one makes GitHub tokens
+unusable: `administration`, `workflows`, `secrets`, `environments`, `dependabot_secrets`
+and every `organization_*` permission. Repository secrets, environments and workflow files
+let whoever holds a token change what runs with the repository's own credentials, which is
+more than a token that an agent holds for an hour should be able to do.
+
+**The App must hold what you set.** The approval page reads the installation's permissions
+each time it is shown, begun or finished, and refuses a request whose set the installation
+does not hold, naming what is missing. Give the App those permissions on GitHub first
+(step 4 below) and accept the change on the installation. A grant keeps the set it was
+approved with: changing the default affects the next request and the next renewal, not
+grants that exist. If GitHub grants a token less than the grant holds (you removed a
+permission from the App since), the token is served with what GitHub granted, and the
+response and the audit entry list that.
+
+A field that is repeated, present but empty, not a valid set or over the ceiling makes the
+App unusable for GitHub tokens, the same as a bad `installation_id`: tokens are refused,
+and `warden-server doctor`'s `github-app` check fails and names the field, never its value.
+SSH, APIs, signing and releases keep working.
 
 ## Create the App
 
@@ -77,7 +115,8 @@ broker. The App is yours, on your account or organization.
 2. Give it a name that says what it is, such as `warden agents`, and any homepage URL.
 3. **Webhook**: turn **Active** off. warden never receives events, and there is nothing for a
    webhook to reach.
-4. **Repository permissions**: set exactly these, and no others.
+4. **Repository permissions**: set exactly these, and no others. (If you change
+   `default_permissions`, add the permissions it names, at those levels.)
 
    | Permission | Level |
    |---|---|

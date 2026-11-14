@@ -1065,10 +1065,20 @@ What an attacker gets, and what stops it:
   `POST /v1/github-token` itself with any repository. What bounds it is the grant: the broker
   mints only for a repository an active grant of that agent covers, by name ignoring case,
   and refuses with a 403 otherwise, or a 409 when two grants cover it.
-- **The permissions are fixed**: `contents`, `pull_requests` and `issues` write, `metadata`
-  read. Neither the agent nor the owner chooses them at approval, and the broker sends
-  exactly these to GitHub whatever the App is allowed. No `workflows`, so GitHub refuses a push
-  that changes a workflow file, and no `administration`.
+- **The permissions are the owner's configuration, never the agent's**: the item's
+  `default_permissions`, which is `contents`, `pull_requests` and `issues` write and `metadata`
+  read when unset. The set is stored with the request when it is made, shown on the approval
+  page, bound into the passkey's digest and held by the grant, so a later change to the item
+  moves no existing grant and no pending request. The broker sends the grant's set to GitHub
+  whatever the App is allowed, and the token and the audit entry carry what GitHub granted.
+  What moves: an owner can now configure a default wider than the four (for example `checks`
+  or `actions`), and every agent's token then holds it from the next request on. A ceiling no
+  configuration lifts keeps `administration`, `workflows`, `secrets`, `environments`,
+  `dependabot_secrets` and every `organization_*` out: so GitHub still refuses a push that
+  changes a workflow file, and a token cannot read or write repository secrets. A field over
+  the ceiling makes the App unusable and is refused as a field, not clipped. The approval is
+  refused when the installation does not hold the set, which the broker reads at each view,
+  begin and finish of the page; a read it cannot make refuses too.
 - **Within a grant, the agent gets tokens with no prompt**, up to 60 an hour (UTC), per
   agent across all its grants: far more
   than the CLI, which keeps each token for its hour, needs, and few enough that a looping

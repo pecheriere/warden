@@ -6,6 +6,32 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- GitHub token grants hold the permissions the owner configures instead of a constant.
+  The `warden:github-app` item has two optional fields, `default_permissions` (what every request
+  gets; the previous four when missing) and `extra_permissions` (read and checked, not yet
+  usable by a request). A ceiling no configuration lifts keeps `administration`, `workflows`,
+  `secrets`, `environments`, `dependabot_secrets` and every `organization_*` out, and a field that
+  names one, or is malformed, makes GitHub tokens unusable and fails doctor's `github-app` check.
+  The approval page shows the set and refuses a request the App's installation does not hold,
+  and `POST /v1/github-token` answers with a `permissions` field: what GitHub granted.
+  ([#281](https://github.com/pecheriere/warden/issues/281))
+
+### Upgrading
+
+- New migration `0013_github_permissions`, applied at startup. As with every migration, rolling
+  back means restoring the backup together with the old version.
+- Grants that exist keep the four permissions they were approved with; a renewal takes the
+  default of that moment.
+- The approval page for a GitHub request reads the App's installation once for each view, begin
+  and finish: one more App key read and one more GitHub call each. A GitHub approval page opened
+  before the upgrade must be reloaded.
+- The `approved` audit entry has a new optional field, `permissions`. An older
+  `warden-server audit verify` refuses a log holding one.
+- The `permissions` of a `github_token_minted` entry is now the set GitHub granted, in canonical
+  order (sorted by name); it was the fixed four in a fixed order.
+
 ## [0.14.0] - 2026-11-14
 
 ### Upgrading

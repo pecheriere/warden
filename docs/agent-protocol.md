@@ -965,17 +965,20 @@ Have a commit signed under the agent's active commit signing grant; see
 
 Mint a GitHub App installation token for one repository, under the agent's active GitHub
 token grant that covers it, read anew for each call; the grant id is not sent. Signed. The
-body names the repository, as `owner/name`, and nothing else: permissions are not the agent's
-to choose, and any other field is refused.
+body names the repository, as `owner/name`, and nothing else: permissions are the grant's, not
+the agent's to choose, and any other field is refused.
 
 ```json
 {"repository":"example-owner/example-repo"}
 ```
 
-- `200`: `{"token":"ghs_…","expires_at":1793095212,"grant_id":"5e1c…","repository":"example-owner/example-repo","repository_id":1001}`.
+- `200`: `{"token":"ghs_…","expires_at":1793095212,"grant_id":"5e1c…","repository":"example-owner/example-repo","repository_id":1001,"permissions":"contents:write,issues:write,metadata:read,pull_requests:write"}`.
   `expires_at` is when GitHub ends the token, in Unix seconds, an hour after it was minted.
-  The token is scoped to that repository's id and has
-  `contents`, `pull_requests` and `issues` write, `metadata` read, and nothing else.
+  The token is scoped to that repository's id and has the permissions of the grant, and
+  nothing else. `permissions` is what GitHub says the token holds: `name:level` pairs sorted by
+  name, joined with commas, and fewer than the grant's if GitHub gave fewer. Older brokers
+  leave it out; their tokens have `contents`, `pull_requests` and `issues` write and
+  `metadata` read.
   Do not log it or write it to disk.
 - `400`: the body is not the shape above, or the broker holds no GitHub App
   (`{"error":"GitHub tokens are not configured on this broker"}`).
@@ -1005,7 +1008,7 @@ to choose, and any other field is refused.
 - `500`: no token, as with an entry that cannot be written to the audit log.
 
 The broker records each token it mints (grant, repository and its id, installation,
-permissions and expiry, never the token) before returning it, and each refusal with a fixed reason. Beyond 30 refusals a
+the permissions GitHub granted and expiry, never the token) before returning it, and each refusal with a fixed reason. Beyond 30 refusals a
 minute per agent they are counted, as for commit signing. A token already returned is not
 recalled when its grant ends: it works until `expires_at`.
 
@@ -1327,8 +1330,10 @@ agent's overlapping ones, which the owner is told on the approval page before ap
 grant approved before grants were scoped has no `repositories`: it ends at upgrade and
 mints nothing. Renewing a grant carries its repositories over, and the owner sees a rename.
 
-A token covers one repository of the grant, with `contents`,
-`pull_requests` and `issues` write and `metadata` read. It cannot reach another repository
+A token covers one repository of the grant, with the grant's permissions: the owner's default
+when the request was made (`contents`, `pull_requests` and `issues` write and `metadata` read, unless
+the owner set another), which the approval page showed. A grant made before this setting existed holds those four.
+It cannot reach another repository
 the App is installed on, though GitHub still lets it open a new issue on a public repository
 the App is installed on, and to be assumed, open issues and comment on any public repository,
 installed or not. A client chooses the repository, never the permissions. Unlike the other kinds, this grant gives the agent a credential that outlives

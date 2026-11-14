@@ -291,6 +291,18 @@ impl OnePasswordConnect {
         serde_json::from_slice(&body).map_err(|e| unreadable(&e))
     }
 
+    /// The item tagged `warden:github-app`, with the failures of finding it as the
+    /// errors the GitHub App has.
+    async fn github_app_item(&self) -> Result<(String, KeyItem), PolicyError> {
+        self.tagged_item(GITHUB_APP_TAG, "GitHub App")
+            .await
+            .map_err(|e| match e {
+                KeyItemError::Absent => PolicyError::NoGithubApp,
+                KeyItemError::Unusable(reason) => PolicyError::GithubApp(reason),
+                KeyItemError::Backend(e) => e,
+            })
+    }
+
     /// The title and decoded body of the one item tagged `tag`; `what` names the
     /// item in messages, none of which quote it.
     async fn tagged_item(&self, tag: &str, what: &str) -> Result<(String, KeyItem), KeyItemError> {
@@ -523,23 +535,15 @@ impl SecretBackend for OnePasswordConnect {
     }
 
     async fn github_app(&self) -> Result<GithubAppKey, PolicyError> {
-        match self.tagged_item(GITHUB_APP_TAG, "GitHub App").await {
-            Ok((title, item)) => parse_github_app(&title, &item.fields),
-            Err(KeyItemError::Absent) => Err(PolicyError::NoGithubApp),
-            Err(KeyItemError::Unusable(reason)) => Err(PolicyError::GithubApp(reason)),
-            Err(KeyItemError::Backend(e)) => Err(e),
-        }
+        let (title, item) = self.github_app_item().await?;
+        parse_github_app(&title, &item.fields)
     }
 
     async fn github_permissions(&self) -> Result<GithubPermissionPolicy, PolicyError> {
         // The item, private key included, is dropped when this call returns; only its
         // permission fields are parsed.
-        match self.tagged_item(GITHUB_APP_TAG, "GitHub App").await {
-            Ok((title, item)) => parse_permission_fields(&title, &item.fields),
-            Err(KeyItemError::Absent) => Err(PolicyError::NoGithubApp),
-            Err(KeyItemError::Unusable(reason)) => Err(PolicyError::GithubApp(reason)),
-            Err(KeyItemError::Backend(e)) => Err(e),
-        }
+        let (title, item) = self.github_app_item().await?;
+        parse_permission_fields(&title, &item.fields)
     }
 
     async fn has_github_app(&self) -> Result<bool, PolicyError> {

@@ -329,8 +329,8 @@ git push                                               # a token for the next ho
 ```
 
 The token is the one credential in warden that the agent holds and can use on its own: it
-lasts an hour, covers one repository of its grant, with `contents`, `pull
-requests` and `issues` write, can still open issues and, to be assumed, comment on public repositories, installed or not, and **revoking a grant does not recall a token already
+lasts an hour, covers one repository of its grant, with the permissions you set
+(by default `contents`, `pull_requests` and `issues` write), can still open issues and, to be assumed, comment on public repositories, installed or not, and **revoking a grant does not recall a token already
 minted**. What an agent can do with it is decided on GitHub, by where you install the App
 and the rules you set there. See [GitHub tokens for agents](docs/github-app.md) and the
 [threat model](docs/threat-model.md#github-tokens).

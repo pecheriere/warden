@@ -334,7 +334,11 @@ async fn repeated_permission_label_is_refused() {
 #[tokio::test]
 async fn github_permissions_does_not_need_the_key() {
     let mut fields = with_permissions(Some("contents:read"), Some("checks:read"));
-    fields[2] = field("private_key", "SECRET-NOT-A-KEY");
+    for existing in &mut fields {
+        if existing["label"] == "private_key" {
+            *existing = field("private_key", "SECRET-NOT-A-KEY");
+        }
+    }
     let server = with_item(fields).await;
     let policy = backend(&server).github_permissions().await.unwrap();
     assert_eq!(

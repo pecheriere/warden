@@ -931,8 +931,9 @@ the `gh` wrapper stops with "cannot tell which repository; pass -R owner/name". 
 warden does not take for a repository, so it gets no token.
 
 After that `git push`, `git fetch` and `gh` work against GitHub as usual, with a token from
-warden. Each token covers **one repository**, the one git or `gh` is working on, with `contents`,
-`pull_requests` and `issues` write, and lasts an hour. It cannot push, open pull requests,
+warden. Each token covers **one repository**, the one git or `gh` is working on, with the
+permissions the owner approved (by default `contents`, `pull_requests` and `issues` write), and
+lasts an hour. It cannot push, open pull requests,
 comment or edit issues on another repository the App is installed on, but it can still open
 a new issue on a public repository the App is installed on, and you should assume it can open
 issues and comment on any public repository, installed or not. warden keeps one token per

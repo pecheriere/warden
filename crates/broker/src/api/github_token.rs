@@ -11,7 +11,6 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use secrecy::ExposeSecret as _;
-use warden_broker_proto::github_permissions::PermissionSet;
 use warden_broker_proto::github_token::{
     AMBIGUOUS_GRANT, APP_CHANGED, GithubTokenRequest, GithubTokenResponse, HOURLY_LIMIT,
     NO_ACTIVE_GRANT, OLD_CLIENT, REPOSITORY_UNREACHABLE,
@@ -129,7 +128,7 @@ async fn attempt(
         &state.github,
         &key,
         repository.id,
-        &PermissionSet::legacy(),
+        &grant.permissions,
         state.clock.now(),
     )
     .await
@@ -156,10 +155,7 @@ async fn attempt(
         grant_id: grant_id.clone(),
         agent: agent.clone(),
         installation_id: key.installation_id(),
-        permissions: PermissionSet::legacy()
-            .iter()
-            .map(|p| p.to_string())
-            .collect(),
+        permissions: minted.granted.iter().map(|p| p.to_string()).collect(),
         expires_at: minted.token.expires_at,
         repository: Some(repository.name.clone()),
         repository_id: Some(repository.id),
@@ -189,7 +185,7 @@ async fn attempt(
         grant_id,
         repository: repository.name.clone(),
         repository_id: repository.id,
-        permissions: None,
+        permissions: Some(minted.granted),
     })
 }
 
