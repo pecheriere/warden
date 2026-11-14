@@ -624,6 +624,7 @@ async fn build_app(config: &Arc<Config>) -> Result<App> {
     .with_commit_signing_max(config.commit_signing_max_window)
     .with_commit_signing_per_day(config.commit_signing_max_per_day)
     .with_proxy_calls_per_day(config.proxy_max_calls_per_day)
+    .with_relay_sessions_per_day(config.relay_max_sessions_per_day)
     .with_github_token_max(config.github_token_max_window)
     .with_link_hosts(config.link_hosts.clone())
     .with_call_limits(config.proxy.max_calls_per_agent, config.proxy.max_calls)

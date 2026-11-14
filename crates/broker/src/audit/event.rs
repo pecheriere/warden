@@ -480,6 +480,31 @@ pub enum AuditEvent {
         /// How many calls were refused.
         count: u64,
     },
+    /// A relay grant reached its limit of sessions for the day. Written once a day
+    /// per grant; the refusals themselves are recorded as usual.
+    RelaySessionLimitReached {
+        /// The grant.
+        grant_id: Id,
+        /// The agent.
+        agent: AgentName,
+        /// The limit.
+        limit: u32,
+    },
+    /// The owner was told that a relay grant reached its daily limit of sessions.
+    RelaySessionLimitNotified {
+        /// The grant.
+        grant_id: Id,
+        /// Name of the channel that delivered the notification.
+        channel: String,
+    },
+    /// Sessions refused for one grant were counted over one minute instead of
+    /// recorded one by one.
+    RelaySessionsRefusedHeld {
+        /// The grant.
+        grant_id: Id,
+        /// How many sessions were refused.
+        count: u64,
+    },
     /// An agent was added.
     AgentAdded {
         /// Agent name.

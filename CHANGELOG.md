@@ -36,6 +36,14 @@ All notable changes to this project are recorded here. The format follows
   applied at startup; as with every migration, rolling back means restoring the backup
   together with the old version. An older `warden-server audit verify` refuses a log holding
   the new entries.
+- A daily session budget for each relay grant: 1000 sessions per UTC day by default
+  (`WARDEN_RELAY_MAX_SESSIONS_PER_DAY`, 1 to 1000000). Past it, new sessions are refused
+  until 00:00 UTC, and the owner is told once a day, with the new entries
+  `relay_session_limit_reached` and `relay_session_limit_notified`. Refused sessions are
+  written one by one up to 30 a minute for each grant, and counted in
+  `relay_sessions_refused_held` beyond that. It uses the columns of migration `0012_daily_use`,
+  and sessions refused before they start do not use it. An older `warden-server audit verify`
+  refuses a log holding the new entries.
 - `warden list [--json] [--repo <owner/name>]` shows what this agent may ask for: SSH
   targets with their users, longest window, mode and destination; API secrets with their
   methods, path prefix, longest window and origin; whether GitHub tokens, commit signing and

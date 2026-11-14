@@ -45,9 +45,11 @@ use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tokio::task::JoinSet;
 
-use crate::audit::AuditLog;
+use crate::audit::{AuditEvent, AuditLog};
+use crate::audit_throttle::{Allowance, Summary, Throttle};
 use crate::policy::SecretBackend;
 use crate::requests::Requests;
+use warden_broker_proto::Id;
 
 use super::host_key::{HostKeyError, RelayHostKey};
 use super::read_ahead::AGENT_WINDOW_BYTES;
@@ -193,7 +195,14 @@ struct Shared {
     /// Whether the relay failed closed: the state of grants has not been
     /// readable for [`FAIL_CLOSED_AFTER`].
     grant_state_lost: AtomicBool,
+    /// What has been recorded of sessions refused before they started, per grant.
+    /// Keyed by grant ids from stored grants only: a refusal is made after the
+    /// login, which a stored grant's key alone passes.
+    session_refusals: Arc<Throttle<Id, u64>>,
 }
+
+/// Refused sessions written one by one per grant per minute.
+const REFUSALS_PER_MINUTE: u32 = 30;
 
 /// The SSH relay listener.
 pub struct RelayServer {
@@ -240,6 +249,17 @@ impl RelayServer {
             window_size: AGENT_WINDOW_BYTES,
             ..server::Config::default()
         };
+        let session_refusals = requests.audit_throttles().throttle(
+            "a refused relay session",
+            Allowance {
+                per_key: REFUSALS_PER_MINUTE,
+                overall: None,
+            },
+            Summary::PerKey(|grant_id, count| AuditEvent::RelaySessionsRefusedHeld {
+                grant_id,
+                count,
+            }),
+        );
         Ok(Self {
             shared: Arc::new(Shared {
                 requests,
@@ -252,6 +272,7 @@ impl RelayServer {
                     limits.max_unauthenticated_per_ip,
                 ),
                 grant_state_lost: AtomicBool::new(false),
+                session_refusals,
             }),
             config: Arc::new(config),
         })

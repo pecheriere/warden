@@ -321,6 +321,9 @@ pub struct Config {
     /// `WARDEN_PROXY_MAX_CALLS_PER_DAY`, default 10000, 1 to 1000000: proxied calls
     /// per API grant per UTC day.
     pub proxy_max_calls_per_day: u32,
+    /// `WARDEN_RELAY_MAX_SESSIONS_PER_DAY`, default 1000, 1 to 1000000: relay sessions
+    /// per relay grant per UTC day.
+    pub relay_max_sessions_per_day: u32,
     /// `WARDEN_GITHUB_TOKEN_MAX_WINDOW`, default `30d`: the longest GitHub token
     /// grant the server allows, `1d`, `7d` or `30d`.
     pub github_token_max_window: Window,
@@ -506,6 +509,28 @@ fn commit_signing_limits(
     Ok((window, per_day))
 }
 
+/// The proxied calls per API grant and the relay sessions per relay grant allowed in
+/// a UTC day, from the environment.
+fn daily_use_limits(
+    get: &impl Fn(&'static str) -> Option<String>,
+) -> Result<(u32, u32), ConfigError> {
+    let calls = bounded_u32(
+        get,
+        "WARDEN_PROXY_MAX_CALLS_PER_DAY",
+        1..=1_000_000,
+        "must be a whole number from 1 to 1000000",
+        crate::requests::CALLS_PER_DAY,
+    )?;
+    let sessions = bounded_u32(
+        get,
+        "WARDEN_RELAY_MAX_SESSIONS_PER_DAY",
+        1..=1_000_000,
+        "must be a whole number from 1 to 1000000",
+        crate::requests::SESSIONS_PER_DAY,
+    )?;
+    Ok((calls, sessions))
+}
+
 /// The longest GitHub token grant, from the environment. Unlike most settings, one
 /// that is set and empty is refused instead of read as unset: it bounds how long an
 /// agent may hold access, so a mistake must not fall back to the default.
@@ -657,13 +682,7 @@ impl Config {
         let proxy = proxy_limits(&get)?;
         let requests = request_limits(&get)?;
         let (commit_signing_max_window, commit_signing_max_per_day) = commit_signing_limits(&get)?;
-        let proxy_max_calls_per_day = bounded_u32(
-            &get,
-            "WARDEN_PROXY_MAX_CALLS_PER_DAY",
-            1..=1_000_000,
-            "must be a whole number from 1 to 1000000",
-            crate::requests::CALLS_PER_DAY,
-        )?;
+        let (proxy_max_calls_per_day, relay_max_sessions_per_day) = daily_use_limits(&get)?;
         let github_token_max_window = github_token_max_window(&lookup)?;
         let link_hosts = get("WARDEN_REQUEST_LINK_HOSTS")
             .map_or_else(
@@ -714,6 +733,7 @@ impl Config {
             commit_signing_max_window,
             commit_signing_max_per_day,
             proxy_max_calls_per_day,
+            relay_max_sessions_per_day,
             github_token_max_window,
             link_hosts,
             relay,
