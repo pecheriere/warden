@@ -63,7 +63,7 @@ ed25519-dalek = { version = "2.2.0", default-features = false, features = ["pkcs
 # russh 0.65 does not check that the target's signature uses the
 # negotiated hash, so a holder of the pinned key could still sign with
 # SHA-1. No DSA, no compression.
-russh = { version = "=0.65.0", default-features = false, features = ["aws-lc-rs", "rsa"] }
+russh = { version = "=0.65.1", default-features = false, features = ["aws-lc-rs", "rsa"] }
 # Signs the GitHub App JWT (RS256) with the App's RSA private key. This is the
 # only code that does an RSA private-key operation; the `rsa` crate is never
 # used with a private key. Already in the tree through rustls and russh, at the
