@@ -750,3 +750,50 @@ async fn installation_read_failure_is_an_error() {
         assert_eq!(err, expected);
     }
 }
+
+#[tokio::test]
+async fn installation_level_none_or_unknown_covers_nothing() {
+    for level in ["none", "", "superuser"] {
+        let held = read_installation(Scripted::with_body(
+            200,
+            installation_json(&[("contents", level), ("metadata", "read")]),
+        ))
+        .await
+        .unwrap();
+        let missing: Vec<String> = held
+            .missing(&set("contents:read"))
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(missing, ["contents:read"], "level {level:?}");
+    }
+}
+
+#[tokio::test]
+async fn installation_without_metadata_misses_metadata() {
+    let held = read_installation(Scripted::with_body(
+        200,
+        installation_json(&[("contents", "write")]),
+    ))
+    .await
+    .unwrap();
+    let missing: Vec<String> = held
+        .missing(&set("contents:read"))
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    assert_eq!(missing, ["metadata:read"]);
+}
+
+#[tokio::test]
+async fn installation_permissions_debug_hides_github_names() {
+    let held = read_installation(Scripted::with_body(
+        200,
+        installation_json(&[("contents", "write"), ("metadata", "read")]),
+    ))
+    .await
+    .unwrap();
+    let shown = format!("{held:?}");
+    assert!(!shown.contains("contents"), "{shown}");
+    assert!(shown.contains('2'), "{shown}");
+}

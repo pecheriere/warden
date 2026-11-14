@@ -18,16 +18,24 @@ struct Wire {
 
 /// The permissions an installation holds, as ranks by GitHub's names. The names
 /// are private: GitHub's text never leaves this type.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub struct InstallationPermissions(HashMap<String, u8>);
 
-/// Where a level ranks: `read` below `write`, and any level GitHub reports that
-/// is not one of them (`admin`) above `write`, so it covers `write`.
+impl std::fmt::Debug for InstallationPermissions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "InstallationPermissions({} entries)", self.0.len())
+    }
+}
+
+/// Where a level ranks: `read` below `write` below `admin`. Any other level
+/// (`none`, an empty or unexpected string) ranks 0 and covers nothing, so
+/// ambiguous input is refused, never allowed.
 fn rank(level: &str) -> u8 {
     match level {
         "read" => 1,
         "write" => 2,
-        _ => 3,
+        "admin" => 3,
+        _ => 0,
     }
 }
 
