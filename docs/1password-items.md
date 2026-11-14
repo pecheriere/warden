@@ -161,7 +161,14 @@ once):
 `app_id` (the App's id), `installation_id` (a positive number) and `private_key` (the
 App's RSA private key as PEM, PKCS#1 or PKCS#8, unencrypted, at least 2048 bits). Add them in
 1Password as custom fields, text for the two ids and concealed for the key; the item's category
-does not matter. warden
+does not matter. Two optional fields set the permissions of the tokens, each a list of
+`name:level` pairs separated by commas (`level` is `read` or `write`):
+`default_permissions` (what every request gets; missing means `contents:write,issues:write,metadata:read,pull_requests:write`) and
+`extra_permissions` (what a request may add to the default; missing means none, and no request can
+ask for one yet). A field that is repeated, empty, malformed, or names a permission above the
+ceiling (`administration`, `workflows`, `secrets`, `environments`, `dependabot_secrets`,
+`repository_hooks`, `organization_*`) makes GitHub tokens unusable until you fix it, and `warden-server doctor`
+names the field. See [Permissions](github-app.md#permissions). warden
 reads the item for each approval page and token, and never gives the key out. Changing
 the App or installation ends every grant made for the old one; replacing only the key
 does not.

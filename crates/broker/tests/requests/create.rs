@@ -12,6 +12,8 @@ use warden_broker::notify::{Fallback, Notifier};
 use warden_broker::requests::{Destination, RequestError};
 use warden_broker::testkit::{CapturingNotifier, FailingNotifier, LongErrorNotifier};
 use warden_broker_proto::{Access, CreatedResponse, RequestStatus, Window, fingerprint};
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, ResponseTemplate};
 
 use super::{
     CREDENTIAL, ECDSA_PUBLIC, START, TOKEN, agent, api_request, audit_types, broken_connect,
@@ -632,4 +634,80 @@ async fn dropped_deny_future_leaves_log_usable() {
         ]
     );
     audit::verify(&h.audit_path).unwrap();
+}
+
+/// The value of the bad `default_permissions` field: never in a refusal.
+const BAD_PERMISSIONS: &str = "contents:wirte";
+
+/// A harness whose GitHub App item has a `default_permissions` of
+/// [`BAD_PERMISSIONS`].
+async fn bad_permission_harness() -> super::Harness {
+    let connect = healthy_connect().await;
+    let mut items: Vec<Value> = serde_json::from_str(super::ITEMS).unwrap();
+    items.push(serde_json::json!({
+        "id": "ga1", "title": "github-app", "category": "API_CREDENTIAL",
+        "vault": {"id": super::VAULT_ID}, "tags": ["warden:github-app"]
+    }));
+    let field = |label: &str, value: &str| serde_json::json!({"id": label, "type": "CONCEALED", "label": label, "value": value});
+    let app = serde_json::json!({
+        "id": "ga1", "title": "github-app", "vault": {"id": super::VAULT_ID},
+        "tags": ["warden:github-app"],
+        "fields": [
+            field("app_id", "123456"),
+            field("installation_id", "7890"),
+            field("private_key", "not a key"),
+            field("default_permissions", BAD_PERMISSIONS),
+        ]
+    });
+    // Mounted ahead of the healthy fixtures, which answer the same paths.
+    Mock::given(method("GET"))
+        .and(path(format!("/v1/vaults/{}/items", super::VAULT_ID)))
+        .respond_with(ResponseTemplate::new(200).set_body_json(items))
+        .with_priority(1)
+        .mount(&connect)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/v1/vaults/{}/items/ga1", super::VAULT_ID)))
+        .respond_with(ResponseTemplate::new(200).set_body_json(app))
+        .with_priority(1)
+        .mount(&connect)
+        .await;
+    harness_with(connect, None).await
+}
+
+#[tokio::test]
+async fn an_ssh_request_succeeds_with_a_bad_github_permission_field() {
+    let h = bad_permission_harness().await;
+    h.requests
+        .create(&agent("bot"), pi_request())
+        .await
+        .expect("a broken GitHub App item does not stop an SSH request");
+}
+
+#[tokio::test]
+async fn a_github_request_is_refused_with_a_bad_github_permission_field() {
+    let h = bad_permission_harness().await;
+    let request = warden_broker::testkit::TestBroker::github_token_request(
+        "push the fix",
+        Window::D7,
+        &["example-owner/example-repo"],
+    );
+    let refused = h
+        .requests
+        .create(&agent("bot"), request)
+        .await
+        .expect_err("a bad permission field refuses GitHub token requests");
+    // The API answers every `Unavailable` with the fixed BACKEND_UNAVAILABLE text.
+    assert!(
+        matches!(refused, RequestError::Unavailable(_)),
+        "{refused:?}"
+    );
+    for text in [refused.to_string(), format!("{refused:?}")] {
+        assert!(!text.contains("wirte"), "{text}");
+    }
+    let stored: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM requests")
+        .fetch_one(&h.pool)
+        .await
+        .unwrap();
+    assert_eq!(stored, 0, "nothing is stored");
 }

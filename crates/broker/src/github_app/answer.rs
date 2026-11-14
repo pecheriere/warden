@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 
 use serde::Deserialize;
-use warden_broker_proto::github_token::PERMISSIONS;
+use warden_broker_proto::github_permissions::{Permission, PermissionSet};
 use warden_broker_proto::release::RepoName;
 
 use super::{InstallationToken, MintError, ResolvedRepository};
@@ -41,16 +41,6 @@ pub(super) struct Answer {
     selection: Option<String>,
 }
 
-/// The rank of a permission level, or `None` for one not known.
-fn rank(level: &str) -> Option<u8> {
-    match level {
-        "read" => Some(1),
-        "write" => Some(2),
-        "admin" => Some(3),
-        _ => None,
-    }
-}
-
 impl Answer {
     /// The answer in `raw`, whose token must expire after `now` and within two
     /// hours.
@@ -67,8 +57,12 @@ impl Answer {
     }
 
     /// The token is for exactly `repository_id`, with no permission beyond
-    /// [`PERMISSIONS`].
-    pub(super) fn check_minted(&self, repository_id: u64) -> Result<(), MintError> {
+    /// `asked`. Returns the set GitHub says the token holds.
+    pub(super) fn check_minted(
+        &self,
+        repository_id: u64,
+        asked: &PermissionSet,
+    ) -> Result<PermissionSet, MintError> {
         let [only] = self.repositories.as_slice() else {
             return Err(MintError::WrongScope);
         };
@@ -78,18 +72,21 @@ impl Answer {
         if SELECTION_IS_SELECTED && self.selection.as_deref() != Some("selected") {
             return Err(MintError::WrongScope);
         }
-        let within = self.permissions.iter().all(|(name, level)| {
-            let asked = PERMISSIONS
-                .iter()
-                .find(|(asked_name, _)| asked_name == name)
-                .and_then(|(_, asked_level)| rank(asked_level));
-            matches!((rank(level), asked), (Some(got), Some(asked)) if got <= asked)
-        });
-        if within {
-            Ok(())
-        } else {
-            Err(MintError::WrongScope)
+        let mut entries = Vec::with_capacity(self.permissions.len());
+        for (name, level) in &self.permissions {
+            let got: Permission = format!("{name}:{level}")
+                .parse()
+                .map_err(|_| MintError::WrongScope)?;
+            if !asked.covers(&got) {
+                return Err(MintError::WrongScope);
+            }
+            entries.push(got.to_string());
         }
+        // GitHub always grants metadata:read, as a set always holds it.
+        if entries.is_empty() {
+            return Ok(PermissionSet::metadata_only());
+        }
+        PermissionSet::parse(&entries.join(",")).map_err(|_| MintError::WrongScope)
     }
 
     /// The token reads metadata and nothing else.

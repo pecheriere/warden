@@ -71,6 +71,7 @@ fn grant(scope: GrantScope) -> GrantView {
             installation_id: 2,
             digest: "ab".repeat(16),
             repositories: scope,
+            permissions: warden_broker_proto::github_permissions::GrantedPermissions::legacy(),
         }),
     }
 }

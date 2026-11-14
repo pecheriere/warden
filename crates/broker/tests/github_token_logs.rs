@@ -10,7 +10,7 @@ use axum::http::StatusCode;
 use serde_json::json;
 use warden_broker::github_app::GithubApi;
 use warden_broker::requests::Clock as _;
-use warden_broker::testkit::github_app::{minted_answer, token_answer};
+use warden_broker::testkit::github_app::{INSTALLATION_ID, minted_answer, token_answer};
 use warden_broker::testkit::upstream::Scripted;
 use warden_broker::testkit::{HttpsUpstream, TestBroker, github_app_key};
 use warden_broker_proto::Window;
@@ -45,6 +45,7 @@ async fn the_token_stays_out_of_the_logs() {
     let _guard = tracing::subscriber::set_default(subscriber);
 
     let upstream = HttpsUpstream::start().await;
+    upstream.answer_legacy_installation();
     let api = GithubApi::pinned(
         upstream.origin().parse().unwrap(),
         upstream.origin().parse().unwrap(),
@@ -99,9 +100,15 @@ async fn the_token_stays_out_of_the_logs() {
     assert_eq!(mint().await.status, StatusCode::SERVICE_UNAVAILABLE);
 
     // The JWT was sent, so it could have been logged: with the approval's look at
-    // the repository, and the two mints that reached GitHub.
+    // the repository, the two mints that reached GitHub, and each read of the
+    // installation at a render of the approval page.
     let sent = upstream.received();
-    assert_eq!(sent.len(), 3);
+    let read = format!("/app/installations/{INSTALLATION_ID}");
+    let (reads, others): (Vec<_>, Vec<_>) = sent
+        .iter()
+        .partition(|call| call.method == "GET" && call.path_and_query == read);
+    assert_eq!(others.len(), 3);
+    assert!(!reads.is_empty());
     assert!(sent.iter().all(|call| {
         call.headers["authorization"]
             .to_str()

@@ -10,7 +10,7 @@ use warden_broker::testkit::upstream::HttpsUpstream;
 use warden_broker_proto::Window;
 use warden_broker_proto::github_token::AMBIGUOUS_GRANT;
 
-use super::{approve_repositories, configured_on_fake, entries, resolved};
+use super::{approve_repositories, configured_on_fake, entries, github_calls, resolved};
 
 const A: (u64, &str) = (1001, "example-owner/example-repo");
 const B: (u64, &str) = (1002, "example-owner/homebrew-tap");
@@ -177,8 +177,7 @@ async fn mint_a(broker: &TestBroker, key: &str) -> warden_broker::testkit::TestR
 
 /// Calls that asked GitHub for a token to mint.
 fn mint_calls(upstream: &HttpsUpstream) -> usize {
-    upstream
-        .received()
+    github_calls(upstream)
         .iter()
         .filter(|call| {
             let body: Value = serde_json::from_slice(&call.body).unwrap();

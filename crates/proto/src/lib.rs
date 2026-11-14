@@ -59,6 +59,7 @@ macro_rules! string_newtype {
 
 pub mod commit_signing;
 pub mod doctor;
+pub mod github_permissions;
 pub mod github_token;
 mod grant;
 mod names;

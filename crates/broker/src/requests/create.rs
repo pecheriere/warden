@@ -11,6 +11,7 @@ use warden_broker_proto::{
     fingerprint,
 };
 
+use super::github_permissions::{self, StoredPermissions};
 use super::github_scope::{Resolution, resolution_event};
 use super::revocation::commit_with_entries;
 use super::transition::detached;
@@ -30,6 +31,8 @@ pub(super) struct Attached<'a> {
     pub release: Option<&'a ReleaseFacts>,
     /// What a renewal's repositories resolved to.
     pub resolution: Option<&'a Resolution>,
+    /// A GitHub token request's permissions.
+    pub permissions: Option<&'a StoredPermissions>,
 }
 
 /// What checking a request against policy found.
@@ -42,6 +45,8 @@ struct Checked {
     release: Option<ReleaseFacts>,
     /// The agent's pending request in the slot, found before GitHub was asked.
     existing: Option<CreatedResponse>,
+    /// A GitHub token request's permissions, to store with it.
+    permissions: Option<StoredPermissions>,
 }
 
 /// Attempts to claim the pending slot when racing other creates.
@@ -72,6 +77,7 @@ impl Requests {
             subject,
             release,
             existing,
+            permissions,
         } = self.check_against_policy(agent, &req).await?;
         if let Some(existing) = existing {
             return Ok(existing);
@@ -97,13 +103,14 @@ impl Requests {
             // Insert and ring as one detached unit: a caller dropped while the
             // insert commits must not leave a pending row nobody was told about.
             let inserted = {
-                let (this, agent, req, key, subject, release) = (
+                let (this, agent, req, key, subject, release, permissions) = (
                     self.clone(),
                     agent.clone(),
                     req.clone(),
                     dedupe_key.clone(),
                     subject.clone(),
                     release.clone(),
+                    permissions.clone(),
                 );
                 detached(async move {
                     let created = this
@@ -116,6 +123,7 @@ impl Requests {
                             Attached {
                                 release: release.as_ref(),
                                 resolution: None,
+                                permissions: permissions.as_ref(),
                             },
                         )
                         .await;
@@ -143,27 +151,28 @@ impl Requests {
         Err(RequestError::Contended)
     }
 
-    /// Checks a GitHub token request and returns its dedupe key and subject.
+    /// Checks a GitHub token request: its dedupe key, subject and the permissions to
+    /// store with it.
     async fn check_github_token(
         &self,
         agent: &AgentName,
         github: &GithubTokenAccess,
         window: Window,
-    ) -> Result<(String, String), RequestError> {
+    ) -> Result<Checked, RequestError> {
         github_scope::check_request(github)?;
-        // Does not read the key: any enrolled agent can get this far.
-        if !self.backend.has_github_app().await? {
-            return Err(RequestError::Rejected(
-                warden_broker_proto::github_token::NOT_CONFIGURED.to_owned(),
-            ));
-        }
+        // Does not read the key: any enrolled agent can get this far. No App is
+        // refused as not configured, an unusable one as unavailable.
+        let permissions = self.new_github_permissions().await?;
         github_token::check_window(window, self.github_token_max)
             .map_err(RequestError::Rejected)?;
         let names: Vec<&str> = github.repositories.iter().map(RepoName::as_str).collect();
-        Ok((
-            format!("{agent}|github_token|{}", github.slot()),
-            format!("github token for {}", names.join(", ")),
-        ))
+        Ok(Checked {
+            dedupe_key: format!("{agent}|github_token|{}", github.slot()),
+            subject: format!("github token for {}", names.join(", ")),
+            release: None,
+            existing: None,
+            permissions: Some(permissions),
+        })
     }
 
     /// Check `req` of `agent` against the policy as it is now. Returns its dedupe
@@ -241,7 +250,7 @@ impl Requests {
                 )
             }
             Access::GithubToken(github) => {
-                self.check_github_token(agent, github, req.window).await?
+                return self.check_github_token(agent, github, req.window).await;
             }
             Access::Release { .. } => {
                 let slot = self.release_slot(req.window, &req.access, agent).await?;
@@ -259,6 +268,7 @@ impl Requests {
                     subject: slot.subject,
                     release,
                     existing,
+                    permissions: None,
                 });
             }
         };
@@ -267,6 +277,7 @@ impl Requests {
             subject,
             release: None,
             existing: None,
+            permissions: None,
         })
     }
 
@@ -297,6 +308,7 @@ impl Requests {
         let Attached {
             release,
             resolution,
+            permissions,
         } = attached;
         let created = AuditEvent::RequestCreated {
             id: id.clone(),
@@ -365,6 +377,10 @@ impl Requests {
                 .bind(serde_json::to_string(resolution)?)
                 .execute(&mut *tx)
                 .await?;
+            }
+            if let Some(permissions) = permissions {
+                // With the request, so it never exists without the set it grants.
+                github_permissions::store(&mut tx, &id, permissions).await?;
             }
             tx.commit().await?;
             Ok(())

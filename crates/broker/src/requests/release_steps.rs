@@ -6,7 +6,7 @@
 
 use sqlx::Row as _;
 use warden_broker_proto::release::{ReleaseGrant, ReleaseSteps, ReleaseTag, RepoName};
-use warden_broker_proto::{AgentName, GrantAccess, GrantView, Id};
+use warden_broker_proto::{AgentName, GrantAccess, Id};
 
 use crate::audit::{AuditEvent, bounded_text};
 use crate::notify::Doorbell;
@@ -120,7 +120,7 @@ impl Requests {
         let mut found = Vec::new();
         for row in self.active_rows(agent, "release").await? {
             let view: String = row.try_get("view")?;
-            let view: GrantView = serde_json::from_str(&view)?;
+            let view = super::stored_view(&view)?;
             let GrantAccess::Release(grant) = view.access else {
                 return Err(RequestError::Corrupt(
                     "release grant changed kind".to_owned(),
@@ -277,7 +277,7 @@ impl Requests {
             .await?
             .ok_or(RequestError::NotFound)?;
         let view: String = row.try_get("view")?;
-        let view: GrantView = serde_json::from_str(&view)?;
+        let view = super::stored_view(&view)?;
         let GrantAccess::Release(release) = view.access else {
             return Err(RequestError::Corrupt(
                 "release grant changed kind".to_owned(),

@@ -19,7 +19,8 @@ impl Backend {
         match self {
             Self::OnePassword => {
                 "To mint GitHub tokens for agents, tag one item warden:github-app, with the \
-                 fields app_id, installation_id and private_key (the App's RSA key as PEM): see \
+                 fields app_id, installation_id and private_key (the App's RSA key as PEM), and \
+                 optionally default_permissions and extra_permissions: see \
                  docs/1password-items.md."
             }
             Self::Local => {

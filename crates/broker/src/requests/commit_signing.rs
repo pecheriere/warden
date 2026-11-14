@@ -7,7 +7,7 @@
 //! does stop that agent's signatures.
 
 use sqlx::Row as _;
-use warden_broker_proto::{AgentName, CommitSigningGrant, GrantAccess, GrantView, Id, Window};
+use warden_broker_proto::{AgentName, CommitSigningGrant, GrantAccess, Id, Window};
 
 use super::{RequestError, Requests, parse};
 use crate::audit::{AuditEvent, bounded_text};
@@ -204,7 +204,7 @@ impl Requests {
             return Ok(None);
         };
         let view: String = row.try_get("view")?;
-        let view: GrantView = serde_json::from_str(&view)?;
+        let view = super::stored_view(&view)?;
         let GrantAccess::CommitSigning(grant) = view.access else {
             return Err(RequestError::Corrupt(
                 "commit signing grant changed kind".to_owned(),

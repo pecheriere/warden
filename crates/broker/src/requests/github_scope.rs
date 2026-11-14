@@ -4,12 +4,14 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use sqlx::Row as _;
+use warden_broker_proto::github_permissions::PermissionSet;
 use warden_broker_proto::github_token::{
     GithubTokenAccess, GrantRepository, GrantScope, OLD_CLIENT,
 };
 use warden_broker_proto::release::RepoName;
 use warden_broker_proto::{AgentName, Id};
 
+use super::github_permissions::{InstallationCheck, StoredPermissions};
 use super::revocation::commit_with_entries;
 use super::{RequestError, Requests, begin, parse};
 use crate::audit::AuditEvent;
@@ -87,6 +89,8 @@ pub struct ReplacedGrant {
     pub grant_id: Id,
     /// What it covers.
     pub scope: GrantScope,
+    /// The permissions its tokens have.
+    pub permissions: PermissionSet,
 }
 
 /// What the approval page of a GitHub token request shows and binds.
@@ -96,14 +100,20 @@ pub struct GithubPending {
     pub resolution: Resolution,
     /// The agent's grants that approving would end.
     pub replaces: Vec<ReplacedGrant>,
+    /// The permissions the request was created with, which the grant will hold.
+    pub permissions: StoredPermissions,
+    /// Whether the App's installation holds them, read at this render.
+    pub installation: InstallationCheck,
 }
 
 impl GithubPending {
     /// What the approval binds besides the App: every resolved id and lowercased
-    /// name in order, then the grants replaced, each followed by `\0`.
+    /// name in order, then the full permission set in its written form, then the
+    /// grants replaced, each followed by `\0`. What the installation holds is not
+    /// bound: it is checked at render, at approval and at each mint.
     #[must_use]
     pub fn digest_input(&self) -> String {
-        let mut input = String::from("warden github-token scope v1\0");
+        let mut input = String::from("warden github-token scope v2\0");
         match &self.resolution {
             Resolution::Resolved(list) => {
                 for repository in list {
@@ -115,6 +125,8 @@ impl GithubPending {
             }
             Resolution::NotAccessible => input.push_str("not accessible\0"),
         }
+        input.push_str(&self.permissions.full.to_string());
+        input.push('\0');
         for replaced in &self.replaces {
             input.push_str(replaced.grant_id.as_str());
             input.push('\0');
@@ -185,9 +197,11 @@ impl Requests {
     /// What the repositories of a GitHub token request resolved to, resolving them
     /// on the first call: the broker asks GitHub, writes `github_repositories_resolved`
     /// and stores the answer, which later calls reuse. With the agent's grants that
-    /// approving would end.
+    /// approving would end, the permissions the request was created with and, read
+    /// from GitHub at each call, whether the App's installation holds them.
     ///
     /// # Errors
+    /// [`RequestError::Corrupt`] when the stored permissions do not parse,
     /// [`RequestError::GithubUnavailable`] when GitHub cannot say, or
     /// [`RequestError::Unavailable`] when the App cannot be read (nothing
     /// is stored, so a later call asks again); the audit and storage failures.
@@ -197,11 +211,14 @@ impl Requests {
         agent: &AgentName,
         access: &GithubTokenAccess,
     ) -> Result<GithubPending, RequestError> {
+        let permissions = self.stored_permissions(id).await?;
         if access.is_legacy() {
             // Nothing to ask GitHub; approving it is refused.
             return Ok(GithubPending {
                 resolution: Resolution::Resolved(Vec::new()),
                 replaces: Vec::new(),
+                permissions,
+                installation: InstallationCheck::Unreadable,
             });
         }
         let resolution = match self.stored_resolution(id).await? {
@@ -209,9 +226,12 @@ impl Requests {
             None => self.resolve_and_store(id, access).await?,
         };
         let replaces = self.replaced_grants(agent, &resolution).await?;
+        let installation = self.installation_check(&permissions.full).await?;
         Ok(GithubPending {
             resolution,
             replaces,
+            permissions,
+            installation,
         })
     }
 
@@ -348,3 +368,6 @@ impl Requests {
         Ok(ended)
     }
 }
+
+#[cfg(test)]
+mod tests;

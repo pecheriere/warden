@@ -164,6 +164,16 @@ fn spawn_with_input(cmd: &mut Command, input: &str) -> Child {
     child
 }
 
+/// What GitHub was asked, but for the reads of the installation, which the broker
+/// makes at each view of an approval page.
+fn upstream_calls(upstream: &HttpsUpstream) -> Vec<warden_broker::testkit::upstream::Received> {
+    upstream
+        .received()
+        .into_iter()
+        .filter(|call| call.method != "GET")
+        .collect()
+}
+
 struct Setup {
     broker: TestBroker,
     upstream: HttpsUpstream,
@@ -177,6 +187,8 @@ async fn setup() -> Setup {
 /// A broker allowing GitHub token grants of up to `max`.
 async fn setup_with_max(max: Window) -> Setup {
     let upstream = HttpsUpstream::start().await;
+    // The approval page reads the installation's permissions at each view.
+    upstream.answer_legacy_installation();
     let api = GithubApi::pinned(
         upstream.origin().parse().unwrap(),
         upstream.origin().parse().unwrap(),
@@ -309,7 +321,11 @@ async fn e2e_request_github_then_git_credential() {
         format!("token={TOKEN}\nargs=pr list -R {REPO}\n")
     );
     // The approval page's lookup, then one mint; the cache serves the rest.
-    assert_eq!(s.upstream.received().len(), 2, "one mint, then the cache");
+    assert_eq!(
+        upstream_calls(&s.upstream).len(),
+        2,
+        "one mint, then the cache"
+    );
 
     // Revoking the grant here drops its cached token.
     let minted = fs::read_to_string(s.machine.cache()).unwrap();
@@ -549,7 +565,7 @@ async fn git_push_gets_token_for_its_repository() {
         format!("username=x-access-token\npassword={TOKEN}\n")
     );
     // GitHub was asked for that repository's id alone: the page's lookup, then one mint.
-    let received = s.upstream.received();
+    let received = upstream_calls(&s.upstream);
     assert_eq!(received.len(), 2, "{received:?}");
     let body: serde_json::Value = serde_json::from_slice(&received[1].body).unwrap();
     assert_eq!(body["repository_ids"], json!([REPO_ID]));
@@ -561,7 +577,7 @@ async fn git_push_gets_token_for_its_repository() {
     );
     assert_eq!(again.status.code(), Some(0), "{}", text(&again.stderr));
     assert_eq!(text(&again.stdout), text(&out.stdout));
-    assert_eq!(s.upstream.received().len(), 2, "no second mint");
+    assert_eq!(upstream_calls(&s.upstream).len(), 2, "no second mint");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -597,12 +613,16 @@ async fn second_repository_files_its_own_request() {
     );
 
     // Each repository keeps its own token in the cache.
-    let before = s.upstream.received().len();
+    let before = upstream_calls(&s.upstream).len();
     let a = s.machine.credential("get", GITHUB_INPUT);
     let b = s.machine.credential("get", OTHER_INPUT);
     assert!(text(&a.stdout).contains(TOKEN), "{}", text(&a.stdout));
     assert!(text(&b.stdout).contains(second), "{}", text(&b.stdout));
-    assert_eq!(s.upstream.received().len(), before, "both from the cache");
+    assert_eq!(
+        upstream_calls(&s.upstream).len(),
+        before,
+        "both from the cache"
+    );
 }
 
 /// A broker that predates repository-scoped grants, local: serves `/v1/info`

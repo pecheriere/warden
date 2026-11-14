@@ -3,14 +3,15 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use secrecy::ExposeSecret as _;
 use serde_json::{Value, json};
-use warden_broker_proto::github_token::PERMISSIONS;
+use warden_broker_proto::github_permissions::PermissionSet;
 use warden_broker_proto::release::RepoName;
 
 use super::{
-    GithubApi, InstallationToken, MintError, ResolvedRepository, current_names, jwt, mint, resolve,
+    GithubApi, InstallationToken, MintError, Minted, ResolvedRepository, current_names,
+    installation_permissions, jwt, mint, resolve,
 };
 use crate::testkit::github_app::{APP_ID, INSTALLATION_ID, github_app_key, token_answer};
-use crate::testkit::upstream::{Gate, HttpsUpstream, Scripted};
+use crate::testkit::upstream::{Gate, HttpsUpstream, Scripted, installation_json};
 
 /// 2026-11-08T12:00:00Z.
 const NOW: i64 = 1_794_139_200;
@@ -31,7 +32,10 @@ const REPO_ID: u64 = 1001;
 const REPO: &str = "example-owner/example-repo";
 
 fn asked_permissions() -> Vec<(&'static str, &'static str)> {
-    PERMISSIONS.to_vec()
+    PermissionSet::legacy()
+        .iter()
+        .map(|p| (p.name(), p.level().as_str()))
+        .collect()
 }
 
 /// A good answer for [`REPO_ID`], expiring at `expires_at` (Unix seconds).
@@ -62,10 +66,16 @@ fn answer_body(token: &str, expires_at: &str, extra: &Value) -> Scripted {
     Scripted::with_body(201, body.to_string())
 }
 
-async fn mint_with(scripted: Scripted) -> Result<InstallationToken, MintError> {
+async fn mint_set(permissions: &PermissionSet, scripted: Scripted) -> Result<Minted, MintError> {
     let (upstream, api) = upstream().await;
     upstream.script_github_token(scripted);
-    mint(&api, &github_app_key().0, REPO_ID, NOW).await
+    mint(&api, &github_app_key().0, REPO_ID, permissions, NOW).await
+}
+
+async fn mint_with(scripted: Scripted) -> Result<InstallationToken, MintError> {
+    mint_set(&PermissionSet::legacy(), scripted)
+        .await
+        .map(|minted| minted.token)
 }
 
 /// The error of a mint that must fail.
@@ -108,7 +118,9 @@ async fn mint_names_one_repository_id_with_fixed_permissions_and_headers() {
     let (upstream, api) = upstream().await;
     upstream.script_github_token(created("ghs_test", EXPIRES_AT));
     let (key, public) = github_app_key();
-    mint(&api, &key, REPO_ID, NOW).await.unwrap();
+    mint(&api, &key, REPO_ID, &PermissionSet::legacy(), NOW)
+        .await
+        .unwrap();
     let received = upstream.received();
     assert_eq!(received.len(), 1);
     let request = &received[0];
@@ -126,7 +138,7 @@ async fn mint_names_one_repository_id_with_fixed_permissions_and_headers() {
     assert_eq!(header("x-github-api-version"), "2022-11-28");
     assert!(header("user-agent").starts_with("warden-broker/"));
     let body: Value = serde_json::from_slice(&request.body).unwrap();
-    let expected: serde_json::Map<String, Value> = PERMISSIONS
+    let expected: serde_json::Map<String, Value> = asked_permissions()
         .iter()
         .map(|(name, level)| ((*name).to_owned(), json!(level)))
         .collect();
@@ -253,9 +265,15 @@ async fn mint_fails_closed_when_upstream_is_untrusted() {
         upstream.origin().parse().unwrap(),
         other.ca_pem().as_bytes().to_vec(),
     );
-    let err = mint(&api, &github_app_key().0, REPO_ID, NOW)
-        .await
-        .unwrap_err();
+    let err = mint(
+        &api,
+        &github_app_key().0,
+        REPO_ID,
+        &PermissionSet::legacy(),
+        NOW,
+    )
+    .await
+    .unwrap_err();
     assert_eq!(err, MintError::Unreachable);
     assert!(upstream.received().is_empty());
 }
@@ -265,7 +283,16 @@ async fn mint_waits_for_a_held_answer() {
     let (upstream, api) = upstream().await;
     let gate = Gate::new();
     upstream.script_github_token(created("ghs_test", EXPIRES_AT).held_by(&gate));
-    let call = tokio::spawn(async move { mint(&api, &github_app_key().0, REPO_ID, NOW).await });
+    let call = tokio::spawn(async move {
+        mint(
+            &api,
+            &github_app_key().0,
+            REPO_ID,
+            &PermissionSet::legacy(),
+            NOW,
+        )
+        .await
+    });
     upstream.wait_for_github_token_calls(1).await;
     assert!(!call.is_finished());
     gate.open();
@@ -295,7 +322,7 @@ fn mint_error_messages_are_fixed() {
 }
 
 fn expected_permissions() -> Value {
-    PERMISSIONS
+    asked_permissions()
         .iter()
         .map(|(name, level)| ((*name).to_owned(), json!(level)))
         .collect::<serde_json::Map<_, _>>()
@@ -577,4 +604,196 @@ async fn mint_refuses_missing_selection() {
                 "permissions": expected_permissions()}),
     );
     assert_eq!(refused(absent).await, MintError::WrongScope);
+}
+
+fn set(text: &str) -> PermissionSet {
+    PermissionSet::parse(text).unwrap()
+}
+
+fn answer_with(permissions: &[(&str, &str)]) -> Scripted {
+    answer(&[(REPO_ID, REPO)], permissions, "selected")
+}
+
+#[tokio::test]
+async fn mint_asks_for_the_set() {
+    let (upstream, api) = upstream().await;
+    let asked = set("actions:read,checks:read,contents:write");
+    upstream.script_github_token(answer_with(&[
+        ("actions", "read"),
+        ("checks", "read"),
+        ("contents", "write"),
+        ("metadata", "read"),
+    ]));
+    mint(&api, &github_app_key().0, REPO_ID, &asked, NOW)
+        .await
+        .unwrap();
+    let body: Value = serde_json::from_slice(&upstream.received()[0].body).unwrap();
+    assert_eq!(
+        body["permissions"],
+        json!({
+            "actions": "read",
+            "checks": "read",
+            "contents": "write",
+            "metadata": "read",
+        })
+    );
+}
+
+#[tokio::test]
+async fn mint_returns_what_github_granted() {
+    let asked = set("checks:read,contents:write,issues:write");
+    let minted = mint_set(
+        &asked,
+        answer_with(&[("contents", "write"), ("metadata", "read")]),
+    )
+    .await
+    .unwrap();
+    assert_eq!(minted.granted, set("contents:write"));
+}
+
+#[tokio::test]
+async fn mint_refuses_wider_or_unknown_permission() {
+    let asked = set("checks:read,contents:write");
+    for permissions in [
+        vec![("checks", "write"), ("metadata", "read")],
+        vec![("checks", "read"), ("foo", "read"), ("metadata", "read")],
+        vec![("checks", "admin"), ("metadata", "read")],
+    ] {
+        let err = mint_set(&asked, answer_with(&permissions))
+            .await
+            .unwrap_err();
+        assert_eq!(err, MintError::WrongScope, "{permissions:?}");
+    }
+}
+
+async fn read_installation(
+    scripted: Scripted,
+) -> Result<super::InstallationPermissions, MintError> {
+    let (upstream, api) = upstream().await;
+    upstream.script_github_installation(scripted);
+    installation_permissions(&api, &github_app_key().0, NOW).await
+}
+
+#[tokio::test]
+async fn installation_is_read_with_the_app_jwt() {
+    let (upstream, api) = upstream().await;
+    upstream.script_github_installation(Scripted::with_body(
+        200,
+        installation_json(&[("metadata", "read")]),
+    ));
+    let (key, public) = github_app_key();
+    installation_permissions(&api, &key, NOW).await.unwrap();
+    let received = upstream.received();
+    assert_eq!(received.len(), 1);
+    assert_eq!(received[0].method, "GET");
+    assert_eq!(
+        received[0].path_and_query,
+        format!("/app/installations/{INSTALLATION_ID}")
+    );
+    let header = received[0]
+        .headers
+        .get("authorization")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    verify(header.strip_prefix("Bearer ").unwrap(), &public);
+}
+
+#[tokio::test]
+async fn installation_missing_lists_only_our_names() {
+    let held = read_installation(Scripted::with_body(
+        200,
+        installation_json(&[
+            ("contents", "write"),
+            ("checks", "read"),
+            ("metadata", "read"),
+            ("organization_x", "admin"),
+        ]),
+    ))
+    .await
+    .unwrap();
+    let missing: Vec<String> = held
+        .missing(&set("actions:read,checks:write,contents:read"))
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    assert_eq!(missing, ["actions:read", "checks:write"]);
+}
+
+#[tokio::test]
+async fn installation_level_beyond_write_covers_write() {
+    let held = read_installation(Scripted::with_body(
+        200,
+        installation_json(&[("contents", "admin"), ("metadata", "read")]),
+    ))
+    .await
+    .unwrap();
+    let missing: Vec<String> = held
+        .missing(&set("contents:write"))
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    assert_eq!(missing, Vec::<String>::new());
+}
+
+#[tokio::test]
+async fn installation_read_failure_is_an_error() {
+    let oversized = vec![b' '; 70 * 1024];
+    for (scripted, expected) in [
+        (Scripted::with_body(500, ""), MintError::Refused(500)),
+        (Scripted::with_body(404, ""), MintError::Refused(404)),
+        (Scripted::with_body(200, "{not json"), MintError::Malformed),
+        (Scripted::with_body(200, "[]"), MintError::Malformed),
+        (Scripted::with_body(200, oversized), MintError::TooLarge),
+    ] {
+        let err = read_installation(scripted).await.unwrap_err();
+        assert_eq!(err, expected);
+    }
+}
+
+#[tokio::test]
+async fn installation_level_none_or_unknown_covers_nothing() {
+    for level in ["none", "", "superuser"] {
+        let held = read_installation(Scripted::with_body(
+            200,
+            installation_json(&[("contents", level), ("metadata", "read")]),
+        ))
+        .await
+        .unwrap();
+        let missing: Vec<String> = held
+            .missing(&set("contents:read"))
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(missing, ["contents:read"], "level {level:?}");
+    }
+}
+
+#[tokio::test]
+async fn installation_without_metadata_misses_metadata() {
+    let held = read_installation(Scripted::with_body(
+        200,
+        installation_json(&[("contents", "write")]),
+    ))
+    .await
+    .unwrap();
+    let missing: Vec<String> = held
+        .missing(&set("contents:read"))
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    assert_eq!(missing, ["metadata:read"]);
+}
+
+#[tokio::test]
+async fn installation_permissions_debug_hides_github_names() {
+    let held = read_installation(Scripted::with_body(
+        200,
+        installation_json(&[("contents", "write"), ("metadata", "read")]),
+    ))
+    .await
+    .unwrap();
+    let shown = format!("{held:?}");
+    assert!(!shown.contains("contents"), "{shown}");
+    assert!(shown.contains('2'), "{shown}");
 }

@@ -91,7 +91,10 @@ pub fn minted_answer(token: &str, expires_at: i64, repositories: &[(u64, &str)])
         token,
         expires_at,
         repositories,
-        &warden_broker_proto::github_token::PERMISSIONS,
+        &warden_broker_proto::github_permissions::PermissionSet::legacy()
+            .iter()
+            .map(|p| (p.name(), p.level().as_str()))
+            .collect::<Vec<_>>(),
         "selected",
     )
 }

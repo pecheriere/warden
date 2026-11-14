@@ -36,6 +36,8 @@ struct Setup {
 /// covers [`REPO`].
 async fn setup() -> Setup {
     let upstream = HttpsUpstream::start().await;
+    // The approval page reads the installation's permissions at each view.
+    upstream.answer_legacy_installation();
     let api = GithubApi::pinned(
         upstream.origin().parse().unwrap(),
         upstream.origin().parse().unwrap(),

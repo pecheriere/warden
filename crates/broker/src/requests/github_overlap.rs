@@ -3,21 +3,25 @@
 //! from before grants were scoped names no repository, so any approval ends it.
 
 use sqlx::{Row as _, Sqlite, Transaction};
+use warden_broker_proto::github_permissions::PermissionSet;
 use warden_broker_proto::github_token::GrantScope;
-use warden_broker_proto::{AgentName, GrantAccess, GrantView, Id};
+use warden_broker_proto::{AgentName, GrantAccess, Id};
 
 use super::decide::same_ids;
-use super::{ReplacedGrant, RequestError, Requests, parse};
+use super::{ReplacedGrant, RequestError, Requests, github_permissions_of, parse, stored_view};
 use crate::audit::AuditEvent;
 
 /// Recorded as `by` for a GitHub token grant ended by approving one that overlaps it.
 const REPLACED: &str = "replaced";
 
-/// The scope of the GitHub token grant stored as `view`.
-fn scope_of(view: &str) -> Result<GrantScope, RequestError> {
-    let view: GrantView = serde_json::from_str(view)?;
+/// The scope and permissions of the GitHub token grant stored as `view`.
+fn scope_of(view: &str) -> Result<(GrantScope, PermissionSet), RequestError> {
+    let view = stored_view(view)?;
     match view.access {
-        GrantAccess::GithubToken(grant) => Ok(grant.repositories),
+        GrantAccess::GithubToken(grant) => {
+            let permissions = github_permissions_of(&grant)?;
+            Ok((grant.repositories, permissions))
+        }
         _ => Err(RequestError::Corrupt(
             "GitHub token grant changed kind".to_owned(),
         )),
@@ -35,11 +39,12 @@ impl Requests {
         let mut found = Vec::new();
         for row in self.active_rows(agent, "github_token").await? {
             let view: String = row.try_get("view")?;
-            let scope = scope_of(&view)?;
+            let (scope, permissions) = scope_of(&view)?;
             if scope.overlaps(new) {
                 found.push(ReplacedGrant {
                     grant_id: parse(&row, "id")?,
                     scope,
+                    permissions,
                 });
             }
         }
@@ -111,7 +116,7 @@ pub(super) async fn end_overlapping(
     let mut grants: Vec<(Id, Id)> = Vec::new();
     for row in &rows {
         let view: String = row.try_get("view")?;
-        if scope_of(&view)?.overlaps(new) {
+        if scope_of(&view)?.0.overlaps(new) {
             grants.push((parse(row, "id")?, parse(row, "request_id")?));
         }
     }

@@ -2,6 +2,7 @@
 //! that render every page and for the screenshots.
 
 use maud::Markup;
+use warden_broker_proto::github_permissions::PermissionSet;
 use warden_broker_proto::github_token::{
     AutomaticCaller, AutomaticRequest, GithubTokenAccess, GrantRepository, GrantScope,
 };
@@ -11,8 +12,8 @@ use warden_broker_proto::{Access, CreateRequest, GrantAccess, Window};
 use super::{NOW, active, agent, approve, fingerprint, goal, grants, history, id, idle, pending};
 use crate::policy::GithubTokenPolicy;
 use crate::requests::{
-    Destination, GithubPending, HistoryEntry, LinkHosts, PendingEntry, ReplacedGrant, Resolution,
-    ScopedRepository,
+    Destination, GithubPending, HistoryEntry, InstallationCheck, LinkHosts, PendingEntry,
+    ReplacedGrant, Resolution, ScopedRepository, StoredPermissions,
 };
 
 pub(super) const REPO: &str = "example-owner/example-repo";
@@ -62,11 +63,34 @@ pub(super) fn resolved(list: Vec<ScopedRepository>) -> GithubPending {
     GithubPending {
         resolution: Resolution::Resolved(list),
         replaces: Vec::new(),
+        permissions: StoredPermissions::legacy(),
+        installation: InstallationCheck::Holds,
     }
+}
+
+/// The legacy set and `checks:read`: wider than what a grant of 0.14 holds.
+pub(super) fn with_checks() -> PermissionSet {
+    PermissionSet::parse("checks:read,contents:write,issues:write,pull_requests:write").unwrap()
+}
+
+/// The single-repository page of a request holding `permissions`, which the
+/// installation `installation`.
+pub(super) fn permissions_view(
+    permissions: PermissionSet,
+    installation: InstallationCheck,
+) -> crate::requests::PendingView {
+    let mut github = resolved(vec![scoped(1001, REPO, None)]);
+    github.permissions = StoredPermissions {
+        full: permissions,
+        beyond_default: Vec::new(),
+    };
+    github.installation = installation;
+    github_view(access(&[REPO], None), Some(github))
 }
 
 pub(super) fn replaced(grant: u8, list: &[(u64, &str)]) -> ReplacedGrant {
     ReplacedGrant {
+        permissions: PermissionSet::legacy(),
         grant_id: id(grant),
         scope: GrantScope::repositories(
             list.iter()
@@ -117,6 +141,8 @@ pub(super) fn unreachable_view() -> crate::requests::PendingView {
         Some(GithubPending {
             resolution: Resolution::NotAccessible,
             replaces: Vec::new(),
+            permissions: StoredPermissions::legacy(),
+            installation: InstallationCheck::Holds,
         }),
     )
 }
@@ -139,15 +165,21 @@ pub(super) fn replaces_view_with(n: usize) -> crate::requests::PendingView {
             ]),
             replaces: vec![
                 replaced(11, &[(1001, REPO)]),
-                replaced(12, &[(1002, TAP), (1005, LONG)]),
+                ReplacedGrant {
+                    permissions: PermissionSet::parse("contents:read").unwrap(),
+                    ..replaced(12, &[(1002, TAP), (1005, LONG)])
+                },
                 ReplacedGrant {
                     grant_id: id(13),
                     scope: GrantScope::Legacy,
+                    permissions: PermissionSet::legacy(),
                 },
             ]
             .into_iter()
             .take(n)
             .collect(),
+            permissions: StoredPermissions::legacy(),
+            installation: InstallationCheck::Holds,
         }),
     )
 }
@@ -171,7 +203,7 @@ pub(super) fn github_grant(n: u8, scope: GrantScope) -> crate::requests::ActiveG
     let mut grant = active(
         n,
         github_token_request(),
-        GrantAccess::GithubToken(github_token_policy().grant(scope)),
+        GrantAccess::GithubToken(github_token_policy().grant(scope, PermissionSet::legacy())),
     );
     grant.not_after = NOW + 26 * 86_400;
     grant
@@ -254,6 +286,33 @@ pub(super) fn github_token_pages() -> Vec<(&'static str, Markup)> {
         (
             "approve-github-token-replaces",
             approve(&replaces_view(), &lnk, NOW),
+        ),
+        (
+            "approve-github-token-permissions",
+            approve(
+                &permissions_view(with_checks(), InstallationCheck::Holds),
+                &lnk,
+                NOW,
+            ),
+        ),
+        (
+            "approve-github-token-app-lacks",
+            approve(
+                &permissions_view(
+                    with_checks(),
+                    InstallationCheck::Missing(vec!["checks:read".parse().unwrap()]),
+                ),
+                &lnk,
+                NOW,
+            ),
+        ),
+        (
+            "approve-github-token-unreadable",
+            approve(
+                &permissions_view(with_checks(), InstallationCheck::Unreadable),
+                &lnk,
+                NOW,
+            ),
         ),
         (
             "approve-github-token-automatic",

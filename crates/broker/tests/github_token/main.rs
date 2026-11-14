@@ -6,8 +6,9 @@ use std::fs;
 use serde_json::Value;
 use warden_broker::github_app::GithubApi;
 use warden_broker::requests::{ActiveGithubToken, Clock as _, GithubLookup};
+use warden_broker::testkit::github_app::INSTALLATION_ID;
 use warden_broker::testkit::github_app::token_answer;
-use warden_broker::testkit::upstream::HttpsUpstream;
+use warden_broker::testkit::upstream::{HttpsUpstream, Received, installation_json};
 use warden_broker::testkit::{TestBroker, github_app_key};
 use warden_broker_proto::Window;
 
@@ -15,6 +16,7 @@ mod legacy;
 mod mint;
 mod overlap;
 mod pages;
+mod permissions;
 mod renewal;
 mod scope;
 mod windows;
@@ -36,12 +38,48 @@ fn api_of(upstream: &HttpsUpstream) -> GithubApi {
     )
 }
 
+/// The permissions the fake GitHub says the App's installation holds, unless a
+/// test says otherwise: more than any request of these tests asks for.
+const INSTALLATION: &[(&str, &str)] = &[
+    ("actions", "read"),
+    ("checks", "write"),
+    ("contents", "write"),
+    ("issues", "write"),
+    ("metadata", "read"),
+    ("pull_requests", "write"),
+];
+
 /// A broker that holds a GitHub App and talks to a local fake GitHub, with an
-/// enrolled agent `bot` whose key is returned.
+/// enrolled agent `bot` whose key is returned. GitHub answers every read of the
+/// installation with [`INSTALLATION`].
 async fn configured_on_fake() -> (TestBroker, String, HttpsUpstream) {
-    let upstream = HttpsUpstream::start().await;
+    let upstream = fake_github().await;
     let (broker, key) = configured(TestBroker::with_github_api(api_of(&upstream)).await).await;
     (broker, key, upstream)
+}
+
+/// A local fake GitHub that answers every read of the installation with
+/// [`INSTALLATION`].
+async fn fake_github() -> HttpsUpstream {
+    let upstream = HttpsUpstream::start().await;
+    upstream.answer_github_installation(Some(installation(INSTALLATION)));
+    upstream
+}
+
+/// The calls `upstream` received, but for the reads of the installation, which the
+/// broker makes at each render of an approval page.
+fn github_calls(upstream: &HttpsUpstream) -> Vec<Received> {
+    let read = format!("/app/installations/{INSTALLATION_ID}");
+    upstream
+        .received()
+        .into_iter()
+        .filter(|call| !(call.method == "GET" && call.path_and_query == read))
+        .collect()
+}
+
+/// GitHub's answer to a read of an installation that holds `permissions`.
+fn installation(permissions: &[(&str, &str)]) -> warden_broker::testkit::upstream::Scripted {
+    warden_broker::testkit::upstream::Scripted::with_body(200, installation_json(permissions))
 }
 
 /// GitHub's answer when the App reaches `repositories` (`(id, full_name)`): the

@@ -6,6 +6,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+use crate::github_permissions::GrantedPermissions;
 use crate::release::RepoName;
 use crate::{FreeTextCheck, ParseError, check_new_free_text, check_stored_free_text};
 
@@ -45,14 +46,16 @@ pub const HOURLY_LIMIT: &str = "this agent has reached its limit of GitHub token
 /// What the broker says when it holds no GitHub App.
 pub const NOT_CONFIGURED: &str = "GitHub tokens are not configured on this broker";
 
-/// The permissions every minted token has, as GitHub names them. Fixed: no
-/// workflows and no administration, whatever the App itself is allowed.
-pub const PERMISSIONS: [(&str, &str); 4] = [
-    ("contents", "write"),
-    ("pull_requests", "write"),
-    ("issues", "write"),
-    ("metadata", "read"),
-];
+/// Why a GitHub token request whose permissions the App's installation does not
+/// all hold is not approved. The missing permissions follow, as `name:level`
+/// joined with `,`.
+pub const INSTALLATION_LACKS: &str =
+    "this request cannot be approved: the App's installation lacks ";
+
+/// Why a GitHub token request is not approved when the broker could not read what
+/// the App's installation holds.
+pub const INSTALLATION_UNREADABLE: &str = "this request cannot be approved: the broker could \
+                                           not read the permissions of the App's installation";
 
 /// What asked for the token without the agent typing a command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -366,6 +369,11 @@ pub struct GithubTokenGrant {
     /// The repositories the grant covers.
     #[serde(default, skip_serializing_if = "GrantScope::is_legacy")]
     pub repositories: GrantScope,
+    /// The permissions its tokens have. Grants stored before permissions were
+    /// configurable mean the legacy set. A name this version does not know is
+    /// kept as text: the broker reads it strictly before acting on it.
+    #[serde(default = "GrantedPermissions::legacy")]
+    pub permissions: GrantedPermissions,
 }
 
 /// Body of `POST /v1/github-token`: the repository to mint a token for.
@@ -389,6 +397,10 @@ pub struct GithubTokenResponse {
     pub repository: RepoName,
     /// GitHub's id for it.
     pub repository_id: u64,
+    /// The permissions the token has; absent from brokers before 0.15. A name
+    /// this version does not know is kept as text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permissions: Option<GrantedPermissions>,
 }
 
 impl fmt::Debug for GithubTokenResponse {
@@ -399,6 +411,7 @@ impl fmt::Debug for GithubTokenResponse {
             .field("grant_id", &self.grant_id)
             .field("repository", &self.repository)
             .field("repository_id", &self.repository_id)
+            .field("permissions", &self.permissions)
             .finish()
     }
 }

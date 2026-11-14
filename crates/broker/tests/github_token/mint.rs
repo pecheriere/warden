@@ -9,7 +9,9 @@ use serde_json::{Value, json};
 use warden_broker::github_app::GithubApi;
 use warden_broker::policy::GithubAppKey;
 use warden_broker::requests::Clock as _;
-use warden_broker::testkit::github_app::{APP_ID, INSTALLATION_ID, RSA2048_PKCS8, minted_answer};
+use warden_broker::testkit::github_app::{
+    APP_ID, INSTALLATION_ID, RSA2048_PKCS8, minted_answer, token_answer,
+};
 use warden_broker::testkit::upstream::{Gate, HttpsUpstream, Received, Scripted};
 use warden_broker::testkit::{TestBroker, TestResponse};
 use warden_broker_proto::Window;
@@ -17,7 +19,8 @@ use warden_broker_proto::github_token::{
     AMBIGUOUS_GRANT, HOURLY_LIMIT, NO_ACTIVE_GRANT, OLD_CLIENT, REPOSITORY_UNREACHABLE,
 };
 
-use super::{approve, approve_repositories, configured, entries};
+use super::permissions::{WITH_CHECKS, set, set_default};
+use super::{approve, approve_repositories, configured, entries, fake_github, github_calls};
 
 const TOKEN: &str = "ghs_test_0123456789";
 /// Repository 1001, which the grant of [`granted`] covers.
@@ -28,7 +31,7 @@ const REPO_B: &str = "example-owner/homebrew-tap";
 /// A broker whose GitHub is `upstream`, with an agent `bot` holding a 30-day grant.
 /// Returns the agent's key and the grant.
 async fn granted() -> (Arc<TestBroker>, HttpsUpstream, String, String) {
-    let upstream = HttpsUpstream::start().await;
+    let upstream = fake_github().await;
     let api = GithubApi::pinned(
         upstream.origin().parse().unwrap(),
         upstream.origin().parse().unwrap(),
@@ -63,8 +66,7 @@ async fn mint_for(broker: &TestBroker, key: &str, repository: &str) -> TestRespo
 /// The requests that asked GitHub for a token to mint (the approval's own look at
 /// a repository is not one of them), oldest first.
 fn mint_calls(upstream: &HttpsUpstream) -> Vec<Received> {
-    upstream
-        .received()
+    github_calls(upstream)
         .into_iter()
         .filter(|call| {
             let body: Value = serde_json::from_slice(&call.body).unwrap();
@@ -98,7 +100,7 @@ async fn held_mint(
 ) -> (Gate, tokio::task::JoinHandle<TestResponse>) {
     let gate = Gate::new();
     upstream.script_github_token(created(broker, TOKEN).held_by(&gate));
-    let expected = upstream.received().len() as u64 + 1;
+    let expected = github_calls(upstream).len() as u64 + 1;
     let call = tokio::spawn({
         let broker = broker.clone();
         let key = key.to_owned();
@@ -110,7 +112,7 @@ async fn held_mint(
 
 #[tokio::test]
 async fn mints_are_capped_per_agent_per_hour() {
-    let upstream = HttpsUpstream::start().await;
+    let upstream = fake_github().await;
     let api = GithubApi::pinned(
         upstream.origin().parse().unwrap(),
         upstream.origin().parse().unwrap(),
@@ -176,9 +178,9 @@ async fn mint_returns_token_under_grant() {
         minted[0]["permissions"],
         json!([
             "contents:write",
-            "pull_requests:write",
             "issues:write",
-            "metadata:read"
+            "metadata:read",
+            "pull_requests:write"
         ])
     );
     assert_eq!(minted[0]["expires_at"], token["expires_at"]);
@@ -408,7 +410,7 @@ async fn refusals_past_the_limit_are_counted_instead_of_listed() {
 
 #[tokio::test]
 async fn hourly_limit_survives_restart() {
-    let upstream = HttpsUpstream::start().await;
+    let upstream = fake_github().await;
     let api = GithubApi::pinned(
         upstream.origin().parse().unwrap(),
         upstream.origin().parse().unwrap(),
@@ -568,7 +570,7 @@ async fn mint_reports_unreachable_repository() {
 /// tokens, as every call that reaches GitHub does.
 #[tokio::test]
 async fn unreachable_repository_costs_the_hourly_budget() {
-    let upstream = HttpsUpstream::start().await;
+    let upstream = fake_github().await;
     let api = GithubApi::pinned(
         upstream.origin().parse().unwrap(),
         upstream.origin().parse().unwrap(),
@@ -621,7 +623,7 @@ async fn grant_replaced_during_mint_gets_nothing() {
 
 #[tokio::test]
 async fn hourly_limit_is_per_agent_across_grants() {
-    let upstream = HttpsUpstream::start().await;
+    let upstream = fake_github().await;
     let api = GithubApi::pinned(
         upstream.origin().parse().unwrap(),
         upstream.origin().parse().unwrap(),
@@ -639,4 +641,116 @@ async fn hourly_limit_is_per_agent_across_grants() {
         assert_refused(&broker, &resp, StatusCode::TOO_MANY_REQUESTS, HOURLY_LIMIT);
     }
     assert_eq!(mint_calls(&upstream).len(), 2);
+}
+
+/// A broker whose default is [`WITH_CHECKS`] and an agent `bot` holding a grant that
+/// was approved under it. Returns the broker, GitHub and the agent's key.
+async fn granted_with_checks() -> (Arc<TestBroker>, HttpsUpstream, String) {
+    let upstream = fake_github().await;
+    let api = GithubApi::pinned(
+        upstream.origin().parse().unwrap(),
+        upstream.origin().parse().unwrap(),
+        upstream.ca_pem().as_bytes().to_vec(),
+    );
+    let (broker, key) = configured(TestBroker::with_github_api(api).await).await;
+    set_default(&broker, WITH_CHECKS);
+    approve(&broker, &upstream, "bot", Window::D30).await;
+    (Arc::new(broker), upstream, key)
+}
+
+/// The permissions a mint call asked GitHub for, as `name:level` in name order.
+fn asked_permissions(call: &Received) -> Vec<String> {
+    let body: Value = serde_json::from_slice(&call.body).unwrap();
+    let mut asked: Vec<String> = body["permissions"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .map(|(name, level)| format!("{name}:{}", level.as_str().unwrap()))
+        .collect();
+    asked.sort();
+    asked
+}
+
+fn answer_with(broker: &TestBroker, permissions: &[(&str, &str)]) -> Scripted {
+    token_answer(
+        TOKEN,
+        broker.clock.now() + 3600,
+        &[(1001, REPO_A)],
+        permissions,
+        "selected",
+    )
+}
+
+#[tokio::test]
+async fn mint_uses_the_grant_set_not_the_current_default() {
+    let (broker, upstream, key) = granted_with_checks().await;
+    // The owner narrows the default after the approval.
+    set_default(&broker, "contents:write,metadata:read");
+    upstream.script_github_token(answer_with(
+        &broker,
+        &[
+            ("checks", "read"),
+            ("contents", "write"),
+            ("issues", "write"),
+            ("metadata", "read"),
+            ("pull_requests", "write"),
+        ],
+    ));
+    let resp = mint(&broker, &key).await;
+    assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
+    let calls = mint_calls(&upstream);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(
+        asked_permissions(&calls[0]).join(","),
+        WITH_CHECKS,
+        "the grant's set, not the narrowed default"
+    );
+    assert_eq!(resp.json()["permissions"], WITH_CHECKS);
+}
+
+#[tokio::test]
+async fn response_echoes_granted() {
+    let (broker, upstream, key) = granted_with_checks().await;
+    // GitHub grants less than was asked: no `checks`.
+    upstream.script_github_token(answer_with(
+        &broker,
+        &[
+            ("contents", "write"),
+            ("issues", "write"),
+            ("metadata", "read"),
+            ("pull_requests", "write"),
+        ],
+    ));
+    let resp = mint(&broker, &key).await;
+    assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
+    let granted = set(resp.json()["permissions"].as_str().unwrap());
+    assert!(!granted.to_string().contains("checks"), "{granted}");
+    let minted = entries(&broker, "github_token_minted");
+    assert_eq!(
+        minted[0]["permissions"],
+        json!([
+            "contents:write",
+            "issues:write",
+            "metadata:read",
+            "pull_requests:write"
+        ])
+    );
+}
+
+#[tokio::test]
+async fn legacy_grant_mints_legacy() {
+    let (broker, upstream, key, _) = granted().await;
+    set_default(&broker, WITH_CHECKS);
+    upstream.script_github_token(created(&broker, TOKEN));
+    let resp = mint(&broker, &key).await;
+    assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
+    let calls = mint_calls(&upstream);
+    assert_eq!(
+        asked_permissions(&calls[0]).join(","),
+        "contents:write,issues:write,metadata:read,pull_requests:write"
+    );
+    assert_eq!(
+        resp.json()["permissions"],
+        "contents:write,issues:write,metadata:read,pull_requests:write"
+    );
 }

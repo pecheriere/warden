@@ -50,6 +50,10 @@ pub enum AuditEvent {
         window_secs: u32,
         /// Passkey that signed the approval.
         passkey_id: String,
+        /// The permissions a GitHub token grant holds, in their written form; absent
+        /// for every other grant.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        permissions: Option<String>,
     },
     /// The owner denied a request.
     Denied {

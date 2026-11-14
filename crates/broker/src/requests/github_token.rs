@@ -8,7 +8,7 @@
 use sqlx::Row as _;
 use warden_broker_proto::github_token::GrantRepository;
 use warden_broker_proto::release::RepoName;
-use warden_broker_proto::{AgentName, GithubTokenGrant, GrantAccess, GrantView, Id, Window};
+use warden_broker_proto::{AgentName, GithubTokenGrant, GrantAccess, Id, Window};
 
 use super::{RequestError, Requests, parse};
 use crate::audit::{AuditEvent, bounded_text};
@@ -127,7 +127,7 @@ impl Requests {
         let mut grants = Vec::new();
         for row in self.active_rows(agent, "github_token").await? {
             let view: String = row.try_get("view")?;
-            let view: GrantView = serde_json::from_str(&view)?;
+            let view = super::stored_view(&view)?;
             let GrantAccess::GithubToken(grant) = view.access else {
                 return Err(RequestError::Corrupt(
                     "GitHub token grant changed kind".to_owned(),

@@ -281,9 +281,12 @@ fn grant_access(grant: &ActiveGrant) -> Markup {
         GrantAccess::CommitSigning(signing) => {
             commit_signing::grant_access(&signing.key_fingerprint)
         }
-        GrantAccess::GithubToken(token) => {
-            github_token::grant_access(&token.app_id, token.installation_id, &token.repositories)
-        }
+        GrantAccess::GithubToken(token) => github_token::grant_access(
+            &token.app_id,
+            token.installation_id,
+            &token.repositories,
+            &token.permissions,
+        ),
         GrantAccess::Release(release) => release::grant_access(release, grant.release),
     }
 }

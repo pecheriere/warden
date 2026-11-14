@@ -272,8 +272,9 @@ pub(crate) enum RequestKind {
         #[command(flatten)]
         context: RequestContext,
     },
-    /// GitHub tokens for git and gh (contents, pull requests and issues of the
-    /// repositories named), minted by the broker for an hour at a time, for much
+    /// GitHub tokens for git and gh, for the repositories named and with the
+    /// permissions the owner approved (by default contents, pull requests and
+    /// issues), minted by the broker for an hour at a time, for much
     /// longer than other access. git and gh also ask for this by themselves, for the
     /// repository they work on, once set up with `warden setup github`.
     Github {

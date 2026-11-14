@@ -19,8 +19,10 @@ use sha2::{Digest as _, Sha256};
 use sqlx::sqlite::SqliteRow;
 use sqlx::{Row as _, SqlitePool};
 use url::Url;
+use warden_broker_proto::github_permissions::PermissionSet;
 use warden_broker_proto::{
-    AgentName, CreateRequest, Fingerprint, GrantAccess, Id, TargetName, UnixUser, Window,
+    AgentName, CreateRequest, Fingerprint, GithubTokenGrant, GrantAccess, GrantView, Id,
+    TargetName, UnixUser, Window,
 };
 
 use crate::agents::AgentError;
@@ -45,6 +47,7 @@ mod bus;
 mod commit_signing;
 mod daily_use;
 mod github_overlap;
+mod github_permissions;
 mod github_scope;
 mod github_token;
 mod limits;
@@ -60,6 +63,7 @@ pub use self::bus::StatusBus;
 pub use self::commit_signing::{ActiveCommitSigning, SIGNATURES_PER_DAY};
 pub(crate) use self::daily_use::DailyUse;
 pub use self::daily_use::{CALLS_PER_DAY, SESSIONS_PER_DAY};
+pub use self::github_permissions::{InstallationCheck, StoredPermissions};
 pub use self::github_scope::{GithubPending, ReplacedGrant, Resolution, ScopedRepository};
 pub use self::github_token::{ActiveGithubToken, GithubLookup, MINTS_PER_HOUR};
 use self::limits::Refusals;
@@ -636,6 +640,32 @@ where
 {
     let raw: String = row.try_get(column)?;
     T::try_from(raw).map_err(|e| RequestError::Corrupt(format!("column {column}: {e}")))
+}
+
+/// A grant view as stored, read strictly: the permissions of a GitHub token grant
+/// must be a set this version can act on. The proto type keeps a name it does not
+/// know as text, for older CLIs; the broker refuses it instead.
+fn stored_view(text: &str) -> Result<GrantView, RequestError> {
+    let view: GrantView = serde_json::from_str(text)?;
+    if let GrantAccess::GithubToken(grant) = &view.access {
+        github_permissions_of(grant)?;
+    }
+    Ok(view)
+}
+
+/// The permissions of a stored GitHub token grant, read strictly: every name known
+/// and none under the ceiling.
+///
+/// # Errors
+///
+/// [`RequestError::Corrupt`] when this version cannot act on the set.
+pub(crate) fn github_permissions_of(
+    grant: &GithubTokenGrant,
+) -> Result<PermissionSet, RequestError> {
+    grant
+        .permissions
+        .known()
+        .map_err(|e| RequestError::Corrupt(format!("GitHub token grant permissions: {e}")))
 }
 
 /// Refuse a `window` longer than `max`, the limit of `subject` (`target pi`,

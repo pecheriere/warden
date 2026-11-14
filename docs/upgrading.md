@@ -56,6 +56,27 @@ doctor` fails its `github.token` check, git sends warden no repository, and an o
 wrapper does not pass `-R` to warden. A `gh` run outside a checkout needs `-R
 owner/name`.
 
+## GitHub token permissions
+
+GitHub token grants now hold a set of permissions that the owner configures
+(`default_permissions` on the `warden:github-app` item, see [Permissions](github-app.md#permissions)),
+instead of a constant. With no field set, nothing changes: the set is `contents`, `issues` and
+`pull_requests` write and `metadata` read.
+
+- A new migration, `0013_github_permissions`, applies at startup. As with every migration,
+  rolling back means restoring the backup together with the old version.
+- **Grants that exist keep the four permissions** they were approved with. A renewal takes
+  the default of that moment, and the owner sees it on the approval page.
+- The approval page for a GitHub request now reads the App's installation once for each view,
+  begin and finish: one more App key read and one more GitHub call each. A GitHub approval page
+  opened before the upgrade must be reloaded.
+- The `approved` audit entry has a new optional field, `permissions`, so an older
+  `warden-server audit verify` refuses a log that holds one.
+- The `permissions` of a `github_token_minted` entry is now what GitHub granted, in canonical
+  order (sorted by name). It was the fixed four in a fixed order.
+- A bad `default_permissions` or `extra_permissions` makes GitHub tokens unusable, and `doctor`
+  names the field.
+
 ## Repository-scoped GitHub grants
 
 GitHub token grants now cover named repositories, and a token is minted for one repository.
