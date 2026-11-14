@@ -94,6 +94,14 @@ All notable changes to this project are recorded here. The format follows
 
 ### Fixed
 
+- Opening the audit log verifies it without holding the file lock, then takes the lock
+  only for what was appended meanwhile, so a `warden-server` command run on a large log
+  no longer makes the running server's audit entries, and the actions that wait for them,
+  fail. Opening and `audit verify` read one line at a time instead of the whole file, and
+  refuse a line over 16 MiB. A log whose verified part changes before the lock is taken
+  is refused. warden refuses to write an entry over 16 MiB, before writing any of it,
+  so that it never writes a log it cannot open again: the action that needed the entry
+  fails, and the log is not poisoned.
 - A `*_FILE` secret file is checked and read through the same open file, and a FIFO in its
   place is refused without waiting on it.
 - A release's commit is checked against the default branch's head by commit id, read from

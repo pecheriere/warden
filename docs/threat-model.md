@@ -301,6 +301,22 @@ change.
   per-grant figure multiplies only by the grants the owner approved, and the refused-call
   figure by the agents. Revoking the agent stops every one of them. The bounds keep the log's growth
   to a rate an owner can watch, not to nothing: an owner still needs to watch the disk.
+- **Opening the log does not hold up the server's appends.** Every writer takes the
+  log's file lock for each append and waits 5 s at most for it. A `warden-server`
+  command that opens the log while the server runs verifies it up to its last complete
+  line without the lock, reading one line at a time, and takes the lock only to check
+  what was appended since and to repair a torn tail, so a large log does not stop the
+  server's appends. If the part it verified is shorter under the lock, or its last line
+  changed, the command refuses to open the log: warden only ever cuts a torn line past
+  the last complete one, so something else changed the file. A line that does not verify
+  in the unlocked pass is read again under the lock, which alone decides, so a torn tail
+  repaired meanwhile is not taken for corruption. Reading and `audit verify` keep at most
+  one line in memory, and refuse a line over 16 MiB.
+- **warden does not write an entry it could not read back.** An entry whose line would
+  be over 16 MiB is refused before any byte reaches the log: the action that needed it
+  fails as for any entry that cannot be written, the log stays usable for the next one,
+  and the server log records the entry's type and size, not its content. So a log warden
+  wrote always opens again.
 
 ## Authentication of callers
 
