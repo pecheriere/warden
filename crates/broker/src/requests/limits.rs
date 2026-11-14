@@ -25,7 +25,7 @@ use url::Url;
 use warden_broker_proto::AgentName;
 
 use super::{PENDING_TTL_SECS, RequestError, Requests};
-use crate::audit::AuditEvent;
+use crate::audit::{AuditEvent, bounded_text};
 use crate::notify::Doorbell;
 
 /// Longest between audit entries for an agent still being refused, in seconds.
@@ -381,7 +381,7 @@ impl Requests {
                 tracing::warn!(agent = %agent, error = %e, "request limit notice failed");
                 AuditEvent::Error {
                     context: "request limit notice".to_owned(),
-                    message: format!("{agent}: {e}"),
+                    message: bounded_text(format!("{agent}: {e}")),
                 }
             }
         };

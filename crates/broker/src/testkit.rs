@@ -16,7 +16,7 @@ pub use backend::{CaState, FakeBackend};
 pub use broker::{BaseUrls, LiveHold, TestBroker, TestResponse, request_signature};
 pub use clock::ManualClock;
 pub use github_app::github_app_key;
-pub use notify::{CapturingNotifier, FailingNotifier};
+pub use notify::{CapturingNotifier, FailingNotifier, LongErrorNotifier};
 pub use upstream::{HttpsUpstream, Received};
 
 use webauthn_authenticator_rs::WebauthnAuthenticator;

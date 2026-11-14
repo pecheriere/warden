@@ -686,4 +686,6 @@ pub const fn window_label(window: Window) -> &'static str {
 }
 
 #[cfg(test)]
+mod refusal_tests;
+#[cfg(test)]
 mod tests;
