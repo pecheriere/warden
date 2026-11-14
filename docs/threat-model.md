@@ -858,9 +858,10 @@ What holds:
   entry that cannot be written all mean no signature. The signature leaves the broker only
   after its entry is written.
 - **Every refusal is recorded.** Beyond 30 a minute per agent they are counted, so refused
-  calls cannot fill the log; the count is written at most once a minute per agent, when the
-  minute that held it is over, and at shutdown. A body over the route's 2 MiB limit is refused before the
-  caller is known, and is not recorded, as on every route.
+  calls cannot fill the log; the count is written as one entry per agent per minute, when
+  the minute that held it is over, and at a clean shutdown. Counts are kept in memory, so a
+  crash can lose up to about the last minute and a quarter of them. A body over the route's
+  2 MiB limit is refused before the caller is known, and is not recorded, as on every route.
 - **An agent cannot approve it, and nothing renews by itself.** A grant takes the passkey,
   and so does renewing it. warden notifies the owner a few days before a grant ends, and the
   notification names only the agent.

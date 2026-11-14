@@ -618,12 +618,12 @@ async fn shutdown_flushes_every_registered_throttle() {
     ));
     stop.send(true).unwrap();
     sweeper.await.unwrap();
-    assert_eq!(
-        broker
-            .audit_types()
-            .iter()
-            .filter(|t| *t == "release_refusals_held")
-            .count(),
-        1
-    );
+    let log = fs::read_to_string(broker.audit_path()).unwrap();
+    let held: Vec<serde_json::Value> = log
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap()["event"].clone())
+        .filter(|event| event["type"] == "release_refusals_held")
+        .collect();
+    assert_eq!(held.len(), 1);
+    assert_eq!(held[0]["count"], 2);
 }

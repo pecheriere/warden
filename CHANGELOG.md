@@ -46,8 +46,8 @@ All notable changes to this project are recorded here. The format follows
 ### Changed
 
 - Counts of refusals beyond the per-minute allowance (`commit_signing_refusals_held`,
-  `github_token_refusals_held`, `release_refusals_held`) are written at most once a minute per
-  agent, once the minute that held them is over, instead of at every sweep.
+  `github_token_refusals_held`, `release_refusals_held`) are written as one entry per agent per
+  minute, once the minute that held them is over, instead of at every sweep.
 - A proxied API call may not set more routing and client-address headers: the `X-Forwarded-*`,
   `X-Original-*`, `X-Rewrite-*`, `X-Envoy-*` and `X-Override-*` families, `X-Client-IP`,
   `True-Client-IP`, `CF-Connecting-IP` and the other `*-Client-IP` and `*-Connecting-IP` names.
