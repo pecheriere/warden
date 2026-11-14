@@ -159,7 +159,8 @@ impl Default for Gate {
 ///   [`HttpsUpstream::script_github_token`] (`500` when none is), held until its
 ///   [`Gate`] opens when it has one;
 /// - `GET /app/installations/<id>`: the next response queued with
-///   [`HttpsUpstream::script_github_installation`] (`500` when none is);
+///   [`HttpsUpstream::script_github_installation`], or else the standing answer
+///   [`HttpsUpstream::answer_github_installation`] set (`500` when neither is);
 /// - the routes of [`GithubReleaseFake`], which [`HttpsUpstream::github_release`]
 ///   scripts and records;
 /// - `/gzip`: a body labelled `Content-Encoding: gzip`;
@@ -174,6 +175,7 @@ pub struct HttpsUpstream {
     released: Arc<watch::Sender<bool>>,
     scripts: Arc<Mutex<VecDeque<Scripted>>>,
     installations: Arc<Mutex<VecDeque<Scripted>>>,
+    installation_standing: Arc<Mutex<Option<Scripted>>>,
     token_calls: Arc<watch::Sender<u64>>,
     github_release: GithubReleaseFake,
     server: AbortHandle,
@@ -199,6 +201,8 @@ struct Shared {
     scripts: Arc<Mutex<VecDeque<Scripted>>>,
     /// Responses for the GitHub installation route, oldest first.
     installations: Arc<Mutex<VecDeque<Scripted>>>,
+    /// The answer of the GitHub installation route when none is queued.
+    installation_standing: Arc<Mutex<Option<Scripted>>>,
     /// How many calls the GitHub token route has received.
     token_calls: Arc<watch::Sender<u64>>,
     /// The fake GitHub of the release client.
@@ -238,6 +242,7 @@ impl HttpsUpstream {
         let released = Arc::new(watch::Sender::new(false));
         let scripts: Arc<Mutex<VecDeque<Scripted>>> = Arc::default();
         let installations: Arc<Mutex<VecDeque<Scripted>>> = Arc::default();
+        let installation_standing: Arc<Mutex<Option<Scripted>>> = Arc::default();
         let token_calls = Arc::new(watch::Sender::new(0));
         let github_release = GithubReleaseFake::default();
         let router = Router::new().fallback(handle).with_state(Shared {
@@ -246,6 +251,7 @@ impl HttpsUpstream {
             released: released.clone(),
             scripts: scripts.clone(),
             installations: installations.clone(),
+            installation_standing: installation_standing.clone(),
             token_calls: token_calls.clone(),
             github_release: github_release.clone(),
         });
@@ -258,6 +264,7 @@ impl HttpsUpstream {
             released,
             scripts,
             installations,
+            installation_standing,
             token_calls,
             github_release,
             server,
@@ -350,6 +357,19 @@ impl HttpsUpstream {
             .lock()
             .expect("upstream script poisoned")
             .push_back(response);
+    }
+
+    /// Answer every call to the GitHub installation route that finds nothing queued
+    /// with [`HttpsUpstream::script_github_installation`] with `response` (`None`:
+    /// `500`). The broker reads the installation at each render of an approval page.
+    ///
+    /// # Panics
+    /// If the script lock is poisoned.
+    pub fn answer_github_installation(&self, response: Option<Scripted>) {
+        *self
+            .installation_standing
+            .lock()
+            .expect("upstream script poisoned") = response;
     }
 
     /// Wait until the GitHub token route has received `count` calls, answered or
@@ -533,13 +553,21 @@ pub fn installation_json(permissions: &[(&str, &str)]) -> Vec<u8> {
         .expect("a JSON value serialises")
 }
 
-/// The next scripted installation response; `500` when none is queued.
+/// The next scripted installation response, else the standing one; `500` when
+/// there is neither.
 async fn github_installation(shared: &Shared) -> Response {
-    let scripted = shared
+    let queued = shared
         .installations
         .lock()
         .expect("upstream script poisoned")
         .pop_front();
+    let scripted = queued.or_else(|| {
+        shared
+            .installation_standing
+            .lock()
+            .expect("upstream script poisoned")
+            .clone()
+    });
     match scripted {
         Some(scripted) => answer_scripted(scripted).await,
         None => respond(StatusCode::INTERNAL_SERVER_ERROR, &[], Body::empty()),

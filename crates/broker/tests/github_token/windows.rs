@@ -6,9 +6,10 @@ use warden_broker_proto::github_token::NOT_CONFIGURED;
 use warden_broker_proto::{Access, Window};
 
 use warden_broker::requests::MINTS_PER_HOUR;
-use warden_broker::testkit::upstream::HttpsUpstream;
 
-use super::{active_for, api_of, approve, configured, configured_on_fake, entries, resolved};
+use super::{
+    active_for, api_of, approve, configured, configured_on_fake, entries, fake_github, resolved,
+};
 
 /// Post a GitHub token request for `window` as the agent with `key`.
 async fn ask(
@@ -86,7 +87,7 @@ async fn window_must_be_1d_7d_or_30d() {
 
 #[tokio::test]
 async fn window_above_server_max_refused() {
-    let upstream = HttpsUpstream::start().await;
+    let upstream = fake_github().await;
     let (broker, key) =
         configured(TestBroker::with_github(api_of(&upstream), Window::D7, MINTS_PER_HOUR).await)
             .await;

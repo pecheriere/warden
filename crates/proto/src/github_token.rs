@@ -46,6 +46,17 @@ pub const HOURLY_LIMIT: &str = "this agent has reached its limit of GitHub token
 /// What the broker says when it holds no GitHub App.
 pub const NOT_CONFIGURED: &str = "GitHub tokens are not configured on this broker";
 
+/// Why a GitHub token request whose permissions the App's installation does not
+/// all hold is not approved. The missing permissions follow, as `name:level`
+/// joined with `,`.
+pub const INSTALLATION_LACKS: &str =
+    "this request cannot be approved: the App's installation lacks ";
+
+/// Why a GitHub token request is not approved when the broker could not read what
+/// the App's installation holds.
+pub const INSTALLATION_UNREADABLE: &str = "this request cannot be approved: the broker could \
+                                           not read the permissions of the App's installation";
+
 /// What asked for the token without the agent typing a command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

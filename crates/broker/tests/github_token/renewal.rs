@@ -8,7 +8,7 @@ use warden_broker::testkit::upstream::{HttpsUpstream, Scripted};
 use warden_broker_proto::Window;
 use warden_broker_proto::github_token::NOT_CONFIGURED;
 
-use super::{active_for, approve, configured_on_fake, entries, resolved};
+use super::{active_for, approve, configured_on_fake, entries, github_calls, resolved};
 
 /// The approval token at the end of `link`.
 fn token_of(link: &str) -> String {
@@ -259,7 +259,7 @@ async fn renewal_copies_names_and_ids() {
     let (broker, _key, upstream) = configured_on_fake().await;
     let old = approve(&broker, &upstream, "bot", Window::D30).await;
     let token = renew(&broker, &upstream, &old).await;
-    let asked = upstream.received().len();
+    let asked = github_calls(&upstream).len();
 
     // The request names the grant's repository and holds its resolution already.
     assert_eq!(
@@ -285,7 +285,7 @@ async fn renewal_copies_names_and_ids() {
     // Opening the page and approving ask GitHub nothing more.
     let approved = broker.approve(&token, Window::D30).await;
     assert_eq!(approved.status, StatusCode::OK, "{}", approved.body);
-    assert_eq!(upstream.received().len(), asked);
+    assert_eq!(github_calls(&upstream).len(), asked);
     // One for the grant's own request, resolved when its owner opened the page, and
     // one for this renewal, recorded when it was started.
     assert_eq!(entries(&broker, "github_repositories_resolved").len(), 2);
@@ -363,12 +363,12 @@ async fn renewing_pins_the_ids_of_a_request_already_waiting() {
 
     // Renewing again asks nothing more and writes nothing more, and the page asks
     // GitHub nothing either.
-    let asked = upstream.received().len();
+    let asked = github_calls(&upstream).len();
     let again = renew_unscripted(&broker, &old).await;
     assert_ne!(again, token);
     let page = broker.get(&format!("/approve/{again}")).await;
     assert_eq!(page.status, StatusCode::OK, "{}", page.body);
-    assert_eq!(upstream.received().len(), asked);
+    assert_eq!(github_calls(&upstream).len(), asked);
     assert_eq!(
         entries(&broker, "github_repositories_resolved").len(),
         before + 1

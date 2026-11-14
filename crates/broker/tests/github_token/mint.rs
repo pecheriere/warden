@@ -17,7 +17,7 @@ use warden_broker_proto::github_token::{
     AMBIGUOUS_GRANT, HOURLY_LIMIT, NO_ACTIVE_GRANT, OLD_CLIENT, REPOSITORY_UNREACHABLE,
 };
 
-use super::{approve, approve_repositories, configured, entries};
+use super::{approve, approve_repositories, configured, entries, fake_github, github_calls};
 
 const TOKEN: &str = "ghs_test_0123456789";
 /// Repository 1001, which the grant of [`granted`] covers.
@@ -28,7 +28,7 @@ const REPO_B: &str = "example-owner/homebrew-tap";
 /// A broker whose GitHub is `upstream`, with an agent `bot` holding a 30-day grant.
 /// Returns the agent's key and the grant.
 async fn granted() -> (Arc<TestBroker>, HttpsUpstream, String, String) {
-    let upstream = HttpsUpstream::start().await;
+    let upstream = fake_github().await;
     let api = GithubApi::pinned(
         upstream.origin().parse().unwrap(),
         upstream.origin().parse().unwrap(),
@@ -63,8 +63,7 @@ async fn mint_for(broker: &TestBroker, key: &str, repository: &str) -> TestRespo
 /// The requests that asked GitHub for a token to mint (the approval's own look at
 /// a repository is not one of them), oldest first.
 fn mint_calls(upstream: &HttpsUpstream) -> Vec<Received> {
-    upstream
-        .received()
+    github_calls(upstream)
         .into_iter()
         .filter(|call| {
             let body: Value = serde_json::from_slice(&call.body).unwrap();
@@ -98,7 +97,7 @@ async fn held_mint(
 ) -> (Gate, tokio::task::JoinHandle<TestResponse>) {
     let gate = Gate::new();
     upstream.script_github_token(created(broker, TOKEN).held_by(&gate));
-    let expected = upstream.received().len() as u64 + 1;
+    let expected = github_calls(upstream).len() as u64 + 1;
     let call = tokio::spawn({
         let broker = broker.clone();
         let key = key.to_owned();
@@ -110,7 +109,7 @@ async fn held_mint(
 
 #[tokio::test]
 async fn mints_are_capped_per_agent_per_hour() {
-    let upstream = HttpsUpstream::start().await;
+    let upstream = fake_github().await;
     let api = GithubApi::pinned(
         upstream.origin().parse().unwrap(),
         upstream.origin().parse().unwrap(),
@@ -408,7 +407,7 @@ async fn refusals_past_the_limit_are_counted_instead_of_listed() {
 
 #[tokio::test]
 async fn hourly_limit_survives_restart() {
-    let upstream = HttpsUpstream::start().await;
+    let upstream = fake_github().await;
     let api = GithubApi::pinned(
         upstream.origin().parse().unwrap(),
         upstream.origin().parse().unwrap(),
@@ -568,7 +567,7 @@ async fn mint_reports_unreachable_repository() {
 /// tokens, as every call that reaches GitHub does.
 #[tokio::test]
 async fn unreachable_repository_costs_the_hourly_budget() {
-    let upstream = HttpsUpstream::start().await;
+    let upstream = fake_github().await;
     let api = GithubApi::pinned(
         upstream.origin().parse().unwrap(),
         upstream.origin().parse().unwrap(),
@@ -621,7 +620,7 @@ async fn grant_replaced_during_mint_gets_nothing() {
 
 #[tokio::test]
 async fn hourly_limit_is_per_agent_across_grants() {
-    let upstream = HttpsUpstream::start().await;
+    let upstream = fake_github().await;
     let api = GithubApi::pinned(
         upstream.origin().parse().unwrap(),
         upstream.origin().parse().unwrap(),

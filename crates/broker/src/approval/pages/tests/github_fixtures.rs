@@ -2,6 +2,7 @@
 //! that render every page and for the screenshots.
 
 use maud::Markup;
+use warden_broker_proto::github_permissions::PermissionSet;
 use warden_broker_proto::github_token::{
     AutomaticCaller, AutomaticRequest, GithubTokenAccess, GrantRepository, GrantScope,
 };
@@ -11,8 +12,8 @@ use warden_broker_proto::{Access, CreateRequest, GrantAccess, Window};
 use super::{NOW, active, agent, approve, fingerprint, goal, grants, history, id, idle, pending};
 use crate::policy::GithubTokenPolicy;
 use crate::requests::{
-    Destination, GithubPending, HistoryEntry, LinkHosts, PendingEntry, ReplacedGrant, Resolution,
-    ScopedRepository,
+    Destination, GithubPending, HistoryEntry, InstallationCheck, LinkHosts, PendingEntry,
+    ReplacedGrant, Resolution, ScopedRepository, StoredPermissions,
 };
 
 pub(super) const REPO: &str = "example-owner/example-repo";
@@ -62,6 +63,8 @@ pub(super) fn resolved(list: Vec<ScopedRepository>) -> GithubPending {
     GithubPending {
         resolution: Resolution::Resolved(list),
         replaces: Vec::new(),
+        permissions: StoredPermissions::legacy(),
+        installation: InstallationCheck::Holds,
     }
 }
 
@@ -117,6 +120,8 @@ pub(super) fn unreachable_view() -> crate::requests::PendingView {
         Some(GithubPending {
             resolution: Resolution::NotAccessible,
             replaces: Vec::new(),
+            permissions: StoredPermissions::legacy(),
+            installation: InstallationCheck::Holds,
         }),
     )
 }
@@ -148,6 +153,8 @@ pub(super) fn replaces_view_with(n: usize) -> crate::requests::PendingView {
             .into_iter()
             .take(n)
             .collect(),
+            permissions: StoredPermissions::legacy(),
+            installation: InstallationCheck::Holds,
         }),
     )
 }
@@ -171,7 +178,7 @@ pub(super) fn github_grant(n: u8, scope: GrantScope) -> crate::requests::ActiveG
     let mut grant = active(
         n,
         github_token_request(),
-        GrantAccess::GithubToken(github_token_policy().grant(scope)),
+        GrantAccess::GithubToken(github_token_policy().grant(scope, PermissionSet::legacy())),
     );
     grant.not_after = NOW + 26 * 86_400;
     grant

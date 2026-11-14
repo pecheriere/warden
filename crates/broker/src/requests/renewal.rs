@@ -359,6 +359,7 @@ impl Requests {
                 Attached {
                     release: None,
                     resolution: resolution.as_ref(),
+                    permissions: None,
                 },
             )
             .await;

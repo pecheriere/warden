@@ -404,6 +404,10 @@ impl Requests {
             grant_id: grant.grant_id.clone(),
             window_secs,
             passkey_id: passkey_id.to_owned(),
+            permissions: match &grant.access {
+                GrantAccess::GithubToken(token) => Some(token.permissions.to_string()),
+                _ => None,
+            },
         }];
         if matches!(grant.access, GrantAccess::Ssh(_)) {
             events.push(AuditEvent::CertIssued {

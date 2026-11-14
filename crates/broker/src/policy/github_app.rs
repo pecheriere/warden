@@ -313,15 +313,16 @@ impl GithubTokenPolicy {
         hex::encode(hasher.finalize())
     }
 
-    /// The grant details approving this policy gives, for these repositories.
+    /// The grant details approving this policy gives, for these repositories and
+    /// permissions.
     #[must_use]
-    pub fn grant(&self, repositories: GrantScope) -> GithubTokenGrant {
+    pub fn grant(&self, repositories: GrantScope, permissions: PermissionSet) -> GithubTokenGrant {
         GithubTokenGrant {
             app_id: self.app_id.clone(),
             installation_id: self.installation_id,
             digest: self.destination_digest(),
             repositories,
-            permissions: PermissionSet::legacy(),
+            permissions,
         }
     }
 }
@@ -457,7 +458,9 @@ mod tests {
             a.policy(Window::D30).destination_digest(),
             b.policy(Window::D30).destination_digest()
         );
-        let grant = base.grant(GrantScope::Legacy);
+        let wider = super::PermissionSet::parse("checks:read,contents:write").unwrap();
+        let grant = base.grant(GrantScope::Legacy, wider.clone());
+        assert_eq!(grant.permissions, wider);
         assert_eq!(grant.app_id, APP_ID);
         assert_eq!(grant.installation_id, INSTALLATION_ID);
         assert_eq!(grant.digest, base.destination_digest());
