@@ -8,7 +8,7 @@ use warden_broker_proto::Id;
 
 use crate::audit::{AuditEvent, AuditLog};
 use crate::policy::{PolicyError, RelayCredential, SshMode, SshTarget};
-use crate::requests::{DailyUse, GrantEnd};
+use crate::requests::{DailyUse, GrantEnd, RelayGrantRecord};
 
 use crate::relay::onward;
 use crate::relay::session::{self, Outcome, Program, PtyRequest, Registration};
@@ -143,6 +143,36 @@ async fn check_session(
     Ok((target, credential))
 }
 
+/// Count one more session against the grant's budget for the day, within
+/// [`GRANT_QUERY_TIMEOUT`]. A count that cannot be had refuses the session.
+async fn take_session(shared: &Shared, grant: &RelayGrantRecord) -> Result<(), Refusal> {
+    let day = DailyUse::RelaySession {
+        target: grant.target.clone(),
+    };
+    let counted = tokio::time::timeout(
+        GRANT_QUERY_TIMEOUT,
+        shared.requests.take_daily_use(&grant.grant_id, &day),
+    )
+    .await;
+    let error = match counted {
+        Ok(Ok(true)) => return Ok(()),
+        Ok(Ok(false)) => {
+            shared
+                .requests
+                .daily_limit_reached(&grant.agent, &grant.grant_id, &day)
+                .await;
+            return Err(DAILY_LIMIT);
+        }
+        Ok(Err(e)) => e.to_string(),
+        Err(_) => format!("no answer within {GRANT_QUERY_TIMEOUT:?}"),
+    };
+    tracing::error!(grant = %grant.grant_id, %error, "relay: could not count a session");
+    Err(Refusal::new(
+        "session count unavailable",
+        session::reason::GRANT_STATE_NOTICE,
+    ))
+}
+
 /// Everything between the agent's `shell`/`exec` and a running session on
 /// the target. Returns the message for the agent on failure.
 ///
@@ -184,26 +214,8 @@ pub(super) async fn open_target(
         Err(refusal) => return Err(refuse(refusal).await),
     };
     // Taken last, so that a refused session does not use the budget.
-    let day = DailyUse::RelaySession {
-        target: grant.target.clone(),
-    };
-    match shared.requests.take_daily_use(&grant.grant_id, &day).await {
-        Ok(true) => {}
-        Ok(false) => {
-            shared
-                .requests
-                .daily_limit_reached(&grant.agent, &grant.grant_id, &day)
-                .await;
-            return Err(refuse(DAILY_LIMIT).await);
-        }
-        Err(e) => {
-            tracing::error!(grant = %grant.grant_id, error = %e, "relay: could not count a session");
-            return Err(refuse(Refusal::new(
-                "session count unavailable",
-                session::reason::GRANT_STATE_NOTICE,
-            ))
-            .await);
-        }
+    if let Err(refusal) = take_session(shared, grant).await {
+        return Err(refuse(refusal).await);
     }
     // Pre-flight: on record before any byte reaches the target.
     let started = AuditEvent::RelaySessionStarted {
