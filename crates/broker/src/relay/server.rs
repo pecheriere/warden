@@ -35,6 +35,7 @@
 //!   of the state of grants has succeeded for [`FAIL_CLOSED_AFTER`], the
 //!   relay fails closed: every session ends and none starts until one does.
 
+use std::net::IpAddr;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
@@ -60,7 +61,7 @@ mod grant_check;
 mod handler;
 mod start;
 
-use conn::connection;
+use conn::{LoginTally, connection, login_refusal_throttle};
 use grant_check::check_grants_every;
 use start::Refusal;
 
@@ -199,6 +200,8 @@ struct Shared {
     /// Keyed by grant ids from stored grants only: a refusal is made after the
     /// login, which a stored grant's key alone passes.
     session_refusals: Arc<Throttle<Id, u64>>,
+    /// What has been recorded of refused logins, per address.
+    login_refusals: Arc<Throttle<IpAddr, LoginTally>>,
 }
 
 /// Refused sessions written one by one per grant per minute.
@@ -260,6 +263,7 @@ impl RelayServer {
                 count,
             }),
         );
+        let login_refusals = login_refusal_throttle(requests.audit_throttles());
         Ok(Self {
             shared: Arc::new(Shared {
                 requests,
@@ -273,6 +277,7 @@ impl RelayServer {
                 ),
                 grant_state_lost: AtomicBool::new(false),
                 session_refusals,
+                login_refusals,
             }),
             config: Arc::new(config),
         })

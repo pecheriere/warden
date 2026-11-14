@@ -10,8 +10,9 @@ use warden_broker::relay::RelayLimits;
 use warden_broker::requests::Clock as _;
 
 use super::{
-    OpenSsh, TARGET, approved_agent, assert_each_start_ended, await_events, collect, events_of,
-    hold_session, key_target, key_target_daily, key_target_with, login, reply, text, too_many,
+    OpenSsh, TARGET, approved_agent, assert_each_start_ended, await_events, collect, connect,
+    events_of, hold_session, key_target, key_target_daily, key_target_with, login, random_key,
+    reply, russh_key, text, too_many,
 };
 
 #[tokio::test(flavor = "multi_thread")]
@@ -291,4 +292,36 @@ async fn refused_sessions_beyond_the_allowance_are_counted() {
     assert_eq!(held.len(), 1, "{held:?}");
     assert_eq!(held[0]["grant_id"], agent.grant_id.as_str());
     assert_eq!(held[0]["count"], 5);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn refused_logins_from_one_address_are_counted_beyond_five_a_minute() {
+    let s = key_target().await;
+    for _ in 0..7 {
+        let mut c = connect(&s.broker, s.relay).await;
+        let auth = c
+            .handle
+            .authenticate_publickey(TARGET, russh_key(&random_key()))
+            .await
+            .unwrap();
+        assert!(!matches!(auth, russh::client::AuthResult::Success));
+        c.handle
+            .disconnect(Disconnect::ByApplication, "", "en")
+            .await
+            .unwrap();
+    }
+    // Stopping the relay returns once every connection has ended and is
+    // recorded or held.
+    s.broker.stop_relay().await;
+    assert_eq!(events_of(&s.broker, "relay_login_refused").len(), 5);
+    assert_eq!(
+        events_of(&s.broker, "relay_logins_refused_held"),
+        [] as [serde_json::Value; 0]
+    );
+    s.broker.state().requests.flush_refusals(true).await;
+    let held = events_of(&s.broker, "relay_logins_refused_held");
+    assert_eq!(held.len(), 1, "{held:?}");
+    assert_eq!(held[0]["peers"], 1);
+    assert_eq!(held[0]["connections"], 2);
+    assert_eq!(held[0]["attempts"], 2);
 }

@@ -1,7 +1,7 @@
 //! One agent connection: its login phase, how long it may stay, and how
 //! its handler and its session task tell its task where they are.
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -13,6 +13,7 @@ use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
 use crate::audit::{AuditEvent, AuditLog};
+use crate::audit_throttle::{Allowance, AuditThrottles, Summary, Tally, Throttle};
 
 use crate::relay::read_ahead::read_ahead;
 use crate::relay::session::{PreAuthPermit, with_cutoff};
@@ -206,12 +207,55 @@ pub(super) async fn connection(
     }
 
     if !*logged_in_rx.borrow() {
-        record_refused_login(&shared.audit, &conn, peer).await;
+        record_refused_login(&shared, &conn, peer).await;
     }
 }
 
+/// Refused relay logins written one by one per address per minute.
+const LOGIN_REFUSALS_PER_ADDRESS: u32 = 5;
+/// Refused relay logins written one by one per minute over all addresses.
+const LOGIN_REFUSALS_OVERALL: u32 = 10;
+/// The most distinct addresses held at once for the minute's summary.
+const LOGIN_REFUSAL_ADDRESSES: usize = 1024;
+
+/// What is held for refused logins that were not written one by one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct LoginTally {
+    connections: u64,
+    attempts: u64,
+}
+
+impl Tally for LoginTally {
+    fn add(&mut self, other: Self) {
+        self.connections = self.connections.saturating_add(other.connections);
+        self.attempts = self.attempts.saturating_add(other.attempts);
+    }
+}
+
+/// The limiter for refused logins, registered with `throttles`: 5 entries a
+/// minute per address and 10 overall, the rest summed in one entry a minute.
+pub(super) fn login_refusal_throttle(
+    throttles: &AuditThrottles,
+) -> Arc<Throttle<IpAddr, LoginTally>> {
+    throttles.throttle(
+        "a refused relay login",
+        Allowance {
+            per_key: LOGIN_REFUSALS_PER_ADDRESS,
+            overall: Some(LOGIN_REFUSALS_OVERALL),
+        },
+        Summary::Aggregate {
+            max_keys: LOGIN_REFUSAL_ADDRESSES,
+            event: |peers, held| AuditEvent::RelayLoginsRefusedHeld {
+                peers,
+                connections: held.connections,
+                attempts: held.attempts,
+            },
+        },
+    )
+}
+
 /// Record the refused login attempts of a connection that never logged in.
-async fn record_refused_login(audit: &AuditLog, conn: &Conn, peer: SocketAddr) {
+async fn record_refused_login(shared: &Shared, conn: &Conn, peer: SocketAddr) {
     let refusals =
         std::mem::take(&mut *conn.refusals.lock().unwrap_or_else(PoisonError::into_inner));
     if refusals.attempts == 0 {
@@ -219,14 +263,39 @@ async fn record_refused_login(audit: &AuditLog, conn: &Conn, peer: SocketAddr) {
     }
     let user = refusals.user.unwrap_or_default();
     tracing::info!(peer = %peer.ip(), user, attempts = refusals.attempts, "relay: login refused");
+    write_refused_login(
+        &shared.login_refusals,
+        &shared.audit,
+        shared.requests.now(),
+        peer.ip(),
+        user,
+        refusals.attempts,
+    )
+    .await;
+}
+
+/// Record, or hold, one refused login. An IPv4 address that arrives mapped into
+/// IPv6 counts as the IPv4 address, so one host is one address.
+async fn write_refused_login(
+    throttle: &Throttle<IpAddr, LoginTally>,
+    audit: &AuditLog,
+    now: i64,
+    peer: IpAddr,
+    user: String,
+    attempts: u32,
+) {
     let event = AuditEvent::RelayLoginRefused {
         user,
-        peer: peer.ip().to_string(),
-        attempts: refusals.attempts,
+        peer: peer.to_string(),
+        attempts,
     };
-    if let Err(e) = audit.append(event).await {
-        tracing::error!(error = %e, "relay: could not record a refused login");
-    }
+    let tally = LoginTally {
+        connections: 1,
+        attempts: u64::from(attempts),
+    };
+    throttle
+        .record(audit, &peer.to_canonical(), now, tally, event)
+        .await;
 }
 
 /// Resolves, with the goodbye, once a logged-in connection has no more use:
@@ -303,7 +372,12 @@ mod tests {
     use tokio::time::Instant;
 
     use super::super::{NOT_STARTED, SESSION_OVER};
-    use super::{Conn, OverOnDrop, Phase, Refusals, Relayed, no_more_use};
+    use super::{
+        Conn, OverOnDrop, Phase, Refusals, Relayed, login_refusal_throttle, no_more_use,
+        write_refused_login,
+    };
+    use crate::audit::AuditLog;
+    use crate::audit_throttle::AuditThrottles;
 
     fn conn() -> Conn {
         Conn {
@@ -359,5 +433,60 @@ mod tests {
         // A late start is refused without spawning anything.
         assert!(!conn.register(|| unreachable!("nothing may start now")));
         assert!(conn.close().is_none());
+    }
+
+    fn events(path: &std::path::Path, kind: &str) -> Vec<serde_json::Value> {
+        std::fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap()["event"].clone())
+            .filter(|event| event["type"] == kind)
+            .collect()
+    }
+
+    /// Drives the limiter as the relay builds it: [`login_refusal_throttle`]
+    /// registered with the relay's [`AuditThrottles`], written as
+    /// `record_refused_login` writes.
+    #[tokio::test]
+    async fn refused_logins_from_many_addresses_write_one_summary_a_minute() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let audit = AuditLog::open(&path).await.unwrap();
+        let throttles = AuditThrottles::default();
+        let throttle = login_refusal_throttle(&throttles);
+        let now = 1_000_000;
+        for n in 0..2000u32 {
+            let [a, b] = u16::try_from(n).unwrap().to_be_bytes();
+            let peer = std::net::IpAddr::from([198, 51, a, b]);
+            write_refused_login(&throttle, &audit, now, peer, "web".to_owned(), 3).await;
+        }
+        assert_eq!(events(&path, "relay_login_refused").len(), 10);
+        assert_eq!(
+            events(&path, "relay_logins_refused_held"),
+            [] as [serde_json::Value; 0]
+        );
+
+        throttles.flush(&audit, now + 61, true).await;
+        let held = events(&path, "relay_logins_refused_held");
+        assert_eq!(held.len(), 1, "{held:?}");
+        assert_eq!(held[0]["peers"], 1025);
+        assert_eq!(held[0]["connections"], 1990);
+        assert_eq!(held[0]["attempts"], 5970);
+        assert_eq!(events(&path, "relay_login_refused").len(), 10);
+    }
+
+    #[tokio::test]
+    async fn an_address_mapped_into_ipv6_is_the_same_address() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let audit = AuditLog::open(&path).await.unwrap();
+        let throttle = login_refusal_throttle(&AuditThrottles::default());
+        let v4 = std::net::IpAddr::from([198, 51, 100, 7]);
+        let mapped =
+            std::net::IpAddr::V6(std::net::Ipv4Addr::new(198, 51, 100, 7).to_ipv6_mapped());
+        for peer in [v4, mapped, v4, mapped, v4, mapped, v4] {
+            write_refused_login(&throttle, &audit, 1_000_000, peer, "web".to_owned(), 1).await;
+        }
+        assert_eq!(events(&path, "relay_login_refused").len(), 5);
     }
 }

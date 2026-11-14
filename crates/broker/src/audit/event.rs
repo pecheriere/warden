@@ -194,6 +194,16 @@ pub enum AuditEvent {
         /// Refused login attempts.
         attempts: u32,
     },
+    /// Refused relay logins, from every address, were counted over one minute
+    /// instead of recorded one by one.
+    RelayLoginsRefusedHeld {
+        /// How many distinct addresses were counted.
+        peers: u64,
+        /// How many connections were refused.
+        connections: u64,
+        /// How many login attempts were refused.
+        attempts: u64,
+    },
     /// The broker signed a commit for an agent. Written before the signature
     /// leaves the broker; it is not given out if this entry cannot be written. It
     /// means warden signed it for that agent, not that anyone reviewed the change.
