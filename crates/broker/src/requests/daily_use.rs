@@ -9,9 +9,10 @@ use super::{RequestError, Requests};
 use crate::audit::AuditEvent;
 use crate::notify::Doorbell;
 
-/// Proxied calls per API grant per UTC day, unless the server says otherwise. Each
-/// refused call past it costs an audit entry at most once a minute, so a looping
-/// agent cannot fill the audit log's disk in the life of a grant.
+/// Proxied calls per API grant per UTC day, unless the server says otherwise. Calls
+/// refused before they start are recorded one by one up to 30 a minute per
+/// agent, and counted beyond that, so a looping agent cannot fill the audit
+/// log's disk in the life of a grant.
 pub const CALLS_PER_DAY: u32 = 10_000;
 
 /// What a grant spends its daily budget on.

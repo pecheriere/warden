@@ -152,6 +152,11 @@ async fn a_grant_stops_at_its_daily_call_limit_and_the_owner_hears_once() {
     assert_eq!(s.upstream.received().len(), 2, "nothing was sent");
     let bell = s.broker.capture.next().await;
     assert_eq!(bell.title, "warden: late reached its API call limit");
+    assert_eq!(
+        bell.message,
+        "It made 2 calls with svc today, so its calls fail until 00:00 UTC. If you do not \
+         expect this many, revoke its grant."
+    );
     assert_eq!(call().await.status, StatusCode::TOO_MANY_REQUESTS);
     let reached = audit_events(&s.broker, &["proxy_call_limit_reached"]);
     assert_eq!(reached.len(), 1, "once a day");

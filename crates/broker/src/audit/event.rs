@@ -471,8 +471,9 @@ pub enum AuditEvent {
         /// Name of the channel that delivered the notification.
         channel: String,
     },
-    /// Calls refused because their grant was held at its daily limit, counted for
-    /// one agent over one minute instead of recorded one by one.
+    /// Calls refused before they started (by policy, a changed secret, the
+    /// calls in flight or the grant's daily limit, or a backend outage), counted
+    /// for one agent over one minute instead of recorded one by one.
     ProxyCallsRefusedHeld {
         /// The agent.
         agent: AgentName,

@@ -133,6 +133,7 @@ async fn the_limit_is_recorded_and_told_once_a_day() {
          not expect this many, revoke its grant."
     );
     assert_eq!(bell.url.as_str(), "https://warden.example.ts.net/grants");
+    assert_eq!(f.notifier.rung().len(), 1, "told once for the day");
     let log = std::fs::read_to_string(&f.audit_path).unwrap();
     assert_eq!(log.matches("proxy_call_limit_reached").count(), 1, "{log}");
 
@@ -142,4 +143,33 @@ async fn the_limit_is_recorded_and_told_once_a_day() {
         .await;
     let log = std::fs::read_to_string(&f.audit_path).unwrap();
     assert_eq!(log.matches("proxy_call_limit_reached").count(), 2, "{log}");
+}
+
+#[tokio::test]
+async fn the_budget_survives_a_restart() {
+    let f = fixture(2).await;
+    let grant = grant(&f.requests, "11111111111111111111111111111111").await;
+    assert!(f.requests.take_daily_use(&grant, &call()).await.unwrap());
+    assert!(f.requests.take_daily_use(&grant, &call()).await.unwrap());
+    // A new `Requests` on the same database, as after a restart.
+    let audit = Arc::new(AuditLog::open(&f.audit_path).await.unwrap());
+    let restarted = Requests::new(
+        f.requests.pool.clone(),
+        audit,
+        Arc::new(FakeBackend::new()),
+        f.notifier.clone(),
+        "https://warden.example.ts.net/".parse().unwrap(),
+        f.clock.clone(),
+        None,
+    )
+    .with_proxy_calls_per_day(2);
+    assert!(!restarted.take_daily_use(&grant, &call()).await.unwrap());
+}
+
+#[tokio::test]
+async fn a_storage_error_refuses_the_use() {
+    let f = fixture(2).await;
+    let grant = grant(&f.requests, "11111111111111111111111111111111").await;
+    f.requests.pool.close().await;
+    assert!(f.requests.take_daily_use(&grant, &call()).await.is_err());
 }
