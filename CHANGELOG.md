@@ -13,6 +13,9 @@ All notable changes to this project are recorded here. The format follows
   proxied calls a day for each API grant can refuse a busy existing grant** with a 429 until
   00:00 UTC. Raise it with `WARDEN_PROXY_MAX_CALLS_PER_DAY` (up to 1000000) before upgrading
   if an agent makes more.
+- The new default limit of 1000 relay sessions a day for each relay grant can refuse a busy
+  existing grant until 00:00 UTC. Raise it with `WARDEN_RELAY_MAX_SESSIONS_PER_DAY` (up to
+  1000000) before upgrading if an agent opens more.
 - `warden list` and `warden prime` need a broker of this version: against an older one,
   `warden list` fails saying to upgrade it, and `warden prime` prints its instructions with
   that note in place of the offers. They need no migration and write no audit entry.
