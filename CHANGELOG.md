@@ -6,6 +6,8 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-11-14
+
 ### Added
 
 - GitHub token grants hold the permissions the owner configures instead of a constant.
