@@ -330,7 +330,7 @@ mod tests {
                 installation_id: 7,
                 digest: "d".repeat(64),
                 repositories: GrantScope::Legacy,
-                permissions: warden_broker_proto::github_permissions::PermissionSet::legacy(),
+                permissions: warden_broker_proto::github_permissions::GrantedPermissions::legacy(),
             }),
         };
         assert_eq!(elsewhere_note(&grant, &[]), "");
@@ -357,7 +357,7 @@ mod tests {
                 installation_id: 7,
                 digest: "d".repeat(64),
                 repositories,
-                permissions: warden_broker_proto::github_permissions::PermissionSet::legacy(),
+                permissions: warden_broker_proto::github_permissions::GrantedPermissions::legacy(),
             }),
         }
     }

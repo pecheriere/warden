@@ -86,19 +86,25 @@ A set is written as `name:level` pairs separated by commas, such as
 before you approve.
 
 **The ceiling.** No configuration lifts these, and a field that names one makes GitHub tokens
-unusable: `administration`, `workflows`, `secrets`, `environments`, `dependabot_secrets`
-and every `organization_*` permission. Repository secrets, environments and workflow files
-let whoever holds a token change what runs with the repository's own credentials, which is
-more than a token that an agent holds for an hour should be able to do.
+unusable: `administration`, `workflows`, `secrets`, `environments`, `dependabot_secrets`,
+`repository_hooks` and every `organization_*` permission. Repository secrets, environments and
+workflow files let whoever holds a token change what runs with the repository's own
+credentials, which is more than a token that an agent holds for an hour should be able to do.
+A webhook keeps sending the repository's events to whoever created it after the token has
+expired and the grant is revoked, so `repository_hooks` would give access that outlives the
+grant.
 
 **The App must hold what you set.** The approval page reads the installation's permissions
 each time it is shown, begun or finished, and refuses a request whose set the installation
 does not hold, naming what is missing. Give the App those permissions on GitHub first
 (step 4 below) and accept the change on the installation. A grant keeps the set it was
 approved with: changing the default affects the next request and the next renewal, not
-grants that exist. If GitHub grants a token less than the grant holds (you removed a
-permission from the App since), the token is served with what GitHub granted, and the
-response and the audit entry list that.
+grants that exist. If you remove a permission from the App after a grant was approved with
+it, GitHub may refuse to mint the grant's tokens: the agent then gets `409` with the
+repository-unreachable error, and you should check the App's permissions on GitHub against
+the grant's set, which the grants page lists. Where GitHub instead grants a token less than
+the grant holds, the token is served with what GitHub granted, and the response and the audit
+entry list that.
 
 A field that is repeated, present but empty, not a valid set or over the ceiling makes the
 App unusable for GitHub tokens, the same as a bad `installation_id`: tokens are refused,

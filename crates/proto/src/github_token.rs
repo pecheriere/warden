@@ -6,7 +6,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::github_permissions::PermissionSet;
+use crate::github_permissions::GrantedPermissions;
 use crate::release::RepoName;
 use crate::{FreeTextCheck, ParseError, check_new_free_text, check_stored_free_text};
 
@@ -370,9 +370,10 @@ pub struct GithubTokenGrant {
     #[serde(default, skip_serializing_if = "GrantScope::is_legacy")]
     pub repositories: GrantScope,
     /// The permissions its tokens have. Grants stored before permissions were
-    /// configurable mean the legacy set.
-    #[serde(default = "PermissionSet::legacy")]
-    pub permissions: PermissionSet,
+    /// configurable mean the legacy set. A name this version does not know is
+    /// kept as text: the broker reads it strictly before acting on it.
+    #[serde(default = "GrantedPermissions::legacy")]
+    pub permissions: GrantedPermissions,
 }
 
 /// Body of `POST /v1/github-token`: the repository to mint a token for.
@@ -396,9 +397,10 @@ pub struct GithubTokenResponse {
     pub repository: RepoName,
     /// GitHub's id for it.
     pub repository_id: u64,
-    /// The permissions the token has; absent from brokers before 0.15.
+    /// The permissions the token has; absent from brokers before 0.15. A name
+    /// this version does not know is kept as text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub permissions: Option<PermissionSet>,
+    pub permissions: Option<GrantedPermissions>,
 }
 
 impl fmt::Debug for GithubTokenResponse {

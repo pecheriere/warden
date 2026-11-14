@@ -204,7 +204,7 @@ impl Requests {
             .map(|row| {
                 let body: String = row.try_get("body")?;
                 let view: String = row.try_get("view")?;
-                let view: GrantView = serde_json::from_str(&view)?;
+                let view = super::stored_view(&view)?;
                 Ok(ActiveGrant {
                     grant_id: parse(row, "id")?,
                     agent: parse(row, "agent")?,
@@ -301,7 +301,7 @@ impl Requests {
                 continue;
             }
             let view: String = row.try_get("view")?;
-            let view: GrantView = serde_json::from_str(&view)?;
+            let view = super::stored_view(&view)?;
             let GrantAccess::Relay(grant) = view.access else {
                 return Err(RequestError::Corrupt("relay grant changed kind".to_owned()));
             };

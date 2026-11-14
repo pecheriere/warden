@@ -13,7 +13,7 @@ use sqlx::{Sqlite, Transaction};
 use url::Url;
 use warden_broker_proto::github_token::GrantScope;
 use warden_broker_proto::{
-    Access, AgentName, CreateRequest, GithubTokenAccess, Goal, GrantAccess, GrantView, Id, Window,
+    Access, AgentName, CreateRequest, GithubTokenAccess, Goal, GrantAccess, Id, Window,
 };
 
 use super::create::Attached;
@@ -472,7 +472,7 @@ fn renewing_scope(row: &SqliteRow, kind: OneAtATime) -> Result<Option<GrantScope
         return Ok(None);
     }
     let view: String = row.try_get("view")?;
-    let view: GrantView = serde_json::from_str(&view)?;
+    let view = super::stored_view(&view)?;
     let renewable = renewable(&view.access);
     match view.access {
         GrantAccess::GithubToken(grant) if renewable => Ok(Some(grant.repositories)),

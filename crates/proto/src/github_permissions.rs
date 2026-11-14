@@ -29,7 +29,6 @@ const KNOWN: &[&str] = &[
     "pages",
     "pull_requests",
     "repository_custom_properties",
-    "repository_hooks",
     "repository_projects",
     "secret_scanning_alerts",
     "security_events",
@@ -40,13 +39,16 @@ const KNOWN: &[&str] = &[
 
 /// The permissions no configuration lifts, besides every `organization_*` one
 /// (see [`under_ceiling`]). `dependabot_secrets` is a repository secret under
-/// another name.
+/// another name. `repository_hooks` lets a token create a webhook, which keeps
+/// sending the repository's events to whoever set it up after the token has
+/// expired and the grant is revoked: access that outlives the grant.
 pub const CEILING: &[&str] = &[
     "administration",
     "workflows",
     "secrets",
     "environments",
     "dependabot_secrets",
+    "repository_hooks",
 ];
 
 /// The prefix of the organization permissions, all under the ceiling.
@@ -105,7 +107,8 @@ impl fmt::Display for PermissionError {
             Self::Unknown => f.write_str("a permission name is not one GitHub documents"),
             Self::Ceiling => f.write_str(
                 "a permission is above the ceiling (administration, workflows, secrets, \
-                 environments, dependabot_secrets, organization_*) that warden never grants",
+                 environments, dependabot_secrets, repository_hooks, organization_*) that warden \
+                 never grants",
             ),
             Self::Admin(name) => write!(f, "the admin level of {name} is never granted"),
             Self::Malformed => f.write_str(
@@ -294,6 +297,120 @@ impl TryFrom<String> for PermissionSet {
 impl From<PermissionSet> for String {
     fn from(set: PermissionSet) -> Self {
         set.to_string()
+    }
+}
+
+/// The longest permission name a [`GrantedPermissions`] accepts.
+const NAME_MAX: usize = 64;
+
+/// A permission set as the broker reports it to agents, in a grant or with a
+/// token. Unlike [`PermissionSet`], a name this version does not know is kept as
+/// text, so that a newer broker whose list knows more names does not break an
+/// older CLI. Each entry must still be a well-formed `name:level`: a name of
+/// lowercase ASCII letters, digits and `_`, a level `read` or `write`, each name
+/// once and `metadata` only read. The written form is canonical, as
+/// [`PermissionSet`] writes it: sorted by name, with `metadata:read` added, so
+/// two values are equal exactly when their written forms are.
+///
+/// It grants nothing: the broker reads every set it acts on as a
+/// [`PermissionSet`], with [`GrantedPermissions::known`].
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct GrantedPermissions(String);
+
+impl GrantedPermissions {
+    /// What every token had before permissions were configurable.
+    #[must_use]
+    pub fn legacy() -> Self {
+        Self::from(&PermissionSet::legacy())
+    }
+
+    /// Parses the written form, accepting names this version does not know.
+    ///
+    /// # Errors
+    ///
+    /// [`PermissionError::Malformed`] for an entry that is not a well-formed
+    /// `name:level`, a repeated name or `metadata` at another level than `read`.
+    pub fn parse(text: &str) -> Result<Self, PermissionError> {
+        let mut map: BTreeMap<&str, Level> = BTreeMap::new();
+        for entry in text.split(',') {
+            let (name, level) = entry
+                .trim()
+                .split_once(':')
+                .ok_or(PermissionError::Malformed)?;
+            let well_formed = !name.is_empty()
+                && name.len() <= NAME_MAX
+                && name
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
+            if !well_formed {
+                return Err(PermissionError::Malformed);
+            }
+            let level = match level {
+                "read" => Level::Read,
+                "write" => Level::Write,
+                _ => return Err(PermissionError::Malformed),
+            };
+            if name == "metadata" && level != Level::Read {
+                return Err(PermissionError::Malformed);
+            }
+            if map.insert(name, level).is_some() {
+                return Err(PermissionError::Malformed);
+            }
+        }
+        map.insert("metadata", Level::Read);
+        let written: Vec<String> = map
+            .iter()
+            .map(|(name, level)| format!("{name}:{level}"))
+            .collect();
+        Ok(Self(written.join(",")))
+    }
+
+    /// The canonical written form.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// The set, read strictly: every name known and none under the ceiling.
+    ///
+    /// # Errors
+    ///
+    /// A [`PermissionError`] when this version cannot act on the set.
+    pub fn known(&self) -> Result<PermissionSet, PermissionError> {
+        PermissionSet::parse(&self.0)
+    }
+}
+
+impl From<&PermissionSet> for GrantedPermissions {
+    fn from(set: &PermissionSet) -> Self {
+        Self(set.to_string())
+    }
+}
+
+impl From<PermissionSet> for GrantedPermissions {
+    fn from(set: PermissionSet) -> Self {
+        Self::from(&set)
+    }
+}
+
+impl fmt::Display for GrantedPermissions {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl TryFrom<String> for GrantedPermissions {
+    type Error = PermissionError;
+
+    fn try_from(text: String) -> Result<Self, Self::Error> {
+        Self::parse(&text)
+    }
+}
+
+impl From<GrantedPermissions> for String {
+    fn from(set: GrantedPermissions) -> Self {
+        set.0
     }
 }
 

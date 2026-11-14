@@ -4,7 +4,7 @@
 //! a minted token outlives the grant's revocation.
 
 use maud::{Markup, html};
-use warden_broker_proto::github_permissions::{Permission, PermissionSet};
+use warden_broker_proto::github_permissions::{GrantedPermissions, Permission, PermissionSet};
 use warden_broker_proto::github_token::{AutomaticCaller, GithubTokenAccess, GrantScope};
 use warden_broker_proto::{Access, AgentName};
 
@@ -299,7 +299,7 @@ pub(super) fn grant_access(
     app_id: &str,
     installation_id: u64,
     scope: &GrantScope,
-    granted: &PermissionSet,
+    granted: &GrantedPermissions,
 ) -> Markup {
     let repos: Vec<Named> = scope
         .list()
@@ -321,7 +321,12 @@ pub(super) fn grant_access(
         } @else {
             span.detail { "Mints tokens for " (app(app_id, installation_id)) }
         }
-        (permissions(granted, &[]))
+        @match granted.known() {
+            Ok(set) => (permissions(&set, &[])),
+            // Not reachable: grants are read from storage strictly, which refuses a set
+            // this version cannot act on.
+            Err(_) => span.detail { "Permissions this broker cannot read" },
+        }
         span.detail { (REVOKING) }
     }
 }

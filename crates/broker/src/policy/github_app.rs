@@ -322,7 +322,7 @@ impl GithubTokenPolicy {
             installation_id: self.installation_id,
             digest: self.destination_digest(),
             repositories,
-            permissions,
+            permissions: permissions.into(),
         }
     }
 }
@@ -460,7 +460,7 @@ mod tests {
         );
         let wider = super::PermissionSet::parse("checks:read,contents:write").unwrap();
         let grant = base.grant(GrantScope::Legacy, wider.clone());
-        assert_eq!(grant.permissions, wider);
+        assert_eq!(grant.permissions.known().unwrap(), wider);
         assert_eq!(grant.app_id, APP_ID);
         assert_eq!(grant.installation_id, INSTALLATION_ID);
         assert_eq!(grant.digest, base.destination_digest());

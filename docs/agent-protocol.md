@@ -976,7 +976,10 @@ the agent's to choose, and any other field is refused.
   `expires_at` is when GitHub ends the token, in Unix seconds, an hour after it was minted.
   The token is scoped to that repository's id and has the permissions of the grant, and
   nothing else. `permissions` is what GitHub says the token holds: `name:level` pairs sorted by
-  name, joined with commas, and fewer than the grant's if GitHub gave fewer. Older brokers
+  name, joined with commas, and fewer than the grant's where GitHub gave fewer. If the owner
+  removed a permission from the App after the grant was approved, GitHub may instead refuse
+  the token, which is the `409` repository-unreachable answer below. A name the client does
+  not know is kept as text, not refused: a newer broker may know more names. Older brokers
   leave it out; their tokens have `contents`, `pull_requests` and `issues` write and
   `metadata` read.
   Do not log it or write it to disk.
@@ -992,8 +995,9 @@ the agent's to choose, and any other field is refused.
   owner revokes one.
 - `409` `{"error":"GitHub would not issue a token for this repository: the App may no longer
   reach it, or it was deleted or replaced"}` (`REPOSITORY_UNREACHABLE`): GitHub refused to
-  scope a token to the repository's id. No token is given out, it is never retried, and the
-  attempt still costs the hourly budget.
+  scope a token to the repository's id, or to the grant's permissions (the owner may have
+  removed one from the App since approving: they check the App's permissions on GitHub). No
+  token is given out, it is never retried, and the attempt still costs the hourly budget.
 - `409` `{"error":"the GitHub App changed; request a new grant"}`: the App or installation
   is no longer the one the owner approved.
 - `409` `{"error":"grant revoked during the call"}` or `{"error":"grant expired during the
@@ -1315,8 +1319,11 @@ GitHub gave them: ids come when the owner first opens the approval page, or, for
 when it is created:
 
 ```json
-{"grant_id":"5e1c…","not_before":1793091612,"not_after":1795683612,"access":{"kind":"github_token","app_id":"123456","installation_id":7890123,"digest":"…","repositories":[{"name":"example-owner/example-repo","id":1001}]}}
+{"grant_id":"5e1c…","not_before":1793091612,"not_after":1795683612,"access":{"kind":"github_token","app_id":"123456","installation_id":7890123,"digest":"…","repositories":[{"name":"example-owner/example-repo","id":1001}],"permissions":"contents:write,issues:write,metadata:read,pull_requests:write"}}
 ```
+
+`permissions` is the grant's set, in the same written form as the token's; a grant from a
+broker before 0.15 leaves it out and means those four.
 
 The request is refused with a `400` when the broker holds no GitHub App
 (`GitHub tokens are not configured on this broker`), and for a window outside the three.

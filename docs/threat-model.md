@@ -1074,8 +1074,9 @@ What an attacker gets, and what stops it:
   What moves: an owner can now configure a default wider than the four (for example `checks`
   or `actions`), and every agent's token then holds it from the next request on. A ceiling no
   configuration lifts keeps `administration`, `workflows`, `secrets`, `environments`,
-  `dependabot_secrets` and every `organization_*` out: so GitHub still refuses a push that
-  changes a workflow file, and a token cannot read or write repository secrets. A field over
+  `dependabot_secrets`, `repository_hooks` and every `organization_*` out: so GitHub still
+  refuses a push that changes a workflow file, a token cannot read or write repository
+  secrets, and it cannot create a webhook that would keep sending events after the grant ends. A field over
   the ceiling makes the App unusable and is refused as a field, not clipped. The approval is
   refused when the installation does not hold the set, which the broker reads at each view,
   begin and finish of the page; a read it cannot make refuses too.

@@ -2,7 +2,9 @@
 //! into the approval and held by the grant; the installation must hold it.
 
 use axum::http::StatusCode;
+use serde_json::json;
 use warden_broker::policy::GithubPermissionPolicy;
+use warden_broker::requests::RequestError;
 use warden_broker::testkit::TestBroker;
 use warden_broker_proto::Window;
 use warden_broker_proto::github_permissions::PermissionSet;
@@ -49,6 +51,8 @@ async fn approve_and_read(
         .expect("a grant for the repository")
         .grant
         .permissions
+        .known()
+        .expect("a set this broker knows")
 }
 
 #[tokio::test]
@@ -103,8 +107,22 @@ async fn unreadable_stored_permissions_refuse_the_page() {
     .await
     .unwrap();
     upstream.script_github_token(resolved(&broker, &[(1001, REPO)]));
+    let page = broker.get(&format!("/approve/{token}")).await;
+    assert_eq!(
+        page.status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "{}",
+        page.body
+    );
+    assert!(!page.body.contains("contents:admin"), "{}", page.body);
     let begin = broker.begin_approval(&token, Window::D7).await;
-    assert_ne!(begin.status, StatusCode::OK, "{}", begin.body);
+    assert_eq!(
+        begin.status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "{}",
+        begin.body
+    );
+    assert!(!begin.body.contains("contents:admin"), "{}", begin.body);
     assert!(active_for(&broker, "bot", REPO).await.is_none());
 }
 
@@ -211,7 +229,66 @@ async fn creation_refused_when_the_permission_fields_cannot_be_read() {
         .requests
         .create(&"bot".parse().unwrap(), request())
         .await;
-    assert!(refused.is_err(), "{refused:?}");
+    assert!(
+        matches!(refused, Err(RequestError::Unavailable(_))),
+        "{refused:?}"
+    );
+    let pool = &broker.state().pool;
+    for (table, count) in [
+        ("requests", "SELECT COUNT(*) FROM requests"),
+        (
+            "github_permissions",
+            "SELECT COUNT(*) FROM github_permissions",
+        ),
+    ] {
+        let rows: i64 = sqlx::query_scalar(count).fetch_one(pool).await.unwrap();
+        assert_eq!(rows, 0, "nothing is written to {table}");
+    }
+}
+
+/// A stored grant whose set this version cannot act on, as a newer broker could
+/// leave after a downgrade, is refused, not read leniently: no token is minted
+/// and the grants page refuses.
+#[tokio::test]
+async fn a_stored_grant_with_an_unknown_permission_refuses() {
+    let (broker, key, upstream) = configured_on_fake().await;
+    let grant = broker
+        .insert_scoped_github_grant("bot", &[(REPO, 1001)])
+        .await;
+    let pool = &broker.state().pool;
+    let view: String = sqlx::query_scalar("SELECT view FROM grants WHERE id = ?")
+        .bind(grant.as_str())
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    let newer = view.replace("contents:write", "contents:write,new_thing:write");
+    assert_ne!(newer, view);
+    sqlx::query("UPDATE grants SET view = ? WHERE id = ?")
+        .bind(newer)
+        .bind(grant.as_str())
+        .execute(pool)
+        .await
+        .unwrap();
+
+    let before = upstream.received().len();
+    let resp = broker
+        .api_post_json(&key, "/v1/github-token", &json!({"repository": REPO}))
+        .await;
+    assert_eq!(
+        resp.status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "{}",
+        resp.body
+    );
+    assert!(!resp.body.contains("new_thing"), "{}", resp.body);
+    assert_eq!(upstream.received().len(), before, "GitHub was not asked");
+    let page = broker.get("/grants").await;
+    assert_eq!(
+        page.status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "{}",
+        page.body
+    );
 }
 
 #[tokio::test]

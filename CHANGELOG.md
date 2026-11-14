@@ -12,10 +12,11 @@ All notable changes to this project are recorded here. The format follows
   The `warden:github-app` item has two optional fields, `default_permissions` (what every request
   gets; the previous four when missing) and `extra_permissions` (read and checked, not yet
   usable by a request). A ceiling no configuration lifts keeps `administration`, `workflows`,
-  `secrets`, `environments`, `dependabot_secrets` and every `organization_*` out, and a field that
-  names one, or is malformed, makes GitHub tokens unusable and fails doctor's `github-app` check.
-  The approval page shows the set and refuses a request the App's installation does not hold,
-  and `POST /v1/github-token` answers with a `permissions` field: what GitHub granted.
+  `secrets`, `environments`, `dependabot_secrets`, `repository_hooks` and every `organization_*`
+  out, and a field that names one, or is malformed, makes GitHub tokens unusable and fails
+  doctor's `github-app` check. The approval page shows the set and refuses a request the App's
+  installation does not hold, GitHub token grants in `GET /v1/grants` gain a `permissions`
+  field, and `POST /v1/github-token` answers with a `permissions` field: what GitHub granted.
   ([#281](https://github.com/pecheriere/warden/issues/281))
 
 ### Upgrading

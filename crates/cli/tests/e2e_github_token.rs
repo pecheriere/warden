@@ -16,7 +16,7 @@ use tempfile::TempDir;
 use warden_broker::github_app::GithubApi;
 use warden_broker::requests::Clock as _;
 use warden_broker::testkit::github_app::{minted_answer, token_answer};
-use warden_broker::testkit::upstream::{HttpsUpstream, Scripted, installation_json};
+use warden_broker::testkit::upstream::HttpsUpstream;
 use warden_broker::testkit::{CapturingNotifier, TestBroker, github_app_key};
 use warden_broker_proto::Window;
 
@@ -188,15 +188,7 @@ async fn setup() -> Setup {
 async fn setup_with_max(max: Window) -> Setup {
     let upstream = HttpsUpstream::start().await;
     // The approval page reads the installation's permissions at each view.
-    upstream.answer_github_installation(Some(Scripted::with_body(
-        200,
-        installation_json(&[
-            ("contents", "write"),
-            ("issues", "write"),
-            ("metadata", "read"),
-            ("pull_requests", "write"),
-        ]),
-    )));
+    upstream.answer_legacy_installation();
     let api = GithubApi::pinned(
         upstream.origin().parse().unwrap(),
         upstream.origin().parse().unwrap(),

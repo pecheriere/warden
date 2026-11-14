@@ -372,6 +372,24 @@ impl HttpsUpstream {
             .expect("upstream script poisoned") = response;
     }
 
+    /// Answer every read of the installation that finds nothing queued with an
+    /// installation holding the legacy set, the four of 0.14: what an approval of
+    /// the default needs.
+    ///
+    /// # Panics
+    /// If the script lock is poisoned.
+    pub fn answer_legacy_installation(&self) {
+        self.answer_github_installation(Some(Scripted::with_body(
+            200,
+            installation_json(&[
+                ("contents", "write"),
+                ("issues", "write"),
+                ("metadata", "read"),
+                ("pull_requests", "write"),
+            ]),
+        )));
+    }
+
     /// Wait until the GitHub token route has received `count` calls, answered or
     /// still held. The caller bounds the wait.
     ///

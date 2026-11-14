@@ -1,4 +1,4 @@
-use super::{Level, Permission, PermissionError, PermissionSet, under_ceiling};
+use super::{GrantedPermissions, Level, Permission, PermissionError, PermissionSet, under_ceiling};
 
 fn set(text: &str) -> PermissionSet {
     PermissionSet::parse(text).unwrap()
@@ -48,6 +48,8 @@ fn refuses_ceiling() {
         "environments:read",
         "organization_projects:read",
         "dependabot_secrets:read",
+        "repository_hooks:write",
+        "repository_hooks:read",
     ] {
         assert_eq!(
             PermissionSet::parse(text).unwrap_err(),
@@ -124,4 +126,64 @@ fn serde_round_trips_as_string() {
     assert_eq!(json, "\"checks:read,metadata:read\"");
     assert_eq!(serde_json::from_str::<PermissionSet>(&json).unwrap(), value);
     assert!(serde_json::from_str::<PermissionSet>("\"checks\"").is_err());
+}
+
+#[test]
+fn granted_permissions_write_the_same_canonical_form() {
+    for text in [
+        "pull_requests:write, contents:write,issues:write",
+        "checks:read",
+        "metadata:read",
+    ] {
+        let strict = set(text);
+        let lenient = GrantedPermissions::parse(text).unwrap();
+        assert_eq!(lenient.as_str(), strict.to_string());
+        assert_eq!(lenient, GrantedPermissions::from(&strict));
+        assert_eq!(lenient.known().unwrap(), strict);
+    }
+    assert_eq!(
+        GrantedPermissions::legacy().as_str(),
+        PermissionSet::legacy().to_string()
+    );
+}
+
+#[test]
+fn granted_permissions_keep_unknown_names_but_act_on_none() {
+    let set = GrantedPermissions::parse("zeta_9:read,contents:write").unwrap();
+    assert_eq!(set.as_str(), "contents:write,metadata:read,zeta_9:read");
+    assert_eq!(set.known(), Err(PermissionError::Unknown));
+    let ceiling = GrantedPermissions::parse("workflows:write").unwrap();
+    assert_eq!(ceiling.known(), Err(PermissionError::Ceiling));
+    let json = serde_json::to_string(&set).unwrap();
+    assert_eq!(
+        serde_json::from_str::<GrantedPermissions>(&json).unwrap(),
+        set
+    );
+}
+
+#[test]
+fn granted_permissions_refuse_malformed_entries() {
+    let long = format!("{}:read", "a".repeat(65));
+    for text in [
+        "",
+        "contents",
+        "contents:",
+        ":read",
+        "contents:admin",
+        "contents:Write",
+        "Contents:read",
+        "con tents:read",
+        "con-tents:read",
+        "contents:read,,issues:read",
+        "contents:read,contents:write",
+        "metadata:write",
+        long.as_str(),
+    ] {
+        assert_eq!(
+            GrantedPermissions::parse(text),
+            Err(PermissionError::Malformed),
+            "{text:?}"
+        );
+    }
+    assert!(GrantedPermissions::parse(&format!("{}:read", "a".repeat(64))).is_ok());
 }

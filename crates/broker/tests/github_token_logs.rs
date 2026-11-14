@@ -11,7 +11,7 @@ use serde_json::json;
 use warden_broker::github_app::GithubApi;
 use warden_broker::requests::Clock as _;
 use warden_broker::testkit::github_app::{INSTALLATION_ID, minted_answer, token_answer};
-use warden_broker::testkit::upstream::{Scripted, installation_json};
+use warden_broker::testkit::upstream::Scripted;
 use warden_broker::testkit::{HttpsUpstream, TestBroker, github_app_key};
 use warden_broker_proto::Window;
 
@@ -45,15 +45,7 @@ async fn the_token_stays_out_of_the_logs() {
     let _guard = tracing::subscriber::set_default(subscriber);
 
     let upstream = HttpsUpstream::start().await;
-    upstream.answer_github_installation(Some(Scripted::with_body(
-        200,
-        installation_json(&[
-            ("contents", "write"),
-            ("issues", "write"),
-            ("metadata", "read"),
-            ("pull_requests", "write"),
-        ]),
-    )));
+    upstream.answer_legacy_installation();
     let api = GithubApi::pinned(
         upstream.origin().parse().unwrap(),
         upstream.origin().parse().unwrap(),

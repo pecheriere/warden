@@ -16,7 +16,7 @@ use tempfile::TempDir;
 use warden_broker::github_app::GithubApi;
 use warden_broker::policy::Listing;
 use warden_broker::testkit::github_app::token_answer;
-use warden_broker::testkit::upstream::{HttpsUpstream, Scripted, installation_json};
+use warden_broker::testkit::upstream::HttpsUpstream;
 use warden_broker::testkit::{FakeBackend, TestBroker, github_app_key};
 
 const AGENT: &str = "build-agent";
@@ -37,15 +37,7 @@ struct Setup {
 async fn setup() -> Setup {
     let upstream = HttpsUpstream::start().await;
     // The approval page reads the installation's permissions at each view.
-    upstream.answer_github_installation(Some(Scripted::with_body(
-        200,
-        installation_json(&[
-            ("contents", "write"),
-            ("issues", "write"),
-            ("metadata", "read"),
-            ("pull_requests", "write"),
-        ]),
-    )));
+    upstream.answer_legacy_installation();
     let api = GithubApi::pinned(
         upstream.origin().parse().unwrap(),
         upstream.origin().parse().unwrap(),

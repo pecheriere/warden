@@ -1,6 +1,6 @@
 //! Unit tests of the wire types.
 
-use crate::github_permissions::PermissionSet;
+use crate::github_permissions::{GrantedPermissions, PermissionSet};
 use crate::github_token::GithubTokenResponse;
 use crate::github_token::GrantScope;
 use crate::release::RepoName;
@@ -541,7 +541,7 @@ fn github_token_grant_serde_shape() {
         installation_id: 678,
         digest: "ab12".to_owned(),
         repositories: GrantScope::Legacy,
-        permissions: PermissionSet::legacy(),
+        permissions: GrantedPermissions::legacy(),
     });
     let value = serde_json::to_value(&grant).unwrap();
     assert_eq!(

@@ -167,7 +167,7 @@ does not matter. Two optional fields set the permissions of the tokens, each a l
 `extra_permissions` (what a request may add to the default; missing means none, and no request can
 ask for one yet). A field that is repeated, empty, malformed, or names a permission above the
 ceiling (`administration`, `workflows`, `secrets`, `environments`, `dependabot_secrets`,
-`organization_*`) makes GitHub tokens unusable until you fix it, and `warden-server doctor`
+`repository_hooks`, `organization_*`) makes GitHub tokens unusable until you fix it, and `warden-server doctor`
 names the field. See [Permissions](github-app.md#permissions). warden
 reads the item for each approval page and token, and never gives the key out. Changing
 the App or installation ends every grant made for the old one; replacing only the key

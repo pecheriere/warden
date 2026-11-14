@@ -6,7 +6,7 @@
 
 use sqlx::{Row as _, Sqlite, Transaction};
 use warden_broker_proto::release::{ReleaseGrant, ReleaseTag, RepoName};
-use warden_broker_proto::{Access, AgentName, GrantAccess, GrantView, Id, Window};
+use warden_broker_proto::{Access, AgentName, GrantAccess, Id, Window};
 
 use super::{PendingView, ReleaseFacts, RequestError, Requests, parse};
 use crate::audit::AuditEvent;
@@ -104,7 +104,7 @@ pub(super) async fn end_replaced(
 /// Whether the release grant in `row` (with a `view`) is one `new` replaces.
 fn replaces(row: &sqlx::sqlite::SqliteRow, new: &ReleaseGrant) -> Result<bool, RequestError> {
     let view: String = row.try_get("view")?;
-    let view: GrantView = serde_json::from_str(&view)?;
+    let view = super::stored_view(&view)?;
     let GrantAccess::Release(grant) = view.access else {
         return Err(RequestError::Corrupt(
             "release grant changed kind".to_owned(),

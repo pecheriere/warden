@@ -368,3 +368,6 @@ impl Requests {
         Ok(ended)
     }
 }
+
+#[cfg(test)]
+mod tests;

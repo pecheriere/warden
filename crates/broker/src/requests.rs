@@ -19,8 +19,10 @@ use sha2::{Digest as _, Sha256};
 use sqlx::sqlite::SqliteRow;
 use sqlx::{Row as _, SqlitePool};
 use url::Url;
+use warden_broker_proto::github_permissions::PermissionSet;
 use warden_broker_proto::{
-    AgentName, CreateRequest, Fingerprint, GrantAccess, Id, TargetName, UnixUser, Window,
+    AgentName, CreateRequest, Fingerprint, GithubTokenGrant, GrantAccess, GrantView, Id,
+    TargetName, UnixUser, Window,
 };
 
 use crate::agents::AgentError;
@@ -638,6 +640,32 @@ where
 {
     let raw: String = row.try_get(column)?;
     T::try_from(raw).map_err(|e| RequestError::Corrupt(format!("column {column}: {e}")))
+}
+
+/// A grant view as stored, read strictly: the permissions of a GitHub token grant
+/// must be a set this version can act on. The proto type keeps a name it does not
+/// know as text, for older CLIs; the broker refuses it instead.
+fn stored_view(text: &str) -> Result<GrantView, RequestError> {
+    let view: GrantView = serde_json::from_str(text)?;
+    if let GrantAccess::GithubToken(grant) = &view.access {
+        github_permissions_of(grant)?;
+    }
+    Ok(view)
+}
+
+/// The permissions of a stored GitHub token grant, read strictly: every name known
+/// and none under the ceiling.
+///
+/// # Errors
+///
+/// [`RequestError::Corrupt`] when this version cannot act on the set.
+pub(crate) fn github_permissions_of(
+    grant: &GithubTokenGrant,
+) -> Result<PermissionSet, RequestError> {
+    grant
+        .permissions
+        .known()
+        .map_err(|e| RequestError::Corrupt(format!("GitHub token grant permissions: {e}")))
 }
 
 /// Refuse a `window` longer than `max`, the limit of `subject` (`target pi`,

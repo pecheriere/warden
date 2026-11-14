@@ -391,6 +391,8 @@ async fn held_by_bot(
         .expect("a grant for the repository")
         .grant
         .permissions
+        .known()
+        .expect("a set this broker knows")
 }
 
 #[tokio::test]

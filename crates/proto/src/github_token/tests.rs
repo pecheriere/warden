@@ -4,7 +4,7 @@ use super::{
     AutomaticCaller, AutomaticRequest, GithubTokenAccess, GithubTokenGrant, GithubTokenRequest,
     GrantRepository, GrantScope, MAX_REPOSITORIES,
 };
-use crate::github_permissions::PermissionSet;
+use crate::github_permissions::{GrantedPermissions, PermissionError};
 use crate::release::RepoName;
 use crate::{Access, GrantAccess, InfoResponse};
 
@@ -205,7 +205,7 @@ fn grant_scope_round_trips_and_refuses_bad_lists() {
         installation_id: 2,
         digest: "ab".to_owned(),
         repositories: scope,
-        permissions: PermissionSet::legacy(),
+        permissions: GrantedPermissions::legacy(),
     });
     let value = serde_json::to_value(&grant).unwrap();
     assert_eq!(
@@ -300,7 +300,7 @@ fn grant_without_permissions_parses_as_legacy() {
         json!({"app_id": "12345", "installation_id": 678, "digest": "ab12"}),
     )
     .unwrap();
-    assert_eq!(grant.permissions, PermissionSet::legacy());
+    assert_eq!(grant.permissions, GrantedPermissions::legacy());
 }
 
 #[test]
@@ -316,4 +316,70 @@ fn response_without_permissions_parses() {
     assert_eq!(response.permissions, None);
     let json = serde_json::to_value(&response).unwrap();
     assert!(json.get("permissions").is_none());
+}
+
+/// A newer broker may know permission names this CLI does not: they must not
+/// break reading its grants or tokens.
+#[test]
+fn grant_and_response_keep_an_unknown_permission_name() {
+    let grant: GithubTokenGrant = serde_json::from_value(json!({
+        "app_id": "12345",
+        "installation_id": 678,
+        "digest": "ab12",
+        "permissions": "new_thing:write,contents:read",
+    }))
+    .unwrap();
+    assert_eq!(
+        grant.permissions.as_str(),
+        "contents:read,metadata:read,new_thing:write"
+    );
+    assert_eq!(grant.permissions.known(), Err(PermissionError::Unknown));
+
+    let response: super::GithubTokenResponse = serde_json::from_value(json!({
+        "token": "t",
+        "expires_at": 1,
+        "grant_id": crate::Id::random(),
+        "repository": "example-owner/example-repo",
+        "repository_id": 1001,
+        "permissions": "contents:read,metadata:read,new_thing:write",
+    }))
+    .unwrap();
+    assert_eq!(response.permissions, Some(grant.permissions));
+}
+
+#[test]
+fn grant_and_response_refuse_malformed_permissions() {
+    for bad in [
+        "contents:wirte",
+        "contents:admin",
+        "Contents:read",
+        "contents",
+        "contents:read,contents:write",
+        "metadata:write",
+        "new-thing:read",
+        "",
+    ] {
+        let grant = json!({
+            "app_id": "12345",
+            "installation_id": 678,
+            "digest": "ab12",
+            "permissions": bad,
+        });
+        assert!(
+            serde_json::from_value::<GithubTokenGrant>(grant).is_err(),
+            "{bad:?}"
+        );
+        let response = json!({
+            "token": "t",
+            "expires_at": 1,
+            "grant_id": crate::Id::random(),
+            "repository": "example-owner/example-repo",
+            "repository_id": 1001,
+            "permissions": bad,
+        });
+        assert!(
+            serde_json::from_value::<super::GithubTokenResponse>(response).is_err(),
+            "{bad:?}"
+        );
+    }
 }

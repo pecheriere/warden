@@ -109,6 +109,8 @@ async fn attempt(
         GithubLookup::One(active) => active,
     };
     *seen = Some(grant_id.clone());
+    // Read strictly: a set this version cannot act on refuses, and costs nothing.
+    let permissions = crate::requests::github_permissions_of(&grant)?;
 
     let key = state
         .backend
@@ -128,7 +130,7 @@ async fn attempt(
         &state.github,
         &key,
         repository.id,
-        &grant.permissions,
+        &permissions,
         state.clock.now(),
     )
     .await
@@ -185,7 +187,7 @@ async fn attempt(
         grant_id,
         repository: repository.name.clone(),
         repository_id: repository.id,
-        permissions: Some(minted.granted),
+        permissions: Some(minted.granted.into()),
     })
 }
 

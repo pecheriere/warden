@@ -5,10 +5,10 @@
 use sqlx::{Row as _, Sqlite, Transaction};
 use warden_broker_proto::github_permissions::PermissionSet;
 use warden_broker_proto::github_token::GrantScope;
-use warden_broker_proto::{AgentName, GrantAccess, GrantView, Id};
+use warden_broker_proto::{AgentName, GrantAccess, Id};
 
 use super::decide::same_ids;
-use super::{ReplacedGrant, RequestError, Requests, parse};
+use super::{ReplacedGrant, RequestError, Requests, github_permissions_of, parse, stored_view};
 use crate::audit::AuditEvent;
 
 /// Recorded as `by` for a GitHub token grant ended by approving one that overlaps it.
@@ -16,9 +16,12 @@ const REPLACED: &str = "replaced";
 
 /// The scope and permissions of the GitHub token grant stored as `view`.
 fn scope_of(view: &str) -> Result<(GrantScope, PermissionSet), RequestError> {
-    let view: GrantView = serde_json::from_str(view)?;
+    let view = stored_view(view)?;
     match view.access {
-        GrantAccess::GithubToken(grant) => Ok((grant.repositories, grant.permissions)),
+        GrantAccess::GithubToken(grant) => {
+            let permissions = github_permissions_of(&grant)?;
+            Ok((grant.repositories, permissions))
+        }
         _ => Err(RequestError::Corrupt(
             "GitHub token grant changed kind".to_owned(),
         )),
