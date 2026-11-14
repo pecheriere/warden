@@ -1,8 +1,10 @@
 # Security assessment
 
-**Date: 2026-11-14. Covers release 0.13.0, reviewed at `main` commit `a401590`. The
-release adds repository-scoped GitHub grants (risks 1 and 2, F24) and signs its manifest
-through the broker (risk 12, below). The review for the previous release, 0.12.0, checked the ranked risks and findings against the changes
+**Date: 2026-11-14. Covers release 0.14.0, reviewed at `main` commit `a34bc79`. The
+release adds `warden list` and `warden prime`, and the audit log's limits (both below).
+The review for 0.13.0 (2026-11-12, at `a401590`) covered repository-scoped GitHub grants
+(risks 1 and 2, F24) and the manifest signed through the broker (risk 12, below). The
+review for 0.12.0 checked the ranked risks and findings against the changes
 since 0.11.0: phone-approved releases (risks 1, 2 and 12). An agent can ask the owner to
 approve one release, bound to a repository, a tag and a commit and checked against what
 GitHub says; the broker then makes the tag, signs and attaches the manifest and publishes
@@ -92,7 +94,7 @@ decision by the maintainer, and stay open until then.
 | F9 | **The protocol said the owner may approve a *shorter* window.** The page offers any window up to the item's maximum, including one longer than asked. This is the owner's choice and is limited by the item, but an agent should not assume `not_after` is no later than it asked. | Document corrected. |
 | F10 | **Open alerts at this date**, checked again on 2026-11-07. Five Scorecard alerts about project practices (CII badge, code review, maintained, vulnerabilities and branch protection), tracked under [#93](https://github.com/pecheriere/warden/issues/93). No CodeQL or Dependabot alert is open. | Open under #93. |
 | F11 | **The reason on `deny.toml`'s `RUSTSEC-2026-0387` exemption is out of date.** It says "only Ed25519 is used", but P-256 signatures are verified through that code. Verification handles no secret, so the exemption still seems right. | Resolved by [#118](https://github.com/pecheriere/warden/pull/118), which removed `crypto-bigint` 0.5 and that exemption. |
-| F12 | **`subtle` is listed in `[workspace.dependencies]`, and no crate uses it directly.** Still true at 0.13.0. | Harmless. For a code change. |
+| F12 | **`subtle` is listed in `[workspace.dependencies]`, and no crate uses it directly.** Still true at 0.14.0. | Harmless. For a code change. |
 | F13 | **The documents said a copied bearer key can only create requests.** `proxy_call`, `list_grants` and `revoke_grant` in [`api.rs`](../crates/broker/src/api.rs) take the same `AuthedAgent` as creating a request, so any copied agent key can use the agent's live API grants and manage its grants. | Documents corrected, and the risk re-rated (risk 9). The code does what it should: a key is the agent. |
 | F14 | **The documents treated a certificate's expiry as the end of access.** `sshd` checks a certificate when it authenticates, and not afterwards. On a throwaway OpenSSH 10.3 server on 2026-11-01, a session outlived its certificate's expiry, and outlived removing the CA with a reload, while new logins were refused in both cases. On OpenSSH 9.2 in a Debian 12 container, `usermod --expiredate 1` refused new logins and did not end an open session, and with `UsePAM yes`, `passwd -l` and `usermod -L` did not stop certificate logins at all. warden sees none of it. | Documents corrected, and risk 5 re-rated. [#35](https://github.com/pecheriere/warden/issues/35) covers what to do about it. |
 | F15 | **Certificate logins are not in the audit log.** They go straight to the target, so warden records the issue and not the use. The target's `sshd` logs each login with the certificate's key id, `warden:<agent>:<grant id>`. Interactive input to a relay session is not recorded either. | Documents corrected. Ship the targets' logs if you need this trail. |
@@ -121,7 +123,7 @@ decision by the maintainer, and stay open until then.
 - Check what dependencies log above the default level.
 - Check every line of the relay's flow control and teardown against the design.
   The claims there were spot-checked, and rest on the relay's tests.
-- For 0.10.0, and still not done at 0.13.0: sign a commit through a live broker and
+- For 0.10.0, and still not done at 0.14.0: sign a commit through a live broker and
   check it on a real GitHub account, install the `.deb` and `.rpm` on a clean host, or test the release binary's
   name resolution on a tailnet. The commit signing, label, link, pending list and
   fingerprint changes were checked against their threat model sections and tests, not
