@@ -2,11 +2,10 @@
 //! files, and the real `warden-server` refusing to start or reporting through
 //! doctor.
 
-use std::fs::{self, Permissions};
+use std::fs;
 use std::io::{BufRead as _, BufReader};
 use std::net::TcpListener;
-use std::os::unix::fs::{PermissionsExt as _, symlink};
-use std::path::{Path, PathBuf};
+use std::os::unix::fs::symlink;
 use std::process::{Command, Output, Stdio};
 use std::sync::Arc;
 
@@ -16,63 +15,14 @@ use base64::engine::general_purpose::STANDARD;
 use serde_json::json;
 use ssh_key::rand_core::OsRng;
 use ssh_key::{Algorithm, Certificate, HashAlg, LineEnding, PrivateKey};
-use tempfile::TempDir;
 use warden_broker::audit::AuditLog;
-use warden_broker::config::LocalSettings;
 use warden_broker::policy::LocalBackend;
-use warden_broker::policy::local::seal_text;
 use warden_broker::store;
 use warden_broker::testkit::{CapturingNotifier, HttpsUpstream, TestBroker, TestResponse};
 use warden_broker_proto::{CreatedResponse, GrantAccess, Id, RequestStatus, Window};
 
-const CREDENTIAL: &str = "local-backend-credential-do-not-leak";
-
-/// The backend's files in a private directory, at their real paths.
-struct Files {
-    _guard: TempDir,
-    root: PathBuf,
-    settings: LocalSettings,
-}
-
-fn chmod(path: &Path, mode: u32) {
-    fs::set_permissions(path, Permissions::from_mode(mode)).unwrap();
-}
-
-impl Files {
-    fn new() -> Self {
-        let guard = tempfile::tempdir().unwrap();
-        let root = guard.path().canonicalize().unwrap();
-        chmod(&root, 0o700);
-        let secrets_dir = root.join("secrets");
-        fs::create_dir(&secrets_dir).unwrap();
-        chmod(&secrets_dir, 0o700);
-        Self {
-            _guard: guard,
-            settings: LocalSettings {
-                policy_file: root.join("policy.toml"),
-                secrets_dir,
-            },
-            root,
-        }
-    }
-
-    /// Write a complete policy file: `text` and the end marker.
-    fn policy(&self, text: &str) {
-        let sealed = seal_text(&format!("{text}\n[end_of_policy]\n")).unwrap();
-        fs::write(&self.settings.policy_file, sealed.as_bytes()).unwrap();
-        chmod(&self.settings.policy_file, 0o600);
-    }
-
-    fn secret(&self, name: &str, content: &str) {
-        let path = self.secret_path(name);
-        fs::write(&path, content).unwrap();
-        chmod(&path, 0o600);
-    }
-
-    fn secret_path(&self, name: &str) -> PathBuf {
-        self.settings.secrets_dir.join(name)
-    }
-}
+mod local_backend_support;
+use local_backend_support::{CREDENTIAL, Files, api_entry, backend_audit, chmod};
 
 fn host_key_line() -> String {
     PrivateKey::random(&mut OsRng, Algorithm::Ed25519)
@@ -80,23 +30,6 @@ fn host_key_line() -> String {
         .public_key()
         .to_openssh()
         .unwrap()
-}
-
-/// `[api_secrets.svc]` for `upstream`, trusting its CA, with extra settings.
-fn api_entry(upstream: &HttpsUpstream, extra: &str) -> String {
-    format!(
-        r#"
-[api_secrets.svc]
-website = "{origin}"
-credential_file = "svc-token"
-max_window = "1h"
-ca_pem = """
-{ca}"""
-{extra}
-"#,
-        origin = upstream.origin(),
-        ca = upstream.ca_pem(),
-    )
 }
 
 /// A broker reading `files`, opened as the server opens it, and an agent.
@@ -110,11 +43,6 @@ async fn broker_on(files: &Files) -> (TestBroker, String) {
     let broker = TestBroker::with_secret_backend(Arc::new(backend)).await;
     let key = broker.add_agent("bot").await;
     (broker, key)
-}
-
-/// What the backend wrote to the audit log.
-fn backend_audit(files: &Files) -> String {
-    fs::read_to_string(files.root.join("backend-audit.jsonl")).unwrap()
 }
 
 async fn approve_api(broker: &TestBroker, secret: &str) -> Id {
@@ -771,61 +699,4 @@ async fn the_local_files_are_refused_without_the_explicit_setting() {
     assert!(!output.status.success());
     let shown = stderr(&output);
     assert!(shown.contains("WARDEN_LOCAL_POLICY_FILE"), "{shown}");
-}
-
-/// While the files are unusable every read is refused, and `GET /v1/offers` reads
-/// three times: the audit log gets ten of those entries a minute, and the sweep
-/// writes the count of the rest.
-#[tokio::test]
-async fn errors_beyond_ten_a_minute_are_counted() {
-    let upstream = HttpsUpstream::start().await;
-    let files = Files::new();
-    files.policy(&api_entry(&upstream, ""));
-    files.secret("svc-token", CREDENTIAL);
-    let audit = Arc::new(
-        AuditLog::open(&files.root.join("backend-audit.jsonl"))
-            .await
-            .unwrap(),
-    );
-    let backend = Arc::new(LocalBackend::open(&files.settings, audit).await.unwrap());
-    let broker = TestBroker::with_secret_backend(backend.clone()).await;
-    broker
-        .state()
-        .requests
-        .audit_throttles()
-        .register(backend.audit_throttle());
-    let key = broker.add_agent("bot").await;
-    fs::write(&files.settings.policy_file, "not a policy").unwrap();
-
-    for _ in 0..15 {
-        let resp = broker.api_get(&key, "/v1/offers").await;
-        assert_eq!(
-            resp.status,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "{}",
-            resp.body
-        );
-    }
-
-    let written = backend_audit(&files);
-    assert_eq!(
-        written.matches("\"type\":\"error\"").count(),
-        10,
-        "{written}"
-    );
-    assert!(
-        !broker
-            .audit_types()
-            .contains(&"local_backend_errors_held".to_owned())
-    );
-
-    broker.state().requests.flush_refusals(true).await;
-    let log = fs::read_to_string(broker.audit_path()).unwrap();
-    let held: Vec<serde_json::Value> = log
-        .lines()
-        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap()["event"].clone())
-        .filter(|event| event["type"] == "local_backend_errors_held")
-        .collect();
-    assert_eq!(held.len(), 1, "{log}");
-    assert_eq!(held[0]["count"], 35);
 }

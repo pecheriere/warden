@@ -12,8 +12,8 @@ All notable changes to this project are recorded here. The format follows
   `warden list` fails saying to upgrade it, and `warden prime` prints its instructions with
   that note in place of the offers. They need no migration and write no audit entry.
 - New audit entries: `release_step_started`, `release_published_changed`,
-  `release_published_changed_notified` and `local_backend_errors_held`. An older `warden-server audit verify` refuses a log
-  holding one.
+  `release_published_changed_notified` and `local_backend_errors_held`. An older
+  `warden-server audit verify` refuses a log holding one.
 - The clients for 1Password Connect, the notifiers and the health probe no longer use a proxy
   named in `HTTP_PROXY`, `HTTPS_PROXY` or `ALL_PROXY`; a deployment that reached them through
   one needs a direct route. See [Upgrading](docs/upgrading.md#proxies-and-http2).

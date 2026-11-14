@@ -261,7 +261,9 @@ check and the read.
 
 **At startup**, `warden-server serve` reads the whole policy and every secret it
 names. If anything is invalid, unreadable or too open, or a certificate target has
-no CA, it writes each problem to the audit log and refuses to start.
+no CA, it writes each problem to the audit log and refuses to start. When more than 10
+problems are found, the startup error names all of them but the audit log gets only the
+first 10.
 
 **On every request**, everything is read again and nothing is cached:
 

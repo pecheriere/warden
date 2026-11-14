@@ -550,7 +550,6 @@ pub struct LocalBackend {
     audit: Option<Arc<AuditLog>>,
     /// Holds the count of the refusals beyond the first few of a minute.
     throttle: Arc<Throttle<(), u64>>,
-    clock: Arc<dyn Clock>,
 }
 
 /// Refusals written one by one in a minute: what the files' state costs the log
@@ -573,7 +572,6 @@ impl LocalBackend {
             files: Self::files(settings),
             audit: Some(audit),
             throttle: Self::throttle(),
-            clock: Arc::new(SystemClock),
         };
         let problems = backend.probe().await.problems();
         if problems.is_empty() {
@@ -593,7 +591,6 @@ impl LocalBackend {
             files: Self::files(settings),
             audit: None,
             throttle: Self::throttle(),
-            clock: Arc::new(SystemClock),
         }
     }
 
@@ -642,7 +639,7 @@ impl LocalBackend {
             message: message.to_owned(),
         };
         self.throttle
-            .record(audit, &(), self.clock.now(), 1, event)
+            .record(audit, &(), SystemClock.now(), 1, event)
             .await;
     }
 
