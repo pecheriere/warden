@@ -494,6 +494,12 @@ pub enum AuditEvent {
         /// Passkey id.
         passkey_id: String,
     },
+    /// Errors of the local secret backend beyond those recorded one by one in a
+    /// minute, counted so that unusable files cannot fill the log.
+    LocalBackendErrorsHeld {
+        /// How many.
+        count: u64,
+    },
     /// An internal error worth recording.
     Error {
         /// Where it happened.

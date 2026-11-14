@@ -261,7 +261,9 @@ check and the read.
 
 **At startup**, `warden-server serve` reads the whole policy and every secret it
 names. If anything is invalid, unreadable or too open, or a certificate target has
-no CA, it writes each problem to the audit log and refuses to start.
+no CA, it writes each problem to the audit log and refuses to start. When more than 10
+problems are found, the startup error names all of them but the audit log gets only the
+first 10.
 
 **On every request**, everything is read again and nothing is cached:
 
@@ -273,6 +275,10 @@ no CA, it writes each problem to the audit log and refuses to start.
   refusal is written to the audit log as an `error` event from
   `local secret backend`. Only the entry concerned is affected, unless the policy
   file itself cannot be used, which refuses everything.
+- While the files stay unusable, at most 10 of these `error` entries are written a
+  minute. The rest are counted and written as one `local_backend_errors_held` entry
+  with their number, once a minute, so that reads of unusable files, which
+  `GET /v1/offers` makes three of per call, cannot fill the audit log.
 
 Errors and audit entries name the entry and the setting. They never quote a value,
 a file's content or a line of the policy, and a secret value is held in memory that

@@ -1285,7 +1285,11 @@ What is lost, and cannot be regained by any setting:
   from changing what it hands out or where secrets go, but not a compromised host,
   and warden cannot verify that it was done beyond the file's owner and mode.
 - **No record of edits.** 1Password keeps item history and usage reports. warden
-  audits its own refusals, not who changed a file.
+  audits its own refusals, not who changed a file. While the files are unusable, every
+  read is refused, so beyond 10 `error` entries a minute the refusals are counted in
+  `local_backend_errors_held`, written once a minute, and callers cannot fill the log.
+  A count still held when the server stops is written at shutdown; one lost to a crash
+  costs at most the last minute or two of counts.
 - **Policy and secret are two reads.** With 1Password both come from one read of one
   item. Here, a change touching both files is two steps, and a call can fall between
   them: an old credential could go to a new destination. Writing a new secret under
