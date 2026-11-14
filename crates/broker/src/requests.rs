@@ -43,6 +43,7 @@ pub(crate) use self::transition::{begin, note_if_not_applied, record};
 
 mod bus;
 mod commit_signing;
+mod daily_use;
 mod github_overlap;
 mod github_scope;
 mod github_token;
@@ -57,6 +58,7 @@ mod renewal;
 
 pub use self::bus::StatusBus;
 pub use self::commit_signing::{ActiveCommitSigning, SIGNATURES_PER_DAY};
+pub use self::daily_use::CALLS_PER_DAY;
 pub use self::github_scope::{GithubPending, ReplacedGrant, Resolution, ScopedRepository};
 pub use self::github_token::{ActiveGithubToken, GithubLookup, MINTS_PER_HOUR};
 use self::limits::Refusals;
@@ -457,6 +459,8 @@ pub struct Requests {
     commit_signing_max: Window,
     /// Signatures per commit signing grant per UTC day.
     commit_signing_per_day: u32,
+    /// Proxied calls per API grant per UTC day.
+    proxy_calls_per_day: u32,
     /// Longest GitHub token grant the server allows.
     github_token_max: Window,
     /// GitHub tokens per agent per hour.
@@ -549,6 +553,7 @@ impl Requests {
             refusals: Arc::default(),
             commit_signing_max: Window::COMMIT_SIGNING_DEFAULT,
             commit_signing_per_day: SIGNATURES_PER_DAY,
+            proxy_calls_per_day: CALLS_PER_DAY,
             github_token_max: Window::GITHUB_TOKEN_DEFAULT,
             github_token_per_hour: MINTS_PER_HOUR,
             signing_refusals,
