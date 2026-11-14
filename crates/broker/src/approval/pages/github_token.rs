@@ -81,6 +81,23 @@ fn permissions(set: &PermissionSet, beyond_default: &[Permission]) -> Markup {
     }
 }
 
+/// How `set`, what approving grants, differs from the sets of the grants it ends:
+/// one line "was ..." for each distinct set that is not `set`. A renewal that follows
+/// a changed default shows what the grant held before.
+fn was(set: &PermissionSet, replaces: &[ReplacedGrant]) -> Markup {
+    let mut earlier: Vec<&PermissionSet> = Vec::new();
+    for grant in replaces {
+        if grant.permissions != *set && !earlier.contains(&&grant.permissions) {
+            earlier.push(&grant.permissions);
+        }
+    }
+    html! {
+        @for old in earlier {
+            span.detail { "was " (permission_list(old)) }
+        }
+    }
+}
+
 /// The permissions of `set`, comma separated.
 fn permission_list(set: &PermissionSet) -> Markup {
     html! {
@@ -265,6 +282,7 @@ pub(super) fn access(
         // The pending list has no stored set to show, only the approval page does.
         @if let Some(pending) = pending {
             (permissions(&pending.permissions.full, &pending.permissions.beyond_default))
+            (was(&pending.permissions.full, &pending.replaces))
         }
         (automatic(request))
         span.detail {

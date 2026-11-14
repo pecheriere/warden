@@ -346,6 +346,7 @@ impl Requests {
             Some(scope) => Some(self.current_names(scope).await?),
             None => None,
         };
+        let permissions = self.renewal_permissions(&req.access).await?;
         let token = approval_token()?;
         let link = self.approval_link(&token)?;
         let change = self.recorded_change.lock().await;
@@ -359,7 +360,7 @@ impl Requests {
                 Attached {
                     release: None,
                     resolution: resolution.as_ref(),
-                    permissions: None,
+                    permissions: permissions.as_ref(),
                 },
             )
             .await;

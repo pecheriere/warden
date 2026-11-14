@@ -6,9 +6,12 @@ use warden_broker::requests::{Resolution, ScopedRepository};
 use warden_broker::testkit::TestBroker;
 use warden_broker::testkit::upstream::{HttpsUpstream, Scripted};
 use warden_broker_proto::Window;
-use warden_broker_proto::github_token::NOT_CONFIGURED;
+use warden_broker_proto::github_token::{INSTALLATION_LACKS, NOT_CONFIGURED};
 
-use super::{active_for, approve, configured_on_fake, entries, github_calls, resolved};
+use super::permissions::{WITH_CHECKS, set, set_default};
+use super::{
+    active_for, approve, configured_on_fake, entries, github_calls, installation, resolved,
+};
 
 /// The approval token at the end of `link`.
 fn token_of(link: &str) -> String {
@@ -282,7 +285,8 @@ async fn renewal_copies_names_and_ids() {
         "Renew GitHub token for example-owner/example-repo"
     );
 
-    // Opening the page and approving ask GitHub nothing more.
+    // Opening the page and approving ask GitHub nothing more but what the installation
+    // holds, which `github_calls` leaves out.
     let approved = broker.approve(&token, Window::D30).await;
     assert_eq!(approved.status, StatusCode::OK, "{}", approved.body);
     assert_eq!(github_calls(&upstream).len(), asked);
@@ -362,7 +366,8 @@ async fn renewing_pins_the_ids_of_a_request_already_waiting() {
     );
 
     // Renewing again asks nothing more and writes nothing more, and the page asks
-    // GitHub nothing either.
+    // GitHub nothing either but what the installation holds, which `github_calls`
+    // leaves out.
     let asked = github_calls(&upstream).len();
     let again = renew_unscripted(&broker, &old).await;
     assert_ne!(again, token);
@@ -373,4 +378,117 @@ async fn renewing_pins_the_ids_of_a_request_already_waiting() {
         entries(&broker, "github_repositories_resolved").len(),
         before + 1
     );
+}
+
+const REPO: &str = "example-owner/example-repo";
+
+/// The permissions of the grant `bot` holds for `REPO`.
+async fn held_by_bot(
+    broker: &TestBroker,
+) -> warden_broker_proto::github_permissions::PermissionSet {
+    active_for(broker, "bot", REPO)
+        .await
+        .expect("a grant for the repository")
+        .grant
+        .permissions
+}
+
+#[tokio::test]
+async fn renewal_uses_the_current_default() {
+    let (broker, _key, upstream) = configured_on_fake().await;
+    // Approved before the default had `checks:read`: a legacy grant.
+    let old = approve(&broker, &upstream, "bot", Window::D30).await;
+    assert_eq!(
+        held_by_bot(&broker).await,
+        warden_broker_proto::github_permissions::PermissionSet::legacy()
+    );
+    set_default(&broker, WITH_CHECKS);
+    let token = renew(&broker, &upstream, &old).await;
+    let approved = broker.approve(&token, Window::D30).await;
+    assert_eq!(approved.status, StatusCode::OK, "{}", approved.body);
+    assert_eq!(held_by_bot(&broker).await, set(WITH_CHECKS));
+}
+
+#[tokio::test]
+async fn renewal_of_legacy_grant_with_narrowed_default() {
+    let (broker, _key, upstream) = configured_on_fake().await;
+    let old = approve(&broker, &upstream, "bot", Window::D30).await;
+    set_default(&broker, "contents:read,metadata:read");
+    let token = renew(&broker, &upstream, &old).await;
+    let page = broker.get(&format!("/approve/{token}")).await;
+    assert!(page.body.contains("id=\"approve\""), "{}", page.body);
+    assert!(!page.body.contains("cannot be approved"), "{}", page.body);
+    let approved = broker.approve(&token, Window::D30).await;
+    assert_eq!(approved.status, StatusCode::OK, "{}", approved.body);
+    assert_eq!(
+        held_by_bot(&broker).await,
+        set("contents:read,metadata:read")
+    );
+}
+
+#[tokio::test]
+async fn renewal_page_shows_the_difference() {
+    let (broker, _key, upstream) = configured_on_fake().await;
+    let old = approve(&broker, &upstream, "bot", Window::D30).await;
+    set_default(&broker, WITH_CHECKS);
+    let token = renew(&broker, &upstream, &old).await;
+    let page = broker.get(&format!("/approve/{token}")).await;
+    assert!(page.body.contains("checks: read"), "{}", page.body);
+    assert!(
+        page.body.contains(
+            "was <code class=\"perm\">contents: write</code>, <code class=\"perm\">issues: write</code>"
+        ),
+        "{}",
+        page.body
+    );
+}
+
+#[tokio::test]
+async fn renewal_page_says_nothing_was_when_nothing_differs() {
+    let (broker, _key, upstream) = configured_on_fake().await;
+    let old = approve(&broker, &upstream, "bot", Window::D30).await;
+    let token = renew(&broker, &upstream, &old).await;
+    let page = broker.get(&format!("/approve/{token}")).await;
+    assert!(page.body.contains("contents: write"), "{}", page.body);
+    assert!(!page.body.contains("was <code"), "{}", page.body);
+}
+
+#[tokio::test]
+async fn renewal_is_not_approvable_when_the_installation_lacks_a_permission() {
+    let (broker, _key, upstream) = configured_on_fake().await;
+    let old = approve(&broker, &upstream, "bot", Window::D30).await;
+    set_default(&broker, WITH_CHECKS);
+    upstream.answer_github_installation(Some(installation(&[
+        ("contents", "write"),
+        ("issues", "write"),
+        ("metadata", "read"),
+        ("pull_requests", "write"),
+    ])));
+    let token = renew(&broker, &upstream, &old).await;
+    let page = broker.get(&format!("/approve/{token}")).await;
+    assert!(page.body.contains("cannot be approved"), "{}", page.body);
+    assert!(page.body.contains("checks: read"), "{}", page.body);
+    assert!(!page.body.contains("id=\"approve\""), "{}", page.body);
+    broker.enroll_soft_passkey().await;
+    let refused = broker.begin_approval(&token, Window::D30).await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.body);
+    assert!(
+        refused.body.contains(INSTALLATION_LACKS),
+        "{}",
+        refused.body
+    );
+    // The old grant keeps minting, with what it holds.
+    assert_eq!(minting_with(&broker).await.as_deref(), Some(old.as_str()));
+}
+
+#[tokio::test]
+async fn grants_page_shows_a_renewed_grants_own_set() {
+    let (broker, _key, upstream) = configured_on_fake().await;
+    let old = approve(&broker, &upstream, "bot", Window::D30).await;
+    set_default(&broker, WITH_CHECKS);
+    let token = renew(&broker, &upstream, &old).await;
+    let approved = broker.approve(&token, Window::D30).await;
+    assert_eq!(approved.status, StatusCode::OK, "{}", approved.body);
+    let grants = broker.get("/grants").await;
+    assert!(grants.body.contains("checks: read"), "{}", grants.body);
 }

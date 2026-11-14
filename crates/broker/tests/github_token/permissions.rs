@@ -13,15 +13,15 @@ use super::{active_for, configured_on_fake, entries, installation, resolved};
 const REPO: &str = "example-owner/example-repo";
 
 /// A default wider than the legacy set by `checks:read`.
-const WITH_CHECKS: &str =
+pub(super) const WITH_CHECKS: &str =
     "checks:read,contents:write,issues:write,metadata:read,pull_requests:write";
 
-fn set(text: &str) -> PermissionSet {
+pub(super) fn set(text: &str) -> PermissionSet {
     PermissionSet::parse(text).unwrap()
 }
 
 /// Make `default` the owner's default, with no extras allowed.
-fn set_default(broker: &TestBroker, default: &str) {
+pub(super) fn set_default(broker: &TestBroker, default: &str) {
     broker
         .backend
         .set_github_permissions(Some(GithubPermissionPolicy {

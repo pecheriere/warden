@@ -3,9 +3,9 @@
 //! the approval page is rendered or approved.
 
 use sqlx::{Row as _, SqliteConnection};
-use warden_broker_proto::Id;
 use warden_broker_proto::github_permissions::{Permission, PermissionSet};
 use warden_broker_proto::github_token::{INSTALLATION_LACKS, INSTALLATION_UNREADABLE};
+use warden_broker_proto::{Access, Id};
 
 use super::{RequestError, Requests};
 use crate::github_app;
@@ -166,6 +166,23 @@ impl Requests {
     pub(super) async fn new_github_permissions(&self) -> Result<StoredPermissions, RequestError> {
         let policy = self.backend.github_permissions().await?;
         Ok(StoredPermissions::of_default(&policy))
+    }
+
+    /// The permissions a renewal of a grant to `access` gets: the owner's current
+    /// default, so that renewals follow it and a narrowed default never strands a
+    /// grant stored before permission sets. `None` for access that holds no GitHub
+    /// token permissions.
+    ///
+    /// # Errors
+    /// As [`Self::new_github_permissions`].
+    pub(super) async fn renewal_permissions(
+        &self,
+        access: &Access,
+    ) -> Result<Option<StoredPermissions>, RequestError> {
+        match access {
+            Access::GithubToken(_) => self.new_github_permissions().await.map(Some),
+            _ => Ok(None),
+        }
     }
 
     /// Whether the App's installation holds every permission of `wanted`, asking
