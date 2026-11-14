@@ -258,7 +258,8 @@ change.
   the database means the approval did not take effect, and no certificate left the
   broker.
 - **Written after the fact, and only logged if that fails.** `request_limited`,
-  `limit_notified`, `notified`,
+  `limit_notified`, `notified`, `proxy_call_limit_reached`, `proxy_call_limit_notified`,
+  `proxy_calls_refused_held`,
   `relay_session_ended`, `relay_session_refused` and `relay_login_refused`
   record something that already happened and gave no new access, so nothing can
   be refused any more. The server log has an error when one is lost. A session's
@@ -276,6 +277,24 @@ change.
   or approved, and relay sessions and proxied calls cannot start. A log that stalls
   holds those up until it answers. Ending access goes on as above. Watch
   the disk that holds the log.
+- **The rate of entries is bounded, so that the log cannot be filled quickly.** The log is
+  append-only and never rotated, so an unbounded source of entries would end in the failure
+  above for every agent. Each source below has a bound, and the table gives the most it
+  can write in a day with the defaults. Sizes are measured from a test log: a `proxy_call`
+  line is about 370 bytes (about 410 for a refusal) and `proxy_call_started` about 310, of
+  which about 150 are the sequence number, time and hash chain; a worst case with the longest
+  URL (512 bytes), method and message is about 1.1 KB. Typical is the measured size times the
+  count; worst case is 1.1 KB times the count.
+
+  | Source | Bound | Typical a day | Worst case a day |
+  |---|---|---|---|
+  | Proxied calls sent, per API grant | 10000 calls, 2 entries each (`proxy_call_started` and `proxy_call`) | about 7 MB (10000 × 680 bytes) | about 22 MB (20000 × 1.1 KB) |
+  | Proxied calls refused before they start, per agent | 30 entries a minute, plus 1 `proxy_calls_refused_held` summary a minute | about 18 MB (44640 × 410 bytes) | about 50 MB (44640 × 1.1 KB) |
+
+  Relay entries are bounded separately. Each API grant takes a phone approval, so the
+  per-grant figure multiplies only by the grants the owner approved, and the refused-call
+  figure by the agents. Revoking the agent stops every one of them. The bounds keep the log's growth
+  to a rate an owner can watch, not to nothing: an owner still needs to watch the disk.
 
 ## Authentication of callers
 
@@ -685,6 +704,18 @@ These were recorded during implementation and are accepted for this release.
     redacted and returned, so a response that is cut part-way, which may quote the
     secret, is dropped unread. The agent gets the fixed message, and the audit entry
     holds only the counts.
+- **An API grant has a daily limit of calls**, 10000 per UTC day by default
+  (`WARDEN_PROXY_MAX_CALLS_PER_DAY`), because each call that is sent writes two entries
+  (`proxy_call_started` and `proxy_call`) and a looping agent could otherwise fill the disk
+  that holds the audit log. It is counted per grant in the database, so a restart does not
+  reset it. Past it, calls fail with a 429 until 00:00 UTC and the owner is notified once a
+  day per grant, with `proxy_call_limit_reached` (the grant, the limit) and
+  `proxy_call_limit_notified` entries; other grants go on. A call that `proxy::check`
+  refuses (policy, a changed secret, a concurrent-call limit) does not use the budget, and
+  its entry is limited instead: at most 30 `proxy_call` entries a minute per agent, with the
+  rest counted in one `proxy_calls_refused_held` entry per agent per minute, once the minute
+  is over. A call that was sent always keeps both its entries. The limit bounds the log and
+  does not limit what a grant may do: within it, an agent can make any call the grant allows.
 - **Within the window, the agent can make any allowed call.** Approval is
   bound to an origin, prefix, method set and window, not to individual
   requests. A prompt-injected agent can issue any call the grant permits

@@ -110,7 +110,12 @@ falls short.
   - if the grant state cannot be read for 10 s, relay sessions end
     (`FAIL_CLOSED_AFTER` in [`relay/server.rs`](../crates/broker/src/relay/server.rs));
   - if `proxy_call_started` or `relay_session_started` cannot be written, nothing
-    is sent ([`api.rs`](../crates/broker/src/api.rs), `relay/server/start.rs`);
+    is sent ([`api/proxy_call.rs`](../crates/broker/src/api/proxy_call.rs),
+    `relay/server/start.rs`);
+  - past its daily limit of calls an API grant gets a 429 and nothing is sent, and a call
+    refused before it starts writes at most 30 entries a minute per agent, the rest
+    counted ([`api/proxy_call.rs`](../crates/broker/src/api/proxy_call.rs),
+    [`requests/daily_use.rs`](../crates/broker/src/requests/daily_use.rs));
   - a route that lacks the signature middleware still refuses `Warden-*` headers
     (`AuthedAgent` in [`identity.rs`](../crates/broker/src/identity.rs));
   - `doctor` never counts a check that could not run as passed
