@@ -306,8 +306,9 @@ change.
   where it is accepted: names, ids, digests and fingerprints of a fixed form, fixed phrases,
   a request's summary (a goal of at most 500 characters without control characters, so at
   most 2000 bytes, and a session label of at most 64 characters), and a signed commit's
-  author (at most 1024 bytes without control characters) and at most 64 parent ids. Typical
-  is the measured size times the count; worst case is the longest size times the count.
+  author (at most 1024 bytes without control characters, so at most 2048 once escaped)
+  and at most 64 parent ids. Typical is the measured size times the count; worst case is
+  the longest size times the count.
 
   | Source | Bound | Typical a day | Worst case a day |
   |---|---|---|---|
