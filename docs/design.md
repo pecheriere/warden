@@ -734,7 +734,7 @@ is on screen without scrolling) and land in `<out-dir>/warden-pages/shots`
 (the script deletes and recreates only that subdirectory); keep `<out-dir>`
 outside the repository, as screenshots are never committed.
 
-`scripts/check-grants-live.py <out-dir>` checks the live refresh of the
+`scripts/playwright-run.sh scripts/check-grants-live.py <out-dir>` checks the live refresh of the
 grants and pending pages the same way: it serves their fixtures with mocked
 answers and asserts, in Playwright's Chromium headless shell on virtual time, that a 401 or 403
 stops polling, that a grant missing from the answer loses its card, that a

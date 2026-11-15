@@ -9,8 +9,9 @@
 #   be outside the repository and is not <HOME> or /.
 # Screenshots show the viewport only (what is on screen without scrolling).
 # Needs: cargo, python3, uv. Screenshots come from Playwright's Chromium headless
-# shell (installed with: uv run --with playwright playwright install
-# chromium-headless-shell), never from an installed Chrome.
+# shell (installed with: scripts/playwright-run.sh install), never from an
+# installed Chrome. The Playwright version and dependency date are in
+# scripts/playwright-pin.env, the one place to edit them.
 set -euo pipefail
 
 if [[ $# -ne 1 ]]; then
@@ -19,10 +20,9 @@ if [[ $# -ne 1 ]]; then
 fi
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-base="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$1")"
-home="$(python3 -c 'import os; print(os.path.realpath(os.path.expanduser("~")))')"
+base="$(python3 -I -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$1")"
+home="$(python3 -I -c 'import os; print(os.path.realpath(os.path.expanduser("~")))')"
 out="$base/warden-pages"
-playwright="playwright==1.64.0" # the release that ships headless shell build 1248
 sizes=(320x568 390x844 466x678 678x466 626x890 890x626 1280x800)
 shots="$out/shots"
 
@@ -54,18 +54,26 @@ cleanup() {
 }
 trap cleanup EXIT
 
-port="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
+port="$(python3 -I -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
 python3 -m http.server "$port" --bind 127.0.0.1 --directory "$out" >/dev/null 2>&1 &
 server_pid=$!
 
-# Wait until the server answers.
+# Wait until the server answers; fail if it never does.
+up=""
 for _ in $(seq 1 50); do
-    python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:$port/static/warden.css')" \
-        2>/dev/null && break
+    if python3 -I -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:$port/static/warden.css')" \
+        2>/dev/null; then
+        up=1
+        break
+    fi
     sleep 0.1
 done
+if [[ -z "$up" ]]; then
+    echo "error: the local HTTP server on port $port did not answer within 5 seconds" >&2
+    exit 1
+fi
 
-uv run --no-project --with "$playwright" python3 -I "$root/scripts/screenshot_pages.py" \
+"$root/scripts/playwright-run.sh" "$root/scripts/screenshot_pages.py" \
     "$out" "http://127.0.0.1:$port" "$shots" "${sizes[@]}"
 
 # The two schemes must actually differ, or the dark rendering is not working.

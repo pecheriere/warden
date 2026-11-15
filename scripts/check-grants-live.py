@@ -1,8 +1,9 @@
-#!/usr/bin/env -S uv run --no-project --with playwright==1.64.0 python3 -I
 """Check the live refresh of the grants and pending pages (warden.js) in
 Playwright's Chromium headless shell.
 
-Usage: scripts/check-grants-live.py <out-dir>
+Usage: scripts/playwright-run.sh scripts/check-grants-live.py <out-dir>
+  The wrapper reads the Playwright version from scripts/playwright-pin.env (the
+  one place to edit it); this file is not executable.
   Renders the page fixtures into <out-dir>/warden-live-check/ (the only
   directory the script ever deletes), serves them on 127.0.0.1 with a mocked
   GET /grants/live, and loads the "grants-live" fixture once per scenario:
@@ -37,7 +38,7 @@ Usage: scripts/check-grants-live.py <out-dir>
 The browser runs on virtual time (CDP Emulation.setVirtualTimePolicy), so 30 s
 of polling take about a second. It is launched once and every scenario gets a
 fresh page. Needs: cargo, uv, and the headless shell (installed with:
-uv run --with playwright playwright install chromium-headless-shell). Never an
+scripts/playwright-run.sh install). Never an
 installed Chrome.
 """
 
@@ -56,7 +57,7 @@ from pathlib import Path
 from playwright.sync_api import Error, TimeoutError as PlaywrightTimeout, sync_playwright
 
 ROOT = Path(__file__).resolve().parent.parent
-INSTALL_HINT = "uv run --with playwright playwright install chromium-headless-shell"
+INSTALL_HINT = "scripts/playwright-run.sh install"
 # Real-time limit for one page; a page that keeps reloading never uses up its budget.
 LOAD_TIMEOUT_MS = 60_000
 PAGE = "/grants-live.html"

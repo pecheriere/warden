@@ -2,8 +2,9 @@
 
 Usage: screenshot_pages.py <pages-dir> <base-url> <shots-dir> <WxH>...
   Run by scripts/screenshot-pages.sh, which renders the pages into <pages-dir>
-  and serves them at <base-url>; run it with
-  `uv run --no-project --with playwright==<version> python3 -I`.
+  and serves them at <base-url>; run it with scripts/playwright-run.sh, which
+  reads the Playwright version from scripts/playwright-pin.env (the one place
+  to edit it). Not executable: it is not run directly.
   Launches the browser once, then takes every <pages-dir>/*.html at every size
   in light and dark, as <shots-dir>/<name>-<WxH>-<light|dark>.png at device
   scale 2 and viewport height (what is on screen without scrolling). Each
@@ -17,7 +18,7 @@ from pathlib import Path
 from playwright.sync_api import Error, sync_playwright
 
 SCALE = 2
-INSTALL_HINT = "uv run --with playwright playwright install chromium-headless-shell"
+INSTALL_HINT = "scripts/playwright-run.sh install"
 
 
 def png_size(path):
@@ -54,15 +55,21 @@ def main():
                         color_scheme=mode,
                     )
                     for name in names:
-                        page = context.new_page()
-                        page.goto(f"{base_url}/{name}.html", wait_until="load")
-                        page.evaluate("document.fonts.ready.then(() => true)")
+                        label = f"{name} at {width}x{height} ({mode})"
                         final = shots / f"{name}-{width}x{height}-{mode}.png"
-                        page.screenshot(path=str(final))
-                        page.close()
+                        try:
+                            page = context.new_page()
+                            page.goto(f"{base_url}/{name}.html", wait_until="load")
+                            page.evaluate("document.fonts.ready.then(() => true)")
+                            page.screenshot(path=str(final))
+                            page.close()
+                        except Error as e:
+                            print(f"error: screenshot of {label} failed: "
+                                  f"{e.message.splitlines()[0]}", file=sys.stderr)
+                            return 1
                         got = png_size(final)
                         if got != (width * SCALE, height * SCALE):
-                            print(f"error: {final.name} is {got[0]}x{got[1]}, "
+                            print(f"error: {label}: {final.name} is {got[0]}x{got[1]}, "
                                   f"expected {width * SCALE}x{height * SCALE}", file=sys.stderr)
                             return 1
                     context.close()
