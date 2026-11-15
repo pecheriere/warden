@@ -48,7 +48,7 @@ webauthn-rs = "=0.5.5"
 # Direct dependency only so that the broker's build script can read the version
 # of the OpenSSL it links (webauthn-rs links it).
 openssl-sys = "0.9.117"
-webauthn-authenticator-rs = { version = "=0.5.5", features = ["softpasskey"] }
+webauthn-authenticator-rs = { version = "=0.6.2", features = ["softpasskey"] }
 # Only what parsing public keys needs (`warden-broker-proto` validates
 # signing keys with it); the broker and CLI add the crypto they use.
 # Never turn on its `std`, `crypto`, `rsa` or `p*` features (nor take a crate
