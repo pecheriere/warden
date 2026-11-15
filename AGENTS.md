@@ -40,6 +40,7 @@ is not one: see [Sign-off](#sign-off-dco).
 | `crates/broker` | `warden-broker`: the server (`api`, `approval` UI, `policy` from 1Password, `ssh_ca`, `relay`, `proxy`, `notify`, `audit`, `store`) |
 | `crates/broker/migrations` | SQLite migrations, applied at startup; never edit a released one, add a new file |
 | `crates/broker/src/testkit` | test helpers (throwaway `sshd`, fixtures), behind the `testkit` feature |
+| `crates/hook` | `warden-agent-hook`: the pure detection library behind `warden hook check` (no I/O); fuzzed by the `hook_check` target in `fuzz/` |
 | `crates/cli` | `warden-broker-cli`, the `warden` command agents run |
 | `crates/demo` | `warden-demo`: the throwaway local demo, never in the image, released only as its own archive (`docs/demo.md`) |
 | `docs/` | user and design documentation |

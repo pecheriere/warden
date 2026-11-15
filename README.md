@@ -428,6 +428,7 @@ Report a vulnerability privately as described in [SECURITY.md](SECURITY.md).
 |-----------|-------|------------|
 | `warden-server` | `warden-broker` | The broker: agent API, approval UI, SSH CA, SSH relay, HTTP proxy, notifications, audit log, SQLite state. Runs as a container. |
 | `warden` | `warden-broker-cli` | The agent's CLI: requests access, waits for the decision, keeps the per-grant key in an `ssh-agent`, wraps `ssh` and makes API calls (`warden http`). |
+| | `warden-agent-hook` | The pure detection library behind `warden hook check`: decides whether a shell command goes around warden. No I/O. |
 | | `warden-broker-proto` | The wire types and the request-signing protocol shared by both. |
 
 ## Development
