@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/proto", "crates/broker", "crates/cli", "crates/demo"]
+members = ["crates/proto", "crates/hook", "crates/broker", "crates/cli", "crates/demo"]
 
 [workspace.package]
 version = "0.15.0"
@@ -25,6 +25,7 @@ debug = "line-tables-only"
 [workspace.dependencies]
 # Internal crates
 warden-broker-proto = { path = "crates/proto", version = "0.15.0" }
+warden-agent-hook = { path = "crates/hook", version = "0.15.0" }
 warden-broker = { path = "crates/broker", version = "0.15.0" }
 warden-demo = { path = "crates/demo", version = "0.15.0" }
 

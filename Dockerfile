@@ -14,14 +14,16 @@ RUN scripts/build-openssl.sh "$(rustc -vV | sed -n 's/^host: //p')" /opt/warden-
 ENV OPENSSL_DIR=/opt/warden-openssl OPENSSL_STATIC=1 WARDEN_OPENSSL_PINNED=1
 COPY Cargo.toml Cargo.lock ./
 COPY crates/proto/Cargo.toml crates/proto/
+COPY crates/hook/Cargo.toml crates/hook/
 COPY crates/broker/Cargo.toml crates/broker/build.rs crates/broker/
 COPY crates/cli/Cargo.toml crates/cli/
 # Cargo needs every workspace member's manifest to load the workspace. The demo
 # stays this empty placeholder: .dockerignore keeps its sources out of the build
 # context, and nothing here builds it (scripts/check-demo-not-shipped.sh).
 COPY crates/demo/Cargo.toml crates/demo/
-RUN mkdir -p crates/proto/src crates/broker/src crates/cli/src crates/demo/src \
+RUN mkdir -p crates/proto/src crates/hook/src crates/broker/src crates/cli/src crates/demo/src \
     && : > crates/proto/src/lib.rs \
+    && : > crates/hook/src/lib.rs \
     && : > crates/broker/src/lib.rs \
     && echo 'fn main() {}' > crates/broker/src/main.rs \
     && echo 'fn main() {}' > crates/cli/src/main.rs \

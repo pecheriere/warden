@@ -4523,6 +4523,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "warden-agent-hook"
+version = "0.15.0"
+
+[[package]]
 name = "warden-broker"
 version = "0.15.0"
 dependencies = [
