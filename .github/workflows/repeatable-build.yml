@@ -5,11 +5,13 @@ name: repeatable build
 # script and Dockerfile as release.yml. The image's options differ in two ways: it
 # writes an OCI archive rather than pushing, and it has no provenance, whose times
 # never repeat. docs/reproducing-builds.md says what this does and does not show.
-# It is too slow for every pull request, so a change to the sources alone waits for
-# the weekly run, which also catches a change in the runner images.
+# It is too slow for every pull request, so it runs on main after a change to the
+# build's configuration or dependencies merges, and every night, which also
+# catches a change in the runner images or in the sources alone.
 
 on:
-  pull_request:
+  push:
+    branches: [main]
     paths:
       - .github/workflows/repeatable-build.yml
       - .github/workflows/release.yml
@@ -29,7 +31,7 @@ on:
       - crates/*/build.rs
       - rust-toolchain.toml
   schedule:
-    - cron: '17 4 * * 1'
+    - cron: '17 4 * * *'
   workflow_dispatch:
 
 permissions:

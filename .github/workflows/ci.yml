@@ -13,11 +13,11 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  check:
+  lint:
     runs-on: ubuntu-latest
     # The budgets are listed in AGENTS.md: a change that needs more raises them
-    # there, with the owner's agreement.
-    timeout-minutes: 12
+    # there, with the owner's agreement. This job and test run in parallel.
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -26,11 +26,117 @@ jobs:
         with:
           toolchain: "1.99"
           components: rustfmt, clippy
+      # The build below takes over a minute, so main keeps it in the cache.
+      # The key changes with the pin and the build script, and the script keeps a
+      # restored build only when its stamp names the pinned tarball's hash, the
+      # target and the script's own hash; otherwise it builds again. Only main
+      # writes the entry, so a pull request cannot plant one. This comes before
+      # the Rust cache, so that the environment it sets is there when the Rust
+      # cache computes its key.
+      # Keep this block and its twin in the test job in step.
+      - name: Restore the pinned OpenSSL
+        id: openssl-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/openssl
+          key: openssl-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/openssl-pin.env', 'scripts/build-openssl.sh') }}
+      # So that the build and the tests run against the OpenSSL the server ships with.
+      - name: Build the pinned OpenSSL
+        run: |
+          scripts/build-openssl.sh "$(rustc -vV | sed -n 's/^host: //p')" "$RUNNER_TEMP/openssl"
+          echo "OPENSSL_DIR=$RUNNER_TEMP/openssl" >> "$GITHUB_ENV"
+          echo "OPENSSL_STATIC=1" >> "$GITHUB_ENV"
+          echo "WARDEN_OPENSSL_PINNED=1" >> "$GITHUB_ENV"
+      - name: Save the pinned OpenSSL
+        if: github.ref == 'refs/heads/main' && steps.openssl-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/openssl
+          key: ${{ steps.openssl-cache.outputs.cache-primary-key }}
       # Only main writes the cache, so pull requests cannot evict main's entries
-      # or plant one that main would read; they restore main's.
+      # or plant one that main would read; they restore main's. On an exact hit the
+      # action saves nothing, so a stale entry would stay until Cargo.lock changes:
+      # `key` adds what the build depends on and the action does not see (it hashes
+      # each workspace member's parsed manifest, never the root virtual manifest,
+      # where `[profile.*]` and `[workspace.dependencies]` live), and `env-vars`
+      # adds the pinned OpenSSL's variables to the action's default prefixes in its
+      # environment hash. The prefixes are narrow on purpose:
+      # WARDEN_TEST_LOGIN_PASSWORD is random.
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
+          key: ${{ hashFiles('Cargo.toml', 'rust-toolchain.toml', 'scripts/openssl-pin.env', 'scripts/build-openssl.sh') }}
+          env-vars: OPENSSL WARDEN_OPENSSL
+      - run: cargo fmt --check
+      - name: Refuse a stale fuzz/Cargo.lock
+        run: cargo metadata --locked --manifest-path fuzz/Cargo.toml --format-version 1 > /dev/null
+      - name: Refuse reqwest decompression features
+        run: scripts/check-no-reqwest-decompression.sh
+      - name: Refuse the demo in anything that ships
+        run: scripts/check-demo-not-shipped.sh
+      - name: Test the release signing script
+        run: scripts/test-sign-release.sh
+      - name: Refuse an OpenSSL out of support
+        run: python3 -I .github/scripts/openssl_support.py
+      - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: Build the documentation
+        run: cargo doc --workspace --all-features --no-deps --locked
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  test:
+    runs-on: ubuntu-latest
+    # The budgets are listed in AGENTS.md: a change that needs more raises them
+    # there, with the owner's agreement. This job and lint run in parallel.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@d124f86f28ff42855784ff3319f48ac182c248f8 # 1.99.1
+        with:
+          toolchain: "1.99"
+      # The build below takes over a minute, so main keeps it in the cache.
+      # The key changes with the pin and the build script, and the script keeps a
+      # restored build only when its stamp names the pinned tarball's hash, the
+      # target and the script's own hash; otherwise it builds again. Only main
+      # writes the entry, so a pull request cannot plant one. This comes before
+      # the Rust cache, so that the environment it sets is there when the Rust
+      # cache computes its key.
+      # Keep this block and its twin in the lint job in step.
+      - name: Restore the pinned OpenSSL
+        id: openssl-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/openssl
+          key: openssl-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/openssl-pin.env', 'scripts/build-openssl.sh') }}
+      # So that the build and the tests run against the OpenSSL the server ships with.
+      - name: Build the pinned OpenSSL
+        run: |
+          scripts/build-openssl.sh "$(rustc -vV | sed -n 's/^host: //p')" "$RUNNER_TEMP/openssl"
+          echo "OPENSSL_DIR=$RUNNER_TEMP/openssl" >> "$GITHUB_ENV"
+          echo "OPENSSL_STATIC=1" >> "$GITHUB_ENV"
+          echo "WARDEN_OPENSSL_PINNED=1" >> "$GITHUB_ENV"
+      - name: Save the pinned OpenSSL
+        if: github.ref == 'refs/heads/main' && steps.openssl-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/openssl
+          key: ${{ steps.openssl-cache.outputs.cache-primary-key }}
+      # Only main writes the cache, so pull requests cannot evict main's entries
+      # or plant one that main would read; they restore main's. On an exact hit the
+      # action saves nothing, so a stale entry would stay until Cargo.lock changes:
+      # `key` adds what the build depends on and the action does not see (it hashes
+      # each workspace member's parsed manifest, never the root virtual manifest,
+      # where `[profile.*]` and `[workspace.dependencies]` live), and `env-vars`
+      # adds the pinned OpenSSL's variables to the action's default prefixes in its
+      # environment hash. The prefixes are narrow on purpose:
+      # WARDEN_TEST_LOGIN_PASSWORD is random.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          key: ${{ hashFiles('Cargo.toml', 'rust-toolchain.toml', 'scripts/openssl-pin.env', 'scripts/build-openssl.sh') }}
+          env-vars: OPENSSL WARDEN_OPENSSL
       # A prebuilt binary, checked against the hash in the action's manifest at this
       # commit, and nothing else: no fallback to building or another source.
       - uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
@@ -66,50 +172,10 @@ jobs:
           sudo mount --bind "$mounted/source.toml" "$mounted/mounted.toml"
           echo "WARDEN_TEST_BIND_MOUNT_SOURCE=$mounted/source.toml" >> "$GITHUB_ENV"
           echo "WARDEN_TEST_BIND_MOUNTED_FILE=$mounted/mounted.toml" >> "$GITHUB_ENV"
-      - run: cargo fmt --check
-      - name: Refuse a stale fuzz/Cargo.lock
-        run: cargo metadata --locked --manifest-path fuzz/Cargo.toml --format-version 1 > /dev/null
-      - name: Refuse reqwest decompression features
-        run: scripts/check-no-reqwest-decompression.sh
-      - name: Refuse the demo in anything that ships
-        run: scripts/check-demo-not-shipped.sh
-      - name: Test the release signing script
-        run: scripts/test-sign-release.sh
-      - name: Refuse an OpenSSL out of support
-        run: python3 -I .github/scripts/openssl_support.py
-      # The build below takes over a minute, so main keeps it in the cache.
-      # The key changes with the pin and the build script, and the script keeps a
-      # restored build only when its stamp names the pinned tarball's hash, the
-      # target and the script's own hash; otherwise it builds again. Only main
-      # writes the entry, so a pull request cannot plant one.
-      - name: Restore the pinned OpenSSL
-        id: openssl-cache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ runner.temp }}/openssl
-          key: openssl-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/openssl-pin.env', 'scripts/build-openssl.sh') }}
-      # So that the tests run against the OpenSSL the server ships with.
-      - name: Build the pinned OpenSSL
-        run: |
-          scripts/build-openssl.sh "$(rustc -vV | sed -n 's/^host: //p')" "$RUNNER_TEMP/openssl"
-          echo "OPENSSL_DIR=$RUNNER_TEMP/openssl" >> "$GITHUB_ENV"
-          echo "OPENSSL_STATIC=1" >> "$GITHUB_ENV"
-          echo "WARDEN_OPENSSL_PINNED=1" >> "$GITHUB_ENV"
-      - name: Save the pinned OpenSSL
-        if: github.ref == 'refs/heads/main' && steps.openssl-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ runner.temp }}/openssl
-          key: ${{ steps.openssl-cache.outputs.cache-primary-key }}
-      - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       # nextest runs the test binaries in parallel and lists every failure
       # (.config/nextest.toml: no fail-fast, no retries); it does not run doctests.
       - run: cargo nextest run --workspace --all-features --locked
       - run: cargo test --doc --workspace --all-features --locked
-      - name: Build the documentation
-        run: cargo doc --workspace --all-features --no-deps --locked
-        env:
-          RUSTDOCFLAGS: -D warnings
 
   coverage:
     # Measures and reports, and fails below 80% of lines (#97). On pull requests
@@ -134,10 +200,15 @@ jobs:
           rustup toolchain install
           rustup component add llvm-tools
       # Only main writes the cache, so pull requests cannot evict main's entries
-      # or plant one that main would read; they restore main's.
+      # or plant one that main would read; they restore main's. `key` adds what the
+      # build depends on and the action does not hash (it sees only the dependencies
+      # of each Cargo.toml, not its profiles), so that a stale entry is replaced
+      # rather than kept until Cargo.lock changes. This job builds with the
+      # system's OpenSSL, so it needs no pin in the key.
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
+          key: ${{ hashFiles('Cargo.toml', 'rust-toolchain.toml') }}
       # From crates.io at a fixed version and with its own lockfile. Dependabot
       # does not see this version: raise it by hand, to a release at least 7
       # days old.
@@ -149,7 +220,7 @@ jobs:
         with:
           tool: cargo-nextest@0.9.151
           fallback: none
-      # The same setup as the check job, for the Linux-only relay tests: they
+      # The same setup as the test job, for the Linux-only relay tests: they
       # fail without it, and the number means little without them. Keep the two
       # in step. A shared composite action cannot hold it: zizmor refuses a
       # GITHUB_ENV write there, where it cannot see the workflow's triggers.
@@ -251,7 +322,8 @@ jobs:
     # cache, like the release build. Each binary builds on its own runner.
     name: ${{ matrix.product }} (${{ matrix.platform }})
     runs-on: ${{ matrix.runner }}
-    # One budget for every product: the demo on macOS is the slowest.
+    # One budget for every product; the demo on macOS, the slowest, is its own job
+    # below, which pull requests skip.
     timeout-minutes: 11
     strategy:
       fail-fast: false
@@ -269,10 +341,6 @@ jobs:
             platform: linux-arm64
             target: aarch64-unknown-linux-musl
             runner: ubuntu-24.04-arm
-          - product: demo
-            platform: macos-arm64
-            target: aarch64-apple-darwin
-            runner: macos-15
           - product: demo
             platform: linux-amd64
             target: x86_64-unknown-linux-musl
@@ -341,6 +409,36 @@ jobs:
           tar -xzf "dist/$file" -C "$RUNNER_TEMP"
           scripts/test-systemd-unit-docker.sh "$RUNNER_TEMP/${file%.tar.gz}/warden-server"
 
+  # The demo on macOS is the slowest of the binaries, and the demo never ships
+  # through a pull request, so it builds on main and on a release only. A job-level
+  # `if` cannot read the matrix, hence this job rather than a matrix entry: keep
+  # its steps in step with the binaries job's, minus the ones for other products.
+  # Not required, and not in critical-path: a pull request does not run it.
+  demo-macos:
+    name: demo (macos-arm64)
+    if: github.event_name != 'pull_request'
+    runs-on: macos-15
+    timeout-minutes: 11
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@d124f86f28ff42855784ff3319f48ac182c248f8 # 1.99.1
+        with:
+          toolchain: "1.99"
+      # In the checkout, so the target lands on the toolchain rust-toolchain.toml
+      # selects, which the action's `targets` input does not reach.
+      - name: Add the build target
+        run: |
+          rustup toolchain install
+          rustup target add aarch64-apple-darwin
+      - name: Build and pack the binary
+        run: scripts/package-binary.sh demo aarch64-apple-darwin macos-arm64 dist
+      - name: Check what the archive holds
+        run: |
+          file=$(python3 -I .github/scripts/collect_archives.py name demo macos-arm64)
+          python3 -I .github/scripts/collect_archives.py check demo macos-arm64 "dist/$file"
+
   image:
     name: image (${{ matrix.platform }})
     runs-on: ${{ matrix.runner }}
@@ -402,7 +500,7 @@ jobs:
   # workflows (dco, zizmor, dependency-review, CodeQL) are not in it: a job can
   # only wait for jobs of its own workflow.
   critical-path:
-    needs: [check, deny, crate-age, binaries, image]
+    needs: [lint, test, deny, crate-age, binaries, image]
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -428,7 +526,7 @@ jobs:
           python3 -I .github/scripts/ci_time.py --budget-minutes 10 \
             --run "$RUNNER_TEMP/run.json" --jobs "$RUNNER_TEMP/jobs.jsonl" \
             --summary "$GITHUB_STEP_SUMMARY" \
-            --require check --require deny --require crate-age \
+            --require lint --require test --require deny --require crate-age \
             --require "cli (linux-amd64)" --require "cli (linux-arm64)" \
             --require "cli (macos-arm64)" \
             --require "image (linux/amd64)" --require "image (linux/arm64)"
@@ -437,7 +535,7 @@ jobs:
   # keep one issue open while main's CI fails. It links the run, which holds the
   # details. Not on a release, which calls this workflow for a tag.
   report-red-main:
-    needs: [check, coverage, deny, binaries, image]
+    needs: [lint, test, coverage, deny, binaries, demo-macos, image]
     if: >-
       always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
       && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
