@@ -15,7 +15,7 @@ use warden_broker::requests::{
 use warden_broker::testkit::{FakeBackend, TestBroker};
 use warden_broker_proto::{AgentName, Id, RequestStatus, Window};
 
-use warden_broker::testkit::wait::HANG;
+use warden_broker::testkit::wait::{HANG, within_hang};
 
 /// How long a change waits for its held entries here: shorter than the real 2 s,
 /// so that these tests do not wait it out. The append is held throughout, so the
@@ -206,7 +206,7 @@ async fn the_agent_revoke_command_path_commits_and_answers_with_appends_held() {
     .await
     .expect("writing the entries waited for the audit log");
     assert_eq!(written.outcome, AuditOutcome::Missing);
-    assert!(stall.holding() >= 2);
+    within_hang("the write's own append held", stall.until_holding(2)).await;
     assert_ne!(requests::unwritten_entries(pool).await.unwrap().len(), 0);
 
     drop(stall);

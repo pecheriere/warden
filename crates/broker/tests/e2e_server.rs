@@ -424,7 +424,7 @@ async fn sweep_loop_expires_pending_requests_and_stops_on_shutdown() {
             if row.0 == "expired" {
                 break;
             }
-            tokio::task::yield_now().await;
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
     })
     .await;

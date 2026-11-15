@@ -47,7 +47,8 @@ async fn thirty_days_is_for_signing_only() {
     let begin = broker.begin_approval(&token, Window::D30).await;
     assert_eq!(begin.status, StatusCode::BAD_REQUEST, "{}", begin.body);
     // A policy cannot say so either.
-    assert!("30d".parse::<Window>().is_err());
+    let err = "30d".parse::<Window>().unwrap_err();
+    assert!(err.to_string().contains("must be one of"), "{err}");
 }
 
 #[tokio::test]

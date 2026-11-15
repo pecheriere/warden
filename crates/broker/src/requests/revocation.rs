@@ -213,10 +213,7 @@ async fn write_bounded(
         Ok(Ok(Err(e))) => (Some(e.to_string()), i64::MAX),
         Ok(Err(e)) => (Some(e.to_string()), i64::MAX),
         Err(_) => (
-            Some(format!(
-                "the audit log did not answer within {} s",
-                wait.as_secs()
-            )),
+            Some(format!("the audit log did not answer within {wait:?}")),
             i64::MAX,
         ),
     };
