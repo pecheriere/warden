@@ -1112,12 +1112,18 @@ happens, so a broken hook never stops the agent.
 - `warden hook check` reads a `PreToolUse` event for a shell command on
   standard input and prints the hook's answer when the command goes around
   warden: a use of `ssh` or an API warden covers, the owner's SSH key, a secret
-  store, a token warden holds, or the owner's own GitHub login. It prints nothing
+  store, or a token warden holds. It prints nothing
   for any other command. It makes no network call: it reads the offers cache
   that `session-start` wrote, which counts as stale after 24 hours, and answers
   within the hook's 2 second timeout. What each case does (`block`, `ask`,
   `warn` or `off`) is set in the `[hook]` table: see
-  [The `[hook]` table](configuration.md#the-hook-table).
+  [The `[hook]` table](configuration.md#the-hook-table). The signals about
+  covered SSH hosts, covered APIs and uncovered hosts need the cache: with none,
+  or one older than 24 hours, they are not raised.
+
+The hook catches honest mistakes. It is not a security boundary: the agent runs
+as the same user and can edit the configuration or obfuscate a command.
+Warden's boundary stays that the agent never holds the secret or the key.
 
 ## Instructions to give an agent
 

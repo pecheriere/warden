@@ -38,7 +38,7 @@ pub const AGENT_KEY_ENV: &str = "WARDEN_AGENT_KEY";
 const KEYCHAIN_SERVICE: &str = "warden-broker";
 
 /// Where the broker is and which agent this machine acts as.
-// Not `Eq`: the raw `[hook]` table can hold floats.
+// Not `Eq`: the raw `hook` value can hold floats.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Config {
     /// Base URL of the broker's agent API.
@@ -48,10 +48,12 @@ pub struct Config {
     /// How a key-signed agent signs; absent for a bearer-key agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ssh_key: Option<SshKeyConfig>,
-    /// The raw `[hook]` table. It is kept unparsed so that `warden login`,
-    /// which rewrites the file, preserves it; `hook::settings` reads it.
+    /// The raw `hook` value, normally a table. It is kept unparsed, and as any
+    /// value, so that a wrong one never makes the whole file unloadable and
+    /// `warden login`, which rewrites the file, preserves it; `hook::settings`
+    /// reads and reports it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hook: Option<toml::Table>,
+    pub hook: Option<toml::Value>,
 }
 
 /// The signing key of a key-signed agent and the broker it signs for.
@@ -575,5 +577,23 @@ mod tests {
         .unwrap();
         let err = format!("{:#}", load_from(&path).unwrap_err());
         assert!(err.contains("must use https"), "{err}");
+    }
+
+    #[test]
+    fn hook_value_that_is_not_a_table_keeps_the_config_loadable_and_is_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "server = \"https://warden.example.ts.net/\"\nagent = \"bot\"\nhook = \"off\"\n",
+        )
+        .unwrap();
+        let config = load_from(&path).unwrap();
+        assert!(config.hook.is_some());
+        let check = crate::hook::settings::doctor_check(&config).expect("a check is reported");
+        assert!(check.detail.contains("must be a table"), "{}", check.detail);
+        let saved = dir.path().join("saved.toml");
+        save_to(&saved, &config).unwrap();
+        assert_eq!(load_from(&saved).unwrap(), config);
     }
 }

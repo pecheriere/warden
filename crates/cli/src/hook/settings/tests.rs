@@ -73,3 +73,14 @@ fn config_over_the_cap_gives_defaults_and_no_note() {
     assert_eq!(note, None);
     assert_ne!(settings.get(Signal::SecretStore), Setting::Off);
 }
+
+#[test]
+fn hook_value_that_is_not_a_table_gives_defaults_and_a_note() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    std::fs::write(&path, format!("{BASE}hook = \"off\"\n")).unwrap();
+    let (settings, note) = load_from(&path);
+    let note = note.expect("a note");
+    assert!(note.contains("must be a table"), "{note}");
+    assert_ne!(settings.get(Signal::SecretStore), Setting::Off);
+}

@@ -17,7 +17,7 @@ const CHECK: &str = "hook.settings";
 /// A failed check carrying the note when the `[hook]` table of `config` is
 /// invalid, and nothing when it is valid or absent.
 pub fn doctor_check(config: &Config) -> Option<Check> {
-    let (_, note) = Settings::from_table(config.hook.as_ref());
+    let (_, note) = from_value(config.hook.as_ref());
     note.map(|note| {
         Check::fail(
             CHECK,
@@ -26,6 +26,19 @@ pub fn doctor_check(config: &Config) -> Option<Check> {
              defaults apply.",
         )
     })
+}
+
+/// The settings of the `hook` value of the configuration, and the note when
+/// it is not a table or the table is invalid.
+fn from_value(value: Option<&toml::Value>) -> (Settings, Option<String>) {
+    match value {
+        None => Settings::from_table(None),
+        Some(toml::Value::Table(table)) => Settings::from_table(Some(table)),
+        Some(_) => (
+            Settings::default(),
+            Some("invalid [hook] setting: it must be a table; using the defaults".to_owned()),
+        ),
+    }
 }
 
 /// The settings from the CLI's configuration file, and the note about an
@@ -44,7 +57,7 @@ fn load_from(path: &Path) -> (Settings, Option<String>) {
     // The hook has a 2 s budget: a pipe, a device or a huge file at the path
     // must not hold it up, so only a small regular file is read.
     let config = read_small(path).and_then(|raw| parse(&raw).ok());
-    Settings::from_table(config.as_ref().and_then(|c| c.hook.as_ref()))
+    from_value(config.as_ref().and_then(|c| c.hook.as_ref()))
 }
 
 #[cfg(test)]

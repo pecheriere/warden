@@ -3,7 +3,7 @@
 //! rules file for this machine, and it saves the offers the broker answered for
 //! `warden hook check`. It exits 0 whatever happens.
 
-use std::io::{Read, Write};
+use std::io::{Read as _, Write as _};
 use std::path::Path;
 
 use crate::config;
@@ -18,7 +18,10 @@ const RULES_CAP: usize = 8 * 1024;
 /// the whole output stays under this.
 const OUTPUT_CAP_CHARS: usize = 9_500;
 const HEADING: &str = "\n## The owner's rules for this machine\n\n";
+/// Ends the rules when the file is longer than `RULES_CAP`.
 const CUT_NOTE: &str = "\n(cut: the file is longer than 8 KiB)\n";
+/// Ends the rules when only the output limit cut them.
+const OUTPUT_CUT_NOTE: &str = "\n(cut: the output limit was reached)\n";
 /// Printed in place of the rules when the output limit leaves no room for them.
 const LEFT_OUT: &str = "\nwarden: the owner's rules were left out: the output limit was reached.\n";
 const UNREADABLE: &str = "warden: the owner's rules file cannot be read.";
@@ -67,6 +70,11 @@ fn render(brief: &str, config_dir: Option<&Path>) -> String {
             let heading = HEADING.chars().count();
             // The final newline a file lacks is added, so it counts.
             let newline = usize::from(!text.ends_with('\n'));
+            let note = if longer || text.len() > RULES_CAP {
+                CUT_NOTE
+            } else {
+                OUTPUT_CUT_NOTE
+            };
             if !longer
                 && text.len() <= RULES_CAP
                 && heading + text.chars().count() + newline <= room
@@ -77,12 +85,12 @@ fn render(brief: &str, config_dir: Option<&Path>) -> String {
                     out.push('\n');
                 }
             } else if let Some(avail) = room
-                .checked_sub(heading + CUT_NOTE.chars().count())
+                .checked_sub(heading + note.chars().count())
                 .filter(|a| *a > 0)
             {
                 out.push_str(HEADING);
                 out.push_str(cut(&text, avail));
-                out.push_str(CUT_NOTE);
+                out.push_str(note);
             } else {
                 push_within(&mut out, LEFT_OUT);
             }
@@ -138,7 +146,7 @@ fn read_rules(path: &Path) -> Rules {
         Ok(meta) if meta.is_file() => {}
         _ => return Rules::Unreadable,
     }
-    let Ok(file) = std::fs::File::open(path) else {
+    let Some(file) = super::files::open_regular(path) else {
         return Rules::Unreadable;
     };
     let mut bytes = Vec::new();

@@ -1,8 +1,8 @@
 //! The offers cache: what `warden hook check` reads instead of calling the
-//! broker. `warden prime` and `warden list` write it, `<state>/offers-cache.json`
-//! at mode 0600, and a copy older than 24 hours is not used.
+//! broker. `warden hook session-start` writes it, `<state>/offers-cache.json` at
+//! mode 0600, and a copy older than 24 hours is not used.
 
-use std::io::Read;
+use std::io::Read as _;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -12,6 +12,7 @@ use anyhow::{Context, Result};
 use serde_json::Value;
 use warden_broker_proto::offers::Offers;
 
+use super::files::open_regular;
 use crate::agent::{state_dir, state_dir_path};
 use crate::client::read_offer;
 
@@ -82,13 +83,11 @@ fn write_temp(temp: &Path, offers_json: &Value) -> Result<()> {
 
 /// [`read`] from `path`.
 fn read_from(path: &Path, now: SystemTime) -> Option<Offers> {
-    // A first look without opening, so that a FIFO is never waited on.
-    if !std::fs::metadata(path).ok()?.is_file() {
-        return None;
-    }
-    let file = std::fs::File::open(path).ok()?;
+    // Opened without blocking and type-checked before and after, so that a
+    // FIFO is never waited on, even if the path is swapped meanwhile.
+    let file = open_regular(path)?;
     let meta = file.metadata().ok()?;
-    if !meta.is_file() || meta.len() > MAX_BYTES {
+    if meta.len() > MAX_BYTES {
         return None;
     }
     // A modification time after `now` counts as fresh; a clock error as stale.
@@ -98,6 +97,8 @@ fn read_from(path: &Path, now: SystemTime) -> Option<Offers> {
     {
         return None;
     }
+    // The size above can be stale if the file grows while it is read: the read
+    // is capped too, and a body over the cap is refused.
     let mut body = Vec::new();
     file.take(MAX_BYTES + 1).read_to_end(&mut body).ok()?;
     if u64::try_from(body.len()).ok()? > MAX_BYTES {

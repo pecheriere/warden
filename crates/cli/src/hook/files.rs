@@ -18,7 +18,21 @@ pub const MAX_BYTES: u64 = 64 * 1024;
 /// without blocking, so a FIFO never holds the hook up.
 #[must_use]
 pub fn read_small(path: &Path) -> Option<String> {
-    // Looked at before it is opened: opening a device can have effects.
+    let file = open_regular(path)?;
+    let mut body = Vec::new();
+    file.take(MAX_BYTES + 1).read_to_end(&mut body).ok()?;
+    if u64::try_from(body.len()).ok()? > MAX_BYTES {
+        return None;
+    }
+    String::from_utf8(body).ok()
+}
+
+/// The regular file at `path`, opened for reading without blocking, or `None`
+/// when it is missing, unreadable or not a regular file. The type is looked at
+/// before the open (opening a device can have effects) and again on the opened
+/// file, so that a swap for a FIFO between the two is caught.
+#[must_use]
+pub fn open_regular(path: &Path) -> Option<std::fs::File> {
     if !is_regular_file(path) {
         return None;
     }
@@ -28,15 +42,7 @@ pub fn read_small(path: &Path) -> Option<String> {
         .custom_flags(flags)
         .open(path)
         .ok()?;
-    if !file.metadata().ok()?.is_file() {
-        return None;
-    }
-    let mut body = Vec::new();
-    file.take(MAX_BYTES + 1).read_to_end(&mut body).ok()?;
-    if u64::try_from(body.len()).ok()? > MAX_BYTES {
-        return None;
-    }
-    String::from_utf8(body).ok()
+    file.metadata().ok()?.is_file().then_some(file)
 }
 
 /// Whether `path`, links followed, is a regular file. Nothing is opened.

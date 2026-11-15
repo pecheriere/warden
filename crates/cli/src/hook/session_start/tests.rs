@@ -1,6 +1,8 @@
 use std::os::unix::fs::PermissionsExt;
 
-use super::{CUT_NOTE, HEADING, LEFT_OUT, OUTPUT_CAP_CHARS, RULES_FILE, UNREADABLE, render};
+use super::{
+    CUT_NOTE, HEADING, LEFT_OUT, OUTPUT_CAP_CHARS, OUTPUT_CUT_NOTE, RULES_FILE, UNREADABLE, render,
+};
 
 const BRIEF: &str = "warden brief\nSSH: build-agent\n";
 
@@ -57,7 +59,8 @@ fn output_stays_under_the_session_start_cap_with_a_long_brief() {
     let dir = dir_with(&"x".repeat(8 * 1024));
     let out = render(&brief, Some(dir.path()));
     assert!(out.chars().count() <= OUTPUT_CAP_CHARS, "{}", out.len());
-    assert!(out.ends_with(CUT_NOTE));
+    // The file is exactly 8 KiB: only the output limit cut it.
+    assert!(out.ends_with(OUTPUT_CUT_NOTE));
     assert!(out.contains('x'));
 }
 
@@ -107,7 +110,8 @@ fn a_file_one_char_over_the_room_is_cut_within_the_cap() {
     let dir = dir_with(&rules);
     let out = render(&brief, Some(dir.path()));
     assert!(out.chars().count() <= OUTPUT_CAP_CHARS);
-    assert!(out.ends_with(CUT_NOTE));
+    assert!(out.ends_with(OUTPUT_CUT_NOTE));
+    assert!(!out.contains("8 KiB"));
 }
 
 #[test]

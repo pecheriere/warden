@@ -1,5 +1,6 @@
-//! The agent hook: `[hook]` settings now, the checks and adapters in later
-//! modules.
+//! The agent hook behind `warden hook check` and `warden hook session-start`:
+//! the `[hook]` settings, the offers cache, the small-file reader and the
+//! command's checks, Claude Code adapter and session-start output.
 
 pub mod cache;
 pub mod check;

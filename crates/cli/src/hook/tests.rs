@@ -23,7 +23,8 @@ fn login_rewrite_keeps_hook_table() {
     save_to(&out, &config).unwrap();
     let reloaded = load_existing_from(&out).unwrap().unwrap();
     assert_eq!(reloaded.hook, config.hook);
-    let (settings, note) = Settings::from_table(reloaded.hook.as_ref());
+    let (settings, note) =
+        Settings::from_table(reloaded.hook.as_ref().and_then(toml::Value::as_table));
     assert_eq!(note, None);
     assert_eq!(settings.get(Signal::CoveredSsh), Setting::Warn);
 }

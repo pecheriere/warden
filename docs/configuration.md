@@ -408,7 +408,7 @@ user decides), `warn` (let it run, with a note to the model) or `off`.
 | `secret-store` | `ask` | A command reads a secret store, such as `op`. |
 | `token-read` | `ask` | A command reads a token that warden holds. |
 | `uncovered-host` | `warn` | A command reaches a host that warden does not cover. |
-| `owner-github` | `warn` | A command uses the owner's own GitHub login. |
+| `owner-github` | `warn` | Accepted, but nothing raises it yet: a later release adds the check for a command that uses the owner's own GitHub login. |
 
 ```toml
 [hook]
@@ -417,9 +417,18 @@ owner-github = "ask"
 ```
 
 A key left out has its default. An invalid table (an unknown key or value, or a
-table that is not a table) is not used at all: every key then has its default,
+`hook` that is not a table) is not used at all: every key then has its default,
 the hook says so, and `warden doctor` reports it under `hook.settings` with
-what to fix. A bad table never turns protection off.
+what to fix. The rest of the file still loads, and `warden login` keeps the
+value as it is.
+
+The hook catches honest mistakes. It is not a security boundary: the agent runs
+as the same user, so it can edit this file or obfuscate a command. Warden's
+boundary stays that the agent never holds the secret or the key.
+
+`covered-ssh`, `covered-api` and `uncovered-host` need the offers cache that
+`warden hook session-start` writes. With no cache, an unreadable one or one
+older than 24 hours, they are not raised; the other signals do not depend on it.
 
 The owner's rules for this machine go in `agent-rules.md` next to `config.toml`
 (`~/.config/warden/agent-rules.md`, or `$XDG_CONFIG_HOME/warden/agent-rules.md`).
@@ -438,6 +447,7 @@ rules further. A file that cannot be read prints one line saying so.
 | `WARDEN_AGENT_KEY` | A bearer key. Takes precedence over the Keychain. The only way to give a bearer key on Linux. |
 | `SSH_AUTH_SOCK` | The `ssh-agent` holding the signing key, unless `--ssh-agent-socket` was given at login. |
 | `$XDG_STATE_HOME/warden` (Linux default `~/.local/state/warden`, macOS `~/Library/Application Support/warden`) | Grant records, the `known_hosts` files of grants, and `github-token.json`, the cached [GitHub tokens](github-app.md#what-the-agent-holds), one per repository (file version 2; a version 1 file is ignored and replaced; mode 0600, for one agent and broker, each served only while it has 5 minutes left). Mode 0700. |
+| `$XDG_STATE_HOME/warden/offers-cache.json` | What the broker offered, written by `warden hook session-start` for `warden hook check` (mode 0600). Not used once it is older than 24 hours. |
 | `$TMPDIR/warden-<uid>/` | The sockets of the per-grant `ssh-agent`s (a short path, as Unix socket paths are limited). Mode 0700. |
 
 On Linux, `warden login` cannot store a bearer key (there is no Keychain).

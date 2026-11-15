@@ -1,5 +1,6 @@
 //! End to end: `warden hook check` from the real `warden` binary, fed a Claude
-//! Code `PreToolUse` event on standard input. The environment is a throwaway
+//! Code `PreToolUse` event on standard input, and `warden hook session-start`
+//! without a broker. The environment is a throwaway
 //! one: `HOME`, the XDG directories and `TMPDIR` all point into a temporary
 //! directory, so nothing here reads the configuration of whoever runs it.
 
@@ -52,8 +53,16 @@ impl Env {
     }
 
     fn check(&self, stdin: &[u8]) -> Output {
+        self.run("check", stdin)
+    }
+
+    fn session_start(&self) -> Output {
+        self.run("session-start", b"")
+    }
+
+    fn run(&self, subcommand: &str, stdin: &[u8]) -> Output {
         let mut child = Command::new(env!("CARGO_BIN_EXE_warden"))
-            .args(["hook", "check"])
+            .args(["hook", subcommand])
             .env_clear()
             .env("HOME", self.path("home"))
             .env("XDG_CONFIG_HOME", self.path("config"))
@@ -255,4 +264,32 @@ fn reading_the_cache_creates_no_state_directory() {
     fs::remove_dir(env.path("state/warden")).unwrap();
     assert_silent(&env.check(&bash_event("ssh switch-01.example.internal", None)));
     assert!(!env.path("state/warden").exists());
+}
+
+#[test]
+fn session_start_without_a_config_prints_the_not_set_up_line_then_the_rules() {
+    let env = Env::new();
+    fs::write(
+        env.path("config/warden/agent-rules.md"),
+        "Never use home-api without asking.\n",
+    )
+    .unwrap();
+    let out = env.session_start();
+    assert!(out.status.success(), "exit {:?}", out.status);
+    assert!(out.stderr.is_empty(), "stderr is not empty");
+    let text = std::str::from_utf8(&out.stdout).unwrap();
+    let not_set_up = text
+        .find("warden is installed here but not set up")
+        .expect("the not-set-up line");
+    let heading = text
+        .find("## The owner's rules for this machine")
+        .expect("the rules heading");
+    let rules = text
+        .find("Never use home-api without asking.")
+        .expect("the rules");
+    assert!(not_set_up < heading && heading < rules, "{text}");
+    assert!(
+        !env.path("state/warden/offers-cache.json").exists(),
+        "no broker answered, so no cache"
+    );
 }
