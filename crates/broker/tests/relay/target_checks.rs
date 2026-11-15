@@ -90,7 +90,7 @@ async fn relay_refuses_unbound_key_and_inactive_grant() {
     for user in [TARGET, "nosuch", "pi", "<invalid>"] {
         assert!(users.contains(&user), "{users:?}");
     }
-    let log = std::fs::read_to_string(s.broker.audit_path()).unwrap();
+    let log = warden_broker::testkit::audit_text(s.broker.audit_path());
     for key in [&stranger, &agent.key, &late.key] {
         let public = key.public_key().to_openssh().unwrap();
         let base64 = public.split(' ').nth(1).unwrap();

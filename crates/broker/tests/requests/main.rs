@@ -244,13 +244,9 @@ async fn row_count(pool: &SqlitePool, table: &str) -> i64 {
 }
 
 fn audit_types(h: &Harness) -> Vec<String> {
-    std::fs::read_to_string(&h.audit_path)
-        .unwrap()
-        .lines()
-        .map(|l| {
-            let v: Value = serde_json::from_str(l).unwrap();
-            v["event"]["type"].as_str().unwrap().to_owned()
-        })
+    warden_broker::testkit::audit_entries(&h.audit_path)
+        .iter()
+        .map(|v| v["event"]["type"].as_str().unwrap().to_owned())
         .collect()
 }
 

@@ -349,7 +349,7 @@ async fn api_calls(s: &Setup, cli: &SignedCli) {
     )
     .await;
     assert!(text(&api.stdout).starts_with("approved: grant "));
-    let log = fs::read_to_string(s.broker.audit_path()).unwrap();
+    let log = warden_broker::testkit::audit_text(s.broker.audit_path());
     assert!(log.contains(r#""session":"e2e-session""#), "{log}");
     let call = cli.run(&["http", SECRET_NAME, "GET", &s.upstream.url("/hello")]);
     assert_eq!(call.status.code(), Some(0), "{}", text(&call.stderr));

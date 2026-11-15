@@ -1,8 +1,6 @@
 //! GitHub token grants: requests, windows and the approval pages. The App's key
 //! is a throwaway one; time only moves through the broker's manual clock.
 
-use std::fs;
-
 use serde_json::Value;
 use warden_broker::github_app::GithubApi;
 use warden_broker::requests::{ActiveGithubToken, Clock as _, GithubLookup};
@@ -181,10 +179,5 @@ async fn active_for(
 
 /// Every audit entry of type `kind`, oldest first.
 fn entries(broker: &TestBroker, kind: &str) -> Vec<Value> {
-    fs::read_to_string(broker.audit_path())
-        .unwrap()
-        .lines()
-        .map(|line| serde_json::from_str::<Value>(line).unwrap()["event"].clone())
-        .filter(|event| event["type"] == kind)
-        .collect()
+    broker.audit_events(kind)
 }

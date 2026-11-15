@@ -168,7 +168,7 @@ async fn backend_unavailable_at_call_time_is_a_fixed_503() {
     let calls = proxy_calls(&s.broker);
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0]["outcome"], "secret backend unavailable");
-    let log = std::fs::read_to_string(s.broker.audit_path()).unwrap();
+    let log = warden_broker::testkit::audit_text(s.broker.audit_path());
     assert!(!log.contains("10.9.8.7"));
     assert_eq!(
         audit_events(&s.broker, &["proxy_call_started"]),

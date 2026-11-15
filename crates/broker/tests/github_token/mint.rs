@@ -345,7 +345,7 @@ async fn backend_failure_is_503_with_a_fixed_message() {
         "secret backend unavailable",
     );
     assert!(!resp.body.contains("vault"), "{}", resp.body);
-    let log = std::fs::read_to_string(broker.audit_path()).unwrap();
+    let log = warden_broker::testkit::audit_text(broker.audit_path());
     assert!(!log.contains("vault.internal"), "{log}");
     assert!(mint_calls(&upstream).is_empty());
 }
@@ -372,7 +372,7 @@ async fn audit_never_contains_token_or_jwt() {
             .unwrap()
             .contains("eyJ")
     }));
-    let log = std::fs::read_to_string(broker.audit_path()).unwrap();
+    let log = warden_broker::testkit::audit_text(broker.audit_path());
     assert!(!log.contains("ghs_test"), "{log}");
     assert!(!log.contains("eyJ"), "{log}");
 }
@@ -544,7 +544,7 @@ async fn mint_refuses_github_answer_for_other_id() {
         entries(&broker, "github_token_refused")[0]["grant_id"],
         grant
     );
-    let log = std::fs::read_to_string(broker.audit_path()).unwrap();
+    let log = warden_broker::testkit::audit_text(broker.audit_path());
     assert!(!log.contains("ghs_"), "{log}");
 }
 

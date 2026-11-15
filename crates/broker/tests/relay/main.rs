@@ -264,10 +264,10 @@ fn text(bytes: &[u8]) -> String {
 
 /// Audit entries (their `event` objects), oldest first.
 fn audit_events(broker: &TestBroker) -> Vec<Value> {
-    std::fs::read_to_string(broker.audit_path())
-        .unwrap()
-        .lines()
-        .map(|line| serde_json::from_str::<Value>(line).unwrap()["event"].clone())
+    broker
+        .audit_entries()
+        .iter()
+        .map(|entry| entry["event"].clone())
         .collect()
 }
 
@@ -280,19 +280,7 @@ fn events_of(broker: &TestBroker, kind: &str) -> Vec<Value> {
 
 /// Wait until the audit log holds `count` entries of `kind`.
 async fn await_events(broker: &TestBroker, kind: &str, count: usize) -> Vec<Value> {
-    let deadline = Instant::now() + HANG;
-    loop {
-        let found = events_of(broker, kind);
-        if found.len() >= count {
-            return found;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "{count} {kind} entries never appeared: {:?}",
-            audit_events(broker)
-        );
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    broker.wait_for_audit_kind(kind, count).await
 }
 
 /// Every connection of the broker's pool, so that a query now waits for one

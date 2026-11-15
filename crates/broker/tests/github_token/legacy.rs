@@ -68,10 +68,10 @@ async fn ending_unscoped_is_idempotent() {
     let (broker, _key, _grant, _pending) = upgraded().await;
     let requests = broker.state().requests.clone();
     assert_eq!(requests.end_unscoped_github().await.unwrap(), 2);
-    let written = std::fs::read_to_string(broker.audit_path()).unwrap();
+    let written = warden_broker::testkit::audit_text(broker.audit_path());
     assert_eq!(requests.end_unscoped_github().await.unwrap(), 0);
     assert_eq!(
-        std::fs::read_to_string(broker.audit_path()).unwrap(),
+        warden_broker::testkit::audit_text(broker.audit_path()),
         written,
         "nothing more is written"
     );

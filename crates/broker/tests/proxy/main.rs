@@ -212,10 +212,10 @@ fn assert_response_clean(resp: &TestResponse, secret: &str) {
 
 /// Audit events of the given types, oldest first.
 fn audit_events(broker: &TestBroker, types: &[&str]) -> Vec<Value> {
-    std::fs::read_to_string(broker.audit_path())
-        .unwrap()
-        .lines()
-        .map(|line| serde_json::from_str::<Value>(line).unwrap()["event"].clone())
+    broker
+        .audit_entries()
+        .iter()
+        .map(|entry| entry["event"].clone())
         .filter(|event| types.iter().any(|t| event["type"] == *t))
         .collect()
 }

@@ -77,5 +77,5 @@ ca_pem = """
 
 /// What the backend wrote to the audit log.
 pub fn backend_audit(files: &Files) -> String {
-    fs::read_to_string(files.root.join("backend-audit.jsonl")).unwrap()
+    warden_broker::testkit::audit_text(&files.root.join("backend-audit.jsonl"))
 }

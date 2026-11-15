@@ -493,7 +493,7 @@ async fn agent_cancels_pending_request() {
             .audit_types()
             .contains(&"request_cancelled".to_owned())
     );
-    let audit = std::fs::read_to_string(broker.audit_path()).unwrap();
+    let audit = warden_broker::testkit::audit_text(broker.audit_path());
     assert!(
         audit.contains(&format!(
             r#""type":"request_cancelled","id":"{}","agent":"bot""#,

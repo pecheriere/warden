@@ -176,7 +176,7 @@ async fn api_request_notifies_and_approves() {
     let types = broker.audit_types();
     assert!(types.contains(&"approved".to_owned()), "{types:?}");
     assert!(!types.contains(&"cert_issued".to_owned()), "{types:?}");
-    let audit = std::fs::read_to_string(broker.audit_path()).unwrap();
+    let audit = warden_broker::testkit::audit_text(broker.audit_path());
     assert!(!audit.contains(API_CREDENTIAL));
     let stored: Vec<String> = sqlx::query("SELECT view FROM grants")
         .fetch_all(&broker.state().pool)

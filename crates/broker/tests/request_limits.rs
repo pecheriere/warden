@@ -5,7 +5,6 @@ use axum::http::StatusCode;
 use serde_json::{Value, json};
 use warden_broker::notify::Doorbell;
 use warden_broker::requests::RequestLimits;
-use warden_broker::testkit::wait::HANG;
 use warden_broker::testkit::{CapturingNotifier, TestBroker, TestResponse};
 use warden_broker_proto::Window;
 
@@ -74,13 +73,10 @@ fn limit_notices(broker: &TestBroker) -> Vec<Doorbell> {
 
 /// The `request_limited` entries of the audit log, as (agent, pending, rate).
 fn limited_entries(broker: &TestBroker) -> Vec<(String, u64, u64)> {
-    std::fs::read_to_string(broker.audit_path())
-        .unwrap()
-        .lines()
-        .map(|line| serde_json::from_str::<Value>(line).unwrap())
-        .filter(|line| line["event"]["type"] == "request_limited")
-        .map(|line| {
-            let event = &line["event"];
+    broker
+        .audit_events("request_limited")
+        .iter()
+        .map(|event| {
             (
                 event["agent"].as_str().unwrap().to_owned(),
                 event["pending"].as_u64().unwrap(),
@@ -250,12 +246,10 @@ async fn the_owner_is_told_once_and_refusals_cannot_fill_the_audit_log() {
     assert!(!rung[0].message.contains("triage"), "{rung:?}");
     assert_eq!(rung[0].url.path(), "/history");
     assert_eq!(limited_entries(&broker), [("build-agent".to_owned(), 1, 0)]);
-    let types = broker.audit_types();
-    assert_eq!(
-        types.iter().filter(|t| *t == "limit_notified").count(),
-        1,
-        "{types:?}"
-    );
+    // The `limit_notified` entry follows the doorbell, so wait for it; a second
+    // one would come from the same refusals, which have all been answered.
+    let notified = broker.wait_for_audit_kind("limit_notified", 1).await;
+    assert_eq!(notified.len(), 1, "{notified:?}");
 
     // Refusals held back come out with the next entry, a minute on.
     broker.clock.advance(60);
@@ -362,13 +356,7 @@ async fn a_failed_audit_write_still_refuses_and_the_count_is_written_later() {
 
 /// Wait until the audit log holds `count` entries of `kind`.
 async fn wait_for_audit_entries(broker: &TestBroker, kind: &str, count: usize) {
-    tokio::time::timeout(HANG, async {
-        while broker.audit_types().iter().filter(|t| *t == kind).count() < count {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("audit entries within 5 s");
+    broker.wait_for_audit_kind(kind, count).await;
 }
 
 #[tokio::test]

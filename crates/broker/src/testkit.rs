@@ -3,6 +3,7 @@
 //!
 //! Compiled only with the `testkit` feature; never part of a release build.
 
+mod audit;
 mod backend;
 mod broker;
 mod clock;
@@ -14,6 +15,7 @@ pub mod upstream;
 
 /// Waiting on a condition, bounded by one hang guard.
 pub use crate::test_wait as wait;
+pub use audit::{audit_entries, audit_events, audit_text, wait_for_audit, wait_for_audit_kind};
 pub use backend::{CaState, FakeBackend};
 pub use broker::{BaseUrls, LiveHold, TestBroker, TestResponse, request_signature};
 pub use clock::ManualClock;

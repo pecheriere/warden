@@ -94,7 +94,7 @@ async fn every_call_audited_without_secret() {
                "url": format!("{origin}/v1/hello")})
     );
 
-    let log = std::fs::read_to_string(s.broker.audit_path()).unwrap();
+    let log = warden_broker::testkit::audit_text(s.broker.audit_path());
     assert!(!log.contains("agent-query-value"));
     assert_clean(&log, SECRET, "audit log");
     assert_clean(&log, ROTATED, "audit log");
@@ -246,8 +246,7 @@ async fn an_overlong_header_name_does_not_make_an_overlong_entry() {
         outcome.starts_with("header refused: \"x-forwarded-aaa"),
         "{outcome}"
     );
-    let line = std::fs::read_to_string(s.broker.audit_path())
-        .unwrap()
+    let line = warden_broker::testkit::audit_text(s.broker.audit_path())
         .lines()
         .find(|line| line.contains("\"proxy_call\""))
         .unwrap()

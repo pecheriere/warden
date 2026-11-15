@@ -112,24 +112,12 @@ fn assert_no_secret_on_disk(cli: &Cli, secrets: &[&str]) {
 
 /// The broker's audit events of type `kind`, oldest first.
 fn audit_events(broker: &TestBroker, kind: &str) -> Vec<Value> {
-    std::fs::read_to_string(broker.audit_path())
-        .unwrap()
-        .lines()
-        .map(|line| serde_json::from_str::<Value>(line).unwrap()["event"].clone())
-        .filter(|e| e["type"] == kind)
-        .collect()
+    broker.audit_events(kind)
 }
 
 /// Wait until the audit log holds an event of type `kind`.
 async fn await_audit_events(broker: &TestBroker, kind: &str) -> Vec<Value> {
-    let deadline = Instant::now() + HANG;
-    loop {
-        let found = audit_events(broker, kind);
-        if !found.is_empty() || Instant::now() >= deadline {
-            return found;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    broker.wait_for_audit_kind(kind, 1).await
 }
 
 #[tokio::test(flavor = "multi_thread")]

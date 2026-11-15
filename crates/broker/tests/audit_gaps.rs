@@ -35,10 +35,10 @@ fn repair_audit_log(broker: &TestBroker, good: &[u8]) {
 }
 
 fn audit_events(broker: &TestBroker) -> Vec<Value> {
-    std::fs::read_to_string(broker.audit_path())
-        .unwrap()
-        .lines()
-        .map(|line| serde_json::from_str::<Value>(line).unwrap()["event"].clone())
+    broker
+        .audit_entries()
+        .iter()
+        .map(|entry| entry["event"].clone())
         .collect()
 }
 
@@ -237,7 +237,7 @@ async fn making_an_enrollment_code_is_audited_without_the_code() {
     assert_eq!(events.len(), 1, "{events:?}");
     assert_eq!(events[0]["type"], "enrollment_code_created");
     assert_eq!(events[0]["expires_at"], broker.clock.now() + 600);
-    let log = std::fs::read_to_string(broker.audit_path()).unwrap();
+    let log = warden_broker::testkit::audit_text(broker.audit_path());
     assert!(!log.contains(&code), "{log}");
     assert!(!log.contains(&sha256_hex(&code)), "{log}");
 }
@@ -347,7 +347,7 @@ async fn the_owner_can_revoke_an_api_grant_when_the_log_cannot_be_written() {
     assert_eq!(bell.url.path(), "/grants");
 
     // Nothing was added to the log: the entry really is missing.
-    let good = std::fs::read_to_string(broker.audit_path()).unwrap();
+    let good = warden_broker::testkit::audit_text(broker.audit_path());
     let lines = good.lines().count();
     assert_eq!(lines, entries + 1, "only the line added to break it");
 }

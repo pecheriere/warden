@@ -239,7 +239,7 @@ async fn login_grant_lookup_is_bounded() {
     let refused = await_events(&s.broker, "relay_login_refused", 1).await;
     assert_eq!(refused[0]["user"], TARGET, "{refused:?}");
     assert_eq!(refused[0]["attempts"], 1, "{refused:?}");
-    let log = std::fs::read_to_string(s.broker.audit_path()).unwrap();
+    let log = warden_broker::testkit::audit_text(s.broker.audit_path());
     let public = agent.key.public_key().to_openssh().unwrap();
     assert!(!log.contains(public.split(' ').nth(1).unwrap()));
     assert!(

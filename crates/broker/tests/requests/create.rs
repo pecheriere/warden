@@ -539,21 +539,9 @@ async fn a_long_notification_error_is_cut_in_its_entry() {
         message.contains(&reason),
         "the request keeps the whole error"
     );
-    let entry = tokio::time::timeout(HANG, async {
-        loop {
-            let found = std::fs::read_to_string(&h.audit_path)
-                .unwrap()
-                .lines()
-                .map(|l| serde_json::from_str::<Value>(l).unwrap()["event"].clone())
-                .find(|e| e["type"] == "notify_failed");
-            if let Some(entry) = found {
-                break entry;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("the entry was written");
+    let entry = warden_broker::testkit::wait_for_audit_kind(&h.audit_path, "notify_failed", 1)
+        .await
+        .remove(0);
     let recorded = entry["reason"].as_str().unwrap();
     let kept = recorded
         .strip_suffix(" (truncated)")
@@ -583,14 +571,13 @@ async fn notified_audit_names_the_channel_that_delivered() {
         .unwrap();
     wait_for(&mut rx, &created.id).await;
     capture.next().await;
-    let channels: Vec<String> = std::fs::read_to_string(&h.audit_path)
-        .unwrap()
-        .lines()
-        .filter_map(|l| {
-            let v: Value = serde_json::from_str(l).unwrap();
-            (v["event"]["type"] == "notified").then(|| v["event"]["channel"].to_string())
-        })
-        .collect();
+    // The capturing notifier answered, but the `notified` entry follows it.
+    let channels: Vec<String> =
+        warden_broker::testkit::wait_for_audit_kind(&h.audit_path, "notified", 1)
+            .await
+            .iter()
+            .map(|event| event["channel"].to_string())
+            .collect();
     assert_eq!(channels, [r#""capture""#]);
 }
 

@@ -239,7 +239,7 @@ async fn the_documented_flow_works_with_real_checks() {
     assert!(!post.status.success(), "{}", text(&post));
 
     // The audit log shows it all, and the chain holds.
-    let log = std::fs::read_to_string(demo.audit_path()).unwrap();
+    let log = warden_broker::testkit::audit_text(&demo.audit_path());
     for event in [
         "request_created",
         "passkey_enrolled",
