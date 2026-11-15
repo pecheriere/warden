@@ -359,6 +359,8 @@ cargo install --locked --git https://github.com/pecheriere/warden --tag v0.15.0 
 | `warden doctor [--strict]` | Checks this machine's setup and says what to fix. See [Checking an agent machine](#checking-an-agent-machine). |
 | `warden list [--json] [--repo <owner/name>]` | Shows what this agent may ask the broker for: SSH targets and users, API secrets, and whether GitHub tokens (with the default permissions and the extras that may be asked for, a sensitive one marked), commit signing and releases are available. In a checkout whose `origin` is on `github.com`, or with `--repo`, it adds what applies to that repository. Asks no one and changes nothing. `--json` prints `{"offers": …, "repository": …}`, the broker's answers as it sent them. Exits 1 when the broker cannot be reached, refuses the login, fails or is too old to answer; a repository answer that fails is a `could not be read` line, not an error. See [What warden offers here](agent-usage.md#what-warden-offers-here). |
 | `warden prime [--brief]` | Prints instructions for an agent: when and how to ask warden for access, from the copy of [Instructions for an agent](agent-instructions.md) built into the CLI, with what this broker offers in place of the list and only the sections for what it offers. In a checkout whose `origin` is on `github.com` it adds what applies to that repository. `--brief` prints the short form for a session-start hook and does not ask about the repository. Gives the broker 3 seconds in all and always exits 0: when the broker cannot be reached, does not answer in time, cannot read its policy, refuses the call or is too old, it prints the rules and a line saying which; with no configuration, one line saying warden is not set up. See [Instructions to give an agent](agent-usage.md#instructions-to-give-an-agent). |
+| `warden hook check` | Reads a Claude Code `PreToolUse` event on standard input and, when the shell command goes around warden, prints the hook's answer (deny, ask or a note), by the `[hook]` settings. Makes no network call, reads the offers cache and answers within the hook's 2 s timeout, and exits 0 whatever happens. See [The `[hook]` table](#the-hook-table) and [Agent hooks](agent-usage.md#agent-hooks). |
+| `warden hook session-start` | Prints what `warden prime --brief` prints, then the owner's rules file, and saves what the broker offers for `warden hook check`. Keeps `prime`'s 3 s broker limit and always exits 0. See [Agent hooks](agent-usage.md#agent-hooks). |
 | `warden status` | Lists the grants on this machine, and the broker's view of this agent's grants and pending requests. |
 | `warden revoke <grant>` | Revokes a grant on the broker and stops its local `ssh-agent`. |
 
@@ -383,6 +385,7 @@ exits 7 when nothing failed but a check could not run.
 | `broker.accepts-agent` | The broker accepts one authenticated `GET /v1/grants`. A 4xx answer is a failure. | The credential is not available, or the broker is unreachable or answers 5xx. |
 | `github.token` | Git does not take GitHub credentials from warden here, or it does and warden's helper is the only one git asks for `https://github.com` (every `credential.helper` and every `credential.<url>.helper` that git matches to some `https://github.com` URL, a repository's or an owner's path included, in order, an empty value dropping those before it), it is this warden's, `credential.https://github.com.useHttpPath` is true (so git sends the repository), and the broker answers. It passes with no grant yet: the first `git` or `gh` call to GitHub asks the owner. A second helper, another warden, `useHttpPath` not true, or a 4xx from the broker is a failure. | Git cannot run or cannot read its configuration, a helper names warden in a form doctor cannot read, the credential is not available, or the broker is unreachable or answers 5xx. |
 | `git.signing` | Git does not sign through warden here, or it does and all of it is right, with an active grant. A setting that does not match, or no grant, is a failure: commits would fail. | The credential is not available, or the broker is unreachable or answers 5xx. |
+| `hook.settings` | Only present when the `[hook]` table is invalid, and then a failure: see [The `[hook]` table](#the-hook-table). | Never. |
 | `version` | Never. | Always: the broker does not publish its version. Doctor prints the CLI's, to compare with `warden-server --version`. |
 
 Because of `version`, a working machine exits 0, and 7 with `--strict`.
@@ -391,14 +394,60 @@ It changes nothing on the machine: unlike every other command, it does not even
 clean up ended grants first. The broker handles its `GET /v1/grants` like any
 other authenticated call, which for a signed call means recording the nonce.
 
+### The `[hook]` table
+
+`warden hook check` decides each way around warden by a setting in the `[hook]`
+table of `config.toml`. Each key takes `block` (deny the command), `ask` (the
+user decides), `warn` (let it run, with a note to the model) or `off`.
+
+| Key | Default | The command it applies to |
+|-----|---------|---------------------------|
+| `covered-ssh` | `block` | A command reaches a host that warden covers over SSH, going around `warden ssh`. |
+| `covered-api` | `block` | A command calls an API that warden covers, going around `warden http`. |
+| `owner-ssh-key` | `ask` | A command uses the owner's own SSH key. |
+| `secret-store` | `ask` | A command reads a secret store, such as `op`. |
+| `token-read` | `ask` | A command reads a token that warden holds. |
+| `uncovered-host` | `warn` | A command reaches a host that warden does not cover. |
+| `owner-github` | `warn` | Accepted, but nothing raises it yet: a later release adds the check for a command that uses the owner's own GitHub login. |
+
+```toml
+[hook]
+covered-ssh = "block"
+owner-github = "ask"
+```
+
+A key left out has its default. An invalid table (an unknown key or value, or a
+`hook` that is not a table) is not used at all: every key then has its default,
+the hook says so, and `warden doctor` reports it under `hook.settings` with
+what to fix. The rest of the file still loads, and `warden login` keeps the
+value as it is.
+
+The hook catches honest mistakes. It is not a security boundary: the agent runs
+as the same user, so it can edit this file or obfuscate a command. Warden's
+boundary stays that the agent never holds the secret or the key.
+
+`covered-ssh`, `covered-api` and `uncovered-host` need the offers cache that
+`warden hook session-start` writes. With no cache, an unreadable one or one
+older than 24 hours, they are not raised; the other signals do not depend on it.
+
+The owner's rules for this machine go in `agent-rules.md` next to `config.toml`
+(`~/.config/warden/agent-rules.md`, or `$XDG_CONFIG_HOME/warden/agent-rules.md`).
+`warden hook session-start` prints its first 8 KiB after the brief, under the
+heading "The owner's rules for this machine", and a note when it cut the file.
+The whole output stays under 9,500 characters, because Claude Code replaces a
+longer `SessionStart` output with a file path, so a long brief shortens the
+rules further. A file that cannot be read prints one line saying so.
+
 ### CLI environment and files
 
 | Name | Meaning |
 |------|---------|
 | `~/.config/warden/config.toml` (or `$XDG_CONFIG_HOME/warden/config.toml`) | The server URL, the agent name and, for a key-signed agent, the public key, the `ssh-agent` socket and the pinned audience. Mode 0600; nothing secret. |
+| `~/.config/warden/agent-rules.md` (or under `$XDG_CONFIG_HOME`) | The owner's rules for this machine, printed by `warden hook session-start`: [The `[hook]` table](#the-hook-table). |
 | `WARDEN_AGENT_KEY` | A bearer key. Takes precedence over the Keychain. The only way to give a bearer key on Linux. |
 | `SSH_AUTH_SOCK` | The `ssh-agent` holding the signing key, unless `--ssh-agent-socket` was given at login. |
 | `$XDG_STATE_HOME/warden` (Linux default `~/.local/state/warden`, macOS `~/Library/Application Support/warden`) | Grant records, the `known_hosts` files of grants, and `github-token.json`, the cached [GitHub tokens](github-app.md#what-the-agent-holds), one per repository (file version 2; a version 1 file is ignored and replaced; mode 0600, for one agent and broker, each served only while it has 5 minutes left). Mode 0700. |
+| `$XDG_STATE_HOME/warden/offers-cache.json` | What the broker offered, written by `warden hook session-start` for `warden hook check` (mode 0600). Not used once it is older than 24 hours. |
 | `$TMPDIR/warden-<uid>/` | The sockets of the per-grant `ssh-agent`s (a short path, as Unix socket paths are limited). Mode 0700. |
 
 On Linux, `warden login` cannot store a bearer key (there is no Keychain).

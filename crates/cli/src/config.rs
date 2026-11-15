@@ -38,7 +38,8 @@ pub const AGENT_KEY_ENV: &str = "WARDEN_AGENT_KEY";
 const KEYCHAIN_SERVICE: &str = "warden-broker";
 
 /// Where the broker is and which agent this machine acts as.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+// Not `Eq`: the raw `hook` value can hold floats.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Config {
     /// Base URL of the broker's agent API.
     pub server: Url,
@@ -47,6 +48,12 @@ pub struct Config {
     /// How a key-signed agent signs; absent for a bearer-key agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ssh_key: Option<SshKeyConfig>,
+    /// The raw `hook` value, normally a table. It is kept unparsed, and as any
+    /// value, so that a wrong one never makes the whole file unloadable and
+    /// `warden login`, which rewrites the file, preserves it; `hook::settings`
+    /// reads and reports it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hook: Option<toml::Value>,
 }
 
 /// The signing key of a key-signed agent and the broker it signs for.
@@ -181,8 +188,15 @@ pub fn load() -> Result<Config> {
 }
 
 fn load_from(path: &Path) -> Result<Config> {
-    let raw = fs::read_to_string(path)?;
-    let config: Config = toml::from_str(&raw)?;
+    parse(&fs::read_to_string(path)?)
+}
+
+/// The configuration in `raw`, checked as [`load`] checks a file.
+///
+/// # Errors
+/// If `raw` is not a valid configuration.
+pub(crate) fn parse(raw: &str) -> Result<Config> {
+    let config: Config = toml::from_str(raw)?;
     check_server_url(&config.server)?;
     if let Some(ssh_key) = &config.ssh_key {
         check_root_url(&config.server)?;
@@ -248,7 +262,7 @@ pub fn save(config: &Config) -> Result<PathBuf> {
 }
 
 /// Write `config` to `path` atomically: mode 0600, parent created 0700.
-fn save_to(path: &Path, config: &Config) -> Result<()> {
+pub(crate) fn save_to(path: &Path, config: &Config) -> Result<()> {
     let dir = path.parent().context("configuration path has no parent")?;
     fs::DirBuilder::new()
         .recursive(true)
@@ -378,6 +392,7 @@ mod tests {
             server: url("https://warden.example.ts.net/"),
             agent: "bot".parse().unwrap(),
             ssh_key: None,
+            hook: None,
         }
     }
 
@@ -562,5 +577,23 @@ mod tests {
         .unwrap();
         let err = format!("{:#}", load_from(&path).unwrap_err());
         assert!(err.contains("must use https"), "{err}");
+    }
+
+    #[test]
+    fn hook_value_that_is_not_a_table_keeps_the_config_loadable_and_is_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "server = \"https://warden.example.ts.net/\"\nagent = \"bot\"\nhook = \"off\"\n",
+        )
+        .unwrap();
+        let config = load_from(&path).unwrap();
+        assert!(config.hook.is_some());
+        let check = crate::hook::settings::doctor_check(&config).expect("a check is reported");
+        assert!(check.detail.contains("must be a table"), "{}", check.detail);
+        let saved = dir.path().join("saved.toml");
+        save_to(&saved, &config).unwrap();
+        assert_eq!(load_from(&saved).unwrap(), config);
     }
 }

@@ -59,6 +59,7 @@ fn context() -> Context {
         coverage: Some(coverage()),
         aliases,
         warden_socket_dir: PathBuf::from("/tmp/warden-501"),
+        warden_socket_dir_real: None,
         read_small_file: Box::new(|_: &Path| None),
     }
 }

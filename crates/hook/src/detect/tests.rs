@@ -9,9 +9,24 @@ use super::{Match, check};
 use crate::context::{ApiCover, Context, Coverage, SshAliases, SshCover};
 use crate::settings::{Setting, Settings, Signal};
 
-const WARDEN_CONFIG: &str = "Host switch-01\n  HostName switch-01.example.internal\n  User \
-build-agent\n  IdentityFile none\n  IdentityAgent /tmp/warden-501/abc.sock\n  IdentitiesOnly \
-yes\n";
+/// What `warden ssh-config switch-01` prints for a relay grant (see
+/// `crates/cli/src/ssh_config.rs`, `block`, and `ssh::connection`), with
+/// throwaway paths.
+const WARDEN_CONFIG: &str = "\
+# warden grant 0123456789ab for switch-01, not_after=1800000000 (2027-01-15T08:00:00Z)
+Host switch-01
+  HostName switch-01.example.internal
+  Port 22
+  User switch-01
+  IdentityAgent \"/tmp/warden-501/abc.sock\"
+  IdentityFile none
+  IdentitiesOnly no
+  UserKnownHostsFile \"/tmp/warden-state/grants/abc/known_hosts\"
+  StrictHostKeyChecking yes
+  PasswordAuthentication no
+  KbdInteractiveAuthentication no
+  ForwardAgent no
+";
 
 fn coverage() -> Coverage {
     Coverage {
@@ -45,6 +60,7 @@ fn context(covered: bool) -> Context {
         coverage: covered.then(coverage),
         aliases,
         warden_socket_dir: PathBuf::from("/tmp/warden-501"),
+        warden_socket_dir_real: None,
         read_small_file: Box::new(move |p: &Path| files.get(p).cloned()),
     }
 }

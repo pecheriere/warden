@@ -124,6 +124,10 @@ pub struct Context {
     pub aliases: SshAliases,
     /// The directory warden's agent sockets live in.
     pub warden_socket_dir: PathBuf,
+    /// The same directory with symbolic links resolved (on macOS `$TMPDIR`
+    /// is `/var/folders/...` and its real path `/private/var/folders/...`),
+    /// when the CLI could tell. Sockets under it count as warden's too.
+    pub warden_socket_dir_real: Option<PathBuf>,
     /// Reads a small file as text; the 64 KiB cap is the reader's job.
     pub read_small_file: Box<FileReader>,
 }
@@ -137,29 +141,11 @@ impl Context {
     /// an empty, `/` or relative socket directory exempts nothing.
     #[must_use]
     pub fn is_warden_socket(&self, path: &str) -> bool {
-        let Some(dir) = self.warden_socket_dir.to_str() else {
-            return false;
-        };
-        let dir = collapse_slashes(dir);
-        let dir = dir.trim_end_matches('/');
-        if !dir.starts_with('/') || has_parent_dir(dir) {
-            return false;
-        }
-        let expanded = match tmpdir_rest(path) {
-            Some(rest) => {
-                let parent = dir.rsplit_once('/').map_or("", |(parent, _)| parent);
-                format!("{parent}/{rest}")
-            }
-            None => path.to_owned(),
-        };
-        let expanded = collapse_slashes(&expanded);
-        let Some(rest) = expanded
-            .strip_prefix(dir)
-            .and_then(|rest| rest.strip_prefix('/'))
-        else {
-            return false;
-        };
-        !rest.is_empty() && !has_parent_dir(&expanded) && !has_parent_dir(path)
+        under_dir(&self.warden_socket_dir, path)
+            || self
+                .warden_socket_dir_real
+                .as_deref()
+                .is_some_and(|dir| under_dir(dir, path))
     }
 
     /// Whether `file` is an SSH config of the shape `warden ssh-config`
@@ -179,6 +165,34 @@ impl Context {
         warden_hosts(&text, &|agent| self.is_warden_socket(agent))
             .is_some_and(|hosts| hosts.contains(&host))
     }
+}
+
+/// Whether `path` is under `dir`, by the rules of
+/// [`Context::is_warden_socket`].
+fn under_dir(dir: &Path, path: &str) -> bool {
+    let Some(dir) = dir.to_str() else {
+        return false;
+    };
+    let dir = collapse_slashes(dir);
+    let dir = dir.trim_end_matches('/');
+    if !dir.starts_with('/') || has_parent_dir(dir) {
+        return false;
+    }
+    let expanded = match tmpdir_rest(path) {
+        Some(rest) => {
+            let parent = dir.rsplit_once('/').map_or("", |(parent, _)| parent);
+            format!("{parent}/{rest}")
+        }
+        None => path.to_owned(),
+    };
+    let expanded = collapse_slashes(&expanded);
+    let Some(rest) = expanded
+        .strip_prefix(dir)
+        .and_then(|rest| rest.strip_prefix('/'))
+    else {
+        return false;
+    };
+    !rest.is_empty() && !has_parent_dir(&expanded) && !has_parent_dir(path)
 }
 
 /// `text` with every run of `/` made one.

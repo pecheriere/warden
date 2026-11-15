@@ -16,10 +16,17 @@ use crate::sign::{self, Signer};
 
 pub(crate) fn login(server: Url, agent: AgentName) -> Result<()> {
     config::check_server_url(&server)?;
+    // An unreadable old configuration is replaced as before; only its
+    // `[hook]` table is carried over.
+    let hook = config::load_existing()
+        .ok()
+        .flatten()
+        .and_then(|old| old.hook);
     let config = Config {
         server,
         agent,
         ssh_key: None,
+        hook,
     };
     let key = if std::io::stdin().is_terminal() {
         eprint!("agent key for {}: ", config.agent);
@@ -129,6 +136,7 @@ pub(crate) async fn login_with_key(login: KeyLogin) -> Result<()> {
             agent_socket,
             audience: audience.clone(),
         }),
+        hook: previous.as_ref().and_then(|old| old.hook.clone()),
     };
     let path = config::save(&config)?;
     eprintln!(

@@ -138,6 +138,11 @@ pub(crate) enum Cmd {
         #[arg(long)]
         brief: bool,
     },
+    /// Run by an agent's hooks, never by hand.
+    Hook {
+        #[command(subcommand)]
+        what: HookCmd,
+    },
     /// Show local grants, and the broker's view of this agent's grants and
     /// pending requests.
     Status,
@@ -202,6 +207,19 @@ pub(crate) enum GithubCmd {
         #[arg(last = true, requires = "gh_args")]
         args: Vec<OsString>,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum HookCmd {
+    /// Read a Claude Code `PreToolUse` event on standard input and print the
+    /// hook's answer when the shell command goes around warden. Makes no
+    /// network call, and exits 0 whatever happens.
+    Check,
+    /// Print what `warden prime --brief` prints and, after it, the owner's rules
+    /// file (`agent-rules.md` next to the configuration), for a Claude Code
+    /// `SessionStart` hook. Saves the offers the broker answered for `hook
+    /// check`, and exits 0 whatever happens.
+    SessionStart,
 }
 
 #[derive(Debug, Subcommand)]
