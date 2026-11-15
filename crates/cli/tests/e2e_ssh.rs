@@ -405,17 +405,34 @@ async fn poll_survives_server_restart_mid_wait() {
     let mut child = KillOnDrop(Some(spawn_request(&cli, TARGET)));
     let token = CapturingNotifier::token(&broker.capture.next().await);
 
+    // The broker rings the owner from its own task, which can run before the
+    // create response reaches the CLI. Restarting then would drop the create,
+    // which the CLI rightly does not retry, instead of a poll: wait until the CLI
+    // says it has the request and is waiting.
+    let stderr = BufReader::new(child.child().stderr.take().unwrap());
+    let (stderr, seen) = within_hang(
+        "the CLI waiting for approval",
+        tokio::task::spawn_blocking(move || {
+            let mut stderr = stderr;
+            let mut seen = String::new();
+            while !seen.contains("waiting for approval") {
+                assert_ne!(stderr.read_line(&mut seen).unwrap(), 0, "{seen}");
+            }
+            (stderr, seen)
+        }),
+    )
+    .await
+    .unwrap();
+
     // The broker process goes away while the CLI is long-polling: its
     // listeners and the in-flight poll are dropped, and the port fails every
     // connection (a reset) until the CLI has found it gone and said it will retry. Only
     // then does the broker come back on it.
     let broker = broker.restart().await;
-    let stderr = BufReader::new(child.child().stderr.take().unwrap());
     let (mut stderr, mut seen) = within_hang(
         "the CLI retrying",
         tokio::task::spawn_blocking(move || {
-            let mut stderr = stderr;
-            let mut seen = String::new();
+            let (mut stderr, mut seen) = (stderr, seen);
             while !seen.contains("retrying") {
                 assert_ne!(stderr.read_line(&mut seen).unwrap(), 0, "{seen}");
             }
