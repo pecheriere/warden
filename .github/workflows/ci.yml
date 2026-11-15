@@ -15,7 +15,9 @@ env:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # The budgets are listed in AGENTS.md: a change that needs more raises them
+    # there, with the owner's agreement.
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -24,7 +26,17 @@ jobs:
         with:
           toolchain: "1.99"
           components: rustfmt, clippy
+      # Only main writes the cache, so pull requests cannot evict main's entries
+      # or plant one that main would read; they restore main's.
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # A prebuilt binary, checked against the hash in the action's manifest at this
+      # commit, and nothing else: no fallback to building or another source.
+      - uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
+        with:
+          tool: cargo-nextest@0.9.151
+          fallback: none
       # Only the tests' own unprivileged sshd may accept logins: the system
       # one is stopped before the runner account gets a password below.
       - name: Install OpenSSH
@@ -65,6 +77,17 @@ jobs:
         run: scripts/test-sign-release.sh
       - name: Refuse an OpenSSL out of support
         run: python3 -I .github/scripts/openssl_support.py
+      # The build below takes over a minute, so main keeps it in the cache.
+      # The key changes with the pin and the build script, and the script keeps a
+      # restored build only when its stamp names the pinned tarball's hash, the
+      # target and the script's own hash; otherwise it builds again. Only main
+      # writes the entry, so a pull request cannot plant one.
+      - name: Restore the pinned OpenSSL
+        id: openssl-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/openssl
+          key: openssl-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/openssl-pin.env', 'scripts/build-openssl.sh') }}
       # So that the tests run against the OpenSSL the server ships with.
       - name: Build the pinned OpenSSL
         run: |
@@ -72,8 +95,17 @@ jobs:
           echo "OPENSSL_DIR=$RUNNER_TEMP/openssl" >> "$GITHUB_ENV"
           echo "OPENSSL_STATIC=1" >> "$GITHUB_ENV"
           echo "WARDEN_OPENSSL_PINNED=1" >> "$GITHUB_ENV"
+      - name: Save the pinned OpenSSL
+        if: github.ref == 'refs/heads/main' && steps.openssl-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/openssl
+          key: ${{ steps.openssl-cache.outputs.cache-primary-key }}
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-      - run: cargo test --workspace --all-features --locked
+      # nextest runs the test binaries in parallel and lists every failure
+      # (.config/nextest.toml: no fail-fast, no retries); it does not run doctests.
+      - run: cargo nextest run --workspace --all-features --locked
+      - run: cargo test --doc --workspace --all-features --locked
       - name: Build the documentation
         run: cargo doc --workspace --all-features --no-deps --locked
         env:
@@ -84,7 +116,7 @@ jobs:
     # and main only: a release does not wait for it.
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 9
     env:
       # Test helpers, which never ship, are not code to cover.
       COVERAGE_IGNORE: crates/broker/src/testkit|/tests\.rs$
@@ -101,12 +133,22 @@ jobs:
         run: |
           rustup toolchain install
           rustup component add llvm-tools
+      # Only main writes the cache, so pull requests cannot evict main's entries
+      # or plant one that main would read; they restore main's.
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # From crates.io at a fixed version and with its own lockfile. Dependabot
       # does not see this version: raise it by hand, to a release at least 7
       # days old.
       - name: Install cargo-llvm-cov
         run: cargo install cargo-llvm-cov --version 0.9.1 --locked
+      # A prebuilt binary, checked against the hash in the action's manifest at this
+      # commit, and nothing else: no fallback to building or another source.
+      - uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
+        with:
+          tool: cargo-nextest@0.9.151
+          fallback: none
       # The same setup as the check job, for the Linux-only relay tests: they
       # fail without it, and the number means little without them. Keep the two
       # in step. A shared composite action cannot hold it: zizmor refuses a
@@ -135,7 +177,7 @@ jobs:
           echo "WARDEN_TEST_BIND_MOUNT_SOURCE=$mounted/source.toml" >> "$GITHUB_ENV"
           echo "WARDEN_TEST_BIND_MOUNTED_FILE=$mounted/mounted.toml" >> "$GITHUB_ENV"
       - name: Run the tests with coverage
-        run: cargo llvm-cov --workspace --all-features --locked --no-report
+        run: cargo llvm-cov nextest --workspace --all-features --locked --no-report
       # An explicit bash has pipefail on, so a broken report fails through the tee.
       - name: Report coverage
         shell: bash
@@ -164,6 +206,7 @@ jobs:
 
   deny:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -184,6 +227,7 @@ jobs:
     # publishes anything.
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -207,7 +251,8 @@ jobs:
     # cache, like the release build. Each binary builds on its own runner.
     name: ${{ matrix.product }} (${{ matrix.platform }})
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
+    # One budget for every product: the demo on macOS is the slowest.
+    timeout-minutes: 11
     strategy:
       fail-fast: false
       matrix:
@@ -299,7 +344,7 @@ jobs:
   image:
     name: image (${{ matrix.platform }})
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 45
+    timeout-minutes: 9
     strategy:
       fail-fast: false
       matrix:
@@ -321,7 +366,8 @@ jobs:
           # A tar rather than type=local: only its entries keep the image's owners.
           outputs: type=tar,dest=${{ runner.temp }}/image.tar
           cache-from: type=gha,scope=${{ matrix.platform }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
+          # Written only from main, like the other caches: pull requests read it.
+          cache-to: ${{ github.ref == 'refs/heads/main' && format('type=gha,mode=max,scope={0}', matrix.platform) || '' }}
       - name: Check the owner and mode of /data in the built image
         run: |
           entry=$(tar --numeric-owner --no-recursion -tvf "$RUNNER_TEMP/image.tar" data/)
@@ -345,4 +391,75 @@ jobs:
           if grep -q 'WARDEN DEMO' "$image/warden-server"; then
             echo "::error::warden-server contains the demo"
             exit 1
+          fi
+
+  # What a pull request waits for in this workflow: from the start of the run to
+  # the last required check here, runner queue included. Jobs here do not wait on
+  # each other, so each job's own time is already bounded by its timeout-minutes;
+  # this adds the queue. It is not a required check: it waits for the binaries
+  # that are not required as well, and a slow queue is not the change's doing.
+  # The table it writes tells a slow queue from a slow job. The checks of other
+  # workflows (dco, zizmor, dependency-review, CodeQL) are not in it: a job can
+  # only wait for jobs of its own workflow.
+  critical-path:
+    needs: [check, deny, crate-age, binaries, image]
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read # to read this run's job times
+      contents: read # to check out ci_time.py
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Keep the names in step with the required checks of the main branch's
+      # ruleset that this workflow runs.
+      - name: Fail over 10 minutes to the required checks
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          attempt="repos/$GH_REPO/actions/runs/$RUN_ID/attempts/$RUN_ATTEMPT"
+          gh api "$attempt" > "$RUNNER_TEMP/run.json"
+          gh api --paginate "$attempt/jobs" --jq '.jobs[]' > "$RUNNER_TEMP/jobs.jsonl"
+          python3 -I .github/scripts/ci_time.py --budget-minutes 10 \
+            --run "$RUNNER_TEMP/run.json" --jobs "$RUNNER_TEMP/jobs.jsonl" \
+            --summary "$GITHUB_STEP_SUMMARY" \
+            --require check --require deny --require crate-age \
+            --require "cli (linux-amd64)" --require "cli (linux-arm64)" \
+            --require "cli (macos-arm64)" \
+            --require "image (linux/amd64)" --require "image (linux/arm64)"
+
+  # A red main fails every pull request that builds on it, so say so at once:
+  # keep one issue open while main's CI fails. It links the run, which holds the
+  # details. Not on a release, which calls this workflow for a tag.
+  report-red-main:
+    needs: [check, coverage, deny, binaries, image]
+    if: >-
+      always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+      && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write # to open or comment on the one issue
+    steps:
+      - name: Open or update the issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          title="CI failed on main"
+          number=$(gh issue list --state open --search "in:title \"$title\"" \
+            --json number,title --jq "map(select(.title == \"$title\")) | .[0].number // empty")
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --body "Still failing at $COMMIT: $RUN_URL"
+          else
+            gh issue create --title "$title" --body "Failed at $COMMIT: $RUN_URL
+
+          Fix main before merging anything else (AGENTS.md), and close this issue once main's CI passes."
           fi

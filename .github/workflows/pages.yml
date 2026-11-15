@@ -26,6 +26,7 @@ jobs:
     # A manual run from another branch must not publish that branch.
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       contents: read
     steps:
@@ -39,6 +40,7 @@ jobs:
   deploy:
     needs: upload
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       pages: write
       id-token: write

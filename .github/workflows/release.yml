@@ -33,6 +33,7 @@ env:
 jobs:
   on-main:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -51,6 +52,7 @@ jobs:
   crate-age:
     needs: on-main
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -73,8 +75,15 @@ jobs:
   ci:
     needs: on-main
     uses: $/.github/workflows/ci.yml
+    # A called workflow's jobs get no more than this, and GitHub refuses to start
+    # one whose jobs ask for more, even jobs that will be skipped. ci.yml's
+    # critical-path (pull requests only) asks for actions: read and its
+    # report-red-main (pushes to main only) for issues: write: neither runs for a
+    # tag, and every other job there keeps contents: read.
     permissions:
+      actions: read # for ci.yml's critical-path, which a tag skips
       contents: read
+      issues: write # for ci.yml's report-red-main, which a tag skips
 
   build:
     needs: [on-main, crate-age, ci]
@@ -152,6 +161,7 @@ jobs:
     # a job output, which another job's artifact token cannot change.
     needs: cli
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       id-token: write
@@ -254,6 +264,7 @@ jobs:
     # replaced artifact stops here. It runs nothing from the repository.
     needs: packages
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       id-token: write
@@ -290,6 +301,7 @@ jobs:
     # binaries and packages built and were attested.
     needs: [build, attest-cli, attest-packages]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       packages: write
@@ -353,6 +365,7 @@ jobs:
     # attest-demo below.
     needs: server
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       id-token: write
@@ -407,6 +420,7 @@ jobs:
     # scripts/sign-release.sh compares names as well as digests.
     needs: demo
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       id-token: write
@@ -448,6 +462,7 @@ jobs:
     # owner publishes it.
     needs: [merge, attest-cli, packages, attest-packages, attest-server, attest-demo]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:
@@ -520,6 +535,7 @@ jobs:
     needs: [build, cli, attest-cli, packages, attest-packages, merge, server, attest-server, demo, attest-demo, draft-release]
     if: ${{ failure() || cancelled() }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Say what exists and what does not
         env:

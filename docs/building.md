@@ -46,18 +46,17 @@ docker buildx build -t warden:dev --load .
 
 ## Test
 
-```sh
-cargo test --workspace --all-features --locked
-```
-
-For a faster local run that lists every failure, use
-[cargo-nextest](https://nexte.st/), which `.config/nextest.toml` configures, and
-run the doctests separately because nextest does not run them:
+CI runs the tests with [cargo-nextest](https://nexte.st/), which
+`.config/nextest.toml` configures to list every failure, and the doctests
+separately because nextest does not run them:
 
 ```sh
 cargo nextest run --workspace --all-features --locked
 cargo test --doc --workspace --all-features --locked
 ```
+
+`cargo test --workspace --all-features --locked` runs the same tests without
+nextest, more slowly.
 
 On Linux, the password-target tests of the relay also need
 `WARDEN_TEST_LOGIN_PASSWORD`. [`AGENTS.md`](../AGENTS.md#before-you-push) has

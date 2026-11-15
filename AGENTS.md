@@ -51,10 +51,8 @@ is not one: see [Sign-off](#sign-off-dco).
 
 ## Before you push
 
-CI (`.github/workflows/ci.yml`, `dco.yml` and `zizmor.yml`) runs these,
-and every one must pass. One difference until #289 lands: CI runs the tests
-with `cargo test --workspace --all-features --locked`, the reference, and
-the list below uses the faster `cargo nextest run` plus the doctests:
+CI (`.github/workflows/ci.yml`, `dco.yml` and `zizmor.yml`) runs exactly
+these, and every one must pass:
 
 ```sh
 python3 -I .github/scripts/dco.py pull-request --base origin/main --head HEAD
@@ -74,19 +72,14 @@ python3 -I .github/scripts/openssl_support.py
 uvx zizmor@1.31.1 .   # when a workflow or the Dependabot config changes
 ```
 
-- Run the tests locally with `cargo nextest run` (`cargo install cargo-nextest
-  --locked`), which `.config/nextest.toml` configures: no fail-fast, so one
-  run lists every failure, and a test that runs over 5 minutes is killed.
-  nextest does not run doctests, hence the separate `cargo test --doc` line.
-  nextest runs each test in its own process and `cargo test` runs a binary's
-  tests as threads of one process, so a test that shares process state can
-  pass under one and fail under the other: if CI's `cargo test` fails where
-  nextest passed, run `cargo test --workspace --all-features --locked
-  --no-fail-fast` locally, which lists every failure instead of stopping at
-  the first failing test binary.
-- CI's `coverage` job also measures test coverage with `cargo llvm-cov`,
-  shown in the run's summary with the lcov file as an artifact. It is not a
-  required check and no threshold fails it yet (#97).
+- The tests run with `cargo nextest run` (`cargo install cargo-nextest
+  --locked`), locally and in CI, which `.config/nextest.toml` configures: no
+  fail-fast, so one run lists every failure, no retries, and a test that runs
+  over 5 minutes is killed. nextest runs each test in its own process and does
+  not run doctests, hence the separate `cargo test --doc` line.
+- CI's `coverage` job also measures test coverage with `cargo llvm-cov
+  nextest`, shown in the run's summary with the lcov file as an artifact. It
+  fails below 80% of lines (#97), but is not a required check.
 - The toolchain is pinned in `rust-toolchain.toml`. Clippy `all` and
   `pedantic` are denied workspace-wide and `unsafe_code` is forbidden.
 - On Linux, the relay's password-target tests need
@@ -114,6 +107,50 @@ uvx zizmor@1.31.1 .   # when a workflow or the Dependabot config changes
 - GitHub Actions are pinned to the full commit SHA of a release at least
   7 days old.
 
+## CI time budgets
+
+A pull request should be green within 10 minutes of its push. Every job has
+`timeout-minutes`, set from the measured 95th percentile of its duration plus
+about 30% (`check` and the fuzz jobs start higher, until runs with nextest and
+the new caches are measured); those of the jobs a pull request waits for are:
+
+| Workflow | Job | Budget (minutes) | Measured p95 before #289 |
+|---|---|---:|---:|
+| ci | `check` (required) | 12, to lower to 6 once measured | 8.7 (expected about 4.5 with nextest and the OpenSSL cache) |
+| ci | `image (*)` (required) | 9 | 5.6 |
+| ci | `cli (*)` (required), `demo (*)`, `server (*)` | 11 | 2.6, 8.1, 6.1 |
+| ci | `coverage` | 9 | 6.2 |
+| ci | `deny`, `crate-age` (required) | 5 | 1.5, 0.2 |
+| ci | `critical-path` | 5 | new |
+| dco, zizmor, dependency-review | each job (required) | 5 | 0.3 or less |
+| fuzz | `fuzz (<target>)`, on pull requests that change fuzzing | 12 (a cold cache builds the broker with ASan) | new: 31.6 as one job |
+| fuzz | `lint`, `targets` | 10, 5 | new |
+
+CI's `critical-path` job (not a required check: it shows red but does not
+block a merge) fails when the required checks of
+`ci.yml` take more than 10 minutes from the start of the run, runner queue
+included, and its summary splits each job's time into queue and run. A
+timeout or a `critical-path` failure caused by a slow job is the change's to
+fix: a pull request that pushes a job past its budget makes it fast again in
+the same pull request, or raises the budget here and in the workflow with the
+owner's agreement. A failure the table puts on the runner queue is rerun, not
+fixed. Caches are written only from `main`, so pull requests do not evict
+`main`'s entries; a pull request's first run after a dependency change is
+slower.
+
+## A red main
+
+A failed `ci.yml` run on `main` opens an issue titled "CI failed on main", or
+comments on the open one. Every pull request that merges onto a red main
+fails, or hides a second failure, so:
+
+- Check the latest `ci` run on `main` before branching and before merging:
+  `gh run list --workflow ci.yml --branch main --limit 1`.
+- Never merge while `main` is red. Fix it first, in a pull request that closes
+  the issue.
+- Merge ready pull requests one at a time, each after the previous one's `ci`
+  run on `main` passed.
+
 ## Fuzzing
 
 `fuzz/` holds `cargo-fuzz` targets for the input an attacker reaches most
@@ -128,9 +165,10 @@ scripts/fuzz.sh 60 redaction   # one target for 60 seconds
 scripts/fuzz.sh 60             # each target for 60 seconds
 ```
 
-`.github/workflows/fuzz.yml` runs each target for 3 minutes every night, and
-on pull requests that change the fuzzing setup. It also runs `cargo fmt` and
-clippy on the crate from `fuzz/`, which `--workspace` does not reach.
+`.github/workflows/fuzz.yml` runs each target for 3 minutes, each in its own
+job, every night and on pull requests that change the fuzzing setup. It takes
+the targets from `fuzz/Cargo.toml`. It also runs `cargo fmt` and clippy on the
+crate from `fuzz/`, which `--workspace` does not reach.
 
 - A change to a requirement in `Cargo.toml` or to the workspace version
   needs `fuzz/Cargo.lock` updated too: `cargo update --workspace` in `fuzz/`.
