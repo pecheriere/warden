@@ -43,6 +43,7 @@ fn context(files: &[(&str, &str)]) -> Context {
         coverage: None,
         aliases: SshAliases::default(),
         warden_socket_dir: PathBuf::from("/tmp/warden-501"),
+        warden_socket_dir_real: None,
         read_small_file: Box::new(move |p: &Path| files.get(p).cloned()),
     }
 }
@@ -238,6 +239,33 @@ fn tmpdir_variable_prefix_is_warden_socket() {
     assert!(!ctx.is_warden_socket("$HOME/warden-501/x.sock"));
     assert!(!ctx.is_warden_socket("$TMPDIRX/warden-501/x.sock"));
     assert!(!ctx.is_warden_socket("$TMPDIR"));
+}
+
+#[test]
+fn real_socket_dir_is_warden_socket_too() {
+    let mut ctx = context_with_dir("/var/folders/ab/T/warden-501");
+    ctx.warden_socket_dir_real = Some(PathBuf::from("/private/var/folders/ab/T/warden-501"));
+    assert!(ctx.is_warden_socket("/var/folders/ab/T/warden-501/x.sock"));
+    assert!(ctx.is_warden_socket("/private/var/folders/ab/T/warden-501/x.sock"));
+    assert!(ctx.is_warden_socket("/private/var/folders/ab/T//warden-501//x.sock"));
+    assert!(!ctx.is_warden_socket("/private/var/folders/ab/T/warden-501"));
+    assert!(!ctx.is_warden_socket("/private/var/folders/ab/T/warden-5019/x.sock"));
+    assert!(!ctx.is_warden_socket("/private/var/folders/ab/T/warden-501/../x.sock"));
+    assert!(!ctx.is_warden_socket("/private/var/other/warden-501/x.sock"));
+}
+
+#[test]
+fn unusable_real_socket_dir_exempts_nothing() {
+    for (i, real) in ["", "/", "relative/warden-501", "/tmp/../warden-501"]
+        .iter()
+        .enumerate()
+    {
+        let mut ctx = context_with_dir("/tmp/warden-501");
+        ctx.warden_socket_dir_real = Some(PathBuf::from(real));
+        assert!(!ctx.is_warden_socket("/etc/x.sock"), "case {i}");
+        assert!(!ctx.is_warden_socket("/x.sock"), "case {i}");
+        assert!(!ctx.is_warden_socket("/tmp/x.sock"), "case {i}");
+    }
 }
 
 #[test]
