@@ -7,6 +7,11 @@
 //! or value reaches the message: a covered subject is a name warden offers, a
 //! tool or credential subject is in the closed set the library exports, and an
 //! uncovered host is host-shaped and occurs in the command as a host.
+//! Clause (c) for an uncovered host guards shape and provenance only: a
+//! host-shaped word cannot be told from a host-shaped secret, so that
+//! "only from a scheme-explicit URL host, `--url`, a destination or a jump
+//! operand" holds by construction in `detect/http.rs` and `detect/ssh.rs`, not
+//! by this property.
 //! Failure messages name the signal only, never the command or a subject.
 //!
 //! Input: the bytes of the command, read as lossy UTF-8.
@@ -108,6 +113,25 @@ fn occurs_as_host(command: &str, host: &str) -> bool {
         .any(|text| occurs_in(text, host))
 }
 
+/// Where a word ends: whitespace and the shell characters that glue a word to
+/// its neighbour (redirections, pipes, quotes, `=`, `,`, `$`, braces).
+fn is_word_end(c: char) -> bool {
+    c.is_whitespace() || "<>|&;()'\"`\\=,${}".contains(c)
+}
+
+/// Whether `host` is the host `url::Url` parses from a whitespace-separated word
+/// of `command` (split as in [`occurs_in`]), read as written or with `http://` before it. The parser
+/// percent-decodes and lowercases, so `http://%73ecret.example.org/` has the
+/// host `secret.example.org`, which does not occur in the text.
+fn is_parsed_host(command: &str, host: &str) -> bool {
+    command.split(is_word_end).any(|word| {
+        [word.to_owned(), format!("http://{word}")]
+            .iter()
+            .filter_map(|text| url::Url::parse(text).ok())
+            .any(|url| url.host_str() == Some(host))
+    })
+}
+
 fn occurs_in(command: &str, host: &str) -> bool {
     let command = command.to_ascii_lowercase();
     let host = host.to_ascii_lowercase();
@@ -115,14 +139,12 @@ fn occurs_in(command: &str, host: &str) -> bool {
         .iter()
         .any(|p| command.contains(&format!("{p}{host}")))
         || command.contains(&format!("@{host}"))
-        || command
-            .split(|c: char| c.is_whitespace() || "<>|&;()'\"`\\=,${}".contains(c))
-            .any(|word| {
-                word.ends_with(&host)
-                    || word
-                        .split_once(':')
-                        .is_some_and(|(h, _)| h.ends_with(&host))
-            })
+        || command.split(is_word_end).any(|word| {
+            word.ends_with(&host)
+                || word
+                    .split_once(':')
+                    .is_some_and(|(h, _)| h.ends_with(&host))
+        })
 }
 
 /// (A command with a non-ASCII character only has to give a host-shaped
@@ -146,7 +168,8 @@ fn subject_is_valid(signal: Signal, subject: &str, command: &str, ctx: &Context)
             is_host_shaped(subject)
                 && (is_normalised_host(subject)
                     || !command.is_ascii()
-                    || occurs_as_host(command, subject))
+                    || occurs_as_host(command, subject)
+                    || is_parsed_host(command, subject))
         }
         Signal::OwnerGithub => false,
     }

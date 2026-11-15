@@ -106,7 +106,7 @@ fn nested_substitution_depth_is_limited() {
         s = format!("echo $({s})");
     }
     let cmds = argvs(&s);
-    assert_eq!(cmds.len(), 5, "outer command plus four levels: {cmds:?}");
+    assert_eq!(cmds.len(), 5, "outer command plus four levels");
 }
 
 #[test]
@@ -226,7 +226,7 @@ fn has(input: &str, words: &[&str]) -> bool {
 
 #[test]
 fn reserved_words_do_not_hide_the_command() {
-    for input in [
+    for (i, input) in [
         "{ ssh pi; }",
         "for h in a b; do ssh pi; done",
         "if ssh pi true; then ls; fi",
@@ -237,13 +237,15 @@ fn reserved_words_do_not_hide_the_command() {
         "f() { ssh pi; }",
         "case x in a) ssh pi;; esac",
         "select h in a b; do ssh pi; done",
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
         assert!(
             argvs(input)
                 .iter()
                 .any(|a| a.first().is_some_and(|w| w == "ssh")),
-            "{input}: {:?}",
-            argvs(input)
+            "case {i}"
         );
     }
     assert!(has(
@@ -302,7 +304,7 @@ fn shell_options_before_c_are_scanned() {
 
 #[test]
 fn wrapper_option_values_are_skipped() {
-    for (input, expected) in [
+    for (input_index, (input, expected)) in [
         ("sudo --user root ssh pi", true),
         ("sudo -u root ssh pi", true),
         ("sudo --group wheel --chdir /x ssh pi", true),
@@ -312,12 +314,15 @@ fn wrapper_option_values_are_skipped() {
         ("time -f %e ssh pi", true),
         ("time -o out ssh pi", true),
         ("sudo -u root", false),
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
         let c = simple_commands(input).remove(0);
         assert_eq!(
             effective_argv(&c) == v(&["ssh", "pi"]).as_slice(),
             expected,
-            "{input}"
+            "case {input_index}"
         );
     }
 }
@@ -331,9 +336,12 @@ fn env_split_string_recurses() {
 
 #[test]
 fn command_lookup_runs_nothing() {
-    for input in ["command -v op", "command -V op", "sudo command -v op"] {
+    for (i, input) in ["command -v op", "command -V op", "sudo command -v op"]
+        .into_iter()
+        .enumerate()
+    {
         let c = simple_commands(input).remove(0);
-        assert!(effective_argv(&c).is_empty(), "{input}");
+        assert!(effective_argv(&c).is_empty(), "case {i}");
     }
     let c = simple_commands("command -p ssh pi").remove(0);
     assert_eq!(effective_argv(&c), v(&["ssh", "pi"]).as_slice());
@@ -380,4 +388,21 @@ fn long_runs_of_parentheses_return() {
     let _ = simple_commands(&pairs);
     let mixed = "((".repeat(32 * 1024);
     let _ = simple_commands(&mixed);
+}
+
+#[test]
+fn arithmetic_skip_ignores_quotes_before_it() {
+    for (i, input) in [
+        "(( y = 1 << 2 ))\nssh pi uptime",
+        "# don't\n(( y = 1 << 2 ))\nssh pi uptime",
+        "cat <<EOF\ndon't\nEOF\n(( y = 1 << 2 ))\nssh pi uptime",
+    ]
+    .iter()
+    .enumerate()
+    {
+        assert!(
+            argvs(input).contains(&v(&["ssh", "pi", "uptime"])),
+            "case {i}"
+        );
+    }
 }

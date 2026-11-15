@@ -94,8 +94,10 @@ fn shell_c_string(options: &[String]) -> Option<&str> {
 }
 
 fn parse(input: &str, depth: u8, shell_nesting: u8) -> Vec<SimpleCommand> {
+    let chars: Vec<char> = input.chars().collect();
+    let scan_budget = chars.len().saturating_mul(4);
     let mut scanner = Scanner {
-        chars: input.chars().collect(),
+        chars,
         pos: 0,
         depth,
         shell_nesting,
@@ -107,7 +109,7 @@ fn parse(input: &str, depth: u8, shell_nesting: u8) -> Vec<SimpleCommand> {
         redirect_target: false,
         nested: Vec::new(),
         heredocs: Vec::new(),
-        paren_close: None,
+        scan_budget,
     };
     scanner.run();
     scanner.out
@@ -120,10 +122,8 @@ struct Heredoc {
 
 struct Scanner {
     chars: Vec<char>,
-    /// For each `(` outside quotes, the index of the `)` that closes it
-    /// (`usize::MAX` when none does); built once, on the first `((` at the
-    /// start of a command, so that scanning for `))` stays linear.
-    paren_close: Option<Vec<usize>>,
+    /// Characters the `((` scans may still read; see [`Self::arithmetic_end`].
+    scan_budget: usize,
     pos: usize,
     depth: u8,
     /// 1 inside a `bash -c` string, which is not recursed into again.
@@ -201,41 +201,34 @@ impl Scanner {
     }
 
     /// The index of the final `)` of an `((…))` whose second `(` is next, if
-    /// it is closed by `))`.
+    /// it is closed by `))`. The scan starts at this `((`, so text before it
+    /// (a comment or heredoc body with an apostrophe) cannot affect it. Each
+    /// scan reads only up to the closing `)`; every character read is charged
+    /// to a budget of a few passes over the input, after which the `((` reads as
+    /// two subshells (the over-reporting reading), keeping the work linear.
     fn arithmetic_end(&mut self) -> Option<usize> {
         let first = self.pos.checked_sub(1)?;
-        let end = *self.paren_closes().get(first)?;
-        (end != usize::MAX && self.chars.get(end.checked_sub(1)?) == Some(&')')).then_some(end)
-    }
-
-    /// The closing `)` of every `(`, found in one forward pass. Quotes and
-    /// backslashes hide parentheses the way [`Self::matching_paren`] reads
-    /// them.
-    fn paren_closes(&mut self) -> &[usize] {
-        if self.paren_close.is_none() {
-            let mut close = vec![usize::MAX; self.chars.len()];
-            let mut open = Vec::new();
-            let mut i = 0;
-            while let Some(&c) = self.chars.get(i) {
-                match c {
-                    '\\' => i += 1,
-                    '\'' => i = self.skip_quote(i, '\''),
-                    '"' => i = self.skip_quote(i, '"'),
-                    '(' => open.push(i),
-                    ')' => {
-                        if let Some(at) = open.pop()
-                            && let Some(slot) = close.get_mut(at)
-                        {
-                            *slot = i;
-                        }
+        let mut open = 0_usize;
+        let mut i = first;
+        let end = loop {
+            self.scan_budget = self.scan_budget.checked_sub(1)?;
+            let &c = self.chars.get(i)?;
+            match c {
+                '\\' => i += 1,
+                '\'' => i = self.skip_quote(i, '\''),
+                '"' => i = self.skip_quote(i, '"'),
+                '(' => open += 1,
+                ')' => {
+                    open -= 1;
+                    if open == 0 {
+                        break i;
                     }
-                    _ => {}
                 }
-                i += 1;
+                _ => {}
             }
-            self.paren_close = Some(close);
-        }
-        self.paren_close.as_deref().unwrap_or_default()
+            i += 1;
+        };
+        (self.chars.get(end.checked_sub(1)?) == Some(&')')).then_some(end)
     }
 
     fn word_char(&mut self, c: char) {

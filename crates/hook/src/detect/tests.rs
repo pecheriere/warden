@@ -132,18 +132,14 @@ fn signals_fire_on_the_commands_that_bypass_warden() {
         ("echo $(ssh switch-01 uptime)", Signal::CoveredSsh),
         ("bash -c 'op read x'", Signal::SecretStore),
     ];
-    for (command, signal) in cases {
-        assert!(
-            signals(command).contains(signal),
-            "{command}: {:?}",
-            signals(command)
-        );
+    for (i, (command, signal)) in cases.iter().enumerate() {
+        assert!(signals(command).contains(signal), "case {i}");
     }
 }
 
 #[test]
 fn warden_routes_are_not_bypasses() {
-    for command in [
+    for (i, command) in [
         "warden ssh switch-01 -- uptime",
         "warden http home-api GET https://home-api.example.internal/api --fail",
         "ssh -o IdentityAgent=/tmp/warden-501/abc.sock switch-01",
@@ -154,8 +150,11 @@ fn warden_routes_are_not_bypasses() {
         "ssh -F /work/warden.conf -o IdentityAgent=none switch-01",
         "scp -F /work/warden.conf f switch-01:/x",
         "rsync -e 'ssh -F /work/warden.conf' d switch-01:/x",
-    ] {
-        assert_eq!(signals(command), vec![], "{command}");
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert_eq!(signals(command), vec![], "case {i}");
     }
 }
 
@@ -181,7 +180,7 @@ fn an_explicit_key_counts_even_on_a_warden_route() {
 
 #[test]
 fn ordinary_work_is_not_reported() {
-    for command in [
+    for (i, command) in [
         "ssh-keygen -t ed25519",
         "git push origin main",
         "git commit -m 'mail me@example.org: hi'",
@@ -209,8 +208,11 @@ fn ordinary_work_is_not_reported() {
         "gh pr list",
         "ls -la",
         "",
-    ] {
-        assert_eq!(signals(command), vec![], "{command}");
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert_eq!(signals(command), vec![], "case {i}");
     }
 }
 
@@ -252,7 +254,10 @@ fn messages_never_echo_the_command() {
         }
         assert!(verdict.message.ends_with("Never look for another way in."));
         for found in &verdict.matches {
-            assert!(!found.subject.contains('/'), "{found:?}");
+            assert!(
+                !found.subject.contains('/'),
+                "case #{case}: subject with a slash"
+            );
         }
     }
 }

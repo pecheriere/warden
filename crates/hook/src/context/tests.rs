@@ -142,27 +142,33 @@ fn garbage_never_panics() {
 #[test]
 fn api_origin_default_port() {
     let c = coverage();
-    for url in [
+    for (i, url) in [
         "https://api.example.com/v1/x",
         "https://API.example.com:443/",
         "https://api.example.com",
         "https://api.example.com:8443/",
         "http://api.example.com/",
-    ] {
-        assert_eq!(c.api_for(url).unwrap().name, "home-api", "{url}");
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert_eq!(c.api_for(url).unwrap().name, "home-api", "case {i}");
     }
 }
 
 #[test]
 fn api_other_origin_no_match() {
     let c = coverage();
-    for url in [
+    for (i, url) in [
         "https://other.example.com/",
         "https://api.example.com.evil.example/",
         "not a url",
         "",
-    ] {
-        assert!(c.api_for(url).is_none(), "{url}");
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert!(c.api_for(url).is_none(), "case {i}");
     }
     let mut broken = coverage();
     broken.api[0].origin = Some("::bad::".to_owned());
@@ -173,19 +179,25 @@ fn api_other_origin_no_match() {
 fn api_schemeless_matches() {
     let mut c = coverage();
     c.api[0].origin = Some("https://home-api.example.internal".to_owned());
-    for url in [
+    for (i, url) in [
         "home-api.example.internal/v1",
         "HOME-API.example.internal:8080/v1",
-    ] {
-        assert_eq!(c.api_for(url).unwrap().name, "home-api", "{url}");
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert_eq!(c.api_for(url).unwrap().name, "home-api", "case {i}");
     }
 }
 
 #[test]
 fn api_other_scheme_same_host_matches() {
     let c = coverage();
-    for url in ["http://api.example.com/", "ftp://api.example.com/x"] {
-        assert_eq!(c.api_for(url).unwrap().name, "home-api", "{url}");
+    for (i, url) in ["http://api.example.com/", "ftp://api.example.com/x"]
+        .into_iter()
+        .enumerate()
+    {
+        assert_eq!(c.api_for(url).unwrap().name, "home-api", "case {i}");
     }
 }
 
@@ -237,15 +249,21 @@ fn repeated_slashes_collapse() {
 
 #[test]
 fn empty_or_relative_socket_dir_exempts_nothing() {
-    for dir in ["", "/", "warden-501", "relative/warden-501", "//"] {
+    for (d, dir) in ["", "/", "warden-501", "relative/warden-501", "//"]
+        .into_iter()
+        .enumerate()
+    {
         let ctx = context_with_dir(dir);
-        for path in [
+        for (p, path) in [
             "/x.sock",
             "/tmp/warden-501/x.sock",
             "$TMPDIR/warden-501/x.sock",
             "warden-501/x.sock",
-        ] {
-            assert!(!ctx.is_warden_socket(path), "{dir:?} {path}");
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert!(!ctx.is_warden_socket(path), "dir {d} path {p}");
         }
     }
 }
@@ -312,10 +330,13 @@ fn warden_ssh_config_refuses_other_shapes() {
             "Host *\n IdentityAgent /tmp/warden-501/a.sock\n IdentityFile none\n",
         ),
     ]);
-    for file in ["mixed", "none", "key", "include", "proxy", "jump", "match"] {
+    for (i, file) in ["mixed", "none", "key", "include", "proxy", "jump", "match"]
+        .into_iter()
+        .enumerate()
+    {
         assert!(
             !ctx.is_warden_ssh_config(&format!("/c/{file}"), "a"),
-            "{file}"
+            "case {i}"
         );
     }
     assert!(!ctx.is_warden_ssh_config("/c/pattern", "a"));
@@ -364,9 +385,9 @@ fn warden_ssh_config_refuses_each_keyword_and_shape() {
             format!("Host a\n{AGENT}Host b\n HostName x\n"),
         ),
     ];
-    for (name, text) in &cases {
+    for (i, (_, text)) in cases.iter().enumerate() {
         let ctx = context(&[("/c/f", text)]);
-        assert!(!ctx.is_warden_ssh_config("/c/f", "a"), "{name}");
+        assert!(!ctx.is_warden_ssh_config("/c/f", "a"), "case {i}");
     }
 }
 

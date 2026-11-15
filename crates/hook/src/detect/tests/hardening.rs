@@ -5,16 +5,21 @@ use super::{check, context, signals};
 use crate::detect::{OWNER_SSH_KEY_SUBJECTS, SECRET_STORE_SUBJECTS, TOKEN_READ_SUBJECTS};
 use crate::settings::{Settings, Signal};
 
+#[track_caller]
 fn fires(command: &str, signal: Signal) {
     assert!(
         signals(command).contains(&signal),
-        "{command}: {:?}",
-        signals(command)
+        "expected signal missing (see the caller's line)"
     );
 }
 
+#[track_caller]
 fn silent(command: &str) {
-    assert_eq!(signals(command), vec![], "{command}");
+    assert_eq!(
+        signals(command),
+        vec![],
+        "unexpected signal (see the caller's line)"
+    );
 }
 
 #[test]
@@ -299,7 +304,7 @@ fn subjects_belong_to_the_closed_sets() {
         "cat .netrc; cat .env; cat ~/.config/gh/hosts.yml; gh auth token",
         "curl -u me https://api.example.org/ s3cr3t.v4lue",
     ];
-    for command in commands {
+    for (i, command) in commands.into_iter().enumerate() {
         for found in check(command, &context(true), &Settings::default()).matches {
             let set: &[&str] = match found.signal {
                 Signal::OwnerSshKey => OWNER_SSH_KEY_SUBJECTS,
@@ -309,7 +314,7 @@ fn subjects_belong_to_the_closed_sets() {
             };
             assert!(
                 set.contains(&found.subject.as_str()),
-                "{command}: {found:?}"
+                "case {i}: subject outside its closed set"
             );
         }
     }
