@@ -380,16 +380,6 @@ impl FakeBackend {
         keys.push(key);
     }
 
-    /// Set the release GitHub App.
-    ///
-    /// # Panics
-    /// If the lock is poisoned.
-    #[must_use]
-    pub fn with_release_app(self, app: ReleaseAppKey) -> Self {
-        self.set_release_app(Some(app));
-        self
-    }
-
     /// Set or clear the release GitHub App on a backend a broker already holds.
     ///
     /// # Panics
