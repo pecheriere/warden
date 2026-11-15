@@ -3,9 +3,10 @@
 From the first release after v0.8.1, building warden twice from the same commit
 with the same tools is meant to give the same bits. The
 [repeatable build](../.github/workflows/repeatable-build.yml) workflow checks this
-every week, and when the build's configuration or dependencies change: it builds
-each output twice, on separate runners, from checkouts at different paths. A change
-to the sources alone is not checked until the next weekly run.
+every night, and after a change to the build's configuration or dependencies
+merges to `main`: it builds each output twice, on separate runners, from checkouts
+at different paths. A pull request does not run it, so a bad change is found on
+`main`, not before the merge.
 
 v0.8.1 and earlier do not reproduce: their files carry build times, and their
 archives did not exist.
