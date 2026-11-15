@@ -742,7 +742,8 @@ mod tests {
         .unwrap();
         let _stop = StopOnDrop(agent.socket.clone(), agent.pid);
         let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
-        assert!(add_key(&agent, &key, Duration::ZERO).await.is_err());
+        let err = add_key(&agent, &key, Duration::ZERO).await.unwrap_err();
+        assert_eq!(err.to_string(), "grant has already ended");
     }
 
     #[test]

@@ -157,7 +157,7 @@ fn generic_and_matching_helpers_are_taken_together_in_order() {
     let values: Vec<&str> = helpers.iter().map(|h| h.value.as_str()).collect();
     assert_eq!(values, ["first", "", "ours", "last"]);
     let failed = github_helpers(vec![helper(URL_KEY, "x")], |_| Err("no".to_owned()));
-    assert!(failed.is_err());
+    assert_eq!(failed, Err("no".to_owned()));
 }
 
 #[test]
