@@ -215,6 +215,11 @@ pub(crate) enum HookCmd {
     /// hook's answer when the shell command goes around warden. Makes no
     /// network call, and exits 0 whatever happens.
     Check,
+    /// Print what `warden prime --brief` prints and, after it, the owner's rules
+    /// file (`agent-rules.md` next to the configuration), for a Claude Code
+    /// `SessionStart` hook. Saves the offers the broker answered for `hook
+    /// check`, and exits 0 whatever happens.
+    SessionStart,
 }
 
 #[derive(Debug, Subcommand)]

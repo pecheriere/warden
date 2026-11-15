@@ -255,15 +255,21 @@ async fn run(cmd: Cmd) -> Result<()> {
             prime::run(brief).await;
             Ok(())
         }
-        // Exits 0 whatever happens: a broken hook must not stop the agent.
-        Cmd::Hook {
-            what: HookCmd::Check,
-        } => {
-            hook::check::run();
+        Cmd::Hook { what } => {
+            run_hook(what).await;
             Ok(())
         }
         Cmd::Status => status().await,
         Cmd::Revoke { grant } => revoke(&grant).await,
+    }
+}
+
+/// Both hook commands exit 0 whatever happens: a broken hook must not stop the
+/// agent.
+async fn run_hook(what: HookCmd) {
+    match what {
+        HookCmd::Check => hook::check::run(),
+        HookCmd::SessionStart => hook::session_start::run().await,
     }
 }
 

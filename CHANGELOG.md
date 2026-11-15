@@ -19,6 +19,18 @@ All notable changes to this project are recorded here. The format follows
   refused in `default_permissions`, `extra_permissions` and requests, because GitHub has no
   such level.
   ([#282](https://github.com/pecheriere/warden/issues/282))
+- `warden hook check` reads a Claude Code `PreToolUse` event and flags the shell commands
+  that go around warden (SSH or an API that warden covers, the owner's SSH key, a secret
+  store, a token warden holds, the owner's GitHub login). It makes no network call and
+  exits 0 whatever happens.
+  ([#199](https://github.com/pecheriere/warden/issues/199))
+- `warden hook session-start` prints `warden prime --brief` followed by the owner's rules
+  file, `agent-rules.md` next to `config.toml` (first 8 KiB, whole output under 9,500
+  characters), and saves the broker's offers for `warden hook check`; it exits 0 whatever
+  happens.
+- A `[hook]` table in the CLI's `config.toml` sets what each way around warden does:
+  `block`, `ask`, `warn` or `off`. An invalid table gives the defaults, never weaker
+  protection, and `warden doctor` reports it.
 
 ### Changed
 

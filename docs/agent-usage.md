@@ -1098,6 +1098,27 @@ never try to get around warden by any other route.
 [i49]: https://github.com/pecheriere/warden/issues/49
 [i35]: https://github.com/pecheriere/warden/issues/35
 
+## Agent hooks
+
+Two commands are run by an agent's hooks, never by hand. Both exit 0 whatever
+happens, so a broken hook never stops the agent.
+
+- `warden hook session-start` prints what `warden prime --brief` prints, then
+  the owner's rules file for this machine, `agent-rules.md` next to `config.toml`
+  (first 8 KiB, with a note when it was cut), and saves what the broker offered
+  in the offers cache. It keeps `prime`'s 3 second limit for the broker. Its
+  output is at most 9,500 characters, so that Claude Code adds it to the
+  model's context whole. It is meant for a `SessionStart` hook.
+- `warden hook check` reads a `PreToolUse` event for a shell command on
+  standard input and prints the hook's answer when the command goes around
+  warden: a use of `ssh` or an API warden covers, the owner's SSH key, a secret
+  store, a token warden holds, or the owner's own GitHub login. It prints nothing
+  for any other command. It makes no network call: it reads the offers cache
+  that `session-start` wrote, which counts as stale after 24 hours, and answers
+  within the hook's 2 second timeout. What each case does (`block`, `ask`,
+  `warn` or `off`) is set in the `[hook]` table: see
+  [The `[hook]` table](configuration.md#the-hook-table).
+
 ## Instructions to give an agent
 
 [Instructions for an agent](agent-instructions.md) says how to ask, how to write

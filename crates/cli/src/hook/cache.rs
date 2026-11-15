@@ -39,10 +39,6 @@ fn cache_path_for_read() -> Result<PathBuf> {
 ///
 /// # Errors
 /// If the state directory or the file cannot be written.
-#[expect(
-    dead_code,
-    reason = "used by warden prime and list, wired in a later commit"
-)]
 pub fn write(offers_json: &Value) -> Result<()> {
     write_to(&cache_path()?, offers_json)
 }
