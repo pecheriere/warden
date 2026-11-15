@@ -850,8 +850,8 @@ holds decisions and grants. The broker's own log notes that an agent listed offe
   listed in full, although the agent never connects there.
 - `github.default_permissions` and `github.extra_permissions` are the owner's default set and
   the permissions an agent may ask for beyond it, in the written form of a grant's and read
-  leniently by a client (an unknown name is text). Both are left out when the owner's
-  fields cannot be read, which marks `github` unavailable; `extra_permissions` is also left out when the
+  leniently by a client (an unknown name is text). Both are left out when no GitHub App is
+  configured, and when the owner's fields cannot be read, which marks `github` unavailable; `extra_permissions` is also left out when the
   owner listed none beyond `metadata`. The CLI shows a sensitive extra marked.
 - `github.max_window` is present only when a GitHub App is configured. No repository is
   named: the broker does not list the repositories it covers.
@@ -1364,9 +1364,14 @@ unless noted, and fixed apart from the name:
   (`SENSITIVE_WINDOW`): the window of a request with a sensitive extra, which the owner also
   cannot approve for longer. Any other request takes `1d`, `7d` or `30d`.
 - `409` `a request for these repositories with other permissions is pending; cancel it with
-  `warden request cancel <id>` or wait for it` (`OTHER_PERMISSIONS_PENDING`): an agent has one
-  pending request for a set of repositories, and asking again with other extras does not
-  replace it. Asking with the same extras returns the pending one, as before.
+  `warden request cancel <id>` or wait for it` (`OTHER_PERMISSIONS_PENDING`), followed by `: `
+  and the id of the pending request: an agent has one pending request for a set of
+  repositories, and asking again with other extras does not replace it. Asking with the same
+  extras returns the pending one, as before.
+
+An extra outside the owner's allowlist, a sensitive extra for a longer window and this `409`
+are each written to the audit log as `github_token_refused`, with no grant, the fixed text and
+a known permission name or the id above, never the request's own words.
 
 A renewal keeps the extras and, for a sensitive grant, a short window. If the allowlist no
 longer holds an extra, the renewal is made and the approval page says which, and cannot be approved.

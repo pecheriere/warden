@@ -228,17 +228,53 @@ fn granted_permissions_refuse_malformed_entries() {
 
 #[test]
 fn every_sensitive_name_has_its_own_meaning() {
-    let names: Vec<_> = MEANINGS.iter().map(|(name, _)| *name).collect();
+    let names: Vec<_> = MEANINGS.iter().map(|(name, _, _)| *name).collect();
     assert_eq!(names, SENSITIVE);
+    let checks: Permission = "checks:read".parse().unwrap();
     for name in SENSITIVE {
-        let meaning = sensitive_meaning(name);
-        assert!(!meaning.is_empty(), "{name}");
-        assert_ne!(meaning, sensitive_meaning("checks"), "{name}");
+        for level in ["read", "write"] {
+            let permission: Permission = format!("{name}:{level}").parse().unwrap();
+            let meaning = sensitive_meaning(&permission);
+            assert!(!meaning.is_empty(), "{permission}");
+            assert_ne!(meaning, sensitive_meaning(&checks), "{permission}");
+        }
     }
+    let workflows: Permission = "workflows:write".parse().unwrap();
     assert_eq!(
-        sensitive_meaning("workflows"),
+        sensitive_meaning(&workflows),
         "change GitHub Actions workflows, which run with the repository's secrets"
     );
+}
+
+#[test]
+fn meanings_follow_the_level() {
+    let meaning = |text: &str| sensitive_meaning(&text.parse::<Permission>().unwrap());
+    // Secret values are never readable through the API, so read only lists names.
+    for name in ["secrets", "dependabot_secrets", "organization_secrets"] {
+        let read = meaning(&format!("{name}:read"));
+        let write = meaning(&format!("{name}:write"));
+        assert!(read.starts_with("list the names of"), "{name}: {read}");
+        assert!(
+            write.starts_with("create, replace and delete"),
+            "{name}: {write}"
+        );
+    }
+    // A read never says more than reading.
+    for (name, read, write) in MEANINGS {
+        if read != write {
+            for word in [
+                "manage",
+                "create",
+                "delete",
+                "publish",
+                "approve",
+                "block and",
+            ] {
+                assert!(!read.contains(word), "{name}: {read}");
+            }
+            assert!(!write.is_empty(), "{name}");
+        }
+    }
 }
 
 #[test]

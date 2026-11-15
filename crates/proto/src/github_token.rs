@@ -62,6 +62,11 @@ pub const INSTALLATION_UNREADABLE: &str = "this request cannot be approved: the 
 /// the level that is allowed when the name is listed at a lower one.
 pub const EXTRA_NOT_ALLOWED: &str = "this broker does not allow that extra GitHub permission: ";
 
+/// [`EXTRA_NOT_ALLOWED`] for several permissions, which an approval page or the
+/// approval itself names, each as `name:level`, when the owner's allowlist changed
+/// after the request was made.
+pub const EXTRAS_NOT_ALLOWED: &str = "this broker does not allow these extra GitHub permissions: ";
+
 /// What the broker says when the agent has a request waiting for the same
 /// repositories that asks for other extra permissions. The id of that request
 /// follows: it is the broker's, not text the agent wrote.

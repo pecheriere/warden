@@ -118,6 +118,14 @@ async fn extra_outside_allowlist_refused() {
     );
     assert!(broker.capture.rung().is_empty(), "nobody is rung");
     assert_eq!(pending_count(&broker).await, 0);
+    // The refusal is in the audit log, with the known permission name only.
+    let refused = entries(&broker, "github_token_refused");
+    assert_eq!(refused.len(), 1, "{refused:?}");
+    assert_eq!(
+        refused[0]["reason"],
+        format!("{EXTRA_NOT_ALLOWED}checks"),
+        "{refused:?}"
+    );
 }
 
 #[tokio::test]
@@ -224,6 +232,16 @@ async fn pending_with_other_extras_is_409() {
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
     assert!(body.contains(OTHER_PERMISSIONS_PENDING), "{body}");
     assert_eq!(pending_count(&broker).await, 1);
+    // Each refusal is in the audit log: the fixed text and the waiting request's id.
+    let refused = entries(&broker, "github_token_refused");
+    assert_eq!(refused.len(), 3, "{refused:?}");
+    for entry in &refused {
+        assert_eq!(
+            entry["reason"],
+            format!("{OTHER_PERMISSIONS_PENDING}: {waiting}"),
+            "{entry}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -275,6 +293,23 @@ async fn renewal_finding_a_request_with_extras_is_409() {
 }
 
 #[tokio::test]
+async fn the_owners_renew_button_says_what_is_waiting() {
+    let (broker, _key, upstream) = configured_on_fake().await;
+    allow(&broker, LEGACY, "checks:read");
+    let grant = approve(&broker, &upstream, "bot", Window::D7).await;
+    broker
+        .create_request("bot", with_extras(Window::D7, "checks:read"))
+        .await;
+    let resp = broker
+        .post_json(&format!("/grants/{grant}/renew"), &json!({}))
+        .await;
+    assert_eq!(resp.status, StatusCode::CONFLICT, "{}", resp.body);
+    let says = resp.json()["error"].as_str().unwrap().to_owned();
+    assert!(says.contains("approve or deny that one first"), "{says}");
+    assert!(!says.contains("cancel"), "{says}");
+}
+
+#[tokio::test]
 async fn summary_names_extras() {
     let (broker, _key, _upstream) = configured_on_fake().await;
     allow(&broker, LEGACY, "actions:read,checks:read");
@@ -301,6 +336,12 @@ async fn sensitive_extra_needs_a_short_window() {
         assert!(body.contains(SENSITIVE_WINDOW), "{window:?}: {body}");
     }
     assert!(broker.capture.rung().is_empty(), "nobody is rung");
+    // Each refusal is in the audit log, with its fixed text.
+    let refused = entries(&broker, "github_token_refused");
+    assert_eq!(refused.len(), 4, "{refused:?}");
+    for entry in &refused {
+        assert_eq!(entry["reason"], SENSITIVE_WINDOW, "{entry}");
+    }
     let (status, body) = post(&broker, &key, &with_extras(Window::H1, "workflows:write")).await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
 }
@@ -309,6 +350,7 @@ async fn sensitive_extra_needs_a_short_window() {
 async fn sensitive_extra_allows_short_window_only_then() {
     let (broker, key, _upstream) = configured_on_fake().await;
     allow(&broker, LEGACY, "checks:read,workflows:write");
+    let mut waiting: Option<String> = None;
     // The short windows are for a sensitive extra, and for nothing else.
     for window in [Window::M15, Window::M30, Window::H1] {
         for request in [without_extras(window), with_extras(window, "checks:read")] {
@@ -316,10 +358,16 @@ async fn sensitive_extra_allows_short_window_only_then() {
             assert_eq!(status, StatusCode::BAD_REQUEST, "{window:?}: {body}");
             assert!(body.contains("1d, 7d or 30d"), "{window:?}: {body}");
         }
-        // Each in turn replaces the request waiting before it.
+        // The first of them stores the request; the others find that one waiting,
+        // as they name the same extras, and return it.
         let (status, body) = post(&broker, &key, &with_extras(window, "workflows:write")).await;
         assert_eq!(status, StatusCode::CREATED, "{window:?}: {body}");
+        match &waiting {
+            None => waiting = Some(created_id(&body)),
+            Some(id) => assert_eq!(&created_id(&body), id, "{window:?}: {body}"),
+        }
     }
+    assert_eq!(pending_count(&broker).await, 1);
 }
 
 #[tokio::test]

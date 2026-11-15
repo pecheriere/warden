@@ -6,7 +6,7 @@ use super::{
     default_window, destination_access, github_token, icon, key_icon, layout, release,
     stated_fields, window_words, windows_for,
 };
-use warden_broker_proto::{Access, Window};
+use warden_broker_proto::Window;
 
 use crate::requests::{Destination, LinkHosts, PendingView, window_label};
 
@@ -21,8 +21,6 @@ pub fn approve(view: &PendingView, hosts: &LinkHosts, now: i64) -> Markup {
         .copied()
         .filter(|w| *w <= max)
         .collect();
-    let sensitive =
-        matches!(&view.request.access, Access::GithubToken(a) if a.has_sensitive_extra());
     let default = default_window(&choices, view.request.window, max);
     let clock = html! {
         circle cx="12" cy="12" r="9" {}
@@ -77,7 +75,7 @@ pub fn approve(view: &PendingView, hosts: &LinkHosts, now: i64) -> Markup {
                     @if let Some(message) = &not_approvable {
                         (message)
                     } @else {
-                        (window_picker(view, &choices, default, sensitive))
+                        (window_picker(view, &choices, default))
                     }
                     div.btns {
                         @if not_approvable.is_none() {
@@ -96,12 +94,7 @@ pub fn approve(view: &PendingView, hosts: &LinkHosts, now: i64) -> Markup {
 }
 
 /// The grant window picker: the `choices`, `default` selected, and what caps them.
-fn window_picker(
-    view: &PendingView,
-    choices: &[Window],
-    default: Window,
-    sensitive: bool,
-) -> Markup {
+fn window_picker(view: &PendingView, choices: &[Window], default: Window) -> Markup {
     let max = view.destination.max_window();
     html! {
         fieldset {
@@ -118,12 +111,6 @@ fn window_picker(
                 p.detail.capped {
                     "Asked for " (window_words(view.request.window)) "; at most "
                     (window_words(max)) " for this " (noun) "."
-                }
-            }
-            @if sensitive && view.request.window <= max && !choices.contains(&view.request.window) {
-                p.detail.capped {
-                    "Asked for " (window_words(view.request.window))
-                    "; a grant with a sensitive permission lasts at most 1 h."
                 }
             }
             @if matches!(view.destination, Destination::Release(_)) {

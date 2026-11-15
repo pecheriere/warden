@@ -188,8 +188,9 @@ pub(super) fn replaces_view_with(n: usize) -> crate::requests::PendingView {
 }
 
 /// The approval page of a request for `REPO` with the extras `extras` (written form,
-/// with `metadata:read`), of which the owner's default `legacy` leaves `beyond` beyond.
-/// A request for 30 days, as an agent's usual one.
+/// with `metadata:read`) on top of the legacy default. A request for 30 days, as an
+/// agent's usual one; for 30 minutes when an extra is sensitive, which the broker
+/// accepts for no longer than an hour.
 pub(super) fn extras_view(extras: &str) -> crate::requests::PendingView {
     let extras = PermissionSet::parse(extras).unwrap();
     let default = PermissionSet::legacy();
@@ -201,7 +202,12 @@ pub(super) fn extras_view(extras: &str) -> crate::requests::PendingView {
         beyond_default,
     };
     let access = GithubTokenAccess::new(vec![name(REPO)], None, Some(extras)).unwrap();
-    github_view(access, Some(github))
+    let sensitive = access.has_sensitive_extra();
+    let mut view = github_view(access, Some(github));
+    if sensitive {
+        view.request.window = Window::M30;
+    }
+    view
 }
 
 /// A request for an extra the owner's allowlist no longer holds.
@@ -237,6 +243,9 @@ pub(super) fn grant_with_extras(
     extras: Option<&str>,
 ) -> crate::requests::ActiveGrant {
     let extras = extras.map(|e| PermissionSet::parse(e).unwrap());
+    let sensitive = extras
+        .as_ref()
+        .is_some_and(|e| e.iter().any(|p| p.is_sensitive()));
     let full = extras
         .as_ref()
         .map_or_else(PermissionSet::legacy, |e| PermissionSet::legacy().union(e));
@@ -245,7 +254,9 @@ pub(super) fn grant_with_extras(
         github_token_request(),
         GrantAccess::GithubToken(github_token_policy().grant(scope, full, extras)),
     );
-    grant.not_after = NOW + 26 * 86_400;
+    // A grant with a sensitive permission lasts at most an hour, and this one has
+    // 40 minutes left.
+    grant.not_after = NOW + if sensitive { 40 * 60 } else { 26 * 86_400 };
     grant
 }
 

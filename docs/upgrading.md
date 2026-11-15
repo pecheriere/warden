@@ -93,6 +93,14 @@ now per repository (`github-token.json`, version 2): an older file is ignored an
 An agent may now hold several GitHub grants, and approving one ends the agent's grants that
 share a repository with it.
 
+## GitHub token permissions and extras
+
+`/v1/info` has a new flag, `github_token_permissions`, which a broker sets when a request may
+name `extra_permissions` and a mint may name `permissions`. **Upgrade the broker before the
+CLI**: a new CLI refuses `--extra-permissions` against a broker that does not report it. Grants
+and requests that exist are unchanged. An agent with a request waiting for a repository now gets
+a `409` when it asks for the same repositories with other extras; it cancels the first or waits.
+
 ## Private files
 
 From 0.9.0, warden keeps its files private to its user, and corrects

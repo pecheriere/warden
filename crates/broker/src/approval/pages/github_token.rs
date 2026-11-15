@@ -8,7 +8,7 @@ use warden_broker_proto::github_permissions::{
     GrantedPermissions, Level, Permission, PermissionSet, sensitive_meaning,
 };
 use warden_broker_proto::github_token::{
-    AutomaticCaller, EXTRA_NOT_ALLOWED, GithubTokenAccess, GrantScope,
+    AutomaticCaller, EXTRA_NOT_ALLOWED, EXTRAS_NOT_ALLOWED, GithubTokenAccess, GrantScope,
 };
 use warden_broker_proto::{Access, AgentName};
 
@@ -48,10 +48,11 @@ pub(super) fn not_approvable(view: &PendingView) -> Option<Markup> {
     if !github.not_allowed.is_empty() {
         return Some(html! {
             p.cannot #cannot-approve role="alert" {
-                "This request cannot be approved: " (EXTRA_NOT_ALLOWED)
+                "This request cannot be approved: "
+                (if github.not_allowed.len() == 1 { EXTRA_NOT_ALLOWED } else { EXTRAS_NOT_ALLOWED })
                 @for (i, refused) in github.not_allowed.iter().enumerate() {
                     @if i > 0 { ", " }
-                    code { (refused.name()) }
+                    code { (refused.to_string()) }
                 }
                 "."
             }
@@ -111,7 +112,7 @@ fn sensitive_note(extras: &[Permission]) -> Markup {
                     @for item in sensitive {
                         li {
                             (permission(item, extras)) " can "
-                            (sensitive_meaning(item.name())) "."
+                            (sensitive_meaning(item)) "."
                         }
                     }
                 }

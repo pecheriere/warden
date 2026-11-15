@@ -222,7 +222,7 @@ impl Requests {
         kind: &str,
     ) -> Result<Vec<SqliteRow>, RequestError> {
         Ok(sqlx::query(
-            "SELECT id, not_after, view FROM grants \
+            "SELECT id, not_after, window_secs, view FROM grants \
              WHERE agent = ?1 AND revoked_at IS NULL AND not_after > ?2 \
              AND json_extract(view, '$.access.kind') = ?3 \
              ORDER BY not_after DESC, id",

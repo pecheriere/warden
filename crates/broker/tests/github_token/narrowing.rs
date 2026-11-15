@@ -164,6 +164,48 @@ async fn an_unknown_or_malformed_set_is_refused_without_echo() {
 }
 
 #[tokio::test]
+async fn a_stored_grant_with_a_sensitive_permission_for_longer_than_1h_does_not_mint() {
+    let (broker, key, upstream) = configured_on_fake().await;
+    allow(&broker, LEGACY, "workflows:write");
+    approve_with_extras(
+        &broker,
+        &upstream,
+        Window::H1,
+        "workflows:write",
+        &[("workflows", "write")],
+    )
+    .await;
+    let before = upstream.received().len();
+    // As approved, within the hour, it mints.
+    upstream.script_github_token(answer(
+        &broker,
+        &[("contents", "write"), ("workflows", "write")],
+    ));
+    let resp = mint_with(&broker, &key, json!({"repository": REPO})).await;
+    assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
+    // A row that says 7 days, as no approval makes it, does not.
+    sqlx::query("UPDATE grants SET window_secs = ?")
+        .bind(7 * 24 * 3600_i64)
+        .execute(&broker.state().pool)
+        .await
+        .unwrap();
+    let calls = upstream.received().len();
+    assert!(calls > before);
+    let resp = mint_with(&broker, &key, json!({"repository": REPO})).await;
+    assert_eq!(resp.status, StatusCode::FORBIDDEN, "{}", resp.body);
+    assert!(resp.body.contains("sensitive permission"), "{}", resp.body);
+    assert_eq!(upstream.received().len(), calls, "GitHub was not asked");
+    let refused = entries(&broker, "github_token_refused");
+    assert!(
+        refused.last().unwrap()["reason"]
+            .as_str()
+            .unwrap()
+            .contains("sensitive permission"),
+        "{refused:?}"
+    );
+}
+
+#[tokio::test]
 async fn info_says_github_token_permissions() {
     let broker = TestBroker::new().await;
     let resp = broker

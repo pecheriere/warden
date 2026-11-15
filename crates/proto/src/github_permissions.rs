@@ -80,114 +80,154 @@ pub fn is_sensitive(name: &str) -> bool {
     SENSITIVE.contains(&name)
 }
 
-/// What each [`SENSITIVE`] permission allows, in the words of GitHub's documentation
-/// of fine-grained permissions, in the order of [`SENSITIVE`]. A test holds the two
-/// lists to the same names.
-const MEANINGS: &[(&str, &str)] = &[
+/// What each [`SENSITIVE`] permission allows at each level, as phrases that
+/// complete "can ...", in the order of [`SENSITIVE`]: name, read, write. Worded after
+/// GitHub's documentation of fine-grained permissions, and no stronger than it. A
+/// name GitHub documents at one level only has the same text at both. A test holds
+/// the names to [`SENSITIVE`].
+const MEANINGS: &[(&str, &str, &str)] = &[
     (
         "administration",
+        "read the repository's settings, collaborators and branch protection",
         "manage the repository's settings, collaborators and branch protection, and delete it",
     ),
     (
         "dependabot_secrets",
-        "read and write the repository's Dependabot secrets",
+        "list the names of the repository's Dependabot secrets (their values cannot be read through the API)",
+        "create, replace and delete the repository's Dependabot secrets, which Dependabot then uses",
     ),
     (
         "environments",
-        "read and change the repository's deployment environments, including their protection rules",
+        "read the repository's deployment environments, including their protection rules",
+        "change the repository's deployment environments, including their protection rules and variables",
     ),
     (
         "organization_administration",
+        "read the organization's settings, members and teams",
         "manage the organization's settings, members and teams",
     ),
     (
         "organization_announcement_banners",
-        "read and change the organization's announcement banner",
+        "read the organization's announcement banner",
+        "change the organization's announcement banner",
     ),
     (
         "organization_copilot_agent_settings",
-        "read and change the organization's Copilot agent settings",
+        "read the organization's Copilot agent settings",
+        "change the organization's Copilot agent settings",
     ),
     (
         "organization_copilot_requests",
-        "make Copilot requests on the organization's account, which it pays for",
+        "read information about the organization's Copilot requests",
+        "make Copilot requests on the organization's account, which it may pay for",
     ),
     (
         "organization_copilot_seat_management",
+        "read the organization's Copilot seats",
         "add and remove the organization's Copilot seats",
     ),
     (
         "organization_custom_org_roles",
+        "read the organization's custom organization roles",
         "read and define the organization's custom organization roles",
     ),
     (
         "organization_custom_properties",
+        "read the organization's custom properties",
         "read and define the organization's custom properties, and set them for all its repositories",
     ),
     (
         "organization_custom_roles",
+        "read the organization's custom repository roles",
         "read and define the organization's custom repository roles",
     ),
     (
         "organization_events",
         "read the organization's events, including activity in its private repositories",
+        "read the organization's events, including activity in its private repositories",
     ),
     (
         "organization_external_properties_for_repos",
+        "read the organization's custom properties for its repositories",
         "read and change the organization's custom properties for its repositories",
     ),
     (
         "organization_hooks",
+        "list the organization's webhooks",
         "create and change the organization's webhooks, which keep sending its events after the grant ends",
     ),
     (
         "organization_packages",
+        "read the organization's packages",
         "read, publish and delete the organization's packages",
     ),
     (
         "organization_personal_access_token_requests",
+        "list requests for personal access tokens on the organization",
         "approve or deny requests for personal access tokens on the organization",
     ),
     (
         "organization_personal_access_tokens",
+        "list the personal access tokens that can reach the organization",
         "list and revoke the personal access tokens that can reach the organization",
     ),
-    ("organization_plan", "read the organization's billing plan"),
+    (
+        "organization_plan",
+        "read the organization's billing plan",
+        "read the organization's billing plan",
+    ),
     (
         "organization_projects",
+        "read all of the organization's projects",
         "read and change all of the organization's projects",
     ),
     (
         "organization_secrets",
-        "read and write the organization's secrets",
+        "list the names of the organization's secrets (their values cannot be read through the API)",
+        "create, replace and delete the organization's secrets, which its workflows then use",
     ),
     (
         "organization_self_hosted_runners",
+        "list the organization's self-hosted runners",
         "manage the organization's self-hosted runners, which run its workflows",
     ),
     (
         "organization_user_blocking",
+        "list the users the organization has blocked",
         "block and unblock users from the organization",
     ),
     (
         "repository_hooks",
+        "list the repository's webhooks and their settings",
         "create and change the repository's webhooks, which keep sending its events after the grant ends",
     ),
-    ("secrets", "read and write the repository's secrets"),
+    (
+        "secrets",
+        "list the names of the repository's secrets (their values cannot be read through the API)",
+        "create, replace and delete the repository's secrets, which its workflows then use",
+    ),
     (
         "workflows",
+        "change GitHub Actions workflows, which run with the repository's secrets",
         "change GitHub Actions workflows, which run with the repository's secrets",
     ),
 ];
 
-/// What the sensitive permission `name` allows, as one fixed phrase that completes
-/// "can ...". Any other name gets a general phrase, so a caller never shows nothing.
+/// What `permission` allows, as one fixed phrase that completes "can ...", true at
+/// the level it names. A permission that is not sensitive gets a general phrase, so
+/// a caller never shows nothing.
 #[must_use]
-pub fn sensitive_meaning(name: &str) -> &'static str {
+pub fn sensitive_meaning(permission: &Permission) -> &'static str {
     MEANINGS
         .iter()
-        .find(|(known, _)| *known == name)
-        .map_or("reach beyond the repository's code", |(_, meaning)| meaning)
+        .find(|(known, _, _)| *known == permission.name)
+        .map_or(
+            "reach beyond the repository's code",
+            |(_, read, write)| match permission.level {
+                Level::Read => read,
+                Level::Write => write,
+            },
+        )
 }
 
 /// How much a permission allows. `write` covers `read`.

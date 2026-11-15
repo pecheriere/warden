@@ -192,7 +192,7 @@ warden request github <owner/name> --goal "<which agent, and what it pushes or o
 A grant has the owner's default permissions, enough to push, open pull requests and
 comment. Ask for more only when the task needs it, such as reading CI results, with
 `--extra-permissions name:level,…` (`warden list` shows which the owner allows), and say why
-in the goal. A sensitive extra, such as `workflows` or `secrets`, is granted for 1 hour at most (the
+in the goal. A sensitive extra, such as `workflows` or `secrets`, is granted for 1 hour at most, and its last token lives up to an hour more (the
 request defaults to `1h`, and a longer `--for` is refused): make the goal say exactly why you need
 that permission. Do not ask for one to get around a refusal. Ask once, with every extra the task needs:
 a request with other extras is refused while one waits.

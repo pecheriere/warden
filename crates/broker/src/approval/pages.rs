@@ -325,15 +325,15 @@ fn windows_for(destination: &Destination, request: &CreateRequest) -> &'static [
 
 /// The window the picker starts on, from the `choices` the page offers (shortest
 /// first, none above `max`): the one asked for, else the shortest that covers it,
-/// else 1 hour when offered, else the longest offered. A request for 30 days with a
-/// sensitive extra therefore starts on 1 hour.
+/// else the longest offered. Creation and renewal never store a request for a
+/// sensitive extra with a window outside the short ones, so that case needs no word
+/// of its own.
 fn default_window(choices: &[Window], asked: Window, max: Window) -> Window {
     let asked = asked.min(max);
     choices
         .iter()
         .copied()
         .find(|w| *w >= asked)
-        .or_else(|| choices.contains(&Window::H1).then_some(Window::H1))
         .or_else(|| choices.last().copied())
         .unwrap_or(asked)
 }

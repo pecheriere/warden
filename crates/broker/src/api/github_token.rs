@@ -16,7 +16,7 @@ use warden_broker_proto::github_token::{
     AMBIGUOUS_GRANT, APP_CHANGED, GithubTokenRequest, GithubTokenResponse, HOURLY_LIMIT,
     NO_ACTIVE_GRANT, OLD_CLIENT, PERMISSIONS_NOT_IN_GRANT, REPOSITORY_UNREACHABLE,
 };
-use warden_broker_proto::{AgentName, Id};
+use warden_broker_proto::{AgentName, Id, Window};
 
 use super::{ApiJson, Failure};
 use crate::AppState;
@@ -33,6 +33,11 @@ const GITHUB_UNAVAILABLE: &str = "GitHub could not issue a token; try again late
 /// CLI recognises the first words.
 const REVOKED_DURING: &str = "grant revoked during the call";
 const EXPIRED_DURING: &str = "grant expired during the call";
+
+/// A grant that holds a sensitive permission lasts at most 1h, so one stored with a
+/// longer window is not trusted.
+const SENSITIVE_GRANT_TOO_LONG: &str =
+    "this grant holds a sensitive permission for longer than 1h and cannot mint";
 
 /// `POST /v1/github-token`: mint a token for the repository the body names, under
 /// the agent's grant that covers it. Runs on its own task, so that a disconnecting
@@ -101,6 +106,7 @@ async fn attempt(
         grant_id,
         grant,
         repository,
+        window_secs,
     } = match lookup {
         GithubLookup::None => return Err(refused(StatusCode::FORBIDDEN, NO_ACTIVE_GRANT)),
         GithubLookup::Ambiguous(first) => {
@@ -112,6 +118,11 @@ async fn attempt(
     *seen = Some(grant_id.clone());
     // Read strictly: a set this version cannot act on refuses, and costs nothing.
     let granted = crate::requests::github_permissions_of(&grant)?;
+    // Creation, approval and renewal never make such a grant; a stored one that is
+    // (a row changed since) is not minted from.
+    if window_secs > Window::H1.secs() && granted.iter().any(|p| p.is_sensitive()) {
+        return Err(refused(StatusCode::FORBIDDEN, SENSITIVE_GRANT_TOO_LONG));
+    }
     let permissions = narrowed(request.permissions, granted)?;
 
     let key = state

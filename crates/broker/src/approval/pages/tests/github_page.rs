@@ -354,8 +354,18 @@ fn page_says_which_extras_the_allowlist_no_longer_holds() {
     let html = page(&view);
     assert!(
         html.contains(
+            "This request cannot be approved: this broker does not allow these extra GitHub \
+             permissions: <code>actions:read</code>, <code>checks:read</code>."
+        ),
+        "{html}"
+    );
+    // One permission is "that permission", and its level is named.
+    view.github.as_mut().unwrap().not_allowed = vec!["checks:write".parse().unwrap()];
+    let html = page(&view);
+    assert!(
+        html.contains(
             "This request cannot be approved: this broker does not allow that extra GitHub \
-             permission: <code>actions</code>, <code>checks</code>."
+             permission: <code>checks:write</code>."
         ),
         "{html}"
     );

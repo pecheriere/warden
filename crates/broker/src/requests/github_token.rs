@@ -25,6 +25,9 @@ pub struct ActiveGithubToken {
     pub grant: GithubTokenGrant,
     /// The repository asked for, as the grant stores it.
     pub repository: GrantRepository,
+    /// How long the grant lasts, in seconds: the longer of what its row and its
+    /// view say, so that a row changed since approval cannot shorten it.
+    pub window_secs: u64,
 }
 
 /// What an agent's active grants say about one repository.
@@ -147,27 +150,34 @@ impl Requests {
         for row in self.active_rows(agent, "github_token").await? {
             let view: String = row.try_get("view")?;
             let view = super::stored_view(&view)?;
+            let column: i64 = row.try_get("window_secs")?;
+            let window_secs = view
+                .not_after
+                .saturating_sub(view.not_before)
+                .max(column)
+                .max(0)
+                .unsigned_abs();
             let GrantAccess::GithubToken(grant) = view.access else {
                 return Err(RequestError::Corrupt(
                     "GitHub token grant changed kind".to_owned(),
                 ));
             };
-            grants.push((parse::<Id>(&row, "id")?, grant));
+            grants.push((parse::<Id>(&row, "id")?, grant, window_secs));
         }
-        let mut covering = grants.iter().filter_map(|(grant_id, grant)| {
+        let mut covering = grants.iter().filter_map(|(grant_id, grant, window_secs)| {
             grant
                 .repositories
                 .covering(repository)
-                .map(|found| (grant_id, grant, found))
+                .map(|found| (grant_id, grant, *window_secs, found))
         });
-        let Some((grant_id, grant, found)) = covering.next() else {
+        let Some((grant_id, grant, window_secs, found)) = covering.next() else {
             return Ok(GithubLookup::None);
         };
         let found_id = found.id;
         let found = found.clone();
         let sharing = grants
             .iter()
-            .filter(|(_, other)| other.repositories.list().iter().any(|r| r.id == found_id))
+            .filter(|(_, other, _)| other.repositories.list().iter().any(|r| r.id == found_id))
             .count();
         if covering.next().is_some() || sharing > 1 {
             return Ok(GithubLookup::Ambiguous(grant_id.clone()));
@@ -176,6 +186,7 @@ impl Requests {
             grant_id: grant_id.clone(),
             grant: grant.clone(),
             repository: found,
+            window_secs,
         }))
     }
 

@@ -2,7 +2,7 @@
 //! names, and the grant for the repositories GitHub resolved when the owner opened
 //! the page.
 
-use warden_broker_proto::github_token::EXTRA_NOT_ALLOWED;
+use warden_broker_proto::github_token::{EXTRA_NOT_ALLOWED, EXTRAS_NOT_ALLOWED};
 use warden_broker_proto::{Access, GrantAccess, GrantView, Id, Window};
 
 use super::grant::{GrantFailure, validity};
@@ -31,12 +31,13 @@ pub(super) fn check(view: &PendingView) -> Result<(), String> {
         _ => return Err(CANNOT_APPROVE.to_owned()),
     }
     if !github.not_allowed.is_empty() {
-        let names: Vec<String> = github
-            .not_allowed
-            .iter()
-            .map(|p| p.name().to_owned())
-            .collect();
-        return Err(format!("{EXTRA_NOT_ALLOWED}{}", names.join(", ")));
+        let names: Vec<String> = github.not_allowed.iter().map(ToString::to_string).collect();
+        let lead = if names.len() == 1 {
+            EXTRA_NOT_ALLOWED
+        } else {
+            EXTRAS_NOT_ALLOWED
+        };
+        return Err(format!("{lead}{}", names.join(", ")));
     }
     github.installation.refusal().map_or(Ok(()), Err)
 }

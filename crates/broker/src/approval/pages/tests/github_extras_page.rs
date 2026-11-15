@@ -1,9 +1,9 @@
 //! What the approval and grants pages say about the extra permissions of a GitHub
 //! token request: how they are marked, and the windows offered with them.
 
-use warden_broker_proto::github_permissions::{SENSITIVE, sensitive_meaning};
+use warden_broker_proto::github_permissions::{Permission, SENSITIVE, sensitive_meaning};
+use warden_broker_proto::github_token::GithubTokenAccess;
 use warden_broker_proto::github_token::GrantScope;
-use warden_broker_proto::{Window, github_token::GithubTokenAccess};
 
 use super::github_fixtures::{
     REPO, extras_view, github_view, grant_with_extras, name, page, resolved, scope_of, scoped,
@@ -61,10 +61,16 @@ fn page_marks_sensitive_permissions_with_their_meaning() {
     }
     assert!(!html.contains("extra-write"), "{html}");
     assert!(html.contains("Sensitive permissions"), "{html}");
-    for name in ["secrets", "workflows"] {
-        let meaning = sensitive_meaning(name);
-        assert!(html.contains(&format!(" can {meaning}.")), "{name}: {html}");
+    // The text is the one for the level shown: names only for `secrets: read`.
+    for text in ["secrets:read", "workflows:write"] {
+        let meaning = sensitive_meaning(&text.parse::<Permission>().unwrap());
+        assert!(html.contains(&format!(" can {meaning}.")), "{text}: {html}");
     }
+    assert!(
+        html.contains("can list the names of the repository&#39;s secrets")
+            || html.contains("can list the names of the repository's secrets"),
+        "{html}"
+    );
     assert!(
         html.contains(
             "can change GitHub Actions workflows, which run with the repository's secrets."
@@ -92,19 +98,8 @@ fn every_sensitive_permission_is_marked() {
 fn sensitive_request_page_offers_short_windows_only() {
     let html = page(&extras_view(SENSITIVE_REQUEST));
     assert_eq!(offered(&html), ["15m", "30m", "1h"], "{html}");
-    // Asked for 30 days: the page starts on 1 hour and says why.
-    assert!(
-        html.contains(r#"<input id="window-1h" type="radio" name="window" value="1h" checked>"#),
-        "{html}"
-    );
-    assert!(html.contains("Asked for 30 days"), "{html}");
-}
-
-#[test]
-fn sensitive_request_keeps_a_short_window_it_asked_for() {
-    let mut view = extras_view(SENSITIVE_REQUEST);
-    view.request.window = Window::M30;
-    let html = page(&view);
+    // The request asks for 30 minutes, which the page starts on, with nothing to
+    // explain.
     assert!(
         html.contains(r#"<input id="window-30m" type="radio" name="window" value="30m" checked>"#),
         "{html}"
@@ -128,7 +123,7 @@ fn not_approvable_extra_is_in_the_notice_and_names_are_code() {
         html.contains(r#"<p class="cannot" id="cannot-approve" role="alert">"#),
         "{html}"
     );
-    assert!(html.contains("<code>checks</code>."), "{html}");
+    assert!(html.contains("<code>checks:read</code>."), "{html}");
     assert!(!html.contains(r#"id="approve""#), "{html}");
 }
 

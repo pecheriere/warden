@@ -1089,7 +1089,14 @@ What an attacker gets, and what stops it:
   token. What an agent can hold is therefore the default set, plus extras the owner
   listed and approved for that grant. An agent with a prompt-injected goal can ask for
   a listed sensitive extra, so the owner's allowlist and the goal on the phone are the
-  controls: list only what an agent may need. The approval is
+  controls: list only what an agent may need. Narrowing the allowlist does not end a grant
+  that is live: one holding a non-sensitive extra keeps minting for up to 30 days, and the
+  owner revokes it. A token minted at the end of a grant lives up to an hour more, so
+  access to a sensitive extra can last about 2 hours after approval (1 hour of grant and
+  1 hour of the last token). The broker refuses to mint from a grant that holds a sensitive
+  permission for longer than 1 hour, and audits it, in case a stored grant was changed.
+  Refused requests for an extra outside the allowlist, a sensitive extra for a long window
+  and a second set of extras are in the audit log as `github_token_refused`. The approval is
   refused when the installation does not hold the set, which the broker reads at each view,
   begin and finish of the page; a read it cannot make refuses too.
 - **Within a grant, the agent gets tokens with no prompt**, up to 60 an hour (UTC), per

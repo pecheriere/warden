@@ -300,7 +300,7 @@ async fn pending_request_unapprovable_after_allowlist_narrowed() {
     assert!(page.body.contains("cannot be approved"), "{}", page.body);
     assert!(
         page.body
-            .contains(&format!("{EXTRA_NOT_ALLOWED}<code>checks</code>")),
+            .contains(&format!("{EXTRA_NOT_ALLOWED}<code>checks:read</code>")),
         "{}",
         page.body
     );

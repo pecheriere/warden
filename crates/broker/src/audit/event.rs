@@ -308,7 +308,10 @@ pub enum AuditEvent {
         accessible: bool,
     },
     /// The broker refused to mint a GitHub token for an agent, or minted one it
-    /// then did not give out because the grant had ended.
+    /// then did not give out because the grant had ended; or it refused a request for
+    /// GitHub token permissions the owner does not offer (an extra outside the
+    /// allowlist, a sensitive one for a long window, or other extras than the ones
+    /// already waiting), with no grant.
     GithubTokenRefused {
         /// The agent.
         agent: AgentName,

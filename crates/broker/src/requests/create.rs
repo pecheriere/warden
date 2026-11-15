@@ -70,6 +70,23 @@ impl Requests {
         agent: &AgentName,
         req: CreateRequest,
     ) -> Result<CreatedResponse, RequestError> {
+        let created = self.create_unaudited(agent, req).await;
+        if let Err(e @ RequestError::OtherPermissionsPending(_)) = &created {
+            // An agent asking for other permissions than the ones it has waiting:
+            // fixed text and the id of its own request.
+            self.record_github_token_refusal(agent, None, e.to_string())
+                .await;
+        }
+        created
+    }
+
+    /// [`Requests::create`] without the audit entry of the refusal that only the
+    /// whole of it can tell.
+    async fn create_unaudited(
+        &self,
+        agent: &AgentName,
+        req: CreateRequest,
+    ) -> Result<CreatedResponse, RequestError> {
         self.link_hosts.check(req.link.as_ref())?;
         let Checked {
             dedupe_key,
@@ -167,11 +184,27 @@ impl Requests {
         github_scope::check_request(github)?;
         // Does not read the key: any enrolled agent can get this far. No App is
         // refused as not configured, an unusable one as unavailable.
-        let permissions = self
+        // The refusals of a request for more than the owner allows are audited: an
+        // agent that probes for permissions it was not offered is what the owner
+        // reads the log for. They hold fixed texts and known permission names only.
+        let permissions = match self
             .new_github_permissions(github.extra_permissions.as_ref())
-            .await?;
-        github_token::check_window_for(window, self.github_token_max, github)
-            .map_err(RequestError::Rejected)?;
+            .await
+        {
+            Err(RequestError::Rejected(reason)) => {
+                self.record_github_token_refusal(agent, None, reason.clone())
+                    .await;
+                return Err(RequestError::Rejected(reason));
+            }
+            other => other?,
+        };
+        if let Err(reason) = github_token::check_window_for(window, self.github_token_max, github) {
+            if github.has_sensitive_extra() {
+                self.record_github_token_refusal(agent, None, reason.clone())
+                    .await;
+            }
+            return Err(RequestError::Rejected(reason));
+        }
         Ok(Checked {
             dedupe_key: format!("{agent}|github_token|{}", github.slot()),
             subject: github.summary(),

@@ -548,7 +548,7 @@ async fn renewal_with_disallowed_extra_is_unapprovable_and_says_which() {
     assert!(page.body.contains("cannot be approved"), "{}", page.body);
     assert!(
         page.body
-            .contains(&format!("{EXTRA_NOT_ALLOWED}<code>checks</code>")),
+            .contains(&format!("{EXTRA_NOT_ALLOWED}<code>checks:read</code>")),
         "{}",
         page.body
     );
