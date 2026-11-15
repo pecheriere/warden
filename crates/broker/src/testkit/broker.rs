@@ -7,7 +7,7 @@ use axum::Router;
 use axum::http::{HeaderMap, StatusCode};
 use serde_json::Value;
 use tempfile::TempDir;
-use tokio::task::AbortHandle;
+use tokio::task::JoinHandle;
 use url::Url;
 use warden_broker_proto::Window;
 
@@ -32,6 +32,7 @@ use crate::{AppState, store};
 mod approval;
 mod github_rows;
 mod inspect;
+mod ports;
 mod requests;
 mod serve;
 
@@ -142,7 +143,9 @@ pub struct TestBroker {
     db_path: PathBuf,
     audit_path: PathBuf,
     default_passkey: tokio::sync::Mutex<Option<SoftAuthenticator>>,
-    servers: Mutex<Vec<AbortHandle>>,
+    servers: Mutex<Vec<JoinHandle<()>>>,
+    /// Every port the broker has served on, held across restarts.
+    ports: ports::Ports,
     relays: Mutex<
         Vec<(
             tokio::sync::watch::Sender<bool>,
@@ -446,6 +449,11 @@ impl TestBroker {
     /// as in a process restart: begun ceremonies, long polls, listeners and
     /// captured doorbells.
     ///
+    /// The ports it served on stay held, so that nothing else can take them:
+    /// until [`TestBroker::spawn_behind_serve_at`] serves on them again, each
+    /// resets every connection, as a port with no process behind it refuses
+    /// one.
+    ///
     /// # Panics
     /// If any part of the setup fails.
     pub async fn restart(self) -> Self {
@@ -473,9 +481,21 @@ impl TestBroker {
     }
 
     async fn restart_with(mut self, relay: Option<String>) -> Self {
+        // Stop serving first, as an exiting process would; the ports stay
+        // held, refusing connections until the new broker serves on them.
+        let servers = std::mem::take(self.servers.get_mut().expect("servers lock poisoned"));
+        for server in servers {
+            server.abort();
+            if let Err(e) = server.await
+                && e.is_panic()
+            {
+                std::panic::resume_unwind(e.into_panic());
+            }
+        }
+        let ports = std::mem::take(&mut self.ports).down();
         self.state.pool.close().await;
         let passkey = std::mem::take(self.default_passkey.get_mut());
-        let next = Self::build(
+        let mut next = Self::build(
             self.dir.take(),
             self.db_path.clone(),
             self.audit_path.clone(),
@@ -489,6 +509,7 @@ impl TestBroker {
         )
         .await;
         *next.default_passkey.lock().await = passkey;
+        next.ports = ports;
         next
     }
 
@@ -591,6 +612,7 @@ impl TestBroker {
             audit_path,
             default_passkey: tokio::sync::Mutex::new(None),
             servers: Mutex::new(Vec::new()),
+            ports: ports::Ports::default(),
             relays: Mutex::new(Vec::new()),
             dir,
             limits,
