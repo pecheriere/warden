@@ -10,6 +10,8 @@ use warden_broker_proto::offers::Offers;
 
 pub use self::ssh_config::{IncludeReader, SshAliases};
 
+use self::ssh_config::warden_shape;
+
 /// Reads a small file as text: `None` when the file is missing,
 /// unreadable, not text or larger than 64 KiB (the caller enforces the cap).
 pub type FileReader = dyn Fn(&Path) -> Option<String>;
@@ -72,14 +74,13 @@ impl From<&Offers> for Coverage {
     }
 }
 
-/// The scheme, lowercased host and port (with the scheme's default) of a URL.
-fn origin_key(url: &str) -> Option<(String, String, u16)> {
-    let url = Url::parse(url).ok()?;
-    Some((
-        url.scheme().to_owned(),
-        url.host_str()?.to_ascii_lowercase(),
-        url.port_or_known_default()?,
-    ))
+/// The lowercased host of a URL; a URL without a scheme is read as `http://`.
+fn host_key(url: &str) -> Option<String> {
+    let parsed = Url::parse(url)
+        .ok()
+        .filter(|u| u.host_str().is_some())
+        .or_else(|| Url::parse(&format!("http://{url}")).ok())?;
+    Some(parsed.host_str()?.to_ascii_lowercase())
 }
 
 impl Coverage {
@@ -100,18 +101,20 @@ impl Coverage {
         })
     }
 
-    /// The API secret whose origin is the one of `url`: scheme, host and port
-    /// (defaults filled in) must all match. An unparsable URL or origin
-    /// matches nothing.
+    /// The API secret whose origin has the host of `url`. Only the host
+    /// matches (ASCII case-insensitive): the scheme and port are ignored,
+    /// since a command may reach the same host over either. A URL without a
+    /// scheme is read as `http://`. An unparsable URL or origin matches
+    /// nothing.
     #[must_use]
     pub fn api_for(&self, url: &str) -> Option<&ApiCover> {
-        let wanted = origin_key(url)?;
+        let wanted = host_key(url)?;
         self.api.iter().find(|cover| {
             cover
                 .origin
                 .as_deref()
-                .and_then(origin_key)
-                .is_some_and(|origin| origin == wanted)
+                .and_then(host_key)
+                .is_some_and(|host| host == wanted)
         })
     }
 }
@@ -133,36 +136,82 @@ pub struct Context {
 
 impl Context {
     /// Whether `path` is under the warden socket directory. The match is on
-    /// the literal text: `~` and variables are not expanded, so an unexpanded
-    /// path is not exempt, and a path with a `..` component is refused.
+    /// the literal text after collapsing repeated `/`: `~` and variables are
+    /// not expanded, except a leading `$TMPDIR` or `${TMPDIR}`, which stands
+    /// for the parent of the socket directory (the CLI makes the directory
+    /// `$TMPDIR/warden-<uid>`). A path with a `..` component is refused, and
+    /// an empty, `/` or relative socket directory exempts nothing.
     #[must_use]
     pub fn is_warden_socket(&self, path: &str) -> bool {
         let Some(dir) = self.warden_socket_dir.to_str() else {
             return false;
         };
+        let dir = collapse_slashes(dir);
         let dir = dir.trim_end_matches('/');
-        let Some(rest) = path
+        if !dir.starts_with('/') || has_parent_dir(dir) {
+            return false;
+        }
+        let expanded = match tmpdir_rest(path) {
+            Some(rest) => {
+                let parent = dir.rsplit_once('/').map_or("", |(parent, _)| parent);
+                format!("{parent}/{rest}")
+            }
+            None => path.to_owned(),
+        };
+        let expanded = collapse_slashes(&expanded);
+        let Some(rest) = expanded
             .strip_prefix(dir)
             .and_then(|rest| rest.strip_prefix('/'))
         else {
             return false;
         };
-        !rest.is_empty()
-            && !Path::new(path)
-                .components()
-                .any(|c| matches!(c, Component::ParentDir))
+        !rest.is_empty() && !has_parent_dir(&expanded) && !has_parent_dir(path)
     }
 
-    /// Whether `file` is an SSH config that routes through warden: it reads,
-    /// names at least one `IdentityAgent`, and every one is a warden socket.
+    /// Whether `file` is an SSH config of the shape `warden ssh-config`
+    /// writes, for `host`: it reads; it has no `Include`, `Match`,
+    /// `ProxyCommand` or `ProxyJump`; every `IdentityFile` is `none`; it names
+    /// at least one `IdentityAgent`, all of them warden sockets; and `host`
+    /// (case-insensitive) is one of its literal `Host` names.
     #[must_use]
-    pub fn is_warden_ssh_config(&self, file: &str) -> bool {
+    pub fn is_warden_ssh_config(&self, file: &str, host: &str) -> bool {
         let Some(text) = (self.read_small_file)(Path::new(file)) else {
             return false;
         };
-        let agents = ssh_config::identity_agents(&text);
-        !agents.is_empty() && agents.iter().all(|agent| self.is_warden_socket(agent))
+        let Some(shape) = warden_shape(&text) else {
+            return false;
+        };
+        let host = host.to_ascii_lowercase();
+        !shape.agents.is_empty()
+            && shape
+                .agents
+                .iter()
+                .all(|agent| self.is_warden_socket(agent))
+            && shape.hosts.contains(&host)
     }
+}
+
+/// `text` with every run of `/` made one.
+fn collapse_slashes(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if c != '/' || !out.ends_with('/') {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// The part of `path` after a leading `$TMPDIR/` or `${TMPDIR}/`.
+fn tmpdir_rest(path: &str) -> Option<&str> {
+    path.strip_prefix("$TMPDIR/")
+        .or_else(|| path.strip_prefix("${TMPDIR}/"))
+}
+
+fn has_parent_dir(path: &str) -> bool {
+    Path::new(path)
+        .components()
+        .any(|c| matches!(c, Component::ParentDir))
 }
 
 #[cfg(test)]

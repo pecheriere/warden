@@ -115,21 +115,25 @@ impl Default for Settings {
     }
 }
 
-/// The longest piece of the config a note may quote.
-const QUOTE_MAX: usize = 32;
-
-/// Quote part of the config for the note: only characters a key or setting
-/// name uses, cut short, so that nothing else from the file reaches an agent.
-fn quote(text: &str) -> String {
-    let mut out: String = text
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
-        .take(QUOTE_MAX)
-        .collect();
-    if text.chars().count() > out.chars().count() {
-        out.push('~');
+/// Quote a bad key only when it looks like a signal name: at most 32 of
+/// `[a-z-]`. Anything else could be a secret pasted into the wrong place, so
+/// the note does not echo it.
+fn unknown_key_detail(key: &str) -> String {
+    if key.len() <= 32 && key.chars().all(|c| c.is_ascii_lowercase() || c == '-') {
+        format!("{key}: unknown key")
+    } else {
+        "an unknown key".to_owned()
     }
-    out
+}
+
+/// Name a bad value only when it looks like a setting name: at most 12 ASCII
+/// lowercase letters. Anything else is not echoed.
+fn unknown_value_detail(signal: Signal, value: &str) -> String {
+    if value.len() <= 12 && value.chars().all(|c| c.is_ascii_lowercase()) {
+        format!("{}: unknown value {value}", signal.key())
+    } else {
+        format!("{}: unknown value", signal.key())
+    }
 }
 
 fn note(detail: &str) -> String {
@@ -156,10 +160,7 @@ impl Settings {
         let mut settings = Settings::default();
         for (key, value) in table {
             let Some(signal) = Signal::from_key(key) else {
-                return (
-                    Settings::default(),
-                    Some(note(&format!("{}: unknown key", quote(key)))),
-                );
+                return (Settings::default(), Some(note(&unknown_key_detail(key))));
             };
             let Some(text) = value.as_str() else {
                 return (
@@ -170,11 +171,7 @@ impl Settings {
             let Some(setting) = Setting::parse(text) else {
                 return (
                     Settings::default(),
-                    Some(note(&format!(
-                        "{}: unknown value {}",
-                        signal.key(),
-                        quote(text)
-                    ))),
+                    Some(note(&unknown_value_detail(signal, text))),
                 );
             };
             settings.values[signal.index()] = setting;

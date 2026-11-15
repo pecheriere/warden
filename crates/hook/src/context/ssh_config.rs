@@ -38,6 +38,7 @@ fn unquote(value: &str) -> &str {
 }
 
 /// Where in the file the reader is.
+#[derive(Clone)]
 enum Block {
     /// Before any `Host` or `Match` line.
     Global,
@@ -52,13 +53,41 @@ fn is_literal(pattern: &str) -> bool {
     !pattern.is_empty() && !pattern.starts_with('!') && !pattern.contains(['*', '?'])
 }
 
+/// `HostName` with `%h` replaced by the alias and `%%` by `%`; any other
+/// `%` token stays literal.
+fn expand_tokens(value: &str, alias: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut chars = value.chars();
+    while let Some(c) = chars.next() {
+        if c != '%' {
+            out.push(c);
+            continue;
+        }
+        match chars.clone().next() {
+            Some('h') => {
+                chars.next();
+                out.push_str(alias);
+            }
+            Some('%') => {
+                chars.next();
+                out.push('%');
+            }
+            _ => out.push('%'),
+        }
+    }
+    out
+}
+
 impl SshAliases {
-    /// Reads `text`, resolving one level of `Include` through `include`,
-    /// which gets the include's raw argument and returns the file's text.
+    /// Reads `text`, resolving one level of `Include` through `include`.
+    /// The callback gets the include's raw argument (as written, `~` and
+    /// all) and returns the file's text; the caller resolves `~`, paths
+    /// relative to `~/.ssh` and globs. An `Include` inside a `Host` block is
+    /// read in that block's context, as `ssh` does.
     #[must_use]
     pub fn parse(text: &str, include: &IncludeReader<'_>) -> Self {
         let mut aliases = Self::default();
-        aliases.read(text, Some(include));
+        aliases.read(text, Some(include), Block::Global);
         aliases
     }
 
@@ -70,10 +99,10 @@ impl SshAliases {
             .map(String::as_str)
     }
 
-    /// Reads one file. `include` is `None` inside an included file, so
-    /// includes go one level deep only.
-    fn read(&mut self, text: &str, include: Option<&IncludeReader<'_>>) {
-        let mut block = Block::Global;
+    /// Reads one file, starting in `block`. `include` is `None` inside an
+    /// included file, so includes go one level deep only.
+    fn read(&mut self, text: &str, include: Option<&IncludeReader<'_>>, start: Block) {
+        let mut block = start;
         for line in text.lines() {
             let Some((keyword, value)) = split_line(line) else {
                 continue;
@@ -98,7 +127,7 @@ impl SshAliases {
                                 // ssh uses the first value it finds.
                                 self.hosts
                                     .entry(name.clone())
-                                    .or_insert_with(|| host.to_owned());
+                                    .or_insert_with(|| expand_tokens(host, name));
                             }
                         }
                     }
@@ -107,7 +136,7 @@ impl SshAliases {
                     if let Some(include) = include {
                         for path in value.split_whitespace().map(unquote) {
                             if let Some(included) = include(path) {
-                                self.read(&included, None);
+                                self.read(&included, None, block.clone());
                             }
                         }
                     }
@@ -118,11 +147,36 @@ impl SshAliases {
     }
 }
 
-/// Every `IdentityAgent` value in `text`, unquoted and unexpanded.
-pub(super) fn identity_agents(text: &str) -> Vec<&str> {
-    text.lines()
-        .filter_map(split_line)
-        .filter(|(keyword, _)| keyword == "identityagent")
-        .map(|(_, value)| unquote(value))
-        .collect()
+/// What a config file that routes through warden declares.
+pub(super) struct WardenShape<'a> {
+    /// Every `IdentityAgent` value, unquoted and unexpanded.
+    pub agents: Vec<&'a str>,
+    /// The literal `Host` names, lowercased.
+    pub hosts: Vec<String>,
+}
+
+/// The agents and host names of `text`, or `None` when it uses anything
+/// warden's own file never does: `Include`, `Match`, `ProxyCommand`,
+/// `ProxyJump`, or an `IdentityFile` other than `none`.
+pub(super) fn warden_shape(text: &str) -> Option<WardenShape<'_>> {
+    let mut shape = WardenShape {
+        agents: Vec::new(),
+        hosts: Vec::new(),
+    };
+    for (keyword, value) in text.lines().filter_map(split_line) {
+        match keyword.as_str() {
+            "include" | "match" | "proxycommand" | "proxyjump" => return None,
+            "identityfile" if !unquote(value).eq_ignore_ascii_case("none") => return None,
+            "identityagent" => shape.agents.push(unquote(value)),
+            "host" => shape.hosts.extend(
+                value
+                    .split_whitespace()
+                    .map(unquote)
+                    .filter(|p| is_literal(p))
+                    .map(str::to_ascii_lowercase),
+            ),
+            _ => {}
+        }
+    }
+    Some(shape)
 }

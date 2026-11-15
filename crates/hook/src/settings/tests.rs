@@ -116,6 +116,26 @@ fn note_never_carries_other_config_text() {
 }
 
 #[test]
+fn token_shaped_value_is_not_echoed() {
+    let t = table("secret-store = \"ghp_abcdefghijklmnop1234\"");
+    let (settings, note) = Settings::from_table(Some(&t));
+    assert_defaults(settings);
+    let note = note.expect("note");
+    assert!(!note.contains("ghp_"), "{note}");
+    assert!(note.contains("secret-store"), "{note}");
+    assert!(note.contains("unknown value"), "{note}");
+}
+
+#[test]
+fn token_shaped_key_is_not_echoed() {
+    let t = table("ghp_abcdefghijklmnop1234 = \"off\"");
+    let (_, note) = Settings::from_table(Some(&t));
+    let note = note.expect("note");
+    assert!(!note.contains("ghp_"), "{note}");
+    assert!(note.contains("an unknown key"), "{note}");
+}
+
+#[test]
 fn block_is_strongest() {
     assert!(Setting::Block > Setting::Ask);
     assert!(Setting::Ask > Setting::Warn);

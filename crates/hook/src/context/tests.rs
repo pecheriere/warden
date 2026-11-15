@@ -148,6 +148,8 @@ fn api_origin_default_port() {
         "https://api.example.com/v1/x",
         "https://API.example.com:443/",
         "https://api.example.com",
+        "https://api.example.com:8443/",
+        "http://api.example.com/",
     ] {
         assert_eq!(c.api_for(url).unwrap().name, "home-api", "{url}");
     }
@@ -157,9 +159,8 @@ fn api_origin_default_port() {
 fn api_other_origin_no_match() {
     let c = coverage();
     for url in [
-        "http://api.example.com/",
-        "https://api.example.com:8443/",
         "https://other.example.com/",
+        "https://api.example.com.evil.example/",
         "not a url",
         "",
     ] {
@@ -171,35 +172,160 @@ fn api_other_origin_no_match() {
 }
 
 #[test]
+fn api_schemeless_matches() {
+    let mut c = coverage();
+    c.api[0].origin = Some("https://home-api.example.internal".to_owned());
+    for url in [
+        "home-api.example.internal/v1",
+        "HOME-API.example.internal:8080/v1",
+    ] {
+        assert_eq!(c.api_for(url).unwrap().name, "home-api", "{url}");
+    }
+}
+
+#[test]
+fn api_other_scheme_same_host_matches() {
+    let c = coverage();
+    for url in ["http://api.example.com/", "ftp://api.example.com/x"] {
+        assert_eq!(c.api_for(url).unwrap().name, "home-api", "{url}");
+    }
+}
+
+#[test]
+fn hostname_percent_tokens() {
+    let a = SshAliases::parse(
+        "Host lab\n HostName %h.example.internal\nHost pct\n HostName a%%b.%x\n",
+        &no_include,
+    );
+    assert_eq!(a.host_for("lab"), Some("lab.example.internal"));
+    assert_eq!(a.host_for("pct"), Some("a%b.%x"));
+}
+
+#[test]
+fn include_inside_host_block_applies_to_block() {
+    let include =
+        |arg: &str| (arg == "extra").then(|| " HostName inc.example.internal\n".to_owned());
+    let a = SshAliases::parse("Host one two\n Include extra\n", &include);
+    assert_eq!(a.host_for("one"), Some("inc.example.internal"));
+    assert_eq!(a.host_for("two"), Some("inc.example.internal"));
+}
+
+fn context_with_dir(dir: &str) -> Context {
+    let mut ctx = context(&[]);
+    ctx.warden_socket_dir = PathBuf::from(dir);
+    ctx
+}
+
+#[test]
+fn tmpdir_variable_prefix_is_warden_socket() {
+    let ctx = context_with_dir("/var/folders/ab/T/warden-501");
+    assert!(ctx.is_warden_socket("$TMPDIR/warden-501/x.sock"));
+    assert!(ctx.is_warden_socket("${TMPDIR}/warden-501/x.sock"));
+    assert!(ctx.is_warden_socket("/var/folders/ab/T//warden-501/x.sock"));
+    assert!(!ctx.is_warden_socket("$TMPDIR/../x.sock"));
+    assert!(!ctx.is_warden_socket("$TMPDIR/warden-501/../x.sock"));
+    assert!(!ctx.is_warden_socket("$TMPDIR/warden-5019/x.sock"));
+    assert!(!ctx.is_warden_socket("$HOME/warden-501/x.sock"));
+    assert!(!ctx.is_warden_socket("$TMPDIRX/warden-501/x.sock"));
+    assert!(!ctx.is_warden_socket("$TMPDIR"));
+}
+
+#[test]
+fn repeated_slashes_collapse() {
+    let ctx = context(&[]);
+    assert!(ctx.is_warden_socket("/tmp//warden-501/x.sock"));
+    assert!(ctx.is_warden_socket("/tmp/warden-501//x.sock"));
+}
+
+#[test]
+fn empty_or_relative_socket_dir_exempts_nothing() {
+    for dir in ["", "/", "warden-501", "relative/warden-501", "//"] {
+        let ctx = context_with_dir(dir);
+        for path in [
+            "/x.sock",
+            "/tmp/warden-501/x.sock",
+            "$TMPDIR/warden-501/x.sock",
+            "warden-501/x.sock",
+        ] {
+            assert!(!ctx.is_warden_socket(path), "{dir:?} {path}");
+        }
+    }
+}
+
+#[test]
 fn warden_socket_prefix() {
     let ctx = context(&[]);
     assert!(ctx.is_warden_socket("/tmp/warden-501/agent.sock"));
     assert!(!ctx.is_warden_socket("/tmp/warden-501"));
     assert!(!ctx.is_warden_socket("/tmp/warden-5019/agent.sock"));
     assert!(!ctx.is_warden_socket("~/warden/agent.sock"));
-    assert!(!ctx.is_warden_socket("$TMPDIR/warden-501/agent.sock"));
+    assert!(!ctx.is_warden_socket("$HOME/warden-501/agent.sock"));
     assert!(!ctx.is_warden_socket("/tmp/warden-501/../x"));
 }
 
+const WARDEN_CONFIG: &str = "Host switch-01\n IdentityAgent \"/tmp/warden-501/a.sock\"\n IdentityFile none\n IdentitiesOnly no\n";
+
 #[test]
-fn warden_ssh_config_needs_all_agents_under_prefix() {
+fn warden_ssh_config_shape() {
     let ctx = context(&[
+        ("/c/ok", WARDEN_CONFIG),
         (
-            "/c/ok",
-            "Host a\n IdentityAgent /tmp/warden-501/a.sock\nHost b\n IdentityAgent \"/tmp/warden-501/b.sock\"\n",
+            "/c/two",
+            "Host a B\n IdentityAgent /tmp/warden-501/a.sock\n IdentityFile none\nHost c\n IdentityAgent /tmp/warden-501/c.sock\n IdentityFile none\n",
         ),
+    ]);
+    assert!(ctx.is_warden_ssh_config("/c/ok", "switch-01"));
+    assert!(ctx.is_warden_ssh_config("/c/ok", "SWITCH-01"));
+    assert!(ctx.is_warden_ssh_config("/c/two", "b"));
+    assert!(ctx.is_warden_ssh_config("/c/two", "c"));
+}
+
+#[test]
+fn warden_ssh_config_refuses_other_shapes() {
+    let ctx = context(&[
+        ("/c/ok", WARDEN_CONFIG),
         (
             "/c/mixed",
-            "IdentityAgent /tmp/warden-501/a.sock\nIdentityAgent ~/pw/agent.sock\n",
+            "Host a\n IdentityAgent /tmp/warden-501/a.sock\n IdentityAgent ~/pw/agent.sock\n",
         ),
         ("/c/none", "Host a\n HostName x\n"),
+        (
+            "/c/key",
+            "Host a\n IdentityAgent /tmp/warden-501/a.sock\n IdentityFile ~/.ssh/id_ed25519\n",
+        ),
+        (
+            "/c/include",
+            "Include ~/.ssh/config\nHost a\n IdentityAgent /tmp/warden-501/a.sock\n IdentityFile none\n",
+        ),
+        (
+            "/c/proxy",
+            "Host a\n IdentityAgent /tmp/warden-501/a.sock\n ProxyCommand nc evil 22\n",
+        ),
+        (
+            "/c/jump",
+            "Host a\n IdentityAgent /tmp/warden-501/a.sock\n ProxyJump evil\n",
+        ),
+        (
+            "/c/match",
+            "Host a\n IdentityAgent /tmp/warden-501/a.sock\nMatch all\n IdentityFile none\n",
+        ),
+        (
+            "/c/pattern",
+            "Host *\n IdentityAgent /tmp/warden-501/a.sock\n IdentityFile none\n",
+        ),
     ]);
-    assert!(ctx.is_warden_ssh_config("/c/ok"));
-    assert!(!ctx.is_warden_ssh_config("/c/mixed"));
-    assert!(!ctx.is_warden_ssh_config("/c/none"));
+    for file in ["mixed", "none", "key", "include", "proxy", "jump", "match"] {
+        assert!(
+            !ctx.is_warden_ssh_config(&format!("/c/{file}"), "a"),
+            "{file}"
+        );
+    }
+    assert!(!ctx.is_warden_ssh_config("/c/pattern", "a"));
+    assert!(!ctx.is_warden_ssh_config("/c/pattern", "*"));
+    assert!(!ctx.is_warden_ssh_config("/c/ok", "other-host"));
 }
 
 #[test]
 fn unreadable_file_is_not_warden() {
-    assert!(!context(&[]).is_warden_ssh_config("/c/missing"));
+    assert!(!context(&[]).is_warden_ssh_config("/c/missing", "a"));
 }
