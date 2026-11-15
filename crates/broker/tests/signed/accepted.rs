@@ -30,13 +30,14 @@ async fn signed_request_accepted() {
         );
         let id = created.json()["id"].as_str().unwrap().to_owned();
 
-        // A long poll signs its query and the empty body.
+        // A status poll signs its query and the empty body. `wait=0`, so that
+        // it answers at once: the signature covers the query whatever it says.
         let polled = broker
             .api_signed(
                 &key,
                 "bot",
                 "GET",
-                &format!("/v1/requests/{id}?wait=1"),
+                &format!("/v1/requests/{id}?wait=0"),
                 b"",
             )
             .await;
