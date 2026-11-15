@@ -10,6 +10,9 @@ use crate::context::Coverage;
 use crate::detect::Match;
 use crate::settings::Signal;
 
+/// The most matches the message lists; the rest are counted.
+const MAX_LISTED: usize = 8;
+
 const CLOSING: &str = "Never look for another way in.";
 
 fn covered_ssh(target: &str, coverage: Option<&Coverage>) -> String {
@@ -71,7 +74,7 @@ pub fn render(matches: &[Match], coverage: Option<&Coverage>) -> String {
         return String::new();
     }
     let mut text = String::new();
-    for found in matches {
+    for found in matches.iter().take(MAX_LISTED) {
         let paragraph = match found.signal {
             Signal::CoveredSsh => covered_ssh(&found.subject, coverage),
             Signal::CoveredApi => covered_api(&found.subject, coverage),
@@ -82,6 +85,9 @@ pub fn render(matches: &[Match], coverage: Option<&Coverage>) -> String {
         };
         // Writing to a String cannot fail.
         let _ = write!(text, "{paragraph}\n\n");
+    }
+    if let Some(more) = matches.len().checked_sub(MAX_LISTED).filter(|n| *n > 0) {
+        let _ = write!(text, "\u{2026} and {more} more.\n\n");
     }
     text.push_str(CLOSING);
     text

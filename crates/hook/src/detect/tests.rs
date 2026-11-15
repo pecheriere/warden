@@ -3,6 +3,8 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+mod hardening;
+
 use super::{Match, check};
 use crate::context::{ApiCover, Context, Coverage, SshAliases, SshCover};
 use crate::settings::{Setting, Settings, Signal};
@@ -230,7 +232,7 @@ fn messages_never_echo_the_command() {
         ("cat /secret/path/.netrc", ".netrc"),
         ("cat /secret/path/.env.hunter2", ".env"),
         (
-            "curl -H 'Authorization: Bearer abc123' api.example.org/path?token=abc123",
+            "curl -H 'Authorization: Bearer abc123' https://api.example.org/path?token=abc123",
             "api.example.org",
         ),
     ];

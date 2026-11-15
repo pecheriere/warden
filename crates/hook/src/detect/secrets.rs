@@ -16,7 +16,6 @@ const PASS_QUIET: &[&str] = &[
     "insert",
     "add",
     "edit",
-    "generate",
     "rm",
     "delete",
     "remove",
@@ -26,7 +25,6 @@ const PASS_QUIET: &[&str] = &[
     "copy",
     "find",
     "search",
-    "grep",
     "version",
     "help",
     "sync",
@@ -36,7 +34,6 @@ const PASS_QUIET: &[&str] = &[
     "completion",
     "mounts",
     "audit",
-    "env",
     "update",
     "templates",
     "fsck",
@@ -69,10 +66,15 @@ fn secret_store(tool: &str) -> Match {
 pub(super) fn secret_store_use(program: &str, args: &[String]) -> Option<Match> {
     match program {
         "op" => {
-            let words = positionals(args, "", &["account", "config", "session", "cache"]);
+            // `--cache` is a flag in `op`; these options take a value.
+            let words = positionals(
+                args,
+                "",
+                &["format", "encoding", "account", "session", "config"],
+            );
             let reads = matches!(
                 words.as_slice(),
-                ["read" | "run" | "inject", ..] | ["item", "get", ..]
+                ["read" | "run" | "inject", ..] | ["item" | "document", "get", ..]
             );
             reads.then(|| secret_store("op"))
         }
@@ -96,7 +98,8 @@ pub(super) fn secret_store_use(program: &str, args: &[String]) -> Option<Match> 
         }
         "bw" => {
             let words = positionals(args, "", &["session"]);
-            (words.first() == Some(&"get")).then(|| secret_store("bw"))
+            let reads = words.first() == Some(&"get") || words.starts_with(&["list", "items"]);
+            reads.then(|| secret_store("bw"))
         }
         _ => None,
     }
@@ -112,9 +115,15 @@ fn credential_kind(word: &str) -> Option<&'static str> {
     if *last == "hosts.yml" && before.ends_with(&[".config", "gh"]) {
         return Some("gh hosts.yml");
     }
-    let example = [".example", ".sample", ".template", ".dist"];
+    // `.env.<x>` is a document or a template when its last extension says so.
+    let not_secret = ["md", "example", "sample", "template", "dist", "txt"];
     let is_env = *last == ".env"
-        || (last.starts_with(".env.") && !example.iter().any(|ext| last.ends_with(ext)));
+        || last.strip_prefix(".env.").is_some_and(|rest| {
+            let extension = rest.rsplit('.').next().unwrap_or(rest);
+            !not_secret
+                .iter()
+                .any(|ext| extension.eq_ignore_ascii_case(ext))
+        });
     is_env.then_some(".env")
 }
 

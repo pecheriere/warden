@@ -55,7 +55,7 @@ fn split_assignment(word: &str) -> Option<(&str, &str)> {
 fn nested_scripts(command: &SimpleCommand) -> Vec<String> {
     let (words, mut scripts) = prefix::unwrap(&command.argv);
     scripts.retain(|script| !script.is_empty());
-    let mut scripts: Vec<String> = scripts.into_iter().map(str::to_string).collect();
+    let mut scripts: Vec<String> = scripts;
     if let [program, args @ ..] = words {
         let name = program.rsplit('/').next().unwrap_or(program);
         if name == "eval" {

@@ -16,6 +16,25 @@ use crate::message;
 use crate::settings::{Setting, Settings, Signal};
 use crate::shell::{self, SimpleCommand};
 
+/// Every subject an `owner-ssh-key` match can have: the tool.
+pub const OWNER_SSH_KEY_SUBJECTS: &[&str] = &[
+    "ssh",
+    "scp",
+    "sftp",
+    "rsync",
+    "git",
+    "ssh-copy-id",
+    "autossh",
+    "mosh",
+];
+
+/// Every subject a `secret-store` match can have: the tool.
+pub const SECRET_STORE_SUBJECTS: &[&str] = &["op", "security", "pass", "gopass", "bw"];
+
+/// Every subject a `token-read` match can have: the kind of credential file
+/// (`gh hosts.yml` has a space), or `gh` for `gh auth token`.
+pub const TOKEN_READ_SUBJECTS: &[&str] = &[".netrc", "gh hosts.yml", ".env", "gh"];
+
 /// One signal that fired, with what it is about.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Match {
@@ -43,13 +62,27 @@ pub struct Verdict {
     pub settings_note: Option<String>,
 }
 
-/// The word `SSH_AUTH_SOCK=…` among the wrapper words `effective_argv` removed.
-fn wrapper_socket(command: &SimpleCommand, effective: &[String]) -> Option<String> {
+/// The value of the `NAME=` word among the wrapper words `effective_argv`
+/// removed.
+fn wrapper_value(command: &SimpleCommand, effective: &[String], name: &str) -> Option<String> {
     let skipped = command.argv.len().saturating_sub(effective.len());
     command.argv[..skipped]
         .iter()
-        .find_map(|word| word.strip_prefix("SSH_AUTH_SOCK="))
-        .map(str::to_owned)
+        .rev()
+        .filter_map(|word| word.split_once('='))
+        .find_map(|(key, value)| (key == name).then(|| value.to_owned()))
+}
+
+/// The value of the environment variable `name` for the command: its own
+/// assignments, else those of an `env` wrapper.
+fn env_value(command: &SimpleCommand, effective: &[String], name: &str) -> Option<String> {
+    command
+        .env
+        .iter()
+        .rev()
+        .find(|(key, _)| key == name)
+        .map(|(_, value)| value.clone())
+        .or_else(|| wrapper_value(command, effective, name))
 }
 
 fn matches_of(command: &SimpleCommand, ctx: &Context) -> Vec<Match> {
@@ -58,18 +91,21 @@ fn matches_of(command: &SimpleCommand, ctx: &Context) -> Vec<Match> {
         return Vec::new();
     };
     let program = args::program_name(first);
-    let socket = command
-        .env
-        .iter()
-        .find(|(name, _)| name == "SSH_AUTH_SOCK")
-        .map(|(_, value)| value.clone())
-        .or_else(|| wrapper_socket(command, words));
+    let socket = env_value(command, words, "SSH_AUTH_SOCK");
     let socket = socket.as_deref();
     // `warden ssh` and `warden http` are no match: the program is `warden`.
     let mut found = match program {
-        "ssh" | "scp" | "sftp" => ssh::ssh_like(program, rest, socket, ctx),
-        "rsync" => ssh::rsync(rest, socket, ctx),
-        "git" => ssh::git(rest, ctx),
+        "ssh" | "scp" | "sftp" | "ssh-copy-id" | "autossh" | "mosh" => {
+            ssh::ssh_like(program, rest, socket, ctx)
+        }
+        "rsync" => {
+            let rsh = env_value(command, words, "RSYNC_RSH");
+            ssh::rsync(rest, socket, rsh.as_deref(), ctx)
+        }
+        "git" => {
+            let ssh_command = env_value(command, words, "GIT_SSH_COMMAND");
+            ssh::git(rest, socket, ssh_command.as_deref(), ctx)
+        }
         "curl" | "wget" | "http" | "https" | "xh" | "xhs" => http::detect(program, rest, ctx),
         _ => Vec::new(),
     };

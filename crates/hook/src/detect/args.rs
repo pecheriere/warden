@@ -89,5 +89,5 @@ pub(super) fn is_plain_host(host: &str) -> bool {
 /// Whether `host` is the machine itself, which no policy covers.
 pub(super) fn is_loopback(host: &str) -> bool {
     let host = host.to_ascii_lowercase();
-    host == "localhost" || host.starts_with("127.")
+    matches!(host.as_str(), "localhost" | "0.0.0.0" | "[::]" | "::") || host.starts_with("127.")
 }

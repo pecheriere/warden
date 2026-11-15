@@ -11,6 +11,11 @@ struct Wrapper {
     assignments: bool,
     /// `-v` and `-V` only look a name up and run nothing.
     lookup_only: bool,
+    /// Positional words that follow the options and are not the program
+    /// (`timeout`'s duration).
+    skip_positionals: usize,
+    /// The words after the options are a script, as for `eval`.
+    rest_is_script: bool,
 }
 
 const NONE: &[&str] = &[];
@@ -21,6 +26,8 @@ fn wrapper(name: &str) -> Option<Wrapper> {
         split_options: NONE,
         assignments: false,
         lookup_only: false,
+        skip_positionals: 0,
+        rest_is_script: false,
     };
     Some(match name {
         "sudo" => plain(&[
@@ -48,14 +55,51 @@ fn wrapper(name: &str) -> Option<Wrapper> {
             "--close-from",
         ]),
         "env" => Wrapper {
-            value_options: &["-u", "-C", "-S", "--unset", "--chdir", "--split-string"],
             split_options: &["-S", "--split-string"],
             assignments: true,
-            lookup_only: false,
+            ..plain(&["-u", "-C", "-S", "--unset", "--chdir", "--split-string"])
         },
         "exec" => plain(&["-a"]),
         "time" => plain(&["-f", "-o", "--format", "--output"]),
         "nohup" => plain(NONE),
+        "timeout" => Wrapper {
+            skip_positionals: 1,
+            ..plain(&["-s", "-k", "--signal", "--kill-after"])
+        },
+        "nice" => plain(&["-n", "--adjustment"]),
+        "ionice" => plain(&[
+            "-c",
+            "-n",
+            "-p",
+            "-P",
+            "-u",
+            "--class",
+            "--classdata",
+            "--pid",
+        ]),
+        "stdbuf" => plain(&["-i", "-o", "-e", "--input", "--output", "--error"]),
+        "doas" => plain(&["-u", "-C"]),
+        "xargs" => plain(&[
+            "-I",
+            "-n",
+            "-P",
+            "-L",
+            "-d",
+            "-E",
+            "-s",
+            "-a",
+            "--max-args",
+            "--max-procs",
+            "--max-lines",
+            "--delimiter",
+            "--eof",
+            "--max-chars",
+            "--arg-file",
+        ]),
+        "watch" => Wrapper {
+            rest_is_script: true,
+            ..plain(&["-n", "--interval", "-q"])
+        },
         "command" => Wrapper {
             lookup_only: true,
             ..plain(NONE)
@@ -67,7 +111,7 @@ fn wrapper(name: &str) -> Option<Wrapper> {
 /// The words after the leading wrappers and options of `argv`, and the strings
 /// of shell words the options handed to the program (`env -S`). A wrapper that
 /// only looks a name up leaves no words.
-pub(super) fn unwrap(argv: &[String]) -> (&[String], Vec<&str>) {
+pub(super) fn unwrap(argv: &[String]) -> (&[String], Vec<String>) {
     let mut rest = argv;
     let mut strings = Vec::new();
     loop {
@@ -88,11 +132,12 @@ pub(super) fn unwrap(argv: &[String]) -> (&[String], Vec<&str>) {
 fn skip_options<'a>(
     mut words: &'a [String],
     wrapper: &Wrapper,
-    strings: &mut Vec<&'a str>,
+    strings: &mut Vec<String>,
 ) -> Option<&'a [String]> {
     while let [word, tail @ ..] = words {
         if word == "--" {
-            return Some(tail);
+            words = tail;
+            break;
         }
         if word.starts_with('-') && word.len() > 1 {
             if wrapper.lookup_only && (word == "-v" || word == "-V") {
@@ -103,14 +148,14 @@ fn skip_options<'a>(
                 if wrapper.split_options.contains(&option)
                     && let Some(value) = tail.first()
                 {
-                    strings.push(value);
+                    strings.push(value.clone());
                 }
                 words = tail.get(1..).unwrap_or_default();
             } else {
                 if let Some(value) = option.strip_prefix("--split-string=")
                     && !wrapper.split_options.is_empty()
                 {
-                    strings.push(value);
+                    strings.push(value.to_owned());
                 }
                 words = tail;
             }
@@ -119,6 +164,13 @@ fn skip_options<'a>(
         } else {
             break;
         }
+    }
+    let words = words.get(wrapper.skip_positionals..).unwrap_or_default();
+    if wrapper.rest_is_script {
+        if !words.is_empty() {
+            strings.push(words.join(" "));
+        }
+        return Some(&[]);
     }
     Some(words)
 }
