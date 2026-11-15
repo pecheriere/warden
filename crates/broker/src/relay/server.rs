@@ -106,6 +106,9 @@ const FAIL_CLOSED_AFTER: Duration = Duration::from_secs(10);
 /// The default of [`RelayLimits::grant_query_timeout`].
 const GRANT_QUERY_TIMEOUT: Duration = Duration::from_millis(1500);
 
+/// The default of [`RelayLimits::forced_close_wait`].
+const FORCED_CLOSE_WAIT: Duration = Duration::from_secs(1);
+
 /// The default of [`RelayLimits::target_read_timeout`].
 const TARGET_READ_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -183,6 +186,10 @@ pub struct RelayLimits {
     /// How long a session whose agent left goes on while the agent's input
     /// is held up with nothing of it delivered to the target (2 s).
     pub agent_left_grace: Duration,
+    /// Longest a session the relay ends (revoked, expired, idle, grant state
+    /// unavailable) gets to close gracefully, each side taking the relay's
+    /// close, before both connections are cut (1 s).
+    pub forced_close_wait: Duration,
     /// Pause before answering each refused login attempt but a first
     /// `none` probe, which slows down guessing keys (1 s).
     pub auth_rejection_time: Duration,
@@ -207,6 +214,7 @@ impl Default for RelayLimits {
             grant_query_timeout: GRANT_QUERY_TIMEOUT,
             target_read_timeout: TARGET_READ_TIMEOUT,
             agent_left_grace: Duration::from_secs(2),
+            forced_close_wait: FORCED_CLOSE_WAIT,
             auth_rejection_time: AUTH_REJECTION_TIME,
         }
     }

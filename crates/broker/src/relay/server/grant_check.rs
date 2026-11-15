@@ -174,6 +174,7 @@ mod tests {
         assert_eq!(limits.grant_query_timeout, Duration::from_millis(1500));
         assert_eq!(limits.target_read_timeout, Duration::from_secs(10));
         assert_eq!(limits.agent_left_grace, Duration::from_secs(2));
+        assert_eq!(limits.forced_close_wait, Duration::from_secs(1));
         assert_eq!(limits.auth_rejection_time, Duration::from_secs(1));
     }
 

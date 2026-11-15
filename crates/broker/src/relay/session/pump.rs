@@ -34,7 +34,8 @@ const DOWNSTREAM_QUEUE_BYTES: usize = 8 * 1024 * 1024;
 /// What a message other than data counts for in a queue.
 const CONTROL_MESSAGE_BYTES: usize = 64;
 
-/// When a session that stopped making progress ends.
+/// When a session that stopped making progress ends, and how long one ended
+/// by force gets to close.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Watch {
     /// A direction holding data that nothing delivers for this long (an
@@ -56,6 +57,9 @@ pub(crate) struct Watch {
     /// The agent gone and its input held up, nothing of it delivered to
     /// the target, for this long (see [`agent_left`]).
     pub left: Duration,
+    /// Longest a session ended by force (see [`reason::forced`]) gets to
+    /// close gracefully before both connections are cut.
+    pub forced_close: Duration,
 }
 
 /// How often the session checks for progress.
@@ -64,10 +68,6 @@ const WATCH_EVERY: Duration = Duration::from_millis(250);
 /// Longest each side gets to take the relay's close at the end before its
 /// connection is cut.
 const CLOSE_WAIT: Duration = Duration::from_secs(2);
-
-/// Longest a session ended by force (see [`reason::forced`]) gets to close
-/// gracefully before both connections are cut.
-const FORCED_CLOSE_WAIT: Duration = Duration::from_secs(1);
 
 /// Cuts a connection off: shuts its socket down under the SSH library,
 /// whose reads then end, whatever state its event loop is in.
@@ -222,7 +222,7 @@ impl Queued {
 /// progress or sits idle, the relay must end it (`live`: revoked or
 /// expired), or `stop` fires; then close both channels, cutting a
 /// connection that does not take its close in time. A session ended by
-/// force has both connections cut after [`FORCED_CLOSE_WAIT`]. The agent's
+/// force has both connections cut after [`Watch::forced_close`]. The agent's
 /// data, EOF, window changes and signals go to the target; the target's
 /// output, EOF, exit status and exit signal come back.
 ///
@@ -300,7 +300,7 @@ pub(crate) async fn relay(
                 }
             }
         };
-        let _ = tokio::time::timeout(FORCED_CLOSE_WAIT, async {
+        let _ = tokio::time::timeout(limits.forced_close, async {
             tokio::join!(agent_side, target_side)
         })
         .await;
