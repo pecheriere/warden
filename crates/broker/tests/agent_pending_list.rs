@@ -226,14 +226,17 @@ async fn listing_notifies_nobody_records_nothing_and_uses_up_no_limit() {
     // it is written: only then does the log stand still.
     while changes.recv().await.unwrap() != created.id {}
     let rung = broker.capture.rung().len();
-    let audit = std::fs::read_to_string(broker.audit_path()).unwrap();
+    let audit = warden_broker::testkit::audit_text(broker.audit_path());
 
     for _ in 0..5 {
         assert_eq!(list(&broker, &key).await.len(), 1);
     }
 
     assert_eq!(broker.capture.rung().len(), rung);
-    assert_eq!(std::fs::read_to_string(broker.audit_path()).unwrap(), audit);
+    assert_eq!(
+        warden_broker::testkit::audit_text(broker.audit_path()),
+        audit
+    );
     // Both limits are 2 and one is used: the second request still goes through.
     let body = serde_json::to_value(TestBroker::api_request("github", GOAL, Window::M15)).unwrap();
     broker.backend.set_api_secret(

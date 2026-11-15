@@ -8,6 +8,7 @@ use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
 use ssh_key::Certificate;
 use warden_broker::requests;
+use warden_broker::testkit::wait::HANG;
 use warden_broker::testkit::{TEST_OWNER, TestBroker};
 use warden_broker_proto::{CreatedResponse, GrantAccess, GrantView, Id, RequestStatus, Window};
 
@@ -413,7 +414,7 @@ async fn sweep_loop_expires_pending_requests_and_stops_on_shutdown() {
         Duration::from_millis(10),
         stopped,
     ));
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(HANG, async {
         loop {
             let row: (String,) = sqlx::query_as("SELECT status FROM requests WHERE id = ?")
                 .bind(created.id.as_str())
@@ -430,7 +431,7 @@ async fn sweep_loop_expires_pending_requests_and_stops_on_shutdown() {
     .expect("sweeper expires the request");
 
     stop.send(true).unwrap();
-    tokio::time::timeout(Duration::from_secs(5), sweeper)
+    tokio::time::timeout(HANG, sweeper)
         .await
         .expect("sweeper stops")
         .unwrap();
@@ -492,7 +493,7 @@ async fn agent_cancels_pending_request() {
             .audit_types()
             .contains(&"request_cancelled".to_owned())
     );
-    let audit = std::fs::read_to_string(broker.audit_path()).unwrap();
+    let audit = warden_broker::testkit::audit_text(broker.audit_path());
     assert!(
         audit.contains(&format!(
             r#""type":"request_cancelled","id":"{}","agent":"bot""#,

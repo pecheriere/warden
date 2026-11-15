@@ -159,12 +159,7 @@ async fn get_grant(s: &Setup) -> Output {
 }
 
 fn audit_entries(s: &Setup, kind: &str) -> Vec<serde_json::Value> {
-    fs::read_to_string(s.broker.audit_path())
-        .unwrap()
-        .lines()
-        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap()["event"].clone())
-        .filter(|event| event["type"] == kind)
-        .collect()
+    s.broker.audit_events(kind)
 }
 
 /// A file naming the broker's key as allowed to sign for the test's email.

@@ -86,7 +86,7 @@ async fn opened_token(broker: &TestBroker, id: &Id) -> String {
 }
 
 fn audit_text(broker: &TestBroker) -> String {
-    std::fs::read_to_string(broker.audit_path()).unwrap()
+    warden_broker::testkit::audit_text(broker.audit_path())
 }
 
 fn replacements(broker: &TestBroker) -> usize {
@@ -100,13 +100,7 @@ fn replacements(broker: &TestBroker) -> usize {
 /// Wait until the entry saying the owner was notified is written: it is the last
 /// thing a new request writes, and it comes from a task of its own.
 async fn until_notified(broker: &TestBroker) {
-    tokio::time::timeout(Duration::from_secs(30), async {
-        while !broker.audit_types().iter().any(|t| t == "notified") {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("the request was notified");
+    broker.wait_for_audit_kind("notified", 1).await;
 }
 
 /// Make every append to the audit log fail, once nothing else is writing to it.

@@ -10,7 +10,7 @@ use warden_broker_proto::Id;
 
 use crate::requests::{GrantEnd, RequestError, Requests};
 
-use super::{CHECK_FAILURE_LOG_EVERY, FAIL_CLOSED_AFTER, GRANT_QUERY_TIMEOUT, Shared};
+use super::{CHECK_FAILURE_LOG_EVERY, GRANT_QUERY_TIMEOUT, Shared};
 
 /// End the live sessions whose grant expired or was revoked, every
 /// `every`; fail closed while the state of grants cannot be read. Never
@@ -26,7 +26,7 @@ pub(super) async fn check_grants_every(shared: &Shared, every: Duration) {
     let sessions = requests.live_sessions();
     let mut ticker = tokio::time::interval(every);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    let mut health = CheckHealth::new(Instant::now());
+    let mut health = CheckHealth::new(Instant::now(), shared.limits.fail_closed_after);
     let mut query: Option<GrantQuery> = None;
     loop {
         tokio::select! {
@@ -117,13 +117,16 @@ struct CheckHealth {
     last_success: Instant,
     /// When a failure was last logged, in the current run of failures.
     last_logged: Option<Instant>,
+    /// How long without a success before the state of grants is lost.
+    fail_closed_after: Duration,
 }
 
 impl CheckHealth {
-    const fn new(now: Instant) -> Self {
+    const fn new(now: Instant, fail_closed_after: Duration) -> Self {
         Self {
             last_success: now,
             last_logged: None,
+            fail_closed_after,
         }
     }
 
@@ -144,9 +147,9 @@ impl CheckHealth {
         log
     }
 
-    /// Whether, at `now`, no query has succeeded for [`FAIL_CLOSED_AFTER`].
+    /// Whether, at `now`, no query has succeeded for its `fail_closed_after`.
     fn lost(&self, now: Instant) -> bool {
-        now.duration_since(self.last_success) >= FAIL_CLOSED_AFTER
+        now.duration_since(self.last_success) >= self.fail_closed_after
     }
 }
 
@@ -157,12 +160,20 @@ mod tests {
     use tokio::time::Instant;
 
     use super::CheckHealth;
+    use crate::relay::server::{FAIL_CLOSED_AFTER, RelayLimits};
+
+    #[test]
+    fn the_default_limits_hold_the_documented_ten_seconds() {
+        let limits = RelayLimits::default();
+        assert_eq!(limits.fail_closed_after, Duration::from_secs(10));
+        assert_eq!(limits.target_read_timeout, Duration::from_secs(10));
+    }
 
     #[test]
     fn fails_closed_ten_seconds_after_the_last_success() {
         let start = Instant::now();
         let at = |secs| start + Duration::from_secs(secs);
-        let mut health = CheckHealth::new(start);
+        let mut health = CheckHealth::new(start, FAIL_CLOSED_AFTER);
         // Measured from the start until a first success.
         assert!(!health.lost(at(9)));
         assert!(health.lost(at(10)));
@@ -178,7 +189,7 @@ mod tests {
     fn failures_logged_first_then_every_thirty_seconds() {
         let start = Instant::now();
         let at = |secs| start + Duration::from_secs(secs);
-        let mut health = CheckHealth::new(start);
+        let mut health = CheckHealth::new(start, FAIL_CLOSED_AFTER);
         assert!(health.failed(at(1)));
         assert!(!health.failed(at(2)));
         assert!(!health.failed(at(30)));

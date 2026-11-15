@@ -189,7 +189,8 @@ async fn write_one(
     Ok(())
 }
 
-/// Write the waiting entries, waiting for that at most [`WRITE_WAIT`]. A log that
+/// Write the waiting entries, waiting for that at most `wait` ([`WRITE_WAIT`]
+/// outside tests). A log that
 /// has stalled finishes on its own task whenever it can; `gate` keeps two writers
 /// in this process from queueing up behind it.
 async fn write_bounded(
@@ -197,6 +198,7 @@ async fn write_bounded(
     audit: &Arc<AuditLog>,
     gate: &Arc<Mutex<()>>,
     clock: &Arc<dyn Clock>,
+    wait: Duration,
 ) -> EntriesWritten {
     let task = {
         let (pool, audit, gate) = (pool.clone(), Arc::clone(audit), Arc::clone(gate));
@@ -206,14 +208,14 @@ async fn write_bounded(
             write_waiting(&pool, &audit, clock.as_ref()).await
         })
     };
-    let (cause, last_seen) = match tokio::time::timeout(WRITE_WAIT, task).await {
+    let (cause, last_seen) = match tokio::time::timeout(wait, task).await {
         Ok(Ok(Ok(last_seen))) => (None, last_seen),
         Ok(Ok(Err(e))) => (Some(e.to_string()), i64::MAX),
         Ok(Err(e)) => (Some(e.to_string()), i64::MAX),
         Err(_) => (
             Some(format!(
                 "the audit log did not answer within {} s",
-                WRITE_WAIT.as_secs()
+                wait.as_secs()
             )),
             i64::MAX,
         ),
@@ -246,13 +248,20 @@ pub async fn write_entries(
     audit: &Arc<AuditLog>,
     clock: &Arc<dyn Clock>,
 ) -> EntriesWritten {
-    write_bounded(pool, audit, &Arc::default(), clock).await
+    write_bounded(pool, audit, &Arc::default(), clock, WRITE_WAIT).await
 }
 
 impl Requests {
     /// Write the waiting entries, and report loudly if any must stay waiting.
     pub(super) async fn settle_entries(&self) -> AuditOutcome {
-        let written = write_bounded(&self.pool, &self.audit, &self.entry_writer, &self.clock).await;
+        let written = write_bounded(
+            &self.pool,
+            &self.audit,
+            &self.entry_writer,
+            &self.clock,
+            WRITE_WAIT,
+        )
+        .await;
         if written.outcome == AuditOutcome::Missing {
             let waiting = unwritten_entries(&self.pool).await;
             tracing::error!(
@@ -343,15 +352,17 @@ impl Requests {
 mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicI64, Ordering};
+    use std::time::Duration;
 
     use warden_broker_proto::Id;
 
     use super::{
-        AuditEvent, AuditLog, AuditOutcome, Clock, commit_with_entries, count_waiting_read_only,
-        unwritten_entries, write_entries,
+        AuditEvent, AuditLog, AuditOutcome, Clock, EntriesWritten, commit_with_entries,
+        count_waiting_read_only, unwritten_entries, write_bounded, write_entries,
     };
     use crate::requests::begin;
     use crate::store;
+    use crate::test_wait::HANG;
 
     /// A clock a test moves by hand.
     struct TestClock(AtomicI64);
@@ -379,6 +390,20 @@ mod tests {
         let path = dir.path().join("audit.jsonl");
         let audit = Arc::new(AuditLog::open(&path).await.unwrap());
         (pool, audit, path)
+    }
+
+    /// How long a write whose log is held by another writer is given: the lock is
+    /// held throughout, so the write fails however long it waits.
+    const STALL_WAIT: Duration = Duration::from_millis(50);
+
+    /// [`write_entries`] from its own process, waiting at most `wait`.
+    async fn write_within(
+        pool: &sqlx::SqlitePool,
+        audit: &Arc<AuditLog>,
+        clock: &Arc<dyn Clock>,
+        wait: Duration,
+    ) -> EntriesWritten {
+        write_bounded(pool, audit, &Arc::default(), clock, wait).await
     }
 
     async fn commit_one(pool: &sqlx::SqlitePool, now: i64) -> AuditEvent {
@@ -418,7 +443,7 @@ mod tests {
         let named = serde_json::to_string(&serde_json::to_string(&entry).unwrap()).unwrap();
 
         let (time, clock) = clock_at(1000);
-        let written = write_entries(&pool, &audit, &clock).await;
+        let written = write_within(&pool, &audit, &clock, HANG).await;
         assert_eq!(written.outcome, AuditOutcome::Missing);
         assert!(written.cause.is_some());
         assert_eq!(unwritten_entries(&pool).await.unwrap(), [entry]);
@@ -454,7 +479,7 @@ mod tests {
         let holder = std::fs::File::open(&path).unwrap();
         holder.lock().unwrap();
         let (time, clock) = clock_at(1000);
-        let written = write_entries(&pool, &audit, &clock).await;
+        let written = write_within(&pool, &audit, &clock, STALL_WAIT).await;
         assert_eq!(written.outcome, AuditOutcome::Missing);
 
         // The write under way finishes an hour later, by this clock.
@@ -480,9 +505,11 @@ mod tests {
             commit_one(&pool, 1000).await;
         }
         let (_, clock) = clock_at(1000);
+        // Each given as long as a busy machine could need: what is tested is
+        // that the two share the work, not how fast the log is.
         let (first, second) = tokio::join!(
-            write_entries(&pool, &audit, &clock),
-            write_entries(&pool, &other, &clock)
+            write_within(&pool, &audit, &clock, HANG),
+            write_within(&pool, &other, &clock, HANG)
         );
         assert_eq!(first.cause, None);
         assert_eq!(second.cause, None);
@@ -535,7 +562,7 @@ mod tests {
         let holder = std::fs::File::open(&path).unwrap();
         holder.lock().unwrap();
         let (_, clock) = clock_at(1000);
-        let written = write_entries(&pool, &audit, &clock).await;
+        let written = write_within(&pool, &audit, &clock, STALL_WAIT).await;
         assert_eq!(written.outcome, AuditOutcome::Missing);
         assert!(written.cause.is_some());
     }

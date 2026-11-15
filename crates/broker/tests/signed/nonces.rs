@@ -9,6 +9,7 @@ use ssh_key::{Algorithm, PrivateKey};
 use warden_broker::requests;
 use warden_broker::signed::NONCE_RETENTION_SECS;
 use warden_broker::testkit::TestBroker;
+use warden_broker::testkit::wait::HANG;
 
 use super::{again, head, nonce_rows};
 
@@ -119,7 +120,7 @@ async fn sweep_loop_forgets_expired_nonces() {
     assert_eq!(nonce_rows(&broker).await, 1);
 
     broker.clock.advance(NONCE_RETENTION_SECS);
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + HANG;
     while nonce_rows(&broker).await != 0 {
         assert!(Instant::now() < deadline, "the sweeper kept the nonce");
         tokio::time::sleep(Duration::from_millis(10)).await;

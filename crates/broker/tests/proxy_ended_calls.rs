@@ -14,12 +14,13 @@ use serde_json::{Value, json};
 use warden_broker::audit::AuditEvent;
 use warden_broker::proxy::{CallEnd, CallInfo};
 use warden_broker::requests::{AuditOutcome, Clock as _, unwritten_entries};
+use warden_broker::testkit::wait::HANG;
 use warden_broker::testkit::{HttpsUpstream, TestBroker, TestResponse};
 use warden_broker_proto::{AgentName, Id, RequestStatus, Window};
 
 const SECRET: &str = "pr0xy-Cred/+=en&tial~42";
 
-const WAIT: Duration = Duration::from_secs(20);
+const WAIT: Duration = HANG;
 
 struct Setup {
     broker: TestBroker,
@@ -93,16 +94,13 @@ async fn reached(s: &Setup, count: usize) {
 }
 
 fn audit_events(broker: &TestBroker, kind: &str) -> Vec<Value> {
-    std::fs::read_to_string(broker.audit_path())
-        .unwrap()
-        .lines()
-        .map(|line| serde_json::from_str::<Value>(line).unwrap()["event"].clone())
-        .filter(|event| event["type"] == kind)
-        .collect()
+    broker.audit_events(kind)
 }
 
-fn the_call(broker: &TestBroker) -> Value {
-    let mut calls = audit_events(broker, "proxy_call");
+/// The one `proxy_call` entry, waiting for it: a call's entry is written as it
+/// ends, which can be after its caller has seen the end.
+async fn the_call(broker: &TestBroker) -> Value {
+    let mut calls = broker.wait_for_audit_kind("proxy_call", 1).await;
     assert_eq!(calls.len(), 1, "{calls:?}");
     calls.remove(0)
 }
@@ -138,7 +136,7 @@ async fn revoke_stops_a_call_waiting_for_its_answer() {
     });
     assert_eq!(resp.status, StatusCode::CONFLICT, "{}", resp.body);
     assert_eq!(resp.body, r#"{"error":"grant revoked during the call"}"#);
-    let audited = the_call(&s.broker);
+    let audited = the_call(&s.broker).await;
     assert_eq!(audited["outcome"], "grant revoked during the call");
     assert_eq!(audited["aborted"], "revoked");
     assert_eq!(audited["status"], Value::Null);
@@ -228,7 +226,7 @@ async fn revoke_cuts_a_response_still_streaming_and_nothing_of_it_gets_out() {
         );
     }
 
-    let audited = the_call(&s.broker);
+    let audited = the_call(&s.broker).await;
     assert_eq!(audited["aborted"], "revoked");
     assert_eq!(audited["status"], 200);
     assert!(
@@ -237,7 +235,7 @@ async fn revoke_cuts_a_response_still_streaming_and_nothing_of_it_gets_out() {
     );
     assert_eq!(audited["redactions"], 0);
     assert_clean(
-        &std::fs::read_to_string(s.broker.audit_path()).unwrap(),
+        &warden_broker::testkit::audit_text(s.broker.audit_path()),
         "the audit log",
     );
 }
@@ -267,7 +265,7 @@ async fn revoking_an_agent_stops_its_calls_only() {
     );
     assert_eq!(mine.status, StatusCode::CONFLICT, "{}", mine.body);
     assert_eq!(theirs.status, StatusCode::OK, "{}", theirs.body);
-    let audited = audit_events(&s.broker, "proxy_call");
+    let audited = s.broker.wait_for_audit_kind("proxy_call", 2).await;
     assert_eq!(audited.len(), 2, "{audited:?}");
     let aborted: Vec<_> = audited.iter().map(|c| c["aborted"].clone()).collect();
     assert!(aborted.contains(&json!("revoked")), "{audited:?}");
@@ -292,7 +290,7 @@ async fn a_revocation_by_another_process_stops_the_call() {
     });
     assert_eq!(resp.status, StatusCode::CONFLICT, "{}", resp.body);
     assert_eq!(resp.body, r#"{"error":"grant revoked during the call"}"#);
-    assert_eq!(the_call(&s.broker)["aborted"], "revoked");
+    assert_eq!(the_call(&s.broker).await["aborted"], "revoked");
     within("the connection closing", s.upstream.wait_for_abandoned(1)).await;
 }
 
@@ -315,7 +313,7 @@ async fn an_answer_after_a_revocation_is_withheld() {
     assert_eq!(resp.status, StatusCode::CONFLICT, "{}", resp.body);
     assert_eq!(resp.body, r#"{"error":"grant revoked during the call"}"#);
     assert_eq!(
-        the_call(&s.broker)["outcome"],
+        the_call(&s.broker).await["outcome"],
         "grant revoked during the call"
     );
 }
@@ -330,7 +328,7 @@ async fn expiry_stops_the_call() {
     });
     assert_eq!(resp.status, StatusCode::CONFLICT, "{}", resp.body);
     assert_eq!(resp.body, r#"{"error":"grant expired during the call"}"#);
-    let audited = the_call(&s.broker);
+    let audited = the_call(&s.broker).await;
     assert_eq!(audited["outcome"], "grant expired during the call");
     assert_eq!(audited["aborted"], "expired");
     within("the connection closing", s.upstream.wait_for_abandoned(1)).await;
@@ -355,7 +353,10 @@ async fn a_grant_state_that_stays_unreadable_stops_the_call() {
         resp.body,
         r#"{"error":"grant state unavailable during the call"}"#
     );
-    assert_eq!(the_call(&s.broker)["aborted"], "grant_state_unavailable");
+    assert_eq!(
+        the_call(&s.broker).await["aborted"],
+        "grant_state_unavailable"
+    );
     within("the connection closing", s.upstream.wait_for_abandoned(1)).await;
 }
 
@@ -464,7 +465,7 @@ async fn a_stalled_log_does_not_keep_a_call_going_or_lose_its_end() {
         }
     })
     .await;
-    assert_eq!(the_call(&s.broker)["aborted"], "revoked");
+    assert_eq!(the_call(&s.broker).await["aborted"], "revoked");
 }
 
 /// A call that ends by itself is not affected, and its entry has no `aborted`.
@@ -473,7 +474,7 @@ async fn a_call_that_finishes_has_no_abort_in_its_entry() {
     let s = setup().await;
     let resp = get(&s, "/delayed").await;
     assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
-    let audited = the_call(&s.broker);
+    let audited = the_call(&s.broker).await;
     assert_eq!(audited["outcome"], "ok");
     assert_eq!(audited.get("aborted"), None, "{audited}");
     assert_eq!(s.upstream.abandoned(), 0);

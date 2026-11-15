@@ -7,6 +7,7 @@ use serde_json::Value;
 use warden_broker::proxy::ProxyLimits;
 use warden_broker::requests::Clock as _;
 use warden_broker::testkit::TestResponse;
+use warden_broker::testkit::wait::HANG;
 
 use super::{
     Setup, approve_api, audit_events, call_as, get, proxied, proxy_calls, setup_daily, setup_with,
@@ -97,7 +98,7 @@ async fn slot_released_after_error_and_disconnect() {
     // hangs up only once the call has reached the upstream, so the slot is
     // certainly taken.
     let mut call = Box::pin(get(&s, "/delayed"));
-    let reached = tokio::time::timeout(Duration::from_secs(5), async {
+    let reached = tokio::time::timeout(HANG, async {
         while !s
             .upstream
             .received()
@@ -115,7 +116,7 @@ async fn slot_released_after_error_and_disconnect() {
     drop(call);
     let busy = get(&s, "/v1/hello").await;
     assert_eq!(busy.status, StatusCode::TOO_MANY_REQUESTS, "{}", busy.body);
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + HANG;
     loop {
         let resp = get(&s, "/v1/hello").await;
         if resp.status == StatusCode::OK {

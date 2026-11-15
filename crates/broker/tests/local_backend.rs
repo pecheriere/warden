@@ -97,7 +97,7 @@ async fn api_flow_request_approve_call_redact() {
         format!("Bearer {CREDENTIAL}").as_str()
     );
 
-    let audit = fs::read_to_string(broker.audit_path()).unwrap();
+    let audit = warden_broker::testkit::audit_text(broker.audit_path());
     assert!(audit.contains("proxy_call"), "{audit}");
     assert!(!audit.contains(CREDENTIAL), "{audit}");
 }
@@ -366,7 +366,7 @@ impl Server {
     }
 
     fn audit(&self) -> String {
-        fs::read_to_string(self.files.root.join("audit.jsonl")).unwrap()
+        warden_broker::testkit::audit_text(&self.files.root.join("audit.jsonl"))
     }
 }
 

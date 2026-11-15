@@ -25,6 +25,8 @@ use std::time::{Duration, Instant};
 use ssh_key::PublicKey;
 use tempfile::TempDir;
 
+use crate::test_wait::HANG;
+
 /// Where OpenSSH's server is expected.
 pub const SSHD: &str = "/usr/sbin/sshd";
 
@@ -191,7 +193,7 @@ impl Sshd {
         };
         // Wait for its own word rather than probing the port, so the log
         // shows only the connections tests make.
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + HANG;
         while !sshd.log().contains("Server listening on") {
             if let Some(status) = sshd.child.try_wait().expect("sshd status") {
                 panic!("sshd exited early with {status}: {}", sshd.log());

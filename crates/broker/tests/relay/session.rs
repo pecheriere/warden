@@ -1,12 +1,11 @@
 //! Sessions that work: shell and exec, window changes and signals, exit
 //! status, refused forwarding and subsystems, and what is audited.
 
-use std::process::Stdio;
-use std::time::Duration;
-
-use russh::Sig;
+use russh::{ChannelMsg, Sig};
 use serde_json::Value;
+use std::process::Stdio;
 use warden_broker::testkit::sshd::current_user;
+use warden_broker::testkit::wait;
 
 #[cfg(target_os = "linux")]
 use super::password_target;
@@ -105,11 +104,22 @@ async fn window_change_and_signals_are_forwarded() {
     let c = login(&s.broker, s.relay, TARGET, &agent.key).await;
     let mut channel = c.handle.channel_open_session().await.unwrap();
     channel
-        .exec(true, "trap 'echo got-term; exit 9' TERM; sleep 20 & wait")
+        .exec(
+            true,
+            "trap 'echo got-term; exit 9' TERM; echo trapped; sleep 20 & wait",
+        )
         .await
         .unwrap();
     assert!(reply(&mut channel).await);
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // Signalled once the trap is set, which the shell says.
+    let mut seen = Vec::new();
+    while !text(&seen).contains("trapped\n") {
+        match wait::within_hang("the trap set", channel.wait()).await {
+            Some(ChannelMsg::Data { data }) => seen.extend_from_slice(&data),
+            Some(_) => {}
+            None => panic!("channel closed before the trap was set"),
+        }
+    }
     channel.signal(Sig::TERM).await.unwrap();
     let out = collect(&mut channel).await;
     assert!(text(&out.stdout).contains("got-term"), "{out:?}");

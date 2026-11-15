@@ -235,7 +235,8 @@ async fn pump(
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
-    use std::time::Duration;
+
+    use crate::test_wait::HANG;
 
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     use tokio::sync::{Semaphore, mpsc};
@@ -274,7 +275,7 @@ mod tests {
         let sent = pattern(2 * 1024 * 1024);
         agent.write_all(&sent).await.unwrap();
         drop(agent);
-        tokio::time::timeout(Duration::from_secs(5), gone.wait())
+        tokio::time::timeout(HANG, gone.wait())
             .await
             .expect("the close was seen");
         // The library still gets every byte, in order, then the end.

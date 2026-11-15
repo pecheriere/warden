@@ -2,7 +2,6 @@
 //! capturing notifiers.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use secrecy::SecretString;
 use serde_json::Value;
@@ -15,6 +14,7 @@ use warden_broker::notify::Notifier;
 use warden_broker::policy::OnePasswordConnect;
 use warden_broker::relay::RelayEndpoint;
 use warden_broker::requests::{RequestError, Requests};
+use warden_broker::testkit::wait::HANG;
 use warden_broker::testkit::{CapturingNotifier, ManualClock};
 use warden_broker::{agents, store};
 use warden_broker_proto::{
@@ -218,16 +218,14 @@ async fn create_notified(h: &Harness, who: &str, req: CreateRequest) -> (Created
 }
 
 async fn wait_for(rx: &mut tokio::sync::broadcast::Receiver<Id>, id: &Id) {
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while rx.recv().await.unwrap() != *id {}
-    })
-    .await
-    .expect("no bus message for request within 5 s");
+    tokio::time::timeout(HANG, async { while rx.recv().await.unwrap() != *id {} })
+        .await
+        .expect("no bus message for request");
 }
 
 /// Wait until some long-poll is subscribed to the bus.
 async fn wait_for_waiter(h: &Harness) {
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(HANG, async {
         while h.requests.bus().receiver_count() == 0 {
             tokio::task::yield_now().await;
         }
@@ -246,25 +244,21 @@ async fn row_count(pool: &SqlitePool, table: &str) -> i64 {
 }
 
 fn audit_types(h: &Harness) -> Vec<String> {
-    std::fs::read_to_string(&h.audit_path)
-        .unwrap()
-        .lines()
-        .map(|l| {
-            let v: Value = serde_json::from_str(l).unwrap();
-            v["event"]["type"].as_str().unwrap().to_owned()
-        })
+    warden_broker::testkit::audit_entries(&h.audit_path)
+        .iter()
+        .map(|v| v["event"]["type"].as_str().unwrap().to_owned())
         .collect()
 }
 
 /// Wait until the audit log holds an entry of `kind`.
 async fn wait_for_audit_entry(h: &Harness, kind: &str) {
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(HANG, async {
         while !audit_types(h).iter().any(|t| t == kind) {
             tokio::task::yield_now().await;
         }
     })
     .await
-    .expect("no audit entry of that kind within 5 s");
+    .expect("no audit entry of that kind");
 }
 
 fn grant_for(h: &Harness, window: Window) -> GrantView {

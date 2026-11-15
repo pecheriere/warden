@@ -15,8 +15,7 @@ use warden_broker::requests::{
 use warden_broker::testkit::{FakeBackend, TestBroker};
 use warden_broker_proto::{AgentName, Id, RequestStatus, Window};
 
-/// Longer than anything here should take. Not what is being tested.
-const HANG: Duration = Duration::from_secs(30);
+use warden_broker::testkit::wait::HANG;
 
 fn bot() -> AgentName {
     AgentName::try_from("bot".to_owned()).unwrap()

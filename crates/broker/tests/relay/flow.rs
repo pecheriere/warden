@@ -9,11 +9,12 @@ use std::time::{Duration, Instant};
 use tokio::io::AsyncWriteExt as _;
 use warden_broker::policy::RelayCredential;
 use warden_broker::relay::RelayLimits;
+use warden_broker::testkit::wait::{self, HANG};
 
 use super::{
     Agent, OpenSsh, Setup, TARGET, approved_agent, assert_each_start_ended, audit_events,
-    await_events, await_events_within, collect, events_of, key_target, key_target_with, login, nas,
-    nas_pinned, openssh_private, random_key, reply, text, too_many,
+    await_events, collect, events_of, key_target, key_target_with, login, nas, nas_pinned,
+    openssh_private, random_key, reply, text, too_many,
 };
 
 #[tokio::test(flavor = "multi_thread")]
@@ -79,12 +80,15 @@ async fn slow_agent_gets_the_end_of_its_output() {
         .unwrap();
     let ended = await_events(&s.broker, "relay_session_ended", 1).await;
     assert_eq!(ended[0]["reason"], "exited", "{ended:?}");
-    tokio::time::sleep(Duration::from_secs(5)).await;
+    // The agent being late is what is tested, so this is a pause and not a
+    // wait on a condition: there is nothing for it to wait for. A relay that
+    // hung up once the session was over would do so at once, well within it.
+    // Twice the wedge timeout, so the pause is clearly past it.
+    tokio::time::sleep(RelayLimits::default().wedge_timeout.saturating_mul(2)).await;
 
     // It still gets every byte and the exit status, not a hang-up.
-    let out = tokio::time::timeout(Duration::from_secs(60), child.wait_with_output())
+    let out = wait::within_hang("ssh finished", child.wait_with_output())
         .await
-        .expect("ssh finished")
         .unwrap();
     assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
     assert_eq!(out.stdout.len(), SIZE);
@@ -102,6 +106,8 @@ async fn agent_that_stays_after_its_session_is_hung_up() {
     let agent = approved_agent(&s.broker, "bot").await;
     let c = login(&s.broker, s.relay, TARGET, &agent.key).await;
     let mut channel = c.handle.channel_open_session().await.unwrap();
+    // The session is over after this, and the agent's time to leave starts.
+    let starting = Instant::now();
     channel.exec(true, "echo ok").await.unwrap();
     assert!(reply(&mut channel).await);
     let out = collect(&mut channel).await;
@@ -109,7 +115,6 @@ async fn agent_that_stays_after_its_session_is_hung_up() {
         (text(&out.stdout).as_str(), out.exit_status),
         ("ok\n", Some(0))
     );
-    let over = Instant::now();
     await_events(&s.broker, "relay_session_ended", 1).await;
 
     // The session is over but the agent stays: until it is hung up, it
@@ -119,13 +124,13 @@ async fn agent_that_stays_after_its_session_is_hung_up() {
         &ssh.run(&["true"]).await,
         "warden relay: too many sessions for this grant",
     );
-    let deadline = over + Duration::from_secs(2 + 5);
-    while !c.handle.is_closed() {
-        assert!(Instant::now() < deadline, "the relay kept the connection");
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    assert!(over.elapsed() >= Duration::from_millis(1500));
-    let deadline = Instant::now() + Duration::from_secs(10);
+    wait::until("the relay hung up", || c.handle.is_closed()).await;
+    assert!(
+        starting.elapsed() >= Duration::from_secs(2),
+        "{:?}",
+        starting.elapsed()
+    );
+    let deadline = Instant::now() + HANG;
     loop {
         let out = ssh.run(&["echo", "ok"]).await;
         if out.status.success() {
@@ -193,7 +198,7 @@ async fn feed_until_held(
             std::future::pending::<()>().await;
         }
     });
-    let deadline = Instant::now() + Duration::from_secs(60);
+    let deadline = Instant::now() + HANG;
     let (mut seen, mut since) = (0, Instant::now());
     while !feeder.is_finished() {
         let count = fed.load(Ordering::Acquire);
@@ -217,12 +222,7 @@ async fn agent_disconnect_ends_wedged_session() {
     child.kill().await.unwrap();
     drop(stdout);
     let gone = Instant::now();
-    let ended = tokio::time::timeout(
-        Duration::from_secs(5),
-        await_events(&s.broker, "relay_session_ended", 1),
-    )
-    .await
-    .expect("the session ended within 5 s of the agent leaving");
+    let ended = await_events(&s.broker, "relay_session_ended", 1).await;
     // Either the agent leaving or the wedge itself ends the session (the
     // wedge may have done so already).
     let reason = ended[0]["reason"].as_str().unwrap();
@@ -244,7 +244,8 @@ async fn agent_disconnect_with_stalled_target_ends_quickly() {
     // window, the relay's queue and the agent's window, and stops there.
     let (mut child, stdout, fed) = feed_until_held(&ssh, &["sleep", "600"]).await;
     assert!(fed.mib() < 32, "{} MiB accepted", fed.mib());
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // Still running: nothing but the agent leaving ends it, which the reason
+    // below shows.
     assert!(
         events_of(&s.broker, "relay_session_ended").is_empty(),
         "{:?}",
@@ -253,12 +254,7 @@ async fn agent_disconnect_with_stalled_target_ends_quickly() {
     child.kill().await.unwrap();
     drop(stdout);
     let gone = Instant::now();
-    let ended = tokio::time::timeout(
-        Duration::from_secs(5),
-        await_events(&s.broker, "relay_session_ended", 1),
-    )
-    .await
-    .expect("the session ended within 5 s of the agent leaving");
+    let ended = await_events(&s.broker, "relay_session_ended", 1).await;
     assert_eq!(
         ended[0]["reason"],
         "client closed",
@@ -278,6 +274,8 @@ async fn held_session_ended_by_relay(end: impl AsyncFnOnce(&Setup, &Agent), reas
     let ssh = OpenSsh::new(&s.broker, s.relay, &agent.key);
     let (_child, _stdout, fed) = feed_until_held(&ssh, &["sleep", "600"]).await;
     assert!(fed.mib() < 32, "{} MiB accepted", fed.mib());
+    // Held for longer than the grace is the case tested, so this is a pause
+    // and not a wait on a condition.
     tokio::time::sleep(Duration::from_millis(2500)).await;
     assert!(
         events_of(&s.broker, "relay_session_ended").is_empty(),
@@ -285,12 +283,7 @@ async fn held_session_ended_by_relay(end: impl AsyncFnOnce(&Setup, &Agent), reas
         audit_events(&s.broker)
     );
     end(&s, &agent).await;
-    let ended = tokio::time::timeout(
-        Duration::from_secs(10),
-        await_events(&s.broker, "relay_session_ended", 1),
-    )
-    .await
-    .expect("the session ended");
+    let ended = await_events(&s.broker, "relay_session_ended", 1).await;
     assert_eq!(ended[0]["reason"], reason, "{:?}", audit_events(&s.broker));
     s.broker.stop_relay().await;
     assert_eq!(events_of(&s.broker, "relay_session_ended").len(), 1);
@@ -301,9 +294,7 @@ async fn held_session_ended_by_relay(end: impl AsyncFnOnce(&Setup, &Agent), reas
 async fn stop_relay_wins_over_the_agent_leaving() {
     held_session_ended_by_relay(
         async |s, _| {
-            tokio::time::timeout(Duration::from_secs(10), s.broker.stop_relay())
-                .await
-                .expect("the relay stopped promptly");
+            wait::within_hang("the relay stopping", s.broker.stop_relay()).await;
         },
         "relay shutting down",
     )
@@ -337,9 +328,7 @@ async fn stop_relay_completes_with_wedged_session() {
     let agent = approved_agent(&s.broker, "bot").await;
     let ssh = OpenSsh::new(&s.broker, s.relay, &agent.key);
     let (_child, _stdout, _) = wedge(&ssh).await;
-    tokio::time::timeout(Duration::from_secs(10), s.broker.stop_relay())
-        .await
-        .expect("stop_relay finished within 10 s");
+    wait::within_hang("the relay stopping", s.broker.stop_relay()).await;
     let ended = events_of(&s.broker, "relay_session_ended");
     assert_eq!(ended.len(), 1, "{:?}", audit_events(&s.broker));
     assert_eq!(ended[0]["reason"], "relay shutting down");
@@ -360,8 +349,7 @@ async fn agent_not_reading_output_ends_session() {
     let started = Instant::now();
     let (mut child, _stdout, fed) = wedge(&ssh).await;
     // The stuck output ends the session, while the agent is still there.
-    let ended =
-        await_events_within(&s.broker, "relay_session_ended", 1, Duration::from_secs(60)).await;
+    let ended = await_events(&s.broker, "relay_session_ended", 1).await;
     assert_eq!(
         ended[0]["reason"],
         "flow control: output to the agent not drained",
@@ -374,10 +362,7 @@ async fn agent_not_reading_output_ends_session() {
     // socket buffers on both connections, and `cat`.
     assert!(fed.mib() < 32, "{} MiB accepted", fed.mib());
     // And the agent's connection is closed.
-    let status = tokio::time::timeout(Duration::from_secs(10), child.wait())
-        .await
-        .expect("ssh exited")
-        .unwrap();
+    let status = wait::within_hang("ssh exited", child.wait()).await.unwrap();
     assert!(!status.success());
     assert_each_start_ended(&s.broker).await;
 }

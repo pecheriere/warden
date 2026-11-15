@@ -7,6 +7,7 @@ use std::time::Duration;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use serde_json::json;
+use warden_broker::testkit::wait::HANG;
 use warden_broker::testkit::{TEST_START, TestBroker};
 use warden_broker_proto::{Id, RequestStatus, Window};
 
@@ -27,7 +28,7 @@ async fn deny_marks_denied_and_wakes_cli() {
                 .await
         })
     };
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(HANG, async {
         while broker.state().requests.bus().receiver_count() == 0 {
             tokio::task::yield_now().await;
         }
@@ -37,7 +38,7 @@ async fn deny_marks_denied_and_wakes_cli() {
 
     let denied = broker.deny(&token).await;
     assert_eq!(denied.status, StatusCode::OK, "{}", denied.body);
-    let woke = tokio::time::timeout(Duration::from_secs(5), poller)
+    let woke = tokio::time::timeout(HANG, poller)
         .await
         .expect("long-poll not woken")
         .unwrap();

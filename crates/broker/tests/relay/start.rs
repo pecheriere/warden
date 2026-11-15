@@ -8,12 +8,18 @@ use russh::client::AuthResult;
 use warden_broker::policy::RelayCredential;
 use warden_broker::relay::RelayLimits;
 use warden_broker::requests::Clock as _;
+use warden_broker::testkit::wait::{self, HANG};
 
 use super::{
     Agent, Collected, Connected, OpenSsh, Setup, TARGET, approved_agent, audit_events,
     await_events, collect, connect, events_of, key_target, key_target_with, login, nas,
-    openssh_private, reply_keeping_stderr, russh_key, sshd_connections, text,
+    openssh_private, reply_keeping_stderr, russh_key, sshd_connections, take_every_connection,
+    text,
 };
+
+/// How long a slow secret backend takes to read a relay target: longer than
+/// any test waits, so that only the relay's own bound can end the wait.
+const SLOW_READ: Duration = HANG.saturating_mul(2);
 
 #[tokio::test(flavor = "multi_thread")]
 async fn shutdown_during_onward_setup_records_end() {
@@ -37,9 +43,11 @@ async fn shutdown_during_onward_setup_records_end() {
     let (_held, _) = silent.accept().await.unwrap();
     await_events(&s.broker, "relay_session_started", 1).await;
 
-    tokio::time::timeout(Duration::from_secs(60), s.broker.stop_relay())
-        .await
-        .expect("the relay stopped without waiting for the onward connection");
+    wait::within_hang(
+        "the relay stopping without waiting for the onward connection",
+        s.broker.stop_relay(),
+    )
+    .await;
     // The stop returns only once the session's end is on record.
     let ended = events_of(&s.broker, "relay_session_ended");
     assert_eq!(ended.len(), 1, "{:?}", audit_events(&s.broker));
@@ -75,11 +83,11 @@ async fn exec_in_background(
 }
 
 /// The session was refused once for `reason`, on record, before anything
-/// started or reached the target.
+/// started or reached the target. Stops the relay: the stop returns only
+/// once every connection's task is done, so a duplicate would be on record.
 async fn assert_refused_once(s: &Setup, reason: &str) {
     let refused = await_events(&s.broker, "relay_session_refused", 1).await;
-    // Give a duplicate a chance to show up.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    wait::within_hang("the relay stopping", s.broker.stop_relay()).await;
     let refused_now = events_of(&s.broker, "relay_session_refused");
     assert_eq!(refused_now.len(), 1, "{:?}", audit_events(&s.broker));
     assert_eq!(
@@ -103,22 +111,20 @@ async fn assert_refused_once(s: &Setup, reason: &str) {
 async fn stop_during_slow_target_read_is_prompt() {
     let s = key_target().await;
     let agent = approved_agent(&s.broker, "bot").await;
-    // The secret backend takes a minute to answer.
-    s.broker
-        .backend
-        .set_relay_read_delay(Some(Duration::from_secs(60)));
+    // The secret backend answers only after `SLOW_READ`, far past the bound.
+    s.broker.backend.set_relay_read_delay(Some(SLOW_READ));
     let (_c, client, _) = exec_in_background(&s, &agent).await;
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    wait::until("the target read began", || {
+        s.broker.backend.relay_reads_started() > 0
+    })
+    .await;
 
-    tokio::time::timeout(Duration::from_secs(60), s.broker.stop_relay())
-        .await
-        .expect("the relay stopped");
+    wait::within_hang("the relay stopping", s.broker.stop_relay()).await;
     // Refused, not started: so no end either. A stop held up by the read
     // would see it time out after 10 s, and be refused for that instead.
     assert_refused_once(&s, "relay shutting down").await;
-    tokio::time::timeout(Duration::from_secs(60), client)
+    wait::within_hang("the agent got an answer or was hung up on", client)
         .await
-        .expect("the agent got an answer or was hung up on")
         .unwrap();
 }
 
@@ -126,11 +132,12 @@ async fn stop_during_slow_target_read_is_prompt() {
 async fn revoke_during_slow_target_read_refuses() {
     let s = key_target().await;
     let agent = approved_agent(&s.broker, "bot").await;
-    s.broker
-        .backend
-        .set_relay_read_delay(Some(Duration::from_secs(60)));
+    s.broker.backend.set_relay_read_delay(Some(SLOW_READ));
     let (_c, client, _) = exec_in_background(&s, &agent).await;
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    wait::until("the target read began", || {
+        s.broker.backend.relay_reads_started() > 0
+    })
+    .await;
 
     s.broker
         .state()
@@ -140,9 +147,8 @@ async fn revoke_during_slow_target_read_refuses() {
         .unwrap();
     // A revocation held up by the read would see it time out after 10 s,
     // and be refused for that instead: the notice below tells them apart.
-    let (replied, stderr, out) = tokio::time::timeout(Duration::from_secs(60), client)
+    let (replied, stderr, out) = wait::within_hang("the agent got an answer", client)
         .await
-        .expect("the agent got an answer")
         .unwrap();
     assert!(replied);
     assert_eq!(out.exit_status, Some(255), "{out:?}");
@@ -166,12 +172,7 @@ async fn revoke_during_slow_grant_lookup_refuses() {
     // Every connection of the pool taken: a grant lookup now waits for one
     // (sqlx's 30 s acquire timeout), as on a hung disk. The grant is
     // revoked meanwhile through one of them, as by another process.
-    let mut held = Vec::new();
-    while let Ok(Ok(conn)) =
-        tokio::time::timeout(Duration::from_millis(500), s.broker.state().pool.acquire()).await
-    {
-        held.push(conn);
-    }
+    let mut held = take_every_connection(&s.broker).await;
     let revoked = sqlx::query("UPDATE grants SET revoked_at = ? WHERE id = ?")
         .bind(s.broker.clock.now())
         .bind(agent.grant_id.as_str())
@@ -201,8 +202,8 @@ async fn revoke_during_slow_grant_lookup_refuses() {
         "{}",
         text(&stderr)
     );
-    assert_refused_once(&s, "grant lookup failed").await;
     drop(held);
+    assert_refused_once(&s, "grant lookup failed").await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -213,12 +214,7 @@ async fn login_grant_lookup_is_bounded() {
 
     // Every connection of the pool taken: the login's grant lookup waits
     // for one (sqlx's 30 s acquire timeout), as on a hung disk.
-    let mut held = Vec::new();
-    while let Ok(Ok(conn)) =
-        tokio::time::timeout(Duration::from_millis(500), s.broker.state().pool.acquire()).await
-    {
-        held.push(conn);
-    }
+    let held = take_every_connection(&s.broker).await;
 
     let asked = Instant::now();
     let auth = c
@@ -243,7 +239,7 @@ async fn login_grant_lookup_is_bounded() {
     let refused = await_events(&s.broker, "relay_login_refused", 1).await;
     assert_eq!(refused[0]["user"], TARGET, "{refused:?}");
     assert_eq!(refused[0]["attempts"], 1, "{refused:?}");
-    let log = std::fs::read_to_string(s.broker.audit_path()).unwrap();
+    let log = warden_broker::testkit::audit_text(s.broker.audit_path());
     let public = agent.key.public_key().to_openssh().unwrap();
     assert!(!log.contains(public.split(' ').nth(1).unwrap()));
     assert!(
@@ -263,20 +259,26 @@ async fn login_grant_lookup_is_bounded() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn slow_target_read_is_refused_after_its_bound() {
-    let s = key_target().await;
+    const READ_BOUND: Duration = Duration::from_secs(2);
+    let s = key_target_with(RelayLimits {
+        target_read_timeout: READ_BOUND,
+        ..RelayLimits::default()
+    })
+    .await;
     let agent = approved_agent(&s.broker, "bot").await;
-    s.broker
-        .backend
-        .set_relay_read_delay(Some(Duration::from_secs(60)));
+    s.broker.backend.set_relay_read_delay(Some(SLOW_READ));
     let (_c, client, asked) = exec_in_background(&s, &agent).await;
-    // Short of the minute the read itself takes.
-    let (replied, stderr, out) = tokio::time::timeout(Duration::from_secs(30), client)
-        .await
-        .expect("refused once the target read took too long")
-        .unwrap();
-    // The read is given 10 s.
+    // Refused rather than answered: the read itself takes `SLOW_READ`.
+    let (replied, stderr, out) =
+        wait::within_hang("refused once the target read took too long", client)
+            .await
+            .unwrap();
+    // The read is given its bound.
     let waited = asked.elapsed();
-    assert!(waited >= Duration::from_millis(9500), "{waited:?}");
+    assert!(
+        waited >= READ_BOUND.saturating_sub(Duration::from_millis(500)),
+        "{waited:?}"
+    );
     assert!(replied);
     assert_eq!(out.exit_status, Some(255), "{out:?}");
     assert!(
@@ -299,11 +301,7 @@ async fn input_flood_before_start_disconnects() {
             break;
         }
     }
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !c.handle.is_closed() {
-        assert!(Instant::now() < deadline, "the relay kept the connection");
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    wait::until("the relay dropped the connection", || c.handle.is_closed()).await;
     let refused = await_events(&s.broker, "relay_session_refused", 1).await;
     assert_eq!(
         refused[0]["reason"],
@@ -316,10 +314,6 @@ async fn input_flood_before_start_disconnects() {
     let c = login(&s.broker, s.relay, TARGET, &agent.key).await;
     let channel = c.handle.channel_open_session().await.unwrap();
     let _ = channel.data_bytes(vec![b'y'; 70 * 1024]).await;
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !c.handle.is_closed() {
-        assert!(Instant::now() < deadline, "the relay kept the connection");
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    wait::until("the relay dropped the connection", || c.handle.is_closed()).await;
     await_events(&s.broker, "relay_session_refused", 2).await;
 }

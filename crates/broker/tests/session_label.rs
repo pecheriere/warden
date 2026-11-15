@@ -36,12 +36,10 @@ async fn broker() -> (TestBroker, String) {
 
 /// The `session` of every `request_created` audit entry, oldest first.
 fn audit_session(broker: &TestBroker) -> Vec<Option<String>> {
-    std::fs::read_to_string(broker.audit_path())
-        .unwrap()
-        .lines()
-        .map(|line| serde_json::from_str::<Value>(line).unwrap())
-        .filter(|entry| entry["event"]["type"] == "request_created")
-        .map(|entry| entry["event"]["session"].as_str().map(ToOwned::to_owned))
+    broker
+        .audit_events("request_created")
+        .iter()
+        .map(|event| event["session"].as_str().map(ToOwned::to_owned))
         .collect()
 }
 
@@ -104,7 +102,7 @@ async fn the_audit_log_has_the_label_and_not_the_link() {
     let response = broker.api_post_json(&key, "/v1/requests", &sent).await;
     assert_eq!(response.status, StatusCode::CREATED, "{}", response.body);
     assert_eq!(audit_session(&broker), [Some("release-work".to_owned())]);
-    let log = std::fs::read_to_string(broker.audit_path()).unwrap();
+    let log = warden_broker::testkit::audit_text(broker.audit_path());
     assert!(log.contains(r#""session":"release-work""#), "{log}");
     assert!(!log.contains("git.example.com"), "{log}");
 }
@@ -120,7 +118,7 @@ async fn a_request_without_them_looks_as_it_did() {
     let bell = broker.capture.next().await;
     assert_eq!(bell.message, "restart the job");
     assert_eq!(audit_session(&broker), [None]);
-    let log = std::fs::read_to_string(broker.audit_path()).unwrap();
+    let log = warden_broker::testkit::audit_text(broker.audit_path());
     assert!(!log.contains("session"), "{log}");
     assert!(
         !broker
