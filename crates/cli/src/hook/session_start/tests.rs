@@ -1,6 +1,6 @@
 use std::os::unix::fs::PermissionsExt;
 
-use super::{CUT_NOTE, HEADING, OUTPUT_CAP_CHARS, RULES_FILE, UNREADABLE, render};
+use super::{CUT_NOTE, HEADING, LEFT_OUT, OUTPUT_CAP_CHARS, RULES_FILE, UNREADABLE, render};
 
 const BRIEF: &str = "warden brief\nSSH: build-agent\n";
 
@@ -83,4 +83,69 @@ fn a_directory_in_place_of_the_file_is_unreadable() {
         render(BRIEF, Some(dir.path())),
         format!("{BRIEF}{UNREADABLE}\n")
     );
+}
+
+#[test]
+fn a_file_ending_just_under_the_cap_is_not_cut() {
+    // The brief leaves room for the file and its final newline, but not for a
+    // cut note: the file is printed whole.
+    let rules = format!("{}\n", "r".repeat(2_000));
+    let fixed = HEADING.chars().count() + rules.chars().count();
+    let brief = format!("{}\n", "b".repeat(OUTPUT_CAP_CHARS - fixed - 1));
+    let dir = dir_with(&rules);
+    let out = render(&brief, Some(dir.path()));
+    assert_eq!(out.chars().count(), OUTPUT_CAP_CHARS);
+    assert!(!out.contains("(cut"));
+    assert!(out.ends_with(&rules));
+}
+
+#[test]
+fn a_file_one_char_over_the_room_is_cut_within_the_cap() {
+    let rules = "r".repeat(2_001);
+    let fixed = HEADING.chars().count() + rules.chars().count();
+    let brief = format!("{}\n", "b".repeat(OUTPUT_CAP_CHARS - fixed - 1));
+    let dir = dir_with(&rules);
+    let out = render(&brief, Some(dir.path()));
+    assert!(out.chars().count() <= OUTPUT_CAP_CHARS);
+    assert!(out.ends_with(CUT_NOTE));
+}
+
+#[test]
+fn a_brief_leaving_no_room_for_the_rules_says_so_within_the_cap() {
+    let dir = dir_with(&format!(
+        "Never use home-api without asking.{}\n",
+        "!".repeat(200)
+    ));
+    for brief_len in [
+        OUTPUT_CAP_CHARS - 75,
+        OUTPUT_CAP_CHARS - 60,
+        OUTPUT_CAP_CHARS - 20,
+    ] {
+        let brief = format!("{}\n", "b".repeat(brief_len - 1));
+        let out = render(&brief, Some(dir.path()));
+        assert!(out.chars().count() <= OUTPUT_CAP_CHARS, "{brief_len}");
+        assert!(!out.contains("home-api"), "{brief_len}");
+    }
+    let brief = format!("{}\n", "b".repeat(OUTPUT_CAP_CHARS - 76));
+    assert!(render(&brief, Some(dir.path())).contains(LEFT_OUT.trim()));
+}
+
+#[test]
+fn an_unreadable_rules_line_stays_within_the_cap() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join(RULES_FILE)).unwrap();
+    for brief_len in (OUTPUT_CAP_CHARS - 150)..=OUTPUT_CAP_CHARS {
+        let brief = "b".repeat(brief_len);
+        let out = render(&brief, Some(dir.path()));
+        assert!(out.chars().count() <= OUTPUT_CAP_CHARS, "{brief_len}");
+    }
+}
+
+#[test]
+fn a_brief_over_the_cap_is_cut_to_it_and_the_rules_are_left_out() {
+    let dir = dir_with("Never use home-api without asking.\n");
+    let brief = "é".repeat(OUTPUT_CAP_CHARS + 500);
+    let out = render(&brief, Some(dir.path()));
+    assert_eq!(out.chars().count(), OUTPUT_CAP_CHARS);
+    assert!(!out.contains("home-api"));
 }

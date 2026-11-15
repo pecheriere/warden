@@ -67,10 +67,10 @@ enum Answer {
 /// command always exits 0.
 pub async fn run(brief: bool) {
     let dir = std::env::current_dir().ok();
-    let setup = setup_from(config::config_path());
     let text = if brief {
         brief_and_offers(OFFERS_TIMEOUT).await.0
     } else {
+        let setup = setup_from(config::config_path());
         output(setup, dir.as_deref(), false, OFFERS_TIMEOUT).await.0
     };
     // A closed stdout leaves no one to tell, and prime exits 0 whatever happens.

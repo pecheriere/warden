@@ -19,6 +19,8 @@ const RULES_CAP: usize = 8 * 1024;
 const OUTPUT_CAP_CHARS: usize = 9_500;
 const HEADING: &str = "\n## The owner's rules for this machine\n\n";
 const CUT_NOTE: &str = "\n(cut: the file is longer than 8 KiB)\n";
+/// Printed in place of the rules when the output limit leaves no room for them.
+const LEFT_OUT: &str = "\nwarden: the owner's rules were left out: the output limit was reached.\n";
 const UNREADABLE: &str = "warden: the owner's rules file cannot be read.";
 
 /// Prints the brief and the owner's rules, then saves the offers.
@@ -37,50 +39,85 @@ pub async fn run() {
     }
 }
 
-/// `brief`, then the rules file in `config_dir`.
+/// `brief`, then the rules file in `config_dir`; never more than
+/// `OUTPUT_CAP_CHARS` characters in all.
+///
+/// A brief that alone passes the limit is cut to it, at a character boundary,
+/// and the rules are left out: Claude Code would replace anything over 10,000
+/// characters with a path the model is not told to read, so a bounded start of
+/// the brief is the safer thing to hand over. (The brief is a few KiB at most
+/// in practice; this only bounds a broker that offers far more than usual.)
 fn render(brief: &str, config_dir: Option<&Path>) -> String {
-    let mut out = brief.to_owned();
+    let mut out = clip(brief, OUTPUT_CAP_CHARS).to_owned();
     let Some(dir) = config_dir else {
         return out;
     };
     match read_rules(&dir.join(RULES_FILE)) {
         Rules::Missing => {}
         Rules::Unreadable => {
-            if !out.ends_with('\n') {
-                out.push('\n');
-            }
-            out.push_str(UNREADABLE);
-            out.push('\n');
+            let separator = if out.is_empty() || out.ends_with('\n') {
+                ""
+            } else {
+                "\n"
+            };
+            push_within(&mut out, &format!("{separator}{UNREADABLE}\n"));
         }
         Rules::Found { text, longer } => {
-            out.push_str(HEADING);
-            let used = out.chars().count() + CUT_NOTE.chars().count();
-            let budget = OUTPUT_CAP_CHARS.saturating_sub(used);
-            let (kept, cut) = cut(&text, budget, longer);
-            out.push_str(kept);
-            if cut {
+            let room = OUTPUT_CAP_CHARS.saturating_sub(out.chars().count());
+            let heading = HEADING.chars().count();
+            // The final newline a file lacks is added, so it counts.
+            let newline = usize::from(!text.ends_with('\n'));
+            if !longer
+                && text.len() <= RULES_CAP
+                && heading + text.chars().count() + newline <= room
+            {
+                out.push_str(HEADING);
+                out.push_str(&text);
+                if newline == 1 {
+                    out.push('\n');
+                }
+            } else if let Some(avail) = room
+                .checked_sub(heading + CUT_NOTE.chars().count())
+                .filter(|a| *a > 0)
+            {
+                out.push_str(HEADING);
+                out.push_str(cut(&text, avail));
                 out.push_str(CUT_NOTE);
-            } else if !kept.ends_with('\n') {
-                out.push('\n');
+            } else {
+                push_within(&mut out, LEFT_OUT);
             }
         }
     }
     out
 }
 
-/// The longest start of `text` of at most `RULES_CAP` bytes and `budget`
-/// characters, cut at a character boundary, and whether anything was left
-/// out. The note's room is in `budget`; a file that fits whole is not cut.
-fn cut(text: &str, budget: usize, longer: bool) -> (&str, bool) {
+/// `text` as it is, or its first `limit` characters.
+fn clip(text: &str, limit: usize) -> &str {
+    match text.char_indices().nth(limit) {
+        Some((index, _)) => &text[..index],
+        None => text,
+    }
+}
+
+/// Appends `line` when the output stays within the limit, otherwise nothing.
+fn push_within(out: &mut String, line: &str) {
+    if out.chars().count() + line.chars().count() <= OUTPUT_CAP_CHARS {
+        out.push_str(line);
+    }
+}
+
+/// The longest start of `text` of at most `RULES_CAP` bytes and `avail`
+/// characters, cut at a character boundary.
+fn cut(text: &str, avail: usize) -> &str {
     let mut end = 0;
     for (count, (index, c)) in text.char_indices().enumerate() {
         let next = index + c.len_utf8();
-        if next > RULES_CAP || count >= budget {
-            return (&text[..end], true);
+        if next > RULES_CAP || count >= avail {
+            break;
         }
         end = next;
     }
-    (text, longer)
+    &text[..end]
 }
 
 enum Rules {
