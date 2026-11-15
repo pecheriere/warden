@@ -149,8 +149,14 @@ fails, or hides a second failure, so:
   `gh run list --workflow ci.yml --branch main --limit 1`.
 - Never merge while `main` is red. Fix it first, in a pull request that closes
   the issue.
-- Merge ready pull requests one at a time, each after the previous one's `ci`
-  run on `main` passed.
+- Merge ready pull requests one at a time. Each is first updated onto the
+  current `main` and merges only once its own checks pass on that update, so a
+  clean merge is never taken as a tested one.
+- A pull request that changes shipped code, the build, a workflow or a
+  dependency also waits until the previous merge's `ci` run on `main` passed:
+  `main` runs jobs a pull request does not, such as the macOS demo build. One
+  that changes only tests, test helpers (`testkit`, `tests/`) or documentation
+  need not wait for that run.
 
 ## Fuzzing
 
