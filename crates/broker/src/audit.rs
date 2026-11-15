@@ -729,7 +729,23 @@ mod tests {
             len_u64(MAX_LINE_BYTES) + 1
         );
         assert_eq!(open::verify(&path).unwrap(), 1);
+
+        // The bound is per line, not per file: the log is now over 16 MiB, and an
+        // entry after it must still be read and verified. A reader capped at
+        // `MAX_LINE_BYTES` for the whole file would stop after the first line and
+        // succeed without ever seeing the second.
+        log.append(AuditEvent::Denied { id: Id::random() })
+            .await
+            .unwrap();
+        assert_eq!(open::verify(&path).unwrap(), 2);
+        let expected = log.state.lock().await.head.clone();
+        assert_eq!(expected.seq, 2);
         drop(log);
-        AuditLog::open(&path).await.unwrap();
+        let reopened = AuditLog::open(&path).await.unwrap();
+        let head = reopened.state.lock().await.head.clone();
+        assert_eq!(
+            (head.seq, head.hash, head.len),
+            (expected.seq, expected.hash, expected.len)
+        );
     }
 }

@@ -2,6 +2,7 @@
 
 use super::{API_ENTRY, Setup, ed25519_pem, host_key, seal, secret, target};
 use crate::policy::SecretBackend;
+use crate::policy::local::files::MAX_POLICY_BYTES;
 use crate::policy::local::{END_MARKER, LocalProbe, digest_line, parse_policy};
 
 /// Every setting that has a default, each narrowing it, and every kind of entry.
@@ -103,6 +104,21 @@ async fn a_cut_policy_file_is_refused_at_every_line_and_inside_the_marker() {
     let same = setup.backend.api_secret(&name).await.unwrap();
     assert_eq!(same.destination_digest(), whole.destination_digest());
     assert_eq!(same.path_prefix, "/api/");
+}
+
+/// The cut test above shortens the backend's limit, so this pins the real one: a
+/// policy one byte over `MAX_POLICY_BYTES`, read through the backend as built, is
+/// refused as too large.
+#[tokio::test]
+async fn the_backend_refuses_a_policy_over_the_production_limit() {
+    let setup = Setup::new("");
+    assert_eq!(setup.backend.files.max_policy_bytes, MAX_POLICY_BYTES);
+    setup.write_raw(&vec![b'#'; MAX_POLICY_BYTES + 1]);
+    let probe = setup.backend.probe().await;
+    assert!(
+        matches!(&probe, LocalProbe::Unreadable(reason) if reason.contains("too large")),
+        "an oversized policy was not refused as too large: {probe:?}"
+    );
 }
 
 /// The attack as first found: the last line of the entry narrows the prefix.
