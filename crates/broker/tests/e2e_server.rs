@@ -8,7 +8,7 @@ use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
 use ssh_key::Certificate;
 use warden_broker::requests;
-use warden_broker::testkit::wait::HANG;
+use warden_broker::testkit::wait::within_hang;
 use warden_broker::testkit::{TEST_OWNER, TestBroker};
 use warden_broker_proto::{CreatedResponse, GrantAccess, GrantView, Id, RequestStatus, Window};
 
@@ -414,7 +414,7 @@ async fn sweep_loop_expires_pending_requests_and_stops_on_shutdown() {
         Duration::from_millis(10),
         stopped,
     ));
-    tokio::time::timeout(HANG, async {
+    within_hang("the sweeper expiring the request", async {
         loop {
             let row: (String,) = sqlx::query_as("SELECT status FROM requests WHERE id = ?")
                 .bind(created.id.as_str())
@@ -424,17 +424,13 @@ async fn sweep_loop_expires_pending_requests_and_stops_on_shutdown() {
             if row.0 == "expired" {
                 break;
             }
-            tokio::time::sleep(Duration::from_millis(10)).await;
+            tokio::task::yield_now().await;
         }
     })
-    .await
-    .expect("sweeper expires the request");
+    .await;
 
     stop.send(true).unwrap();
-    tokio::time::timeout(HANG, sweeper)
-        .await
-        .expect("sweeper stops")
-        .unwrap();
+    within_hang("the sweeper stopping", sweeper).await.unwrap();
 }
 
 #[tokio::test]
