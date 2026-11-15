@@ -16,7 +16,8 @@ fn data(len: usize) -> russh::ChannelMsg {
 }
 
 // Paused time: the push below can only finish if room is freed, which nothing
-// does while it waits, so the timeout is reached without waiting in real time.
+// does while it waits, so the timeout is reached without waiting in real time: the
+// 100 ms below is virtual.
 #[tokio::test(start_paused = true)]
 async fn queue_waits_for_room_and_reports_progress() {
     let progress = Arc::new(Progress::default());

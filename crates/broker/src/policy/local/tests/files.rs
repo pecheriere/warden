@@ -67,7 +67,13 @@ async fn loosened_permissions_are_refused_at_once() {
     let error = setup.backend.api_secret(&name).await.unwrap_err();
     assert_invalid(&error, "home-api", "credential_file");
     assert!(error.to_string().contains("group or others"), "{error}");
-    assert!(setup.backend.api_secret_with_value(&name).await.is_err());
+    let error = setup
+        .backend
+        .api_secret_with_value(&name)
+        .await
+        .unwrap_err();
+    assert_invalid(&error, "home-api", "credential_file");
+    assert!(error.to_string().contains("group or others"), "{error}");
     chmod(&setup.secret_path("home-api"), 0o600);
 
     chmod(&setup.settings.policy_file, 0o664);
