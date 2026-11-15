@@ -73,7 +73,7 @@ fn page_marks_sensitive_permissions_with_their_meaning() {
     );
     assert!(
         html.contains(
-            "can change GitHub Actions workflows, which run with the repository's secrets."
+            "can create and change GitHub Actions workflow files, which run with the repository's secrets."
         ),
         "{html}"
     );
@@ -84,10 +84,16 @@ fn page_marks_sensitive_permissions_with_their_meaning() {
 #[test]
 fn every_sensitive_permission_is_marked() {
     for name in SENSITIVE {
-        let html = page(&extras_view(&format!("{name}:read,metadata:read")));
+        // `workflows` has only a write level; the others have read.
+        let level = if *name == "workflows" {
+            "write"
+        } else {
+            "read"
+        };
+        let html = page(&extras_view(&format!("{name}:{level},metadata:read")));
         assert!(
             html.contains(&format!(
-                r#"<code class="perm sensitive">{name}: read</code>"#
+                r#"<code class="perm sensitive">{name}: {level}</code>"#
             )),
             "{name}: {html}"
         );

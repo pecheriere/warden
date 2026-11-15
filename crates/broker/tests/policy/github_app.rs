@@ -268,6 +268,11 @@ async fn bad_permission_field_makes_the_app_unusable() {
         "contents:read,contents:write",
         "metadata:write",
         "contents:admin",
+        // Levels GitHub does not document for these names.
+        "workflows:read",
+        "organization_copilot_requests:write",
+        "organization_events:write",
+        "organization_plan:write",
         "  ",
         "",
     ];

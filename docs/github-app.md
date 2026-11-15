@@ -107,7 +107,11 @@ most: the approval page offers only those windows, marks the permission with wha
 the holder do at the level asked, and a longer window is refused. A token minted at the end
 of such a grant lives up to an hour more, so the access can last about 2 hours. The request defaults to `1h` when it names
 one, and its goal should say exactly why the agent needs it. A name that GitHub does not
-document, such as an `organization_*` one missing from its page, stays unknown and is refused.
+document, such as an `organization_*` one missing from its page, stays unknown and is refused,
+and so is a level GitHub does not document for a name: `workflows` has only `write`, and
+`organization_copilot_requests`, `organization_events` and `organization_plan` have only
+`read`. Such an entry in `extra_permissions` makes GitHub tokens unusable, and
+`warden-server doctor` names the field.
 
 An agent holding a grant with extras can mint a token with fewer permissions than the grant
 holds: the mint endpoint takes a `permissions` field, and the CLI does not send one yet, so
