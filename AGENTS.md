@@ -61,7 +61,8 @@ scripts/check-no-reqwest-decompression.sh
 scripts/check-demo-not-shipped.sh
 scripts/test-sign-release.sh
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-cargo test --workspace --all-features --locked
+cargo nextest run --workspace --all-features --locked
+cargo test --doc --workspace --all-features --locked
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps --locked
 cargo deny check
 cargo deny --manifest-path fuzz/Cargo.toml check
@@ -71,6 +72,12 @@ python3 -I .github/scripts/openssl_support.py
 uvx zizmor@1.31.1 .   # when a workflow or the Dependabot config changes
 ```
 
+- Run the tests locally with `cargo nextest run` (`cargo install cargo-nextest
+  --locked`), which `.config/nextest.toml` configures: no fail-fast, so one
+  run lists every failure, and a test that runs over 5 minutes is killed.
+  nextest does not run doctests, hence the separate `cargo test --doc` line.
+  CI's workflow still runs `cargo test --workspace`, which stops at the first
+  failing test binary; where `cargo test` remains, add `--no-fail-fast`.
 - CI's `coverage` job also measures test coverage with `cargo llvm-cov`,
   shown in the run's summary with the lcov file as an artifact. It is not a
   required check and no threshold fails it yet (#97).

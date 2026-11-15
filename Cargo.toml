@@ -16,6 +16,12 @@ unsafe_code = "forbid"
 all = { level = "deny", priority = -1 }
 pedantic = { level = "deny", priority = -1 }
 
+# Line tables keep file:line in backtraces and panics, and leave out the
+# variable and type information that the 38 broker test binaries would each
+# link. `test` inherits this profile. The release profile is untouched.
+[profile.dev]
+debug = "line-tables-only"
+
 [workspace.dependencies]
 # Internal crates
 warden-broker-proto = { path = "crates/proto", version = "0.15.0" }
