@@ -186,8 +186,15 @@ pub fn load() -> Result<Config> {
 }
 
 fn load_from(path: &Path) -> Result<Config> {
-    let raw = fs::read_to_string(path)?;
-    let config: Config = toml::from_str(&raw)?;
+    parse(&fs::read_to_string(path)?)
+}
+
+/// The configuration in `raw`, checked as [`load`] checks a file.
+///
+/// # Errors
+/// If `raw` is not a valid configuration.
+pub(crate) fn parse(raw: &str) -> Result<Config> {
+    let config: Config = toml::from_str(raw)?;
     check_server_url(&config.server)?;
     if let Some(ssh_key) = &config.ssh_key {
         check_root_url(&config.server)?;

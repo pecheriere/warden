@@ -15,7 +15,7 @@ use warden_agent_hook::detect;
 use super::cache;
 use super::claude::{self, Event};
 use super::files::Reader;
-use super::include::include_text;
+use super::include::Includes;
 use super::settings;
 use crate::agent;
 
@@ -60,7 +60,8 @@ fn build_context(
 ) -> Context {
     let reader = Reader::new(event.cwd.as_deref());
     let aliases = home.map_or_else(SshAliases::default, |home| {
-        let include = |argument: &str| include_text(argument, home, &|p| reader.read(p));
+        let includes = Includes::new(home);
+        let include = |argument: &str| includes.text(argument, &|p| reader.read(p));
         reader
             .read(&home.join(".ssh/config"))
             .map_or_else(SshAliases::default, |text| {

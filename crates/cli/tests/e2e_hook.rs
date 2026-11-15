@@ -107,6 +107,7 @@ fn reason(value: &Value) -> &str {
 fn assert_silent(out: &Output) {
     assert!(out.status.success(), "exit {:?}", out.status);
     assert!(out.stdout.is_empty(), "stdout is not empty");
+    assert!(out.stderr.is_empty(), "stderr is not empty");
 }
 
 #[test]
@@ -187,12 +188,12 @@ fn invalid_hook_table_adds_its_note_to_the_reason() {
     let out = env.check(&bash_event("op read x", None));
     let value = answer(&out);
     assert_eq!(decision(&value), "ask");
+    let table: toml::Table = toml::from_str("secret-store = \"sometimes\"\n").unwrap();
+    let (_, note) = warden_agent_hook::settings::Settings::from_table(Some(&table));
+    let note = note.expect("the fixture table is invalid");
     let lines: Vec<&str> = reason(&value).lines().collect();
     assert!(lines.len() >= 2, "the note is its own line");
-    assert!(
-        lines.last().unwrap().contains("hook"),
-        "note names the table"
-    );
+    assert_eq!(*lines.last().unwrap(), note);
 }
 
 #[test]
@@ -200,4 +201,58 @@ fn hook_table_can_turn_a_signal_off() {
     let env = Env::new();
     env.write_config(&format!("{CONFIG}\n[hook]\nsecret-store = \"off\"\n"));
     assert_silent(&env.check(&bash_event("op read x", None)));
+}
+
+/// What `warden ssh-config` renders for a relay grant, with the agent socket
+/// at `socket`.
+fn rendered_block(socket: &std::path::Path) -> String {
+    format!(
+        "# warden grant 0123456789ab for switch-01, not_after=1800000000 (2027-01-15T08:00:00Z)\n\
+         Host switch-01\n  HostName switch-01.example.internal\n  Port 22\n  User admin\n  \
+         IdentityAgent \"{}\"\n  IdentityFile none\n  IdentitiesOnly no\n  \
+         UserKnownHostsFile \"/work/known_hosts\"\n  StrictHostKeyChecking yes\n  \
+         PasswordAuthentication no\n  KbdInteractiveAuthentication no\n  ForwardAgent no\n",
+        socket.display()
+    )
+}
+
+#[test]
+fn warden_ssh_config_is_accepted_under_the_socket_dir_and_its_realpath() {
+    let env = Env::new();
+    env.write_cache(SWITCH_CACHE);
+    let uid = rustix::process::getuid().as_raw();
+    let name = format!("warden-{uid}");
+    let sockets = env.path("tmp").join(&name);
+    let real_sockets = fs::canonicalize(env.path("tmp")).unwrap().join(&name);
+    for (i, dir) in [sockets, real_sockets].iter().enumerate() {
+        let file = env.path(&format!("home/warden-{i}.conf"));
+        fs::write(&file, rendered_block(&dir.join("0123456789ab.sock"))).unwrap();
+        let command = format!("ssh -F {} switch-01", file.display());
+        assert_silent(&env.check(&bash_event(&command, None)));
+    }
+}
+
+#[test]
+fn ssh_config_with_another_agent_socket_is_denied() {
+    let env = Env::new();
+    env.write_cache(SWITCH_CACHE);
+    let file = env.path("home/other.conf");
+    fs::write(
+        &file,
+        rendered_block(std::path::Path::new("/work/other.sock")),
+    )
+    .unwrap();
+    let command = format!("ssh -F {} switch-01", file.display());
+    assert_eq!(
+        decision(&answer(&env.check(&bash_event(&command, None)))),
+        "deny"
+    );
+}
+
+#[test]
+fn reading_the_cache_creates_no_state_directory() {
+    let env = Env::new();
+    fs::remove_dir(env.path("state/warden")).unwrap();
+    assert_silent(&env.check(&bash_event("ssh switch-01.example.internal", None)));
+    assert!(!env.path("state/warden").exists());
 }

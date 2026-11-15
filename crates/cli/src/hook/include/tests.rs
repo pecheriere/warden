@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
 
-use super::{glob_matches, include_text};
+use super::{Includes, glob_matches};
 use crate::hook::files::{MAX_BYTES, read_small};
 
 fn home() -> tempfile::TempDir {
@@ -11,7 +11,7 @@ fn home() -> tempfile::TempDir {
 }
 
 fn text(argument: &str, home: &Path) -> Option<String> {
-    include_text(argument, home, &read_small)
+    Includes::new(home).text(argument, &read_small)
 }
 
 #[test]
@@ -110,4 +110,43 @@ fn glob_rules() {
     for (i, (pattern, name, want)) in cases.iter().enumerate() {
         assert_eq!(glob_matches(pattern, name), *want, "case {i}");
     }
+}
+
+#[test]
+fn many_include_lines_share_one_budget_and_stop_reading() {
+    let home = home();
+    let ten_kib = "a".repeat(10 * 1024);
+    for i in 0..10 {
+        fs::write(home.path().join(".ssh").join(format!("x{i}")), &ten_kib).unwrap();
+    }
+    let includes = Includes::new(home.path());
+    let reads = std::cell::Cell::new(0_u32);
+    let read = |path: &Path| {
+        reads.set(reads.get() + 1);
+        read_small(path)
+    };
+    let mut total = 0;
+    for _ in 0..200 {
+        total += includes.text("x*", &read).map_or(0, |text| text.len());
+    }
+    assert!(u64::try_from(total).unwrap() <= MAX_BYTES);
+    assert!(total > 0);
+    assert!(reads.get() <= 7, "{} reads", reads.get());
+}
+
+#[test]
+fn a_glob_lists_regular_files_only() {
+    let home = home();
+    let ssh = home.path().join(".ssh");
+    fs::write(ssh.join("a"), "A\n").unwrap();
+    fs::create_dir(ssh.join("b")).unwrap();
+    let names = super::list(&ssh);
+    assert!(names.contains(&"a".to_owned()));
+    assert!(!names.contains(&"b".to_owned()));
+    let status = std::process::Command::new("mkfifo")
+        .arg(ssh.join("pipe"))
+        .status()
+        .unwrap();
+    assert!(status.success());
+    assert!(!super::list(&ssh).contains(&"pipe".to_owned()));
 }

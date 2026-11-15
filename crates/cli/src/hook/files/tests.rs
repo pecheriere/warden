@@ -91,3 +91,9 @@ fn reader_reads_each_path_once() {
     std::fs::write(&file, "second").unwrap();
     assert_eq!(reader.read(&file).as_deref(), Some("first"));
 }
+
+#[test]
+fn refuses_a_character_device_without_opening_it() {
+    assert_eq!(read_small(Path::new("/dev/null")), None);
+    assert_eq!(read_small(Path::new("/dev/zero")), None);
+}

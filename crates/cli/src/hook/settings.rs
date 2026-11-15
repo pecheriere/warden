@@ -8,7 +8,8 @@ use std::path::Path;
 use warden_agent_hook::settings::Settings;
 use warden_broker_proto::doctor::Check;
 
-use crate::config::{Config, config_path, load_existing_from};
+use super::files::read_small;
+use crate::config::{Config, config_path, parse};
 
 /// The name of the doctor check for the `[hook]` table.
 const CHECK: &str = "hook.settings";
@@ -40,7 +41,9 @@ pub fn load() -> (Settings, Option<String>) {
 
 /// [`load`] for the configuration at `path`.
 fn load_from(path: &Path) -> (Settings, Option<String>) {
-    let config = load_existing_from(path).ok().flatten();
+    // The hook has a 2 s budget: a pipe, a device or a huge file at the path
+    // must not hold it up, so only a small regular file is read.
+    let config = read_small(path).and_then(|raw| parse(&raw).ok());
     Settings::from_table(config.as_ref().and_then(|c| c.hook.as_ref()))
 }
 

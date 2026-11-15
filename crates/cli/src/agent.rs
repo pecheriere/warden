@@ -190,15 +190,24 @@ fn publish(temp: &Path, path: &Path, dir: &Path, contents: &[u8]) -> Result<()> 
 /// # Errors
 /// If no location is known or it cannot be created privately.
 pub fn state_dir() -> Result<PathBuf> {
+    let dir = state_dir_path()?;
+    private_dir(&dir)?;
+    Ok(dir)
+}
+
+/// Where [`state_dir`] is, without creating or changing anything: for
+/// readers that must not touch the disk.
+///
+/// # Errors
+/// If no state directory can be determined.
+pub fn state_dir_path() -> Result<PathBuf> {
     let base = match std::env::var_os("XDG_STATE_HOME").map(PathBuf::from) {
         Some(dir) if dir.is_absolute() => dir,
         _ => dirs::state_dir()
             .or_else(dirs::data_dir)
             .context("cannot determine a state directory")?,
     };
-    let dir = base.join("warden");
-    private_dir(&dir)?;
-    Ok(dir)
+    Ok(base.join("warden"))
 }
 
 /// `<state>/grants`, created 0700.

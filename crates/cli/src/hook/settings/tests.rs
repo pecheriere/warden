@@ -44,3 +44,32 @@ fn invalid_table_gives_defaults_and_a_note() {
     assert!(note.is_some());
     assert_ne!(settings.get(Signal::SecretStore), Setting::Off);
 }
+
+#[test]
+fn fifo_at_the_config_path_gives_defaults_without_waiting() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let status = std::process::Command::new("mkfifo")
+        .arg(&path)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let (settings, note) = load_from(&path);
+    assert_eq!(note, None);
+    assert_ne!(settings.get(Signal::SecretStore), Setting::Off);
+}
+
+#[test]
+fn config_over_the_cap_gives_defaults_and_no_note() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let padding = "# x\n".repeat(20_000);
+    std::fs::write(
+        &path,
+        format!("{BASE}\n[hook]\nsecret-store = \"off\"\n{padding}"),
+    )
+    .unwrap();
+    let (settings, note) = load_from(&path);
+    assert_eq!(note, None);
+    assert_ne!(settings.get(Signal::SecretStore), Setting::Off);
+}

@@ -14,11 +14,15 @@ pub const MAX_BYTES: u64 = 64 * 1024;
 
 /// The text of the regular file at `path`: `None` when it is missing,
 /// unreadable, not a regular file (a directory, a FIFO or a device would
-/// block or never end), over [`MAX_BYTES`] or not UTF-8. The file is opened
+/// block, never end or have effects when opened), over [`MAX_BYTES`] or not UTF-8. The file is opened
 /// without blocking, so a FIFO never holds the hook up.
 #[must_use]
 pub fn read_small(path: &Path) -> Option<String> {
-    let flags = i32::try_from(OFlags::NONBLOCK.bits()).ok()?;
+    // Looked at before it is opened: opening a device can have effects.
+    if !is_regular_file(path) {
+        return None;
+    }
+    let flags = i32::try_from((OFlags::NONBLOCK | OFlags::NOCTTY).bits()).ok()?;
     let file = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(flags)
@@ -33,6 +37,12 @@ pub fn read_small(path: &Path) -> Option<String> {
         return None;
     }
     String::from_utf8(body).ok()
+}
+
+/// Whether `path`, links followed, is a regular file. Nothing is opened.
+#[must_use]
+pub fn is_regular_file(path: &Path) -> bool {
+    std::fs::metadata(path).is_ok_and(|meta| meta.is_file())
 }
 
 /// Reads small files for one run: a relative path is resolved against the

@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 use serde_json::Value;
 use warden_broker_proto::offers::Offers;
 
-use crate::agent::state_dir;
+use crate::agent::{state_dir, state_dir_path};
 use crate::client::read_offer;
 
 /// The file's name in the state directory.
@@ -27,6 +27,12 @@ static SEQUENCE: AtomicU32 = AtomicU32::new(0);
 
 fn cache_path() -> Result<PathBuf> {
     Ok(state_dir()?.join(FILE_NAME))
+}
+
+/// Where the cache is, without creating the state directory: a reader on the
+/// hook's path creates and fixes nothing.
+fn cache_path_for_read() -> Result<PathBuf> {
+    Ok(state_dir_path()?.join(FILE_NAME))
 }
 
 /// Stores the broker's offers body for later hook runs.
@@ -45,7 +51,7 @@ pub fn write(offers_json: &Value) -> Result<()> {
 /// hours old at `now`.
 #[must_use]
 pub fn read(now: SystemTime) -> Option<Offers> {
-    read_from(&cache_path().ok()?, now)
+    read_from(&cache_path_for_read().ok()?, now)
 }
 
 /// [`write()`] to `path`: a private temp file beside it, renamed over it.
