@@ -451,7 +451,7 @@ mod tests {
             // The runtime's only worker must stay free to run this task
             // while the work waits for it.
             let ping = tokio::spawn(async move { tx.send(()).unwrap() });
-            let got = off_runtime(move || rx.recv_timeout(Duration::from_secs(5)).is_ok()).await;
+            let got = off_runtime(move || rx.recv_timeout(crate::test_wait::HANG).is_ok()).await;
             ping.await.unwrap();
             assert!(matches!(got, Ok(true)));
         });

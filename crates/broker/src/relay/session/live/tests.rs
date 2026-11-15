@@ -3,8 +3,6 @@
 
 use std::sync::atomic::Ordering;
 
-use std::time::Duration;
-
 use warden_broker_proto::{AgentName, Id, TargetName, UnixUser};
 
 use crate::requests::RelayGrantRecord;
@@ -24,11 +22,14 @@ fn grant(agent: &str, not_after: i64) -> RelayGrantRecord {
     }
 }
 
-/// The reason `live` was told to end for, if it was.
+/// The reason `live` was told to end for, if it was: telling is synchronous,
+/// so a told registration is ended at its first poll and nothing is waited for.
 async fn told(live: &mut Registration) -> Option<&'static str> {
-    tokio::time::timeout(Duration::from_millis(10), live.ended())
-        .await
-        .ok()
+    tokio::select! {
+        biased;
+        why = live.ended() => Some(why),
+        () = std::future::ready(()) => None,
+    }
 }
 
 #[tokio::test]
