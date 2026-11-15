@@ -165,11 +165,10 @@ pub struct RelayLimits {
     pub start_timeout: Duration,
     /// Time the grant check may go without a successful query before the
     /// relay fails closed: every session ends and none starts until one
-    /// succeeds ([`FAIL_CLOSED_AFTER`], 10 s).
+    /// succeeds (10 s).
     pub fail_closed_after: Duration,
     /// Longest read of a relay target's item (policy and credential) when
-    /// a session starts; past it, the session is refused
-    /// ([`TARGET_READ_TIMEOUT`], 10 s).
+    /// a session starts; past it, the session is refused (10 s).
     pub target_read_timeout: Duration,
 }
 
