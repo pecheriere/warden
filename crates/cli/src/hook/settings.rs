@@ -3,10 +3,12 @@
 //! The table is validated by `warden_agent_hook::settings`: an invalid key or
 //! value gives the defaults and a note, never a weaker setting.
 
+use std::path::Path;
+
 use warden_agent_hook::settings::Settings;
 use warden_broker_proto::doctor::Check;
 
-use crate::config::Config;
+use crate::config::{Config, config_path, load_existing_from};
 
 /// The name of the doctor check for the `[hook]` table.
 const CHECK: &str = "hook.settings";
@@ -24,3 +26,23 @@ pub fn doctor_check(config: &Config) -> Option<Check> {
         )
     })
 }
+
+/// The settings from the CLI's configuration file, and the note about an
+/// invalid `[hook]` table. A missing or unreadable configuration, or one
+/// that does not parse, gives the defaults and no note: `warden doctor`
+/// reports those.
+pub fn load() -> (Settings, Option<String>) {
+    match config_path() {
+        Ok(path) => load_from(&path),
+        Err(_) => Settings::from_table(None),
+    }
+}
+
+/// [`load`] for the configuration at `path`.
+fn load_from(path: &Path) -> (Settings, Option<String>) {
+    let config = load_existing_from(path).ok().flatten();
+    Settings::from_table(config.as_ref().and_then(|c| c.hook.as_ref()))
+}
+
+#[cfg(test)]
+mod tests;

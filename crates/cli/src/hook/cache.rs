@@ -25,7 +25,6 @@ const MAX_BYTES: u64 = 1024 * 1024;
 /// Makes temp file names unique within the process.
 static SEQUENCE: AtomicU32 = AtomicU32::new(0);
 
-#[expect(dead_code, reason = "used by write and read, wired in a later commit")]
 fn cache_path() -> Result<PathBuf> {
     Ok(state_dir()?.join(FILE_NAME))
 }
@@ -45,15 +44,11 @@ pub fn write(offers_json: &Value) -> Result<()> {
 /// The cached offers, when there are some, they are readable and less than 24
 /// hours old at `now`.
 #[must_use]
-#[expect(
-    dead_code,
-    reason = "used by warden hook check, wired in the next commit"
-)]
 pub fn read(now: SystemTime) -> Option<Offers> {
     read_from(&cache_path().ok()?, now)
 }
 
-/// [`write`] to `path`: a private temp file beside it, renamed over it.
+/// [`write()`] to `path`: a private temp file beside it, renamed over it.
 fn write_to(path: &Path, offers_json: &Value) -> Result<()> {
     let dir = path.parent().context("the cache path has no directory")?;
     let temp = dir.join(format!(

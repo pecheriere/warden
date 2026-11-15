@@ -212,7 +212,7 @@ pub fn grants_dir() -> Result<PathBuf> {
 }
 
 /// `$TMPDIR/warden-<uid>`: short enough for agent sockets.
-fn socket_dir() -> PathBuf {
+pub(crate) fn socket_dir() -> PathBuf {
     std::env::temp_dir().join(format!("warden-{}", rustix::process::getuid().as_raw()))
 }
 

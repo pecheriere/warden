@@ -2,7 +2,10 @@
 //! modules.
 
 pub mod cache;
+pub mod check;
 pub mod claude;
+pub mod files;
+pub mod include;
 pub mod settings;
 
 #[cfg(test)]

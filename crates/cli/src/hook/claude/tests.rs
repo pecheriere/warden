@@ -110,6 +110,7 @@ fn parses_a_bash_event() {
     let parsed = parse_event(&stdin).unwrap();
     assert_eq!(parsed.command, "ls -l");
     assert_eq!(parsed.permission_mode.as_deref(), Some("plan"));
+    assert_eq!(parsed.cwd.as_deref(), Some("/work"));
 }
 
 #[test]

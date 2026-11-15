@@ -33,30 +33,19 @@ const NO_PROMPT_MODES: [&str; 2] = ["bypassPermissions", "dontAsk"];
 
 /// The part of a `PreToolUse` event for a Bash call that the hook reads.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "used by warden hook check, wired in the next commit"
-    )
-)]
 pub struct Event {
     /// The command line Claude is about to run.
     pub command: String,
     /// Claude's `permission_mode`, when it sent one.
     pub permission_mode: Option<String>,
+    /// The directory the agent works in, which relative paths in the command
+    /// are relative to.
+    pub cwd: Option<String>,
 }
 
 /// The Bash call in `stdin`; `None` for any other tool, input that is not
 /// JSON of the expected shape, or more than 64 KiB.
 #[must_use]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "used by warden hook check, wired in the next commit"
-    )
-)]
 pub fn parse_event(stdin: &[u8]) -> Option<Event> {
     if stdin.len() > MAX_EVENT_BYTES {
         return None;
@@ -72,6 +61,7 @@ pub fn parse_event(stdin: &[u8]) -> Option<Event> {
             .get("permission_mode")
             .and_then(Value::as_str)
             .map(str::to_owned),
+        cwd: event.get("cwd").and_then(Value::as_str).map(str::to_owned),
     })
 }
 
@@ -80,13 +70,6 @@ pub fn parse_event(stdin: &[u8]) -> Option<Event> {
 /// The reason is the verdict's message followed by `settings_note` as its own
 /// line. `ask` becomes `deny` in modes where it might not prompt.
 #[must_use]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "used by warden hook check, wired in the next commit"
-    )
-)]
 pub fn answer(
     verdict: &Verdict,
     settings_note: Option<&str>,

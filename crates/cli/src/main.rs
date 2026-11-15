@@ -36,7 +36,7 @@ use anyhow::{Result, ensure};
 use clap::Parser;
 use warden_broker_proto::doctor::EXIT_NOTHING_FAILED;
 
-use crate::cli::{Cli, Cmd, GithubCmd, ReleaseCmd, RequestKind, SetupWhat};
+use crate::cli::{Cli, Cmd, GithubCmd, HookCmd, ReleaseCmd, RequestKind, SetupWhat};
 use crate::client::Client;
 use crate::commands::{HttpCall, revoke, run_http, run_setup_git, run_ssh, status};
 use crate::config::Config;
@@ -140,11 +140,12 @@ fn parse_failure_exit(e: &clap::Error) -> ExitCode {
 }
 
 /// Whether the housekeeping runs before `cmd`. Doctor, list and prime change
-/// nothing, so not even the housekeeping runs before them.
+/// nothing, so not even the housekeeping runs before them, and a hook runs on
+/// every shell command, so it has to stay fast.
 const fn runs_housekeeping(cmd: &Cmd) -> bool {
     !matches!(
         cmd,
-        Cmd::Doctor { .. } | Cmd::List { .. } | Cmd::Prime { .. }
+        Cmd::Doctor { .. } | Cmd::List { .. } | Cmd::Prime { .. } | Cmd::Hook { .. }
     )
 }
 
@@ -252,6 +253,13 @@ async fn run(cmd: Cmd) -> Result<()> {
         // It needs no configuration, and exits 0 whatever happens.
         Cmd::Prime { brief } => {
             prime::run(brief).await;
+            Ok(())
+        }
+        // Exits 0 whatever happens: a broken hook must not stop the agent.
+        Cmd::Hook {
+            what: HookCmd::Check,
+        } => {
+            hook::check::run();
             Ok(())
         }
         Cmd::Status => status().await,
