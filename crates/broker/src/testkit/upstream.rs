@@ -38,9 +38,6 @@ pub const SLOW_PREFIX: &[u8] = b"partial body that must never reach the agent";
 /// Body served by `/binary`: not valid UTF-8.
 pub const BINARY_BODY: &[u8] = b"\xff\xfe\x00binary\x80";
 
-/// How long `/delayed` waits before answering.
-pub const DELAY: Duration = Duration::from_secs(1);
-
 /// A request the upstream received.
 #[derive(Debug, Clone)]
 pub struct Received {
@@ -150,8 +147,8 @@ impl Default for Gate {
 /// - `/huge`, `/huge-chunked`: [`HUGE_BYTES`] bytes, with and without
 ///   `Content-Length`;
 /// - `/slow`: [`SLOW_PREFIX`], then nothing for a minute;
-/// - `/delayed` and any path under it: `late answer`, after [`DELAY`];
-/// - `/held`: `late answer`, once [`HttpsUpstream::release_held`] is called;
+/// - `/held` and any path under it: `late answer`, once
+///   [`HttpsUpstream::release_held`] is called;
 /// - `/hang`: no answer at all, until the caller closes the connection;
 /// - `/drip`: `200`, the `Authorization` value in clear, then a chunk every few
 ///   milliseconds without end, until the caller closes the connection;
@@ -502,11 +499,7 @@ async fn handle(State(shared): State<Shared>, req: Request) -> Response {
         "/huge" => respond(StatusCode::OK, &[], Body::from(vec![b'a'; HUGE_BYTES])),
         "/huge-chunked" => respond(StatusCode::OK, &[], huge_chunked()),
         "/slow" => respond(StatusCode::OK, &[], slow()),
-        path if path == "/delayed" || path.starts_with("/delayed/") => {
-            tokio::time::sleep(DELAY).await;
-            respond(StatusCode::OK, &[], Body::from("late answer"))
-        }
-        "/held" => {
+        path if path == "/held" || path.starts_with("/held/") => {
             // The sender lives in `shared`, so this cannot fail.
             let _ = shared
                 .released

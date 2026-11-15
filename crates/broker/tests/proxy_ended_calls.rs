@@ -250,12 +250,14 @@ async fn revoking_an_agent_stops_its_calls_only() {
     let s = setup().await;
     let other_key = s.broker.add_agent("other").await;
     let other_grant = approve(&s.broker, "other").await;
-    let delayed = s.upstream.url("/delayed");
+    let held = s.upstream.url("/held");
+    // The other agent's call is still out when the revocation lands, and
+    // answers only after it.
     let (mine, theirs, ()) = tokio::join!(
         within("the call ending", get(&s, "/hang")),
         async {
             reached(&s, 1).await;
-            call(&s.broker, &other_key, &other_grant, &delayed).await
+            call(&s.broker, &other_key, &other_grant, &held).await
         },
         async {
             reached(&s, 2).await;
@@ -265,6 +267,7 @@ async fn revoking_an_agent_stops_its_calls_only() {
                 .revoke_agent(&AgentName::try_from("bot".to_owned()).unwrap())
                 .await
                 .unwrap();
+            s.upstream.release_held();
         },
     );
     assert_eq!(mine.status, StatusCode::CONFLICT, "{}", mine.body);
@@ -487,7 +490,10 @@ async fn a_stalled_log_does_not_keep_a_call_going_or_lose_its_end() {
 #[tokio::test]
 async fn a_call_that_finishes_has_no_abort_in_its_entry() {
     let s = setup().await;
-    let resp = get(&s, "/delayed").await;
+    let (resp, ()) = tokio::join!(within("the call ending", get(&s, "/held")), async {
+        reached(&s, 1).await;
+        s.upstream.release_held();
+    });
     assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
     let audited = the_call(&s.broker).await;
     assert_eq!(audited["outcome"], "ok");
