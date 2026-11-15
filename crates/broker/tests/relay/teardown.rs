@@ -17,18 +17,25 @@ use super::{
     reply_keeping_stderr, take_every_connection, text,
 };
 
+/// The relay checks the state of grants every second, so the last successful
+/// check came at most this long before an outage began.
+const CHECK_EVERY: Duration = Duration::from_secs(1);
+
 /// How long the relay may go without reading the state of grants before it
-/// fails closed, in the tests of that: shorter than the 10 s default, and
-/// past a check (1 s) and two grant query bounds (1.5 s each), so that a
-/// loaded machine does not end a session before the outage on one slow
-/// query: it takes two in a row, each stalled for over a second.
-const FAIL_CLOSED_AFTER: Duration = Duration::from_secs(6);
+/// fails closed, in the test where every query fails at once (an unreadable
+/// database): shorter than the 10 s default, and past two checks, so that a
+/// loaded machine that delays one does not end a session before the outage.
+const FAIL_CLOSED_AFTER: Duration = Duration::from_secs(2);
 
 /// The window of the test that proves expiry needs no query: a tick runs
 /// the expiry before it marks the grant state lost, so expiry shows only if
-/// the clock is advanced before the window can elapse. The default 8 s
-/// keeps that margin wide, as it was before the windows were shortened.
-const EXPIRY_FIRST_WINDOW: Duration = Duration::from_secs(8);
+/// the clock is advanced before the window can elapse. Four checks keep
+/// that margin wide.
+const EXPIRY_FIRST_WINDOW: Duration = Duration::from_secs(4);
+
+/// The wait of a revocation for its audit entries in the test of held appends,
+/// instead of the 2 s of production.
+const SHORT_WRITE_WAIT: Duration = Duration::from_millis(50);
 
 /// Connections to `sshd` (the relay's onward ones) not yet ended, by its
 /// log: each is named by its client port.
@@ -182,6 +189,11 @@ async fn revoked_while_a_session_waits_to_record_its_start_opens_nothing() {
 #[tokio::test(flavor = "multi_thread")]
 async fn revoke_closes_live_session_while_audit_appends_are_held() {
     let s = key_target().await;
+    s.broker
+        .state()
+        .requests
+        .set_audit_write_wait(SHORT_WRITE_WAIT)
+        .await;
     let agent = approved_agent(&s.broker, "bot").await;
     let (c, mut channel) = hold_session(&s, &agent.key).await;
     let audit = s.broker.state().audit.clone();
@@ -311,7 +323,7 @@ async fn db_revoke_from_another_process_closes_session() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn idle_session_times_out() {
-    const IDLE: Duration = Duration::from_secs(2);
+    const IDLE: Duration = Duration::from_millis(500);
     let s = key_target_with(RelayLimits {
         idle_timeout: IDLE,
         ..RelayLimits::default()
@@ -420,9 +432,9 @@ async fn db_unreadable_fails_closed() {
     // The session ends, both sides closed ...
     assert_both_sides_closed(&s, &running, 0).await;
     // ... not before the state has been unreadable for the window: the last
-    // successful check was at most a tick (1 s) before `lost`.
+    // successful check was at most a check interval before `lost`.
     assert!(
-        lost.elapsed() >= FAIL_CLOSED_AFTER.saturating_sub(Duration::from_secs(2)),
+        lost.elapsed() >= FAIL_CLOSED_AFTER.saturating_sub(CHECK_EVERY),
         "ended after {:?} of failures",
         lost.elapsed()
     );
@@ -483,7 +495,7 @@ async fn hung_grant_query_still_fails_closed_and_expires() {
     // not before the window less a tick after the queries started hanging.
     assert_both_sides_closed(&s, &kept, 0).await;
     assert!(
-        hung.elapsed() >= EXPIRY_FIRST_WINDOW.saturating_sub(Duration::from_millis(1100)),
+        hung.elapsed() >= EXPIRY_FIRST_WINDOW.saturating_sub(CHECK_EVERY),
         "failed closed too early: {:?}",
         hung.elapsed()
     );
