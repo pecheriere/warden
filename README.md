@@ -1,5 +1,7 @@
 # warden
 
+[![CI on main](https://github.com/pecheriere/warden/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/pecheriere/warden/actions/workflows/ci.yml?query=branch%3Amain)
+
 warden is a self-hosted **approval broker** for AI agents and scripts.
 
 An agent asks for temporary access to a server or an API and says why. You
