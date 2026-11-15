@@ -25,7 +25,9 @@ pub fn audit_text(path: &Path) -> String {
     let raw = match std::fs::read_to_string(path) {
         Ok(raw) => raw,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(e) => panic!("read audit log {}: {e}", path.display()),
+        // No path in the message: it comes from a broker that holds secrets,
+        // and nothing derived from one goes into a log line.
+        Err(e) => panic!("read the audit log: {e}"),
     };
     match raw.rfind('\n') {
         Some(end) => raw[..=end].to_owned(),
