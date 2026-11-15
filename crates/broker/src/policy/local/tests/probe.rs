@@ -99,19 +99,21 @@ async fn a_refused_request_is_audited_but_an_unknown_name_is_not() {
     let audit = Arc::new(AuditLog::open(&audit_path).await.unwrap());
     let backend = LocalBackend::open(&setup.settings, audit).await.unwrap();
 
-    let unknown = backend.api_secret(&secret("absent")).await;
+    // Only the error is printed: an `Ok` would hold the secret.
+    let Err(unknown) = backend.api_secret(&secret("absent")).await else {
+        panic!("an unknown name was served");
+    };
     assert!(
-        matches!(unknown, Err(PolicyError::UnknownSecret(_))),
-        "{unknown:?}"
+        matches!(unknown, PolicyError::UnknownSecret(_)),
+        "{unknown}"
     );
     assert_eq!(fs::read_to_string(&audit_path).unwrap(), "");
 
     chmod(&setup.secret_path("home-api"), 0o644);
-    let refused = backend.api_secret(&secret("home-api")).await;
-    assert!(
-        matches!(refused, Err(PolicyError::Invalid { .. })),
-        "{refused:?}"
-    );
+    let Err(refused) = backend.api_secret(&secret("home-api")).await else {
+        panic!("a secret readable by others was served");
+    };
+    assert!(matches!(refused, PolicyError::Invalid { .. }), "{refused}");
     let log = fs::read_to_string(&audit_path).unwrap();
     assert_eq!(log.lines().count(), 1, "{log}");
     assert!(log.contains("group or others"), "{log}");
