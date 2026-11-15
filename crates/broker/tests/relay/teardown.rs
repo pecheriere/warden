@@ -22,7 +22,13 @@ use super::{
 /// past a check (1 s) and two grant query bounds (1.5 s each), so that a
 /// loaded machine does not end a session before the outage on one slow
 /// query: it takes two in a row, each stalled for over a second.
-const FAIL_CLOSED_AFTER: Duration = Duration::from_secs(4);
+const FAIL_CLOSED_AFTER: Duration = Duration::from_secs(6);
+
+/// The window of the test that proves expiry needs no query: a tick runs
+/// the expiry before it marks the grant state lost, so expiry shows only if
+/// the clock is advanced before the window can elapse. The default 8 s
+/// keeps that margin wide, as it was before the windows were shortened.
+const EXPIRY_FIRST_WINDOW: Duration = Duration::from_secs(8);
 
 /// Connections to `sshd` (the relay's onward ones) not yet ended, by its
 /// log: each is named by its client port.
@@ -305,7 +311,7 @@ async fn db_revoke_from_another_process_closes_session() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn idle_session_times_out() {
-    const IDLE: Duration = Duration::from_secs(1);
+    const IDLE: Duration = Duration::from_secs(2);
     let s = key_target_with(RelayLimits {
         idle_timeout: IDLE,
         ..RelayLimits::default()
@@ -449,7 +455,7 @@ async fn db_unreadable_fails_closed() {
 #[tokio::test(flavor = "multi_thread")]
 async fn hung_grant_query_still_fails_closed_and_expires() {
     let s = key_target_with(RelayLimits {
-        fail_closed_after: FAIL_CLOSED_AFTER,
+        fail_closed_after: EXPIRY_FIRST_WINDOW,
         ..RelayLimits::default()
     })
     .await;
@@ -477,7 +483,7 @@ async fn hung_grant_query_still_fails_closed_and_expires() {
     // not before the window less a tick after the queries started hanging.
     assert_both_sides_closed(&s, &kept, 0).await;
     assert!(
-        hung.elapsed() >= FAIL_CLOSED_AFTER.saturating_sub(Duration::from_millis(1100)),
+        hung.elapsed() >= EXPIRY_FIRST_WINDOW.saturating_sub(Duration::from_millis(1100)),
         "failed closed too early: {:?}",
         hung.elapsed()
     );

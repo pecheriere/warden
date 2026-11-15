@@ -5,7 +5,7 @@ use russh::{ChannelMsg, Sig};
 use serde_json::Value;
 use std::process::Stdio;
 use warden_broker::testkit::sshd::current_user;
-use warden_broker::testkit::wait;
+use warden_broker::testkit::wait::{self, HANG};
 
 #[cfg(target_os = "linux")]
 use super::password_target;
@@ -114,8 +114,13 @@ async fn window_change_and_signals_are_forwarded() {
     channel
         .exec(
             true,
-            "trap 'echo got-term; kill $!; exit 9' TERM; \
-             sleep 600 >/dev/null 2>&1 & echo trapped; wait",
+            // Just past `HANG`, so that a failed test leaves no `sleep`
+            // behind for long.
+            format!(
+                "trap 'echo got-term; kill $!; exit 9' TERM; \
+                 sleep {} >/dev/null 2>&1 & echo trapped; wait",
+                HANG.as_secs() + 1
+            ),
         )
         .await
         .unwrap();

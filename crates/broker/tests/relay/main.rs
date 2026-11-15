@@ -86,9 +86,14 @@ async fn key_target() -> Setup {
 /// The default limits without the pause before answering each refused
 /// login, for the tests that are refused many times: the pause slows down
 /// guessing keys, which they do not test, and adds a second per refusal.
+/// Without the pause, refusals come back to back while the server still
+/// holds the permits of the connections just closed, so the limits on
+/// connections before login, which they do not test either, are raised.
 fn without_refusal_pause() -> RelayLimits {
     RelayLimits {
         auth_rejection_time: Duration::ZERO,
+        max_unauthenticated: 1000,
+        max_unauthenticated_per_ip: 1000,
         ..RelayLimits::default()
     }
 }
