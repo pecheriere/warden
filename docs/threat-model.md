@@ -1116,7 +1116,7 @@ What an attacker gets, and what stops it:
   including one finishing when the revocation lands: that token is not given out. A token
   already out lives until GitHub ends it, at most an hour, and the agent may hold one for
   each repository it asked for. The CLI also keeps the tokens in `github-token.json` in its
-  state directory (mode 0600, for that agent and broker, one per repository), and
+  state directory (mode 0600, for that agent and broker, one per repository and permission set), and
   serves each for the rest of its hour after the owner revokes in the approval UI, as nothing
   tells the CLI. `warden revoke` on the agent's machine drops it. An owner who must end a
   token at once suspends the App or removes its installation on GitHub, which ends the tokens

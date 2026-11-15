@@ -579,10 +579,20 @@ goal say exactly why this permission is needed, for what change, and nothing wid
 the repositories (`+checks:read`), and the owner sees them in red on the approval page.
 Without extras `--for` is `1d`, `7d` or `30d`, and `30d` when left out.
 
-A token can be narrower than its grant: `warden github token --repo owner/name` mints the grant's
-whole set. The broker also accepts a smaller `permissions` in the mint
-([protocol](agent-protocol.md#post-v1github-token)), and refuses one the grant does not
-hold (`403`, "the grant does not hold this GitHub permission: <name>").
+A token can be narrower than its grant. `warden github token --repo owner/name` mints the grant's
+whole set, and `--permissions` gives the token only some of it, such as a read-only check:
+
+```sh
+warden github token --repo example-owner/example-repo --permissions checks:read
+```
+
+The set is `name:level` pairs joined with commas (`metadata:read` is always added), and a
+bad one exits 64. The broker refuses a pair the grant does not hold (`403`, "the grant does
+not hold this GitHub permission: <name>"; see the
+[protocol](agent-protocol.md#post-v1github-token)), and the CLI refuses a broker that does not
+announce `github_token_permissions`. The CLI caches a narrowed token apart from the whole-set
+one, and `--fresh` mints a new token instead of serving the cached one. git and the `gh`
+wrapper always ask for the grant's whole set.
 
 ### Releases
 
@@ -971,8 +981,8 @@ lasts an hour. It cannot push, open pull requests,
 comment or edit issues on another repository the App is installed on, but it can still open
 a new issue on a public repository the App is installed on, and you should assume it can open
 issues and comment on any public repository, installed or not. warden keeps one token per
-repository in `github-token.json` in its state directory, mode 0600 (an older, single-token
-file is ignored and replaced), and gets a new one when less than 5 minutes of it remain. Use it only through `git` and `gh`: do not print it, write it into a
+repository and permission set in `github-token.json` in its state directory, mode 0600 (an
+older file is ignored and replaced, and a new grant for a repository drops its older tokens), and gets a new one when less than 5 minutes of it remain. Use it only through `git` and `gh`: do not print it, write it into a
 file, put it in a URL or hand it to another program.
 
 **With no active grant for the repository**, the first call asks the owner itself, for that

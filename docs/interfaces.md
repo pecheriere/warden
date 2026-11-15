@@ -39,7 +39,7 @@ specified. Interfaces with a reference of their own are linked, not repeated.
 | Output | Format | Reference |
 |---|---|---|
 | Audit log | One JSON object per line, in a hash chain: `{"seq","ts","prev","event","hash"}`. `event` has a `type`. The types are in [`audit.rs`](../crates/broker/src/audit.rs). | [Audit log](design.md#11-audit-log), `warden-server audit verify` |
-| `~/.local/bin/gh` and `github-token.json` | `warden setup github` writes a `gh` wrapper (a shell script with a marker line); the CLI caches the GitHub tokens, one per repository, in its state directory, mode 0600 | [GitHub tokens](agent-usage.md#github-tokens) |
+| `~/.local/bin/gh` and `github-token.json` | `warden setup github` writes a `gh` wrapper (a shell script with a marker line); the CLI caches the GitHub tokens, one per repository and permission set, in its state directory, mode 0600 | [GitHub tokens](agent-usage.md#github-tokens) |
 | Standard output | Logs (`RUST_LOG`), and each audit entry again under the target `audit` | [Server data](configuration.md#server-data) |
 | SQLite database | Internal; it may change between releases, with one-way migrations | [Backups and upgrades](deployment.md#9-backups-and-upgrades) |
 

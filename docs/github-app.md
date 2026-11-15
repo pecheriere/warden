@@ -52,7 +52,7 @@ set it up.
 - **Revoking a grant does not recall a token already minted.** GitHub, not warden, ends it,
   within the hour, for each repository the agent held a token for. A token is a bearer secret: whoever has it can use it until then.
 - **The CLI keeps the token** in `github-token.json` in its state directory, mode 0600, for
-  that agent and broker, with one entry per repository. It serves that file for the rest of the hour even after you revoke
+  that agent and broker, with one entry per repository and asked permission set. It serves that file for the rest of the hour even after you revoke
   the grant in the approval UI, because nothing tells the CLI. `warden revoke <grant>` on the
   agent's machine deletes it. To be sure, also remove the App's access on GitHub (below).
 - **A compromised agent machine gets the token**, and the agent's key can mint more for as
@@ -114,8 +114,9 @@ and so is a level GitHub does not document for a name: `workflows` has only `wri
 `warden-server doctor` names the field.
 
 An agent holding a grant with extras can mint a token with fewer permissions than the grant
-holds: the mint endpoint takes a `permissions` field, and the CLI does not send one yet, so
-narrowing is available on the wire only. Nothing can mint more than the grant.
+holds: the mint endpoint takes a `permissions` field, and `warden github token
+--permissions <set>` sends it. git and the `gh` wrapper always ask for the grant's whole
+set. Nothing can mint more than the grant.
 
 **The App must hold what you set.** The approval page reads the installation's permissions
 each time it is shown, begun or finished, and refuses a request whose set the installation
