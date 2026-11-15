@@ -18,8 +18,8 @@ use super::{
 };
 
 /// How often the relay checks the state of grants in the tests of outages,
-/// instead of every second: the last successful check came at most this long
-/// before an outage began.
+/// instead of every second: the last successful check came about this long
+/// before an outage began, plus any delay of the tick (see `FAIL_CLOSED_AFTER`).
 const CHECK_EVERY: Duration = Duration::from_millis(100);
 
 /// How long the relay may go without reading the state of grants before it
@@ -44,8 +44,8 @@ const DB_QUERY_TIMEOUT: Duration = Duration::from_millis(250);
 /// The window of the test that proves expiry needs no query: a tick runs
 /// the expiry before it marks the grant state lost, so expiry shows only if
 /// the clock is advanced before the window can elapse. With checks every
-/// 100 ms, the first tick after the advance comes within 100 ms, a tenth of
-/// the window, and even a delay of a second leaves the expiry first.
+/// 100 ms, the first tick after the advance comes within 100 ms, a fifteenth
+/// of the window, and even a delay of a second leaves the expiry first.
 const EXPIRY_FIRST_WINDOW: Duration = Duration::from_millis(1500);
 
 /// The longest a grant query may take in the test of a hung one, instead of
@@ -518,7 +518,7 @@ async fn hung_grant_query_still_fails_closed_and_expires() {
     // Every connection of the pool taken: from now on a grant query waits
     // for one (sqlx's 30 s acquire timeout), as on a hung disk. The last
     // successful check came before this, so only half the window is required
-    // below (see `FAIL_CLOSED_AFTER`).
+    // below (the reasoning at `FAIL_CLOSED_AFTER` holds for `EXPIRY_FIRST_WINDOW`).
     let hung = Instant::now();
     let held = take_every_connection(&s.broker).await;
 
