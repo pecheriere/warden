@@ -17,5 +17,7 @@
 //! - parentheses of a `case` pattern inside `$(…)`.
 
 pub mod context;
+pub mod detect;
+pub mod message;
 pub mod settings;
 pub mod shell;
