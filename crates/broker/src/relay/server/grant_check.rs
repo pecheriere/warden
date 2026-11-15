@@ -18,7 +18,7 @@ use super::{CHECK_FAILURE_LOG_EVERY, Shared};
 ///
 /// Expiry is enforced on every tick from memory, whatever the database
 /// does. Revocation needs a query: at most one runs at a time, each bounded
-/// by [`RelayLimits::grant_query_timeout`], and the ticks go on meanwhile, so a query
+/// by [`super::RelayLimits::grant_query_timeout`], and the ticks go on meanwhile, so a query
 /// that hangs counts as failed and the outage (time since the last
 /// successful query) is seen as it grows.
 pub(super) async fn check_grants_every(shared: &Shared, every: Duration) {
