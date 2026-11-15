@@ -1,4 +1,9 @@
 # A hung test fails instead of stalling the run: nextest has no limit by default.
-# Slowest test measured: 13s.
+# The limit is 5 minutes (60s x 5) so a loaded machine does not fail a slow test.
+# A timeout means a test hung or got slower: investigate before raising it.
 [profile.default]
-slow-timeout = { period = "10s", terminate-after = 4 }
+slow-timeout = { period = "60s", terminate-after = 5 }
+# Report every failure in one run, not only the first.
+fail-fast = false
+# No retries: a flaky test is a bug to fix, not to hide.
+retries = 0
