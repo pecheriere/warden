@@ -251,7 +251,7 @@ pub async fn write_entries(
     write_bounded(pool, audit, &Arc::default(), clock, WRITE_WAIT).await
 }
 
-/// [`write_entries`], waiting at most `wait` instead of [`WRITE_WAIT`], so that a
+/// [`write_entries`], waiting at most `wait` instead of 2 s, so that a
 /// test of a stalled log does not wait out the real limit. It gives up the same
 /// way. Only the `testkit` feature builds it, so no configuration reaches it.
 #[cfg(feature = "testkit")]
@@ -266,7 +266,7 @@ pub async fn write_entries_within(
 
 impl Requests {
     /// Make each change from now on wait at most `wait` for its entries to be
-    /// written, instead of [`WRITE_WAIT`], so that a test of a stalled log does
+    /// written, instead of 2 s, so that a test of a stalled log does
     /// not wait out the real limit. It gives up the same way. Only the `testkit`
     /// feature builds it, so no configuration reaches it.
     #[cfg(feature = "testkit")]
