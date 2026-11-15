@@ -583,7 +583,10 @@ mod tests {
     #[test]
     fn the_real_server_still_refuses_what_the_demo_uses() {
         let refused = parse_public_url("http://localhost:8081/").unwrap_err();
-        assert!(refused.to_string().contains("https"), "{refused}");
+        assert!(
+            refused.to_string().contains("must be an https URL"),
+            "{refused}"
+        );
         let error = Config::from_lookup(|var| match var {
             "WARDEN_PUBLIC_URL" => Some("http://localhost:8081/".to_owned()),
             _ => None,
