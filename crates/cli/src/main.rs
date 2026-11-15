@@ -12,6 +12,7 @@ mod git_signing;
 mod github_repo;
 mod github_token;
 mod guidance;
+mod hook;
 mod http;
 mod install;
 mod list;

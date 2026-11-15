@@ -20,6 +20,7 @@ use zeroize::Zeroizing;
 
 use crate::client::{CallError, Client, fetch_info};
 use crate::config::{self, Config};
+use crate::hook;
 use crate::setup_git::current_value;
 
 /// What replaces a bearer key the broker echoed back.
@@ -222,6 +223,7 @@ async fn checks(probes: &impl Probes) -> Vec<Check> {
         "config",
         format!("Agent {} at {}.", config.agent, config.server),
     )];
+    checks.extend(hook::settings::doctor_check(&config));
     let info = probes.info(&config.server).await;
     checks.push(match &info {
         Ok(_) => Check::pass("server.reachable", "The broker answered GET /v1/info."),
@@ -500,6 +502,7 @@ mod tests {
                 agent_socket: None,
                 audience: audience(PINNED),
             }),
+            hook: None,
         }
     }
 

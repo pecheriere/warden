@@ -38,7 +38,8 @@ pub const AGENT_KEY_ENV: &str = "WARDEN_AGENT_KEY";
 const KEYCHAIN_SERVICE: &str = "warden-broker";
 
 /// Where the broker is and which agent this machine acts as.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+// Not `Eq`: the raw `[hook]` table can hold floats.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Config {
     /// Base URL of the broker's agent API.
     pub server: Url,
@@ -47,6 +48,10 @@ pub struct Config {
     /// How a key-signed agent signs; absent for a bearer-key agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ssh_key: Option<SshKeyConfig>,
+    /// The raw `[hook]` table. It is kept unparsed so that `warden login`,
+    /// which rewrites the file, preserves it; `hook::settings` reads it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hook: Option<toml::Table>,
 }
 
 /// The signing key of a key-signed agent and the broker it signs for.
@@ -248,7 +253,7 @@ pub fn save(config: &Config) -> Result<PathBuf> {
 }
 
 /// Write `config` to `path` atomically: mode 0600, parent created 0700.
-fn save_to(path: &Path, config: &Config) -> Result<()> {
+pub(crate) fn save_to(path: &Path, config: &Config) -> Result<()> {
     let dir = path.parent().context("configuration path has no parent")?;
     fs::DirBuilder::new()
         .recursive(true)
@@ -378,6 +383,7 @@ mod tests {
             server: url("https://warden.example.ts.net/"),
             agent: "bot".parse().unwrap(),
             ssh_key: None,
+            hook: None,
         }
     }
 
