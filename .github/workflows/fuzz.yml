@@ -1,8 +1,9 @@
 name: fuzz
 
 # Runs each cargo-fuzz target for a short, fixed time: every night, and on a pull
-# request that changes the fuzzing setup itself, not on every pull request. A
-# crash fails the job. Fix it and add the input to fuzz/seeds/<target>.
+# request that changes the fuzzing setup itself, not on every pull request. Each
+# target runs in its own job, at the same time as the others, for 3 minutes. A
+# crash fails that job. Fix it and add the input to fuzz/seeds/<target>.
 #
 # This repository is public, so scripts/fuzz.sh --quiet keeps the crashing input
 # and the stack trace out of the log, and nothing is uploaded. The log shows
@@ -25,9 +26,34 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  fuzz:
+  # The targets from fuzz/Cargo.toml, the list `cargo fuzz list` reads, so that a
+  # new target is fuzzed without a list here to keep in step.
+  targets:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      targets: ${{ steps.list.outputs.targets }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: List the targets
+        id: list
+        run: |
+          targets=$(python3 -I -c '
+          import json, sys, tomllib
+          names = [b["name"] for b in tomllib.load(open("fuzz/Cargo.toml", "rb")).get("bin", [])]
+          if not names:
+              sys.exit("no fuzz targets in fuzz/Cargo.toml")
+          print(json.dumps(names))
+          ')
+          echo "targets=$targets" >> "$GITHUB_OUTPUT"
+
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:
@@ -38,22 +64,54 @@ jobs:
       - name: Install the pinned nightly
         working-directory: fuzz
         run: rustup toolchain install
+      # Only main (the nightly run) writes the cache; pull requests read it.
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           workspaces: fuzz
+          shared-key: fuzz-lint
           cache-bin: "false"
-      - name: Install cargo-fuzz
-        run: cargo install cargo-fuzz --version 0.13.2 --locked
-      # cargo-fuzz has no --locked, so check first that it will not change
-      # fuzz/Cargo.lock, whose versions the crate-age check has seen.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Check the fuzz crate's lockfile, formatting and lints
         working-directory: fuzz
         run: |
           cargo metadata --locked --format-version 1 > /dev/null
           cargo fmt --check
           cargo clippy --all-targets --locked -- -D warnings
-      - name: Build the targets
+
+  fuzz:
+    needs: targets
+    name: fuzz (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.targets.outputs.targets) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned nightly
         working-directory: fuzz
-        run: cargo fuzz build
-      - name: Fuzz each target for 3 minutes
-        run: scripts/fuzz.sh --quiet 180
+        run: rustup toolchain install
+      # One cache for every target: they share the dependencies, the slow part
+      # to build. Only main writes it, from one job, so the jobs do not race.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          workspaces: fuzz
+          shared-key: fuzz
+          cache-bin: "false"
+          save-if: ${{ github.ref == 'refs/heads/main' && strategy.job-index == 0 }}
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --version 0.13.2 --locked
+      # cargo-fuzz has no --locked, so check first that it will not change
+      # fuzz/Cargo.lock, whose versions the crate-age check has seen.
+      - name: Refuse a stale fuzz/Cargo.lock
+        working-directory: fuzz
+        run: cargo metadata --locked --format-version 1 > /dev/null
+      - name: Fuzz the target for 3 minutes
+        env:
+          TARGET: ${{ matrix.target }}
+        run: scripts/fuzz.sh --quiet 180 "$TARGET"
