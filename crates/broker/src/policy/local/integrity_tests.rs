@@ -96,6 +96,11 @@ impl<F: FnMut()> Read for TornRead<F> {
     }
 }
 
+/// The size limit of the torn reads. `read_limited` allocates and wipes the whole limit
+/// on every read, which takes about 9 ms at `MAX_POLICY_BYTES` in a debug build, and
+/// these tests read hundreds of times. Both versions are far below it.
+const TORN_READ_LIMIT: usize = 4096;
+
 /// What a real read of `path` returns when `other` is written over it, without
 /// truncating, after `first` bytes.
 fn read_torn(path: &Path, other: &str, first: usize) -> String {
@@ -105,7 +110,7 @@ fn read_torn(path: &Path, other: &str, first: usize) -> String {
         first,
         overwrite: Some(|| writer.write_all_at(other.as_bytes(), 0).unwrap()),
     };
-    read_limited(torn, MAX_POLICY_BYTES).unwrap().to_string()
+    read_limited(torn, TORN_READ_LIMIT).unwrap().to_string()
 }
 
 /// The mix exists on a real read, would have been accepted without the digest, is
@@ -447,7 +452,14 @@ fn sealing_from_a_draft_leaves_the_draft_and_can_make_the_file() {
     let created = root.join("created.toml");
     assert_eq!(entries(seal_file(&created, Some(&draft))), (0, 1));
     assert_eq!(fs::metadata(&created).unwrap().mode() & 0o777, 0o644);
-    assert!(read_policy(&created, rustix::process::geteuid().as_raw()).is_ok());
+    assert!(
+        read_policy(
+            &created,
+            rustix::process::geteuid().as_raw(),
+            MAX_POLICY_BYTES
+        )
+        .is_ok()
+    );
 }
 
 /// Whatever is refused leaves the file as it was, and nothing beside it.

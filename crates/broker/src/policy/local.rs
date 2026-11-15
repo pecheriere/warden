@@ -290,13 +290,17 @@ struct Files {
     policy_file: PathBuf,
     secrets_dir: PathBuf,
     euid: u32,
+    /// The most the policy file may hold: [`files::MAX_POLICY_BYTES`], less in tests
+    /// that read it many times.
+    max_policy_bytes: usize,
 }
 
 impl Files {
     /// The policy file, parsed.
     fn policy(&self) -> Result<PolicyFile, PolicyError> {
         let shown = |what: String| PolicyError::Unavailable(format!("the policy file {what}"));
-        let text = read_policy(&self.policy_file, self.euid).map_err(|e| shown(e.to_string()))?;
+        let text = read_policy(&self.policy_file, self.euid, self.max_policy_bytes)
+            .map_err(|e| shown(e.to_string()))?;
         parse_policy(&text).map_err(shown)
     }
 
@@ -617,6 +621,7 @@ impl LocalBackend {
             policy_file: settings.policy_file.clone(),
             secrets_dir: settings.secrets_dir.clone(),
             euid: rustix::process::geteuid().as_raw(),
+            max_policy_bytes: files::MAX_POLICY_BYTES,
         }
     }
 
