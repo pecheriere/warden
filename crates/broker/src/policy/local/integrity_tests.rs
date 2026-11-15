@@ -15,7 +15,7 @@ use super::{
     Unverified, digest_line, parse_policy, seal_policy_file, seal_text,
 };
 use crate::config::LocalSettings;
-use crate::policy::SecretBackend;
+use crate::policy::{PolicyError, SecretBackend};
 
 const CREDENTIAL: &str = "api-credential-do-not-leak";
 
@@ -196,8 +196,16 @@ async fn an_interrupted_overwrite_refuses_everything_through_the_backend() {
         Some("https://old-host.example.com")
     );
 
-    assert!(backend.api_secret_with_value(&name).await.is_err());
-    assert!(backend.api_secret(&name).await.is_err());
+    for error in [
+        backend.api_secret_with_value(&name).await.unwrap_err(),
+        backend.api_secret(&name).await.unwrap_err(),
+    ] {
+        assert!(matches!(error, PolicyError::Unavailable(_)), "{error}");
+        assert!(
+            error.to_string().contains("does not match the digest"),
+            "{error}"
+        );
+    }
     assert!(matches!(backend.probe().await, LocalProbe::Unreadable(_)));
 
     // Finishing the write is enough: nothing is remembered about the refusal.
@@ -485,22 +493,44 @@ fn sealing_refuses_what_warden_would_and_changes_nothing() {
     }
     fs::remove_file(&draft).unwrap();
 
-    assert!(seal_file(&path, Some(&root.join("absent"))).is_err());
-    assert!(seal_file(&root.join("absent"), None).is_err());
+    let refusal = |result: Result<SealedPolicy, SealError>, part: &str| {
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains(part), "expected {part:?}: {error}");
+    };
+    refusal(
+        seal_file(&path, Some(&root.join("absent"))),
+        "does not exist",
+    );
+    refusal(
+        seal_file(&root.join("absent"), None),
+        "the policy file does not exist",
+    );
 
     let link = root.join("link");
     symlink(&path, &link).unwrap();
-    assert!(seal_file(&link, Some(&path)).is_err());
-    assert!(seal_file(&path, Some(&link)).is_err());
+    refusal(
+        seal_file(&link, Some(&path)),
+        "the policy file a part of the path is a symbolic link",
+    );
+    refusal(
+        seal_file(&path, Some(&link)),
+        "the draft a part of the path is a symbolic link",
+    );
     fs::remove_file(&link).unwrap();
 
     let second_name = root.join("second-name");
     fs::hard_link(&path, &second_name).unwrap();
-    assert!(seal_file(&path, None).is_err());
+    refusal(
+        seal_file(&path, None),
+        "the policy file has more than one name",
+    );
     fs::remove_file(&second_name).unwrap();
 
     fs::set_permissions(&path, Permissions::from_mode(0o660)).unwrap();
-    assert!(seal_file(&path, None).is_err());
+    refusal(
+        seal_file(&path, None),
+        "the policy file can be written by group or others",
+    );
     fs::set_permissions(&path, Permissions::from_mode(0o600)).unwrap();
 
     assert_eq!(fs::read_to_string(&path).unwrap(), old);
