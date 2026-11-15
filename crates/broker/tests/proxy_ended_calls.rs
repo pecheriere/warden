@@ -339,14 +339,17 @@ async fn expiry_stops_the_call() {
 }
 
 /// With nothing able to say the grant still holds, the call stops. The checks
-/// run as often and give up as the broker's do, only sooner than its 10 s.
+/// keep the broker's order, a period shorter than the time one check may take,
+/// which is shorter than the time without a good check after which the call
+/// stops (the broker's are 1 s, 1.5 s and 10 s), only with shorter times, so
+/// that one slow check cannot stop the call.
 #[tokio::test]
 async fn a_grant_state_that_stays_unreadable_stops_the_call() {
     let s = setup_with(ProxyLimits {
         grant_checks: GrantChecks {
-            every: Duration::from_millis(50),
-            check_limit: Duration::from_millis(1500),
-            lost_after: Duration::from_millis(200),
+            every: Duration::from_millis(20),
+            check_limit: Duration::from_millis(100),
+            lost_after: Duration::from_millis(300),
         },
         ..ProxyLimits::default()
     })

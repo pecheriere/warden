@@ -43,6 +43,29 @@ impl Drop for Sshd {
     }
 }
 
+/// A spawned `warden`, killed and reaped on drop unless taken, so that a test
+/// that fails or times out while waiting on it does not leave it running.
+struct KillOnDrop(Option<Child>);
+
+impl KillOnDrop {
+    fn child(&mut self) -> &mut Child {
+        self.0.as_mut().expect("the child has not been taken")
+    }
+
+    fn take(mut self) -> Child {
+        self.0.take().expect("the child has not been taken")
+    }
+}
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        if let Some(child) = &mut self.0 {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
 fn free_port() -> u16 {
     TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
         .unwrap()
@@ -379,7 +402,7 @@ async fn poll_survives_server_restart_mid_wait() {
         cli,
         urls,
     } = setup().await;
-    let mut child = spawn_request(&cli, TARGET);
+    let mut child = KillOnDrop(Some(spawn_request(&cli, TARGET)));
     let token = CapturingNotifier::token(&broker.capture.next().await);
 
     // The broker process goes away while the CLI is long-polling: its
@@ -387,7 +410,7 @@ async fn poll_survives_server_restart_mid_wait() {
     // connections until the CLI has found it gone and said it will retry. Only
     // then does the broker come back on it.
     let broker = broker.restart().await;
-    let stderr = BufReader::new(child.stderr.take().unwrap());
+    let stderr = BufReader::new(child.child().stderr.take().unwrap());
     let (mut stderr, mut seen) = within_hang(
         "the CLI retrying",
         tokio::task::spawn_blocking(move || {
@@ -404,7 +427,7 @@ async fn poll_survives_server_restart_mid_wait() {
     broker.spawn_behind_serve_at(&urls).await;
     approve(&broker, &token).await;
 
-    let mut out = tokio::task::spawn_blocking(move || child.wait_with_output())
+    let mut out = tokio::task::spawn_blocking(move || child.take().wait_with_output())
         .await
         .unwrap()
         .unwrap();

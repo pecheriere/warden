@@ -183,8 +183,7 @@ async fn every_transition_is_audited() {
 async fn dropped_create_still_rings() {
     let h = harness().await;
     // Hold the request's audit entry, as a log that has stalled would, so the
-    // insert blocks inside its transaction, after the row is written but before
-    // it commits.
+    // detached insert waits at its audit entry, before its write transaction.
     let stall = h
         .audit
         .stall_appends(|event| matches!(event, audit::AuditEvent::RequestCreated { .. }));

@@ -527,9 +527,11 @@ async fn an_audit_log_that_has_stalled_does_not_stop_a_revocation() {
 /// database, as a revocation must. The append is held until that check is done,
 /// with no time limit, so a write lock `work` held across it would still be held
 /// when the other writer's busy timeout ran out. Once checked, it is let go and
-/// the next append is held in its turn.
+/// the next append is held in its turn. At least `appends` are expected to be
+/// held, the ones the work awaits (not those it leaves to a detached task).
 async fn assert_no_write_lock_while_log_waits<T: Send + 'static>(
     broker: &TestBroker,
+    appends: usize,
     work: impl Future<Output = T> + Send + 'static,
 ) {
     let audit = broker.state().audit.clone();
@@ -569,7 +571,10 @@ async fn assert_no_write_lock_while_log_waits<T: Send + 'static>(
         }
     })
     .await;
-    assert!(held > 0, "the work wrote nothing to the audit log");
+    assert!(
+        held >= appends,
+        "the work wrote {held} entries to the audit log, not the {appends} it must"
+    );
 }
 
 #[tokio::test]
@@ -579,7 +584,8 @@ async fn creating_a_request_holds_no_write_lock_while_the_log_waits() {
     let requests = broker.state().requests.clone();
     let bot = AgentName::try_from("bot".to_owned()).unwrap();
     let request = TestBroker::pi_request("restart the job", Window::M15);
-    assert_no_write_lock_while_log_waits(&broker, async move {
+    // Awaited entries: RequestCreated; the notice's Notified is left to a detached task.
+    assert_no_write_lock_while_log_waits(&broker, 1, async move {
         drop(requests.create(&bot, request).await);
     })
     .await;
@@ -602,7 +608,8 @@ async fn approving_holds_no_write_lock_while_the_log_waits() {
         }),
     };
     let requests = broker.state().requests.clone();
-    assert_no_write_lock_while_log_waits(&broker, async move {
+    // Awaited entries: Approved and CertIssued.
+    assert_no_write_lock_while_log_waits(&broker, 2, async move {
         drop(
             requests
                 .mark_approved(&token, Window::M15, grant, "passkey", &[])
@@ -617,7 +624,8 @@ async fn making_an_enrollment_code_holds_no_write_lock_while_the_log_waits() {
     let broker = TestBroker::new().await;
     let passkeys = broker.state().passkeys.clone();
     let now = broker.clock.now();
-    assert_no_write_lock_while_log_waits(&broker, async move {
+    // Awaited entries: EnrollmentCodeCreated.
+    assert_no_write_lock_while_log_waits(&broker, 1, async move {
         drop(passkeys.create_enrollment_code(now).await);
     })
     .await;
@@ -627,7 +635,8 @@ async fn making_an_enrollment_code_holds_no_write_lock_while_the_log_waits() {
 async fn denying_holds_no_write_lock_while_the_log_waits() {
     let (broker, _auth, _created, token) = pending(Window::M15).await;
     let requests = broker.state().requests.clone();
-    assert_no_write_lock_while_log_waits(&broker, async move {
+    // Awaited entries: Denied.
+    assert_no_write_lock_while_log_waits(&broker, 1, async move {
         drop(requests.deny(&token).await);
     })
     .await;
@@ -643,7 +652,8 @@ async fn adding_a_key_signed_agent_holds_no_write_lock_while_the_log_waits() {
         "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOh0zJ+xlPfFH6uwtZmJ2O9GrkMxjqMwPQTsBVmbbBrE new@host",
     )
     .unwrap();
-    assert_no_write_lock_while_log_waits(&broker, async move {
+    // Awaited entries: AgentAdded and AgentKeySet.
+    assert_no_write_lock_while_log_waits(&broker, 2, async move {
         drop(agents::add_key_audited(&pool, &audit, &name, &key).await);
     })
     .await;
@@ -668,7 +678,8 @@ async fn a_refused_request_holds_no_write_lock_while_the_log_waits() {
         .backend
         .set_api_secret(FakeBackend::example_api_secret(), "not-a-real-secret");
     let refused = TestBroker::api_request("github", "list issues", Window::M15);
-    assert_no_write_lock_while_log_waits(&broker, async move {
+    // Awaited entries: RequestLimited and LimitNotified.
+    assert_no_write_lock_while_log_waits(&broker, 2, async move {
         let got = requests.create(&bot, refused).await;
         assert!(
             matches!(got, Err(RequestError::Limited(_))),
