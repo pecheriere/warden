@@ -12,3 +12,5 @@ workspace = true
 
 [dependencies]
 toml.workspace = true
+warden-broker-proto.workspace = true
+url.workspace = true
