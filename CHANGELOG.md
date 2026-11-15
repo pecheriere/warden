@@ -6,6 +6,11 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- russh 0.65.1, with the fixes for GHSA-736f-c93q-9fwx and GHSA-9264-jvgf-6w2f. Neither reaches
+  warden: the relay does not use russh's agent client or `kex_done`.
+
 ## [0.15.0] - 2026-11-14
 
 ### Added
