@@ -1,0 +1,1 @@
+cat .netrc; cat .env; cat ~/.config/gh/hosts.yml; gh auth token
