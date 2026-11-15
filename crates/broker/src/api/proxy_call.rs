@@ -11,7 +11,7 @@ use crate::AppState;
 use crate::audit::{AuditEvent, bounded_text};
 use crate::identity::AuthedAgent;
 use crate::policy::{ApiScope, PolicyError};
-use crate::proxy::{self, CallEnd, CallInfo, CallSlot, GrantChecks, GrantState, Needles};
+use crate::proxy::{self, CallEnd, CallInfo, CallSlot, GrantState, Needles};
 use crate::requests::{DailyUse, RequestError};
 
 /// Longest method name recorded in the audit log as sent.
@@ -340,7 +340,7 @@ async fn call_ended(
     grant_id: &Id,
     slot: &CallSlot,
 ) -> CallEnd {
-    let checked = proxy::until_grant_ends(GrantChecks::default(), || async {
+    let checked = proxy::until_grant_ends(state.config.proxy.grant_checks, || async {
         match grant_end(state, agent, grant_id).await {
             Ok(None) => GrantState::Usable,
             Ok(Some(end)) => GrantState::Ended(end),

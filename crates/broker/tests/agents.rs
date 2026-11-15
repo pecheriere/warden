@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use sha2::{Digest as _, Sha256};
 use sqlx::{Row as _, SqlitePool};
 use warden_broker::agents::{self, AgentError, AgentPublicKey, AuthKind, PublicKeyError};
@@ -492,12 +494,17 @@ async fn add_audited_records_agent_added() {
     assert_eq!(audit::verify(&path).unwrap(), 1);
 }
 
+/// How long an append waits for a held audit lock in these tests: shorter than
+/// the real 5 s, so that they do not wait it out. It times out the same way.
+const SHORT_LOCK_WAIT: Duration = Duration::from_millis(100);
+
 #[tokio::test]
 async fn add_audited_revokes_agent_when_audit_fails() {
     let dir = tempfile::tempdir().unwrap();
     let pool = pool(&dir).await;
     let path = dir.path().join("audit.jsonl");
     let audit = AuditLog::open(&path).await.unwrap();
+    audit.set_lock_wait(SHORT_LOCK_WAIT).await;
     // Another writer holds the audit lock, so the append times out.
     let holder = std::fs::File::open(&path).unwrap();
     holder.lock().unwrap();
@@ -743,6 +750,7 @@ async fn set_key_is_not_made_when_the_audit_fails() {
     let path = dir.path().join("audit.jsonl");
     let audit = AuditLog::open(&path).await.unwrap();
     let bearer = agents::add(&pool, &name("bot")).await.unwrap();
+    audit.set_lock_wait(SHORT_LOCK_WAIT).await;
     // Another writer holds the audit lock, so the append times out.
     let holder = std::fs::File::open(&path).unwrap();
     holder.lock().unwrap();

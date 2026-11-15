@@ -171,6 +171,11 @@ pub async fn approved_grant(child: Child) -> (String, String) {
         .await
         .unwrap()
         .unwrap();
+    approved_grant_in(out)
+}
+
+/// Like [`approved_grant`], from the output of the process.
+pub fn approved_grant_in(out: Output) -> (String, String) {
     let stdout = String::from_utf8(out.stdout).unwrap();
     let stderr = String::from_utf8(out.stderr).unwrap();
     assert_eq!(

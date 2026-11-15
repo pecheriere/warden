@@ -105,7 +105,13 @@ async fn every_call_audited_without_secret() {
 async fn proxy_refused_when_audit_unwritable() {
     let s = setup().await;
     // Another writer holds the audit log's lock: the pre-flight entry
-    // cannot be written, so nothing may be sent.
+    // cannot be written, so nothing may be sent. The append gives up sooner
+    // than the real 5 s, the same way.
+    s.broker
+        .state()
+        .audit
+        .set_lock_wait(Duration::from_millis(100))
+        .await;
     let holder = std::fs::File::open(s.broker.audit_path()).unwrap();
     holder.lock().unwrap();
     let resp = get(&s, "/v1/hello").await;

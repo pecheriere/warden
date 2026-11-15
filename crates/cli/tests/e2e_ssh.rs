@@ -6,6 +6,7 @@
 mod common;
 
 use std::fs;
+use std::io::{BufRead as _, BufReader, Read as _};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
@@ -17,11 +18,13 @@ use ssh_key::{Algorithm, LineEnding, PrivateKey};
 use tempfile::TempDir;
 use warden_broker::policy::{Listing, SshMode, SshTarget};
 use warden_broker::testkit::sshd::current_user;
-use warden_broker::testkit::wait::HANG;
+use warden_broker::testkit::wait::{HANG, within_hang};
 use warden_broker::testkit::{BaseUrls, CapturingNotifier, TestBroker};
 use warden_broker_proto::{TargetName, UnixUser, Window};
 
-use common::{Cli, STATE_DIR, approve, approved_grant, now, spawn_request, write_private};
+use common::{
+    Cli, STATE_DIR, approve, approved_grant, approved_grant_in, now, spawn_request, write_private,
+};
 
 const SSHD: &str = "/usr/sbin/sshd";
 const TARGET: &str = "box";
@@ -37,6 +40,29 @@ impl Drop for Sshd {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+}
+
+/// A spawned `warden`, killed and reaped on drop unless taken, so that a test
+/// that fails or times out while waiting on it does not leave it running.
+struct KillOnDrop(Option<Child>);
+
+impl KillOnDrop {
+    fn child(&mut self) -> &mut Child {
+        self.0.as_mut().expect("the child has not been taken")
+    }
+
+    fn take(mut self) -> Child {
+        self.0.take().expect("the child has not been taken")
+    }
+}
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        if let Some(child) = &mut self.0 {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 }
 
@@ -376,18 +402,38 @@ async fn poll_survives_server_restart_mid_wait() {
         cli,
         urls,
     } = setup().await;
-    let child = spawn_request(&cli, TARGET);
+    let mut child = KillOnDrop(Some(spawn_request(&cli, TARGET)));
     let token = CapturingNotifier::token(&broker.capture.next().await);
 
     // The broker process goes away while the CLI is long-polling: its
     // listeners and the in-flight poll are dropped, and the port refuses
-    // connections for a while before the broker comes back on it.
+    // connections until the CLI has found it gone and said it will retry. Only
+    // then does the broker come back on it.
     let broker = broker.restart().await;
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    let stderr = BufReader::new(child.child().stderr.take().unwrap());
+    let (mut stderr, mut seen) = within_hang(
+        "the CLI retrying",
+        tokio::task::spawn_blocking(move || {
+            let mut stderr = stderr;
+            let mut seen = String::new();
+            while !seen.contains("retrying") {
+                assert_ne!(stderr.read_line(&mut seen).unwrap(), 0, "{seen}");
+            }
+            (stderr, seen)
+        }),
+    )
+    .await
+    .unwrap();
     broker.spawn_behind_serve_at(&urls).await;
     approve(&broker, &token).await;
 
-    let (grant, stderr) = approved_grant(child).await;
+    let mut out = tokio::task::spawn_blocking(move || child.take().wait_with_output())
+        .await
+        .unwrap()
+        .unwrap();
+    stderr.read_to_string(&mut seen).unwrap();
+    out.stderr = seen.into_bytes();
+    let (grant, stderr) = approved_grant_in(out);
     assert!(stderr.contains("retrying"), "{stderr}");
     let ssh = cli.run(&["ssh", TARGET, "--", "echo", "ok"]);
     assert_eq!(

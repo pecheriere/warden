@@ -3,6 +3,7 @@
 
 use std::time::{Duration, Instant};
 
+use warden_broker::testkit::wait::HANG;
 use warden_broker_proto::{ApiGrant, RequestStatus};
 
 use super::{CallError, check_scope_not_wider, next_retry_delay, wait_for_decision};
@@ -84,8 +85,9 @@ fn scripted(
     (poll, calls)
 }
 
+/// A deadline no test reaches: reaching it would end the wait with an error.
 fn soon() -> Instant {
-    Instant::now() + Duration::from_secs(5)
+    Instant::now() + HANG
 }
 
 #[tokio::test]
@@ -127,15 +129,11 @@ async fn deadline_ends_retries() {
 
     let always_down = || std::future::ready(Err(CallError::Unavailable("down".to_owned())));
     let started = Instant::now();
-    let got = wait_for_decision(
-        always_down,
-        started + Duration::from_millis(50),
-        Duration::from_secs(15),
-    )
-    .await;
+    let got = wait_for_decision(always_down, started + Duration::from_millis(50), HANG).await;
     assert!(got.is_err());
-    // The pause before a retry never runs past the deadline.
-    assert!(started.elapsed() < Duration::from_secs(2));
+    // The pause before a retry never runs past the deadline: a full pause would
+    // last until HANG.
+    assert!(started.elapsed() < HANG);
 }
 
 fn api_grant(methods: &[&str], prefix: &str) -> ApiGrant {

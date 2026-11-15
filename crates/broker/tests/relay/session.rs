@@ -279,8 +279,14 @@ async fn session_audited_start_before_bytes_and_end() {
     assert_eq!(cut.chars().count(), 201);
     assert!(cut.ends_with('…'));
 
-    // If the start cannot be recorded, nothing reaches the target.
+    // If the start cannot be recorded, nothing reaches the target. The append
+    // gives up on the held lock sooner than the real 5 s, the same way.
     let before = sshd_connections(&s.sshd);
+    s.broker
+        .state()
+        .audit
+        .set_lock_wait(std::time::Duration::from_millis(100))
+        .await;
     let holder = std::fs::File::open(s.broker.audit_path()).unwrap();
     holder.lock().unwrap();
     let out = ssh.run(&["echo", "unrecorded"]).await;

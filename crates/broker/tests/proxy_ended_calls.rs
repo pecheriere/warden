@@ -12,7 +12,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use serde_json::{Value, json};
 use warden_broker::audit::AuditEvent;
-use warden_broker::proxy::{CallEnd, CallInfo};
+use warden_broker::proxy::{CallEnd, CallInfo, GrantChecks, ProxyLimits};
 use warden_broker::requests::{AuditOutcome, Clock as _, unwritten_entries};
 use warden_broker::testkit::wait::HANG;
 use warden_broker::testkit::{HttpsUpstream, TestBroker, TestResponse};
@@ -30,7 +30,11 @@ struct Setup {
 }
 
 async fn setup() -> Setup {
-    let broker = TestBroker::new().await;
+    setup_with(ProxyLimits::default()).await
+}
+
+async fn setup_with(limits: ProxyLimits) -> Setup {
+    let broker = TestBroker::with_proxy_limits(limits).await;
     let upstream = HttpsUpstream::start().await;
     broker
         .backend
@@ -334,11 +338,22 @@ async fn expiry_stops_the_call() {
     within("the connection closing", s.upstream.wait_for_abandoned(1)).await;
 }
 
-/// With nothing able to say the grant still holds, the call stops. This waits
-/// for the real limit of 10 s.
+/// With nothing able to say the grant still holds, the call stops. The checks
+/// keep the broker's order, a period shorter than the time one check may take,
+/// which is shorter than the time without a good check after which the call
+/// stops (the broker's are 1 s, 1.5 s and 10 s), only with shorter times, so
+/// that one slow check cannot stop the call.
 #[tokio::test]
 async fn a_grant_state_that_stays_unreadable_stops_the_call() {
-    let s = setup().await;
+    let s = setup_with(ProxyLimits {
+        grant_checks: GrantChecks {
+            every: Duration::from_millis(20),
+            check_limit: Duration::from_millis(100),
+            lost_after: Duration::from_millis(300),
+        },
+        ..ProxyLimits::default()
+    })
+    .await;
     let (resp, ()) = tokio::join!(within("the call ending", get(&s, "/hang")), async {
         reached(&s, 1).await;
         s.broker.state().pool.close().await;

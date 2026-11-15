@@ -13,7 +13,7 @@ use ssh_key::Certificate;
 use warden_broker::agents;
 use warden_broker::approval::passkeys::{self, PasskeyError};
 use warden_broker::requests::{AuditOutcome, Clock as _, RequestError, RequestLimits, sha256_hex};
-use warden_broker::testkit::wait::HANG;
+use warden_broker::testkit::wait::{HANG, within_hang};
 use warden_broker::testkit::{FakeBackend, SoftAuthenticator, TestBroker, TestResponse};
 use warden_broker_proto::{
     AgentName, CreatedResponse, GrantAccess, GrantView, Id, RequestStatus, SshGrant, UnixUser,
@@ -522,15 +522,19 @@ async fn an_audit_log_that_has_stalled_does_not_stop_a_revocation() {
 
 // --- writing the log never holds up the database ------------------------------
 
-/// Hold the audit log's lock, as a log that has stalled would, while `work` runs,
-/// and check the whole time that another writer can still get into the database,
-/// as a revocation must.
+/// Hold each append to the audit log, as a log that has stalled would, while
+/// `work` runs, and check during each that another writer can still get into the
+/// database, as a revocation must. The append is held until that check is done,
+/// with no time limit, so a write lock `work` held across it would still be held
+/// when the other writer's busy timeout ran out. Once checked, it is let go and
+/// the next append is held in its turn. At least `appends` are expected to be
+/// held, the ones the work awaits (not those it leaves to a detached task).
 async fn assert_no_write_lock_while_log_waits<T: Send + 'static>(
     broker: &TestBroker,
+    appends: usize,
     work: impl Future<Output = T> + Send + 'static,
 ) {
-    let holder = std::fs::File::open(broker.audit_path()).unwrap();
-    holder.lock().unwrap();
+    let audit = broker.state().audit.clone();
     let file: String = sqlx::query("PRAGMA database_list")
         .fetch_one(&broker.state().pool)
         .await
@@ -538,22 +542,39 @@ async fn assert_no_write_lock_while_log_waits<T: Send + 'static>(
         .get("file");
     let mut other = SqliteConnectOptions::new()
         .filename(file)
-        // Long enough for a short write to finish, far less than a log can stall.
+        // Long enough for a short write to finish; an append is held for longer.
         .busy_timeout(Duration::from_secs(1))
         .connect()
         .await
         .unwrap();
-    let task = tokio::spawn(work);
-    while !task.is_finished() {
-        sqlx::query("BEGIN IMMEDIATE")
-            .execute(&mut other)
-            .await
-            .expect("a writer holds the database while it waits for the audit log");
-        sqlx::query("ROLLBACK").execute(&mut other).await.unwrap();
-        tokio::task::yield_now().await;
-    }
-    drop(holder);
-    task.await.unwrap();
+    let mut stall = audit.stall_appends(|_| true);
+    let mut task = tokio::spawn(work);
+    let held = within_hang("the work finishing", async {
+        let mut held = 0_usize;
+        loop {
+            tokio::select! {
+                () = stall.until_holding(1) => {}
+                finished = &mut task => {
+                    finished.unwrap();
+                    return held;
+                }
+            }
+            sqlx::query("BEGIN IMMEDIATE")
+                .execute(&mut other)
+                .await
+                .expect("a writer holds the database while it waits for the audit log");
+            sqlx::query("ROLLBACK").execute(&mut other).await.unwrap();
+            held += 1;
+            // Hold the next append before letting this one go.
+            let next = audit.stall_appends(|_| true);
+            drop(std::mem::replace(&mut stall, next));
+        }
+    })
+    .await;
+    assert!(
+        held >= appends,
+        "the work wrote {held} entries to the audit log, not the {appends} it must"
+    );
 }
 
 #[tokio::test]
@@ -563,7 +584,8 @@ async fn creating_a_request_holds_no_write_lock_while_the_log_waits() {
     let requests = broker.state().requests.clone();
     let bot = AgentName::try_from("bot".to_owned()).unwrap();
     let request = TestBroker::pi_request("restart the job", Window::M15);
-    assert_no_write_lock_while_log_waits(&broker, async move {
+    // Awaited entries: RequestCreated; the notice's Notified is left to a detached task.
+    assert_no_write_lock_while_log_waits(&broker, 1, async move {
         drop(requests.create(&bot, request).await);
     })
     .await;
@@ -586,7 +608,8 @@ async fn approving_holds_no_write_lock_while_the_log_waits() {
         }),
     };
     let requests = broker.state().requests.clone();
-    assert_no_write_lock_while_log_waits(&broker, async move {
+    // Awaited entries: Approved and CertIssued.
+    assert_no_write_lock_while_log_waits(&broker, 2, async move {
         drop(
             requests
                 .mark_approved(&token, Window::M15, grant, "passkey", &[])
@@ -601,7 +624,8 @@ async fn making_an_enrollment_code_holds_no_write_lock_while_the_log_waits() {
     let broker = TestBroker::new().await;
     let passkeys = broker.state().passkeys.clone();
     let now = broker.clock.now();
-    assert_no_write_lock_while_log_waits(&broker, async move {
+    // Awaited entries: EnrollmentCodeCreated.
+    assert_no_write_lock_while_log_waits(&broker, 1, async move {
         drop(passkeys.create_enrollment_code(now).await);
     })
     .await;
@@ -611,7 +635,8 @@ async fn making_an_enrollment_code_holds_no_write_lock_while_the_log_waits() {
 async fn denying_holds_no_write_lock_while_the_log_waits() {
     let (broker, _auth, _created, token) = pending(Window::M15).await;
     let requests = broker.state().requests.clone();
-    assert_no_write_lock_while_log_waits(&broker, async move {
+    // Awaited entries: Denied.
+    assert_no_write_lock_while_log_waits(&broker, 1, async move {
         drop(requests.deny(&token).await);
     })
     .await;
@@ -627,7 +652,8 @@ async fn adding_a_key_signed_agent_holds_no_write_lock_while_the_log_waits() {
         "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOh0zJ+xlPfFH6uwtZmJ2O9GrkMxjqMwPQTsBVmbbBrE new@host",
     )
     .unwrap();
-    assert_no_write_lock_while_log_waits(&broker, async move {
+    // Awaited entries: AgentAdded and AgentKeySet.
+    assert_no_write_lock_while_log_waits(&broker, 2, async move {
         drop(agents::add_key_audited(&pool, &audit, &name, &key).await);
     })
     .await;
@@ -652,7 +678,8 @@ async fn a_refused_request_holds_no_write_lock_while_the_log_waits() {
         .backend
         .set_api_secret(FakeBackend::example_api_secret(), "not-a-real-secret");
     let refused = TestBroker::api_request("github", "list issues", Window::M15);
-    assert_no_write_lock_while_log_waits(&broker, async move {
+    // Awaited entries: RequestLimited and LimitNotified.
+    assert_no_write_lock_while_log_waits(&broker, 2, async move {
         let got = requests.create(&bot, refused).await;
         assert!(
             matches!(got, Err(RequestError::Limited(_))),
