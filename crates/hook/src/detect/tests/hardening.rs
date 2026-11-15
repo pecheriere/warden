@@ -19,7 +19,7 @@ fn silent(command: &str) {
 
 #[test]
 fn a_misread_option_value_never_reaches_the_message() {
-    for (command, secret) in [
+    for (case, (command, secret)) in [
         (
             "curl -H 'Authorization: Bearer x' --tlspassword s3cr3t.v4lue https://api.example.org/",
             "s3cr3t.v4lue",
@@ -46,11 +46,20 @@ fn a_misread_option_value_never_reaches_the_message() {
             "s3c.r3t",
         ),
         ("http -a me:pw https://api.example.org/ s3c.r3t", "s3c.r3t"),
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
         let verdict = check(command, &context(true), &Settings::default());
-        assert!(!verdict.message.contains(secret), "{command}");
+        assert!(
+            !verdict.message.contains(secret),
+            "case #{case}: message echoes its fixture"
+        );
         for found in &verdict.matches {
-            assert!(!found.subject.contains(secret), "{command}: {found:?}");
+            assert!(
+                !found.subject.contains(secret),
+                "case #{case}: a subject echoes its fixture"
+            );
         }
     }
 }

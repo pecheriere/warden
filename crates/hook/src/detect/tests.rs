@@ -31,7 +31,6 @@ fn coverage() -> Coverage {
             name: "home-api".to_owned(),
             origin: Some("https://home-api.example.internal".to_owned()),
         }],
-        github: false,
     }
 }
 
@@ -47,7 +46,6 @@ fn context(covered: bool) -> Context {
         aliases,
         warden_socket_dir: PathBuf::from("/tmp/warden-501"),
         read_small_file: Box::new(move |p: &Path| files.get(p).cloned()),
-        github_helper: None,
     }
 }
 
@@ -236,19 +234,20 @@ fn messages_never_echo_the_command() {
             "api.example.org",
         ),
     ];
-    for (command, subject) in cases {
+    for (case, (command, subject)) in cases.iter().enumerate() {
         let verdict = check(command, &context(true), &Settings::default());
-        assert!(!verdict.message.is_empty(), "{command}");
+        assert!(!verdict.message.is_empty(), "case #{case}: no message");
         assert!(
             verdict.message.contains(subject),
-            "{command}: {}",
-            verdict.message
+            "case #{case}: message lacks its subject"
         );
-        for secret in ["abc123", "vault-x", "item-y", "hunter2", "/secret/path"] {
+        for (i, secret) in ["abc123", "vault-x", "item-y", "hunter2", "/secret/path"]
+            .iter()
+            .enumerate()
+        {
             assert!(
                 !verdict.message.contains(secret),
-                "{command}: {}",
-                verdict.message
+                "case #{case}: message echoes forbidden fixture #{i}"
             );
         }
         assert!(verdict.message.ends_with("Never look for another way in."));
