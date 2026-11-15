@@ -4525,6 +4525,9 @@ dependencies = [
 [[package]]
 name = "warden-agent-hook"
 version = "0.15.0"
+dependencies = [
+ "toml",
+]
 
 [[package]]
 name = "warden-broker"

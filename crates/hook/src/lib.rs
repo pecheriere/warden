@@ -2,4 +2,5 @@
 //!
 //! No I/O and no panics on any input: the callers feed it text an agent wrote.
 
+pub mod settings;
 pub mod shell;
