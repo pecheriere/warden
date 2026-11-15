@@ -6,12 +6,12 @@
 //! every match subject is checked for its own signal (c), so no path, header
 //! or value reaches the message: a covered subject is a name warden offers, a
 //! tool or credential subject is in the closed set the library exports, and an
-//! uncovered host is host-shaped and occurs in the command as a host.
-//! Clause (c) for an uncovered host guards shape and provenance only: a
-//! host-shaped word cannot be told from a host-shaped secret, so that
-//! "only from a scheme-explicit URL host, `--url`, a destination or a jump
-//! operand" holds by construction in `detect/http.rs` and `detect/ssh.rs`, not
-//! by this property.
+//! uncovered host is host-shaped.
+//! Clause (c) for an uncovered host guards shape only: a host-shaped word cannot
+//! be told from a host-shaped secret, so that its subject comes only from a
+//! scheme-explicit URL host, `--url`, or an SSH destination or jump operand is
+//! guaranteed by construction in `crates/hook/src/detect/http.rs` and
+//! `detect/ssh.rs`, not by the fuzzer.
 //! Failure messages name the signal only, never the command or a subject.
 //!
 //! Input: the bytes of the command, read as lossy UTF-8.
@@ -72,86 +72,9 @@ fn is_host_shaped(subject: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '[' | ']' | ':'))
 }
 
-/// A host as the URL parser writes it, which can differ from the text: an IPv4
-/// address in dotted decimal (`11` becomes `0.0.0.11`), an IPv6 address in
-/// brackets, or an internationalised name in punycode (a label with `xn--`).
-/// Such a subject is digits or a name's encoding, so it holds no secret.
-fn is_normalised_host(subject: &str) -> bool {
-    let digits_and_dots = subject.chars().all(|c| c.is_ascii_digit() || c == '.');
-    let ipv6 = subject
-        .strip_prefix('[')
-        .and_then(|s| s.strip_suffix(']'))
-        .is_some_and(|inner| {
-            inner
-                .chars()
-                .all(|c| c.is_ascii_hexdigit() || matches!(c, ':' | '.'))
-        });
-    let punycode = subject.split('.').any(|label| label.starts_with("xn--"));
-    digits_and_dots || ipv6 || punycode
-}
-
-/// Whether `host` occurs in `command` right after `:/` (as in `://`) or `@`, as a whole
-/// word, as the end of a word (an option value written against its flag, as in
-/// `-Jhost`), or as the host part of a `host:path` word. Words end at whitespace
-/// and at the shell characters that glue a word to its neighbour (redirections,
-/// pipes, `=`, `,`, `$`, braces). The shell joins quotes and substitutions
-/// into one word, so the text is also read with quotes, backticks, backslashes,
-/// `$(` and `)` and control characters removed, and line continuations joined.
-fn occurs_as_host(command: &str, host: &str) -> bool {
-    let joined: String = command
-        .replace("\\\n", "")
-        .chars()
-        .filter(|c| !matches!(c, '\'' | '"' | '`' | '\\'))
-        .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
-        .collect();
-    let flat: String = joined
-        .chars()
-        .filter(|c| !matches!(c, '$' | '(' | ')'))
-        .collect();
-    [command, joined.as_str(), flat.as_str()]
-        .into_iter()
-        .any(|text| occurs_in(text, host))
-}
-
-/// Where a word ends: whitespace and the shell characters that glue a word to
-/// its neighbour (redirections, pipes, quotes, `=`, `,`, `$`, braces).
-fn is_word_end(c: char) -> bool {
-    c.is_whitespace() || "<>|&;()'\"`\\=,${}".contains(c)
-}
-
-/// Whether `host` is the host `url::Url` parses from a whitespace-separated word
-/// of `command` (split as in [`occurs_in`]), read as written or with `http://` before it. The parser
-/// percent-decodes and lowercases, so `http://%73ecret.example.org/` has the
-/// host `secret.example.org`, which does not occur in the text.
-fn is_parsed_host(command: &str, host: &str) -> bool {
-    command.split(is_word_end).any(|word| {
-        [word.to_owned(), format!("http://{word}")]
-            .iter()
-            .filter_map(|text| url::Url::parse(text).ok())
-            .any(|url| url.host_str() == Some(host))
-    })
-}
-
-fn occurs_in(command: &str, host: &str) -> bool {
-    let command = command.to_ascii_lowercase();
-    let host = host.to_ascii_lowercase();
-    [":/", "://", ":///"]
-        .iter()
-        .any(|p| command.contains(&format!("{p}{host}")))
-        || command.contains(&format!("@{host}"))
-        || command.split(is_word_end).any(|word| {
-            word.ends_with(&host)
-                || word
-                    .split_once(':')
-                    .is_some_and(|(h, _)| h.ends_with(&host))
-        })
-}
-
-/// (A command with a non-ASCII character only has to give a host-shaped
-/// subject: the URL parser maps such text, as in `\u{01c9}` to `lj`.)
 /// Whether `subject` is right for `signal`; `false` also for a signal no
 /// check produces.
-fn subject_is_valid(signal: Signal, subject: &str, command: &str, ctx: &Context) -> bool {
+fn subject_is_valid(signal: Signal, subject: &str, ctx: &Context) -> bool {
     match signal {
         Signal::CoveredSsh => ctx
             .coverage
@@ -164,13 +87,7 @@ fn subject_is_valid(signal: Signal, subject: &str, command: &str, ctx: &Context)
         Signal::OwnerSshKey => OWNER_SSH_KEY_SUBJECTS.contains(&subject),
         Signal::SecretStore => SECRET_STORE_SUBJECTS.contains(&subject),
         Signal::TokenRead => TOKEN_READ_SUBJECTS.contains(&subject),
-        Signal::UncoveredHost => {
-            is_host_shaped(subject)
-                && (is_normalised_host(subject)
-                    || !command.is_ascii()
-                    || occurs_as_host(command, subject)
-                    || is_parsed_host(command, subject))
-        }
+        Signal::UncoveredHost => is_host_shaped(subject),
         Signal::OwnerGithub => false,
     }
 }
@@ -186,7 +103,7 @@ fuzz_target!(|data: &[u8]| {
     );
     for found in &verdict.matches {
         assert!(
-            subject_is_valid(found.signal, &found.subject, &command, &ctx),
+            subject_is_valid(found.signal, &found.subject, &ctx),
             "hook_check: property (c) failed for signal {}",
             found.signal.key()
         );
