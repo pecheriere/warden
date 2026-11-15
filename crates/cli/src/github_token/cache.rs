@@ -1,5 +1,6 @@
 //! The cache of GitHub tokens, `<state>/github-token.json`: one entry per
-//! repository, shared by `warden github token` and the git credential helper.
+//! repository and permission set asked for, shared by `warden github token` and the
+//! git credential helper.
 //!
 //! The file necessarily holds the tokens in clear, so it is served only while it is
 //! a regular file of this user with mode exactly 0600 that parses in the one shape
@@ -7,8 +8,9 @@
 //! replaced on the next write, never trusted.
 //!
 //! ```json
-//! {"version":2,"agent":"…","server":"…","entries":[
-//!   {"repository":"o/r","repository_id":1001,"grant_id":"…","token":"…","expires_at":0}]}
+//! {"version":3,"agent":"…","server":"…","entries":[
+//!   {"repository":"o/r","repository_id":1001,"grant_id":"…","token":"…","expires_at":0,
+//!    "asked":"full"}]}
 //! ```
 
 use std::fs;
@@ -19,6 +21,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 use warden_broker_proto::Id;
+use warden_broker_proto::github_permissions::PermissionSet;
 use warden_broker_proto::github_token::GithubTokenResponse;
 use warden_broker_proto::release::RepoName;
 use zeroize::Zeroizing;
@@ -39,13 +42,42 @@ const MAX_ENTRIES: usize = 32;
 const MAX_TOKEN_BYTES: usize = 1024;
 
 /// The version of the file's shape.
-const VERSION: u8 = 2;
+const VERSION: u8 = 3;
 
-/// Bytes of an entry besides its token and repository name, with room to spare.
+/// What an entry's `asked` is when no permissions were named: the grant's whole set.
+const FULL: &str = "full";
+
+/// Bytes of an entry besides its token, repository name and `asked`, with room to
+/// spare.
 const ENTRY_OVERHEAD: usize = 256;
 
 /// Bytes of the file besides its entries, with room to spare.
 const FILE_OVERHEAD: usize = 1024;
+
+/// The permissions a token was asked for, which is what it is cached under: not
+/// what GitHub answered, so that asking again for the same finds it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AskedSet {
+    /// The grant's whole set: no `permissions` on the wire.
+    Full,
+    /// Exactly these, which the grant must hold.
+    Exactly(PermissionSet),
+}
+
+impl AskedSet {
+    /// The key in the file: `full`, or the set as [`PermissionSet`] writes it.
+    pub(super) fn key(&self) -> String {
+        match self {
+            Self::Full => FULL.to_owned(),
+            Self::Exactly(set) => set.to_string(),
+        }
+    }
+}
+
+/// Whether `key` is one [`AskedSet::key`] writes.
+fn well_formed_key(key: &str) -> bool {
+    key == FULL || PermissionSet::parse(key).is_ok_and(|set| set.to_string() == key)
+}
 
 /// A token in memory, wiped when dropped.
 #[derive(Clone)]
@@ -60,11 +92,13 @@ pub(super) struct Entry {
     pub token: Zeroizing<String>,
     /// When GitHub ends it, in seconds since the Unix epoch.
     pub expires_at: i64,
+    /// The [`AskedSet::key`] it was asked for.
+    pub asked: String,
 }
 
 impl Entry {
-    /// The entry for `response`.
-    pub fn new(response: GithubTokenResponse) -> Self {
+    /// The entry for `response`, which answers a request for `asked`.
+    pub fn new(response: GithubTokenResponse, asked: &AskedSet) -> Self {
         let GithubTokenResponse {
             token,
             expires_at,
@@ -79,6 +113,7 @@ impl Entry {
             grant_id,
             token: Zeroizing::new(token),
             expires_at,
+            asked: asked.key(),
         }
     }
 
@@ -94,7 +129,8 @@ impl Entry {
                 _ => 1,
             })
             .sum();
-        ENTRY_OVERHEAD + token + self.repository.as_str().len()
+        // `asked` holds only permission names, `:`, `,` and `_`, which JSON does not escape.
+        ENTRY_OVERHEAD + token + self.repository.as_str().len() + self.asked.len()
     }
 }
 
@@ -107,6 +143,7 @@ struct StoredEntry {
     grant_id: Id,
     token: String,
     expires_at: i64,
+    asked: String,
 }
 
 /// The file as read.
@@ -127,6 +164,7 @@ struct EntryRef<'a> {
     grant_id: &'a Id,
     token: &'a str,
     expires_at: i64,
+    asked: &'a str,
 }
 
 /// The file as written.
@@ -198,12 +236,13 @@ impl Cache {
             .into_iter()
             .map(|e| {
                 let token = Zeroizing::new(e.token);
-                well_formed(&token).then_some(Entry {
+                (well_formed(&token) && well_formed_key(&e.asked)).then_some(Entry {
                     repository: e.repository,
                     repository_id: e.repository_id,
                     grant_id: e.grant_id,
                     token,
                     expires_at: e.expires_at,
+                    asked: e.asked,
                 })
             })
             .collect::<Option<Vec<_>>>()?;
@@ -213,11 +252,13 @@ impl Cache {
         })
     }
 
-    /// The entry for `repository`, ignoring case, with at least
+    /// The entry for `repository`, ignoring case, asked for `asked`, with at least
     /// [`MIN_REMAINING_SECS`] left at `now`.
-    pub fn lookup(&self, repository: &RepoName, now: i64) -> Option<&Entry> {
+    pub fn lookup(&self, repository: &RepoName, asked: &AskedSet, now: i64) -> Option<&Entry> {
+        let key = asked.key();
         self.entries.iter().find(|e| {
             e.repository.matches(repository)
+                && e.asked == key
                 && e.expires_at.saturating_sub(now) >= MIN_REMAINING_SECS
         })
     }
@@ -228,13 +269,21 @@ impl Cache {
             .retain(|e| e.expires_at.saturating_sub(now) >= MIN_REMAINING_SECS);
     }
 
-    /// Add `entry`, replacing the one with the same repository id or name. What
-    /// does not fit in [`MAX_ENTRIES`] entries or [`MAX_CACHE_BYTES`] bytes is
+    /// Add `entry`, replacing the one with the same repository (id or name) and
+    /// `asked`. An entry of the same repository minted under another grant is
+    /// dropped as well, with all that repository's others: a new grant supersedes
+    /// the tokens of the old one. What does not fit in [`MAX_ENTRIES`] entries or [`MAX_CACHE_BYTES`] bytes is
     /// dropped, the entry ending soonest first, but never `entry` itself.
     pub fn put(&mut self, entry: Entry) {
-        self.entries.retain(|e| {
-            e.repository_id != entry.repository_id && !e.repository.matches(&entry.repository)
-        });
+        let same_repository = |e: &Entry| {
+            e.repository_id == entry.repository_id || e.repository.matches(&entry.repository)
+        };
+        let superseded = self
+            .entries
+            .iter()
+            .any(|e| same_repository(e) && e.grant_id != entry.grant_id);
+        self.entries
+            .retain(|e| !(same_repository(e) && (superseded || e.asked == entry.asked)));
         self.entries.push(entry);
         while self.entries.len() > MAX_ENTRIES || self.size_bound() > MAX_CACHE_BYTES {
             let Some(soonest) = self
@@ -292,6 +341,7 @@ impl Cache {
                     grant_id: &e.grant_id,
                     token: &e.token,
                     expires_at: e.expires_at,
+                    asked: &e.asked,
                 })
                 .collect(),
         };

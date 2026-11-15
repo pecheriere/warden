@@ -199,12 +199,14 @@ async fn run(cmd: Cmd) -> Result<()> {
             what:
                 GithubCmd::Token {
                     repo,
+                    permissions,
+                    fresh,
                     gh_args,
                     args,
                 },
         } => {
             let repository = github_token::repository_for(repo, gh_args, &args)?;
-            github_token::print_token(&repository).await
+            github_token::print_token(&repository, permissions, fresh).await
         }
         Cmd::Http {
             secret,

@@ -19,6 +19,11 @@ All notable changes to this project are recorded here. The format follows
   refused in `default_permissions`, `extra_permissions` and requests, because GitHub has no
   such level.
   ([#282](https://github.com/pecheriere/warden/issues/282))
+- `warden github token --permissions <set>` mints a token with only those permissions,
+  within the grant's, and `--fresh` mints a new one instead of serving the cached one. The
+  token cache now keeps one token per repository and permission set, so a narrowed token is
+  never served for a plain request; a cache from an earlier version is discarded and the
+  next token is minted anew. ([#283](https://github.com/pecheriere/warden/issues/283))
 
 ### Changed
 

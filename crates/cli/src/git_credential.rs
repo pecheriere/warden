@@ -21,7 +21,7 @@ use warden_broker_proto::release::RepoName;
 use zeroize::Zeroizing;
 
 use crate::github_repo;
-use crate::github_token::{self, Caller};
+use crate::github_token::{self, AskedSet, Caller};
 use crate::{EXIT_ERROR, Exit};
 
 /// The most input read from git, in bytes. Git sends a few short lines.
@@ -150,7 +150,13 @@ pub async fn run(args: &[OsString]) -> ExitCode {
         return ExitCode::SUCCESS;
     };
     let obtain = |repository: RepoName| async move {
-        github_token::obtain(Caller::CredentialHelper, &repository).await
+        github_token::obtain(
+            Caller::CredentialHelper,
+            &repository,
+            &AskedSet::Full,
+            false,
+        )
+        .await
     };
     let token = match answer(&asked, obtain).await {
         Ok(Answer::Token(token)) => token,

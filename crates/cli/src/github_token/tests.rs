@@ -6,10 +6,11 @@ use std::path::{Path, PathBuf};
 
 use tempfile::TempDir;
 use warden_broker_proto::Id;
+use warden_broker_proto::github_permissions::PermissionSet;
 use warden_broker_proto::github_token::GithubTokenResponse;
 use warden_broker_proto::release::RepoName;
 
-use super::cache::{Cache, Entry, well_formed};
+use super::cache::{AskedSet, Cache, Entry, well_formed};
 use super::{Caller, Identity, MIN_REMAINING_SECS, explain, goal_for, repository_for, serve_from};
 use crate::client::CallError;
 use crate::{EXIT_ERROR, EXIT_NO_GRANT, Exit};
@@ -54,7 +55,7 @@ fn response(token: &str, expires_at: i64, repository: &str, id: u64) -> GithubTo
 }
 
 fn entry(token: &str, expires_at: i64, repository: &str, id: u64) -> Entry {
-    Entry::new(response(token, expires_at, repository, id))
+    Entry::new(response(token, expires_at, repository, id), &AskedSet::Full)
 }
 
 /// A cache of `entries`, for [`identity`], written to `path`.
@@ -90,10 +91,18 @@ async fn serve_as(
     id: u64,
 ) -> (String, bool) {
     let minted = Cell::new(false);
-    let token = serve_from(path, NOW, identity, &repo(repository), || {
-        minted.set(true);
-        ready(Ok(response(FRESH, NOW + 3600, answered, id)))
-    })
+    let token = serve_from(
+        path,
+        NOW,
+        identity,
+        &repo(repository),
+        &AskedSet::Full,
+        false,
+        || {
+            minted.set(true);
+            ready(Ok(response(FRESH, NOW + 3600, answered, id)))
+        },
+    )
     .await
     .unwrap();
     (token.to_string(), minted.get())
@@ -298,7 +307,7 @@ async fn cache_refuses_wrong_mode_or_garbage() {
     }
     let entry_json = |token: &str, extra: &str| {
         format!(
-            r#"{{"repository":"{REPO}","repository_id":1001,"grant_id":"{}","token":"{token}","expires_at":{}{extra}}}"#,
+            r#"{{"repository":"{REPO}","repository_id":1001,"grant_id":"{}","token":"{token}","expires_at":{},"asked":"full"{extra}}}"#,
             Id::random(),
             NOW + 3600
         )
@@ -308,11 +317,11 @@ async fn cache_refuses_wrong_mode_or_garbage() {
             r#"{{"version":{version},"agent":"build-agent","server":"https://warden.example.ts.net/","entries":[{entries}]{extra}}}"#
         )
     };
-    let bad_token = file(&entry_json(r"ghs_a\nb", ""), "", 2);
-    let unknown_entry_field = file(&entry_json("ghs_a", r#","x":1"#), "", 2);
-    let unknown_field = file(&entry_json("ghs_a", ""), r#","x":1"#, 2);
-    let wrong_version = file(&entry_json("ghs_a", ""), "", 3);
-    let too_many = file(&vec![entry_json("ghs_a", ""); 33].join(","), "", 2);
+    let bad_token = file(&entry_json(r"ghs_a\nb", ""), "", 3);
+    let unknown_entry_field = file(&entry_json("ghs_a", r#","x":1"#), "", 3);
+    let unknown_field = file(&entry_json("ghs_a", ""), r#","x":1"#, 3);
+    let wrong_version = file(&entry_json("ghs_a", ""), "", 2);
+    let too_many = file(&vec![entry_json("ghs_a", ""); 33].join(","), "", 3);
     let huge = format!(r#"{{"token":"{}"}}"#, "a".repeat(20_000));
     for garbage in [
         "",
@@ -343,7 +352,7 @@ async fn cache_refuses_wrong_mode_or_garbage() {
     }
     // The shape is exactly one the tests above could be mistaken about.
     let d = dir();
-    fs::write(&d.cache, file(&entry_json("ghs_a", ""), "", 2)).unwrap();
+    fs::write(&d.cache, file(&entry_json("ghs_a", ""), "", 3)).unwrap();
     fs::set_permissions(&d.cache, fs::Permissions::from_mode(0o600)).unwrap();
     assert!(Cache::load(&d.cache).is_some());
 }
@@ -411,14 +420,22 @@ async fn cache_file_created_0600() {
 #[tokio::test]
 async fn a_token_that_is_not_well_formed_is_refused_and_not_cached() {
     let d = dir();
-    let refused = serve_from(&d.cache, NOW, &identity(), &repo(REPO), || {
-        ready(Ok(response(
-            "ghs_a\npassword=other",
-            NOW + 3600,
-            REPO,
-            1001,
-        )))
-    })
+    let refused = serve_from(
+        &d.cache,
+        NOW,
+        &identity(),
+        &repo(REPO),
+        &AskedSet::Full,
+        false,
+        || {
+            ready(Ok(response(
+                "ghs_a\npassword=other",
+                NOW + 3600,
+                REPO,
+                1001,
+            )))
+        },
+    )
     .await
     .unwrap_err();
     assert!(!refused.to_string().contains("ghs_a"), "{refused}");
@@ -432,9 +449,15 @@ async fn a_token_that_is_not_well_formed_is_refused_and_not_cached() {
 #[tokio::test]
 async fn mint_answer_for_other_repository_is_refused() {
     let d = dir();
-    let refused = serve_from(&d.cache, NOW, &identity(), &repo(REPO), || {
-        ready(Ok(response(FRESH, NOW + 3600, OTHER_REPO, 1002)))
-    })
+    let refused = serve_from(
+        &d.cache,
+        NOW,
+        &identity(),
+        &repo(REPO),
+        &AskedSet::Full,
+        false,
+        || ready(Ok(response(FRESH, NOW + 3600, OTHER_REPO, 1002))),
+    )
     .await
     .unwrap_err();
     assert_eq!(
@@ -459,11 +482,19 @@ async fn mint_answer_for_other_repository_is_refused() {
 #[tokio::test]
 async fn a_failed_mint_keeps_its_call_error() {
     let d = dir();
-    let e = serve_from(&d.cache, NOW, &identity(), &repo(REPO), || {
-        ready(Err::<GithubTokenResponse, _>(
-            CallError::Refused("broker refused (403)".to_owned()).into(),
-        ))
-    })
+    let e = serve_from(
+        &d.cache,
+        NOW,
+        &identity(),
+        &repo(REPO),
+        &AskedSet::Full,
+        false,
+        || {
+            ready(Err::<GithubTokenResponse, _>(
+                CallError::Refused("broker refused (403)".to_owned()).into(),
+            ))
+        },
+    )
     .await
     .unwrap_err();
     assert!(e.downcast_ref::<CallError>().is_some());
@@ -544,4 +575,224 @@ fn a_bad_repo_flag_in_gh_mode_refuses_with_the_fixed_message() {
         assert_eq!(exit.code, EXIT_ERROR);
         assert_eq!(exit.message, crate::github_repo::UNDETERMINED_GH);
     }
+}
+
+fn checks_read() -> AskedSet {
+    AskedSet::Exactly(PermissionSet::parse("checks:read").unwrap())
+}
+
+/// An entry for `asked`, minted under `grant`.
+fn asked_entry(token: &str, grant: &Id, asked: &AskedSet) -> Entry {
+    let mut r = response(token, NOW + 3600, REPO, 1001);
+    r.grant_id = grant.clone();
+    Entry::new(r, asked)
+}
+
+/// As [`serve_as`], for `asked`, with `fresh`.
+async fn serve_asked(path: &Path, asked: &AskedSet, fresh: bool) -> (String, bool) {
+    let minted = Cell::new(false);
+    let token = serve_from(path, NOW, &identity(), &repo(REPO), asked, fresh, || {
+        minted.set(true);
+        ready(Ok(response(FRESH, NOW + 3600, REPO, 1001)))
+    })
+    .await
+    .unwrap();
+    (token.to_string(), minted.get())
+}
+
+#[test]
+fn cache_keys_by_repository_and_set() {
+    let grant = Id::random();
+    let mut cache = Cache::empty(identity());
+    cache.put(asked_entry("ghs_full", &grant, &AskedSet::Full));
+    assert!(
+        cache.lookup(&repo(REPO), &checks_read(), NOW).is_none(),
+        "a whole-set token does not answer a narrowed ask"
+    );
+    cache.put(asked_entry("ghs_narrow", &grant, &checks_read()));
+    assert_eq!(cache.entries.len(), 2, "both coexist");
+    let full = cache.lookup(&repo(REPO), &AskedSet::Full, NOW).unwrap();
+    assert_eq!(full.token.as_str(), "ghs_full");
+    let narrow = cache.lookup(&repo(REPO), &checks_read(), NOW).unwrap();
+    assert_eq!(narrow.token.as_str(), "ghs_narrow");
+    let other = AskedSet::Exactly(PermissionSet::parse("actions:read").unwrap());
+    assert!(cache.lookup(&repo(REPO), &other, NOW).is_none());
+    // The same key under the same grant replaces.
+    cache.put(asked_entry("ghs_narrow2", &grant, &checks_read()));
+    assert_eq!(cache.entries.len(), 2);
+}
+
+#[tokio::test]
+async fn fresh_skips_and_replaces() {
+    let d = dir();
+    write_one(&d.cache, CACHED, NOW + 3600);
+    assert_eq!(
+        serve_asked(&d.cache, &AskedSet::Full, false).await,
+        (CACHED.to_owned(), false)
+    );
+    assert_eq!(
+        serve_asked(&d.cache, &AskedSet::Full, true).await,
+        (FRESH.to_owned(), true)
+    );
+    assert_eq!(stored_token(&d.cache, REPO).as_deref(), Some(FRESH));
+    assert_eq!(loaded(&d.cache).entries.len(), 1);
+}
+
+#[test]
+fn new_grant_id_drops_the_repository_entries() {
+    let (old, new) = (Id::random(), Id::random());
+    let mut cache = Cache::empty(identity());
+    cache.put(asked_entry("ghs_full", &old, &AskedSet::Full));
+    cache.put(asked_entry("ghs_narrow", &old, &checks_read()));
+    cache.put(entry("ghs_other", NOW + 3600, OTHER_REPO, 1002));
+    cache.put(asked_entry("ghs_new", &new, &AskedSet::Full));
+    let mut tokens: Vec<_> = cache.entries.iter().map(|e| e.token.to_string()).collect();
+    tokens.sort();
+    assert_eq!(tokens, ["ghs_new", "ghs_other"]);
+}
+
+#[tokio::test]
+async fn version_2_file_is_replaced() {
+    let d = dir();
+    let v2 = format!(
+        r#"{{"version":2,"agent":"build-agent","server":"https://warden.example.ts.net/","entries":[{{"repository":"{REPO}","repository_id":1001,"grant_id":"{}","token":"ghs_old","expires_at":{}}}]}}"#,
+        Id::random(),
+        NOW + 3600
+    );
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&d.cache)
+        .unwrap();
+    fs::write(&d.cache, v2).unwrap();
+    assert!(Cache::load(&d.cache).is_none());
+    assert_eq!(serve(&d.cache).await, (FRESH.to_owned(), true));
+    assert_eq!(stored_token(&d.cache, REPO).as_deref(), Some(FRESH));
+}
+
+#[test]
+fn bad_asked_key_makes_file_unreadable() {
+    // `checks:read` alone is not canonical: it lacks the `metadata:read` the
+    // canonical form always holds.
+    for bad in [
+        "",
+        "Full",
+        "checks:read",
+        "metadata:read,checks:read",
+        "checks:admin,metadata:read",
+        "nonsense",
+    ] {
+        let d = dir();
+        let text = format!(
+            r#"{{"version":3,"agent":"build-agent","server":"https://warden.example.ts.net/","entries":[{{"repository":"{REPO}","repository_id":1001,"grant_id":"{}","token":"ghs_a","expires_at":{},"asked":"{bad}"}}]}}"#,
+            Id::random(),
+            NOW + 3600
+        );
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&d.cache)
+            .unwrap();
+        fs::write(&d.cache, text).unwrap();
+        assert!(Cache::load(&d.cache).is_none(), "{bad}");
+    }
+    let d = dir();
+    let mut cache = Cache::empty(identity());
+    cache.put(asked_entry("ghs_a", &Id::random(), &checks_read()));
+    cache.write(&d.cache).unwrap();
+    assert_eq!(
+        loaded(&d.cache).entries[0].asked,
+        "checks:read,metadata:read"
+    );
+}
+
+/// The longest `asked` there is: every permission name at `write`, as long as
+/// `PermissionSet` allows. 47 names of at most 36 bytes, `:write` and a comma each.
+fn longest_set() -> AskedSet {
+    let mut names: Vec<&str> = warden_broker_proto::github_permissions::SENSITIVE.to_vec();
+    names.extend([
+        "actions",
+        "artifact_metadata",
+        "attestations",
+        "checks",
+        "code_quality",
+        "codespaces",
+        "contents",
+        "deployments",
+        "discussions",
+        "issues",
+        "merge_queues",
+        "packages",
+        "pages",
+        "pull_requests",
+        "repository_custom_properties",
+        "repository_projects",
+        "secret_scanning_alerts",
+        "security_events",
+        "single_file",
+        "statuses",
+        "vulnerability_alerts",
+    ]);
+    // A name whose documented levels stop at `read` takes `read`.
+    let text = names
+        .iter()
+        .map(|n| {
+            let write = format!("{n}:write");
+            if PermissionSet::parse(&write).is_ok() {
+                write
+            } else {
+                format!("{n}:read")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let parsed = PermissionSet::parse(&text).unwrap();
+    AskedSet::Exactly(parsed)
+}
+
+#[test]
+fn full_cache_with_the_longest_asked_still_fits() {
+    let asked = longest_set();
+    let key = asked.key();
+    assert!(
+        key.len() <= 1300,
+        "the longest key is about 1.2 KB: {}",
+        key.len()
+    );
+    // Real tokens are about 40 bytes: 32 entries of the longest key do not all fit
+    // in 16 KiB (32 * (key + 256 + token + repository) is over), so the cap evicts
+    // the soonest, and what stays is written within the bound and read back.
+    let d = dir();
+    let mut cache = Cache::empty(identity());
+    let grant = Id::random();
+    for i in 0..32_u64 {
+        let mut r = response(
+            &"a".repeat(1024),
+            NOW + 3600 + i64::try_from(i).unwrap(),
+            &format!("o/r{i}"),
+            i,
+        );
+        r.grant_id = grant.clone();
+        cache.put(Entry::new(r, &asked));
+    }
+    assert!(cache.entries.len() < 32, "the byte cap evicted");
+    assert!(
+        cache.entries.iter().any(|e| e.repository_id == 31),
+        "the newest stays"
+    );
+    cache.write(&d.cache).unwrap();
+    assert!(fs::metadata(&d.cache).unwrap().len() <= 16 * 1024);
+    assert_eq!(loaded(&d.cache).entries.len(), cache.entries.len());
+    // Ten with the longest key and a realistic token fit whole.
+    let mut cache = Cache::empty(identity());
+    for i in 0..10_u64 {
+        let mut r = response(&"a".repeat(64), NOW + 3600, &format!("o/r{i}"), i);
+        r.grant_id = grant.clone();
+        cache.put(Entry::new(r, &asked));
+    }
+    assert_eq!(cache.entries.len(), 10);
+    cache.write(&d.cache).unwrap();
+    assert_eq!(loaded(&d.cache).entries.len(), 10);
 }
