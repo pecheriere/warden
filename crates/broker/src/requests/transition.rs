@@ -83,7 +83,7 @@ pub(crate) async fn begin(pool: &SqlitePool) -> Result<Transaction<'static, Sqli
 mod tests {
     use warden_broker_proto::Id;
 
-    use super::{AuditEvent, AuditLog, note_if_not_applied, record};
+    use super::{AuditError, AuditEvent, AuditLog, note_if_not_applied, record};
 
     fn denied(id: &Id) -> AuditEvent {
         AuditEvent::Denied { id: id.clone() }
@@ -132,6 +132,9 @@ mod tests {
         // An unreadable last line refuses every append.
         std::fs::write(&path, b"not an audit line\n").unwrap();
         let got = record(&audit, vec![denied(&Id::random())], "a change").await;
-        assert!(got.is_err(), "{got:?}");
+        assert!(
+            matches!(got, Err(AuditError::UnreadableLastLine { .. })),
+            "{got:?}"
+        );
     }
 }

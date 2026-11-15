@@ -8,7 +8,7 @@ use warden_broker_proto::{AgentName, Id, SecretName};
 use super::DailyUse;
 use crate::audit::AuditLog;
 use crate::notify::Notifier;
-use crate::requests::Requests;
+use crate::requests::{RequestError, Requests};
 use crate::store;
 use crate::testkit::{CapturingNotifier, FakeBackend, LongErrorNotifier, ManualClock};
 
@@ -178,7 +178,8 @@ async fn a_storage_error_refuses_the_use() {
     let f = fixture(2).await;
     let grant = grant(&f.requests, "11111111111111111111111111111111").await;
     f.requests.pool.close().await;
-    assert!(f.requests.take_daily_use(&grant, &call()).await.is_err());
+    let refused = f.requests.take_daily_use(&grant, &call()).await;
+    assert!(matches!(refused, Err(RequestError::Db(_))), "{refused:?}");
 }
 
 #[tokio::test]
