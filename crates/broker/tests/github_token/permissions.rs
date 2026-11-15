@@ -299,7 +299,8 @@ async fn pending_request_unapprovable_after_allowlist_narrowed() {
     assert_eq!(page.status, StatusCode::OK, "{}", page.body);
     assert!(page.body.contains("cannot be approved"), "{}", page.body);
     assert!(
-        page.body.contains(&format!("{EXTRA_NOT_ALLOWED}checks")),
+        page.body
+            .contains(&format!("{EXTRA_NOT_ALLOWED}<code>checks</code>")),
         "{}",
         page.body
     );

@@ -1,5 +1,6 @@
 use super::{
-    GrantedPermissions, Level, Permission, PermissionError, PermissionSet, SENSITIVE, is_sensitive,
+    GrantedPermissions, Level, MEANINGS, Permission, PermissionError, PermissionSet, SENSITIVE,
+    is_sensitive, sensitive_meaning,
 };
 
 fn set(text: &str) -> PermissionSet {
@@ -223,4 +224,30 @@ fn granted_permissions_refuse_malformed_entries() {
         );
     }
     assert!(GrantedPermissions::parse(&format!("{}:read", "a".repeat(64))).is_ok());
+}
+
+#[test]
+fn every_sensitive_name_has_its_own_meaning() {
+    let names: Vec<_> = MEANINGS.iter().map(|(name, _)| *name).collect();
+    assert_eq!(names, SENSITIVE);
+    for name in SENSITIVE {
+        let meaning = sensitive_meaning(name);
+        assert!(!meaning.is_empty(), "{name}");
+        assert_ne!(meaning, sensitive_meaning("checks"), "{name}");
+    }
+    assert_eq!(
+        sensitive_meaning("workflows"),
+        "change GitHub Actions workflows, which run with the repository's secrets"
+    );
+}
+
+#[test]
+fn written_form_without_metadata() {
+    let parsed = GrantedPermissions::parse("workflows:write,checks:read").unwrap();
+    assert_eq!(
+        parsed.without_metadata().as_deref(),
+        Some("checks:read,workflows:write")
+    );
+    let only = GrantedPermissions::parse("metadata:read").unwrap();
+    assert_eq!(only.without_metadata(), None);
 }

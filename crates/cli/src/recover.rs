@@ -8,6 +8,7 @@
 
 use anyhow::Result;
 use warden_broker_proto::doctor::sanitize;
+use warden_broker_proto::github_permissions::GrantedPermissions;
 use warden_broker_proto::{Access, GrantAccess, GrantView, Id, PendingRequest};
 
 use crate::client::Client;
@@ -71,7 +72,17 @@ pub fn broker_grant_line(grant: &GrantView, local: &[Id]) -> String {
         GrantAccess::CommitSigning(signing) => {
             format!("commit signing with {}", signing.key_fingerprint)
         }
-        GrantAccess::GithubToken(token) => token.repositories.summary(),
+        GrantAccess::GithubToken(token) => {
+            let line = token.repositories.summary();
+            match token
+                .extra_permissions
+                .as_ref()
+                .and_then(GrantedPermissions::without_metadata)
+            {
+                Some(extras) => format!("{line} +{extras}"),
+                None => line,
+            }
+        }
         GrantAccess::Release(release) => {
             format!("release {} of {}", release.tag, release.repository)
         }
@@ -234,6 +245,7 @@ pub async fn collect(grant_id: &Id) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use warden_broker_proto::github_permissions::GrantedPermissions;
     use warden_broker_proto::github_token::{GrantRepository, GrantScope};
     use warden_broker_proto::release::RepoName;
     use warden_broker_proto::{
@@ -330,7 +342,7 @@ mod tests {
                 installation_id: 7,
                 digest: "d".repeat(64),
                 repositories: GrantScope::Legacy,
-                permissions: warden_broker_proto::github_permissions::GrantedPermissions::legacy(),
+                permissions: GrantedPermissions::legacy(),
                 extra_permissions: None,
             }),
         };
@@ -358,7 +370,7 @@ mod tests {
                 installation_id: 7,
                 digest: "d".repeat(64),
                 repositories,
-                permissions: warden_broker_proto::github_permissions::GrantedPermissions::legacy(),
+                permissions: GrantedPermissions::legacy(),
                 extra_permissions: None,
             }),
         }
@@ -391,6 +403,27 @@ mod tests {
             legacy.contains("github token (all repositories)"),
             "{legacy}"
         );
+    }
+
+    /// The status line of a legacy-scope GitHub grant asked for `extras`.
+    fn line_with_extras(extras: Option<&str>) -> String {
+        let mut grant = github_grant_view(GrantScope::Legacy);
+        if let GrantAccess::GithubToken(token) = &mut grant.access {
+            token.extra_permissions = extras.map(|e| GrantedPermissions::parse(e).unwrap());
+        }
+        broker_grant_line(&grant, &[])
+    }
+
+    #[test]
+    fn status_line_shows_extras() {
+        let line = line_with_extras(Some("checks:read,workflows:write"));
+        assert!(
+            line.contains("github token (all repositories) +checks:read,workflows:write  grant "),
+            "{line}"
+        );
+        // No extras, or only the metadata every set has, shows none.
+        assert!(!line_with_extras(Some("metadata:read")).contains(" +"));
+        assert!(!line_with_extras(None).contains(" +"));
     }
 
     #[test]

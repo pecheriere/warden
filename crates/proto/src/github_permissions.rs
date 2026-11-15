@@ -80,6 +80,116 @@ pub fn is_sensitive(name: &str) -> bool {
     SENSITIVE.contains(&name)
 }
 
+/// What each [`SENSITIVE`] permission allows, in the words of GitHub's documentation
+/// of fine-grained permissions, in the order of [`SENSITIVE`]. A test holds the two
+/// lists to the same names.
+const MEANINGS: &[(&str, &str)] = &[
+    (
+        "administration",
+        "manage the repository's settings, collaborators and branch protection, and delete it",
+    ),
+    (
+        "dependabot_secrets",
+        "read and write the repository's Dependabot secrets",
+    ),
+    (
+        "environments",
+        "read and change the repository's deployment environments, including their protection rules",
+    ),
+    (
+        "organization_administration",
+        "manage the organization's settings, members and teams",
+    ),
+    (
+        "organization_announcement_banners",
+        "read and change the organization's announcement banner",
+    ),
+    (
+        "organization_copilot_agent_settings",
+        "read and change the organization's Copilot agent settings",
+    ),
+    (
+        "organization_copilot_requests",
+        "make Copilot requests on the organization's account, which it pays for",
+    ),
+    (
+        "organization_copilot_seat_management",
+        "add and remove the organization's Copilot seats",
+    ),
+    (
+        "organization_custom_org_roles",
+        "read and define the organization's custom organization roles",
+    ),
+    (
+        "organization_custom_properties",
+        "read and define the organization's custom properties, and set them for all its repositories",
+    ),
+    (
+        "organization_custom_roles",
+        "read and define the organization's custom repository roles",
+    ),
+    (
+        "organization_events",
+        "read the organization's events, including activity in its private repositories",
+    ),
+    (
+        "organization_external_properties_for_repos",
+        "read and change the organization's custom properties for its repositories",
+    ),
+    (
+        "organization_hooks",
+        "create and change the organization's webhooks, which keep sending its events after the grant ends",
+    ),
+    (
+        "organization_packages",
+        "read, publish and delete the organization's packages",
+    ),
+    (
+        "organization_personal_access_token_requests",
+        "approve or deny requests for personal access tokens on the organization",
+    ),
+    (
+        "organization_personal_access_tokens",
+        "list and revoke the personal access tokens that can reach the organization",
+    ),
+    ("organization_plan", "read the organization's billing plan"),
+    (
+        "organization_projects",
+        "read and change all of the organization's projects",
+    ),
+    (
+        "organization_secrets",
+        "read and write the organization's secrets",
+    ),
+    (
+        "organization_self_hosted_runners",
+        "manage the organization's self-hosted runners, which run its workflows",
+    ),
+    (
+        "organization_user_blocking",
+        "block and unblock users from the organization",
+    ),
+    (
+        "repository_hooks",
+        "create and change the repository's webhooks, which keep sending its events after the grant ends",
+    ),
+    ("secrets", "read and write the repository's secrets"),
+    (
+        "workflows",
+        "change GitHub Actions workflows, which run with the repository's secrets",
+    ),
+];
+
+/// What the sensitive permission `name` allows, as one fixed phrase that completes
+/// "can ...". Any other name gets a general phrase, so a caller never shows nothing.
+#[must_use]
+pub fn sensitive_meaning(name: &str) -> &'static str {
+    MEANINGS
+        .iter()
+        .find(|(known, _)| *known == name)
+        .map_or("reach beyond the repository's code", |(_, meaning)| meaning)
+}
+
 /// How much a permission allows. `write` covers `read`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Level {
@@ -399,6 +509,18 @@ impl GrantedPermissions {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// The written form without `metadata:read`, which every set holds, or `None`
+    /// when nothing else is in it. This is how a line about extras names them.
+    #[must_use]
+    pub fn without_metadata(&self) -> Option<String> {
+        let rest: Vec<&str> = self
+            .0
+            .split(',')
+            .filter(|entry| *entry != "metadata:read")
+            .collect();
+        (!rest.is_empty()).then(|| rest.join(","))
     }
 
     /// The set, read strictly: every name known, sensitive ones included.

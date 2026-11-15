@@ -8,6 +8,7 @@
 mod accessibility;
 mod approve_page;
 mod format;
+mod github_extras_page;
 mod github_fixtures;
 mod github_page;
 mod grants_page;
@@ -515,6 +516,7 @@ fn kind_pages() -> impl Iterator<Item = (&'static str, Markup)> {
     commit_signing_pages()
         .into_iter()
         .chain(github_fixtures::github_token_pages())
+        .chain(github_fixtures::github_extras_pages())
         .chain(release_fixtures::release_pages())
         .chain(longest_fingerprint_pages())
 }

@@ -234,6 +234,15 @@ impl GithubTokenAccess {
         self.repositories.is_empty()
     }
 
+    /// Whether the extra permissions include a sensitive one, which limits the grant
+    /// to [`crate::Window::GITHUB_TOKEN_SENSITIVE`].
+    #[must_use]
+    pub fn has_sensitive_extra(&self) -> bool {
+        self.extra_permissions
+            .as_ref()
+            .is_some_and(|extras| extras.sensitive().next().is_some())
+    }
+
     /// The repository names joined with `, `, as the pages and `warden status` show them.
     #[must_use]
     pub fn names(&self) -> String {

@@ -3,9 +3,11 @@
 use maud::{Markup, html};
 
 use super::{
-    destination_access, github_token, icon, key_icon, layout, release, stated_fields, window_words,
-    windows_for,
+    default_window, destination_access, github_token, icon, key_icon, layout, release,
+    stated_fields, window_words, windows_for,
 };
+use warden_broker_proto::{Access, Window};
+
 use crate::requests::{Destination, LinkHosts, PendingView, window_label};
 
 /// The approval page for a pending request: the details on one side, the
@@ -13,8 +15,15 @@ use crate::requests::{Destination, LinkHosts, PendingView, window_label};
 #[must_use]
 pub fn approve(view: &PendingView, hosts: &LinkHosts, now: i64) -> Markup {
     let max = view.destination.max_window();
-    let default = view.request.window.min(max);
     let remaining = (view.expires_at - now).max(0);
+    let choices: Vec<Window> = windows_for(&view.destination, &view.request)
+        .iter()
+        .copied()
+        .filter(|w| *w <= max)
+        .collect();
+    let sensitive =
+        matches!(&view.request.access, Access::GithubToken(a) if a.has_sensitive_extra());
+    let default = default_window(&choices, view.request.window, max);
     let clock = html! {
         circle cx="12" cy="12" r="9" {}
         path d="M12 7v5l3 2" {}
@@ -68,34 +77,7 @@ pub fn approve(view: &PendingView, hosts: &LinkHosts, now: i64) -> Markup {
                     @if let Some(message) = &not_approvable {
                         (message)
                     } @else {
-                        fieldset {
-                            legend.label { "Grant for" }
-                            // A release has one lifetime, said once below, so no cap to explain.
-                            @let capped_by = match view.destination {
-                                Destination::Ssh(_) => Some("target"),
-                                Destination::Api(_) => Some("secret"),
-                                Destination::CommitSigning(_) => Some("signing key"),
-                                Destination::GithubToken(_) => Some("GitHub App"),
-                                Destination::Release(_) => None,
-                            };
-                            @if let (true, Some(noun)) = (view.request.window > max, capped_by) {
-                                p.detail.capped {
-                                    "Asked for " (window_words(view.request.window)) "; at most "
-                                    (window_words(max)) " for this " (noun) "."
-                                }
-                            }
-                            @if matches!(view.destination, Destination::Release(_)) {
-                                p.detail { (release::LIFETIME) }
-                            }
-                            div.seg {
-                                @for window in windows_for(&view.destination).iter().copied().filter(|w| *w <= max) {
-                                    @let id = format!("window-{}", window_label(window));
-                                    input #(id) type="radio" name="window"
-                                        value=(window_label(window)) checked[window == default];
-                                    label for=(id) { (window_words(window)) }
-                                }
-                            }
-                        }
+                        (window_picker(view, &choices, default, sensitive))
                     }
                     div.btns {
                         @if not_approvable.is_none() {
@@ -111,4 +93,50 @@ pub fn approve(view: &PendingView, hosts: &LinkHosts, now: i64) -> Markup {
         }
     };
     layout("Approve access", None, true, &content)
+}
+
+/// The grant window picker: the `choices`, `default` selected, and what caps them.
+fn window_picker(
+    view: &PendingView,
+    choices: &[Window],
+    default: Window,
+    sensitive: bool,
+) -> Markup {
+    let max = view.destination.max_window();
+    html! {
+        fieldset {
+            legend.label { "Grant for" }
+            // A release has one lifetime, said once below, so no cap to explain.
+            @let capped_by = match view.destination {
+                Destination::Ssh(_) => Some("target"),
+                Destination::Api(_) => Some("secret"),
+                Destination::CommitSigning(_) => Some("signing key"),
+                Destination::GithubToken(_) => Some("GitHub App"),
+                Destination::Release(_) => None,
+            };
+            @if let (true, Some(noun)) = (view.request.window > max, capped_by) {
+                p.detail.capped {
+                    "Asked for " (window_words(view.request.window)) "; at most "
+                    (window_words(max)) " for this " (noun) "."
+                }
+            }
+            @if sensitive && view.request.window <= max && !choices.contains(&view.request.window) {
+                p.detail.capped {
+                    "Asked for " (window_words(view.request.window))
+                    "; a grant with a sensitive permission lasts at most 1 h."
+                }
+            }
+            @if matches!(view.destination, Destination::Release(_)) {
+                p.detail { (release::LIFETIME) }
+            }
+            div.seg {
+                @for window in choices.iter().copied() {
+                    @let id = format!("window-{}", window_label(window));
+                    input #(id) type="radio" name="window"
+                        value=(window_label(window)) checked[window == default];
+                    label for=(id) { (window_words(window)) }
+                }
+            }
+        }
+    }
 }

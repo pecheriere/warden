@@ -361,3 +361,45 @@ async fn approving_a_sensitive_request_takes_a_short_window_only() {
         set("workflows:write")
     );
 }
+
+/// The approval page of `request` under a policy that allows `workflows:write` and
+/// `checks:read` beyond the legacy default.
+async fn extras_page(request: CreateRequest) -> String {
+    let (broker, _key, upstream) = configured_on_fake().await;
+    allow(&broker, LEGACY, "checks:read,workflows:write");
+    let (_, token) = broker.create_request("bot", request).await;
+    upstream.script_github_token(resolved(&broker, &[(1001, REPO)]));
+    upstream.answer_github_installation(Some(installation(&[
+        ("checks", "read"),
+        ("contents", "write"),
+        ("issues", "write"),
+        ("metadata", "read"),
+        ("pull_requests", "write"),
+        ("workflows", "write"),
+    ])));
+    let page = broker.get(&format!("/approve/{token}")).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    page.body
+}
+
+fn offered(body: &str) -> Vec<&'static str> {
+    ["15m", "30m", "1h", "4h", "1d", "7d", "30d"]
+        .into_iter()
+        .filter(|w| body.contains(&format!("value=\"{w}\"")))
+        .collect()
+}
+
+#[tokio::test]
+async fn sensitive_request_page_offers_short_windows_only() {
+    let body = extras_page(with_extras(Window::M30, "workflows:write")).await;
+    assert_eq!(offered(&body), ["15m", "30m", "1h"], "{body}");
+    assert!(body.contains(r#"value="30m" checked"#), "{body}");
+    assert!(
+        body.contains(r#"<code class="perm sensitive">workflows: write</code>"#),
+        "{body}"
+    );
+    // The same extras that are not sensitive keep the long windows.
+    let body = extras_page(with_extras(Window::D7, "checks:read")).await;
+    assert_eq!(offered(&body), ["1d", "7d", "30d"], "{body}");
+    assert!(body.contains(r#"value="7d" checked"#), "{body}");
+}

@@ -60,11 +60,7 @@ pub(super) fn check_window_for(
     max: Window,
     access: &GithubTokenAccess,
 ) -> Result<(), String> {
-    let sensitive = access
-        .extra_permissions
-        .as_ref()
-        .is_some_and(|extras| extras.sensitive().next().is_some());
-    if !sensitive {
+    if !access.has_sensitive_extra() {
         return check_window(window, max);
     }
     if !window.is_github_token_sensitive() {

@@ -286,6 +286,7 @@ fn grant_access(grant: &ActiveGrant) -> Markup {
             token.installation_id,
             &token.repositories,
             &token.permissions,
+            token.extra_permissions.as_ref(),
         ),
         GrantAccess::Release(release) => release::grant_access(release, grant.release),
     }
@@ -305,12 +306,34 @@ const fn window_words(window: Window) -> &'static str {
     }
 }
 
-/// The windows a grant of `destination` can have, shortest first.
-const fn windows_for(destination: &Destination) -> &'static [Window] {
+/// The windows a grant of `destination` for `request` can have, shortest first. A
+/// GitHub token request whose extra permissions include a sensitive one has only the
+/// short ones, as approval enforces.
+fn windows_for(destination: &Destination, request: &CreateRequest) -> &'static [Window] {
     match destination {
         Destination::CommitSigning(_) => &Window::COMMIT_SIGNING,
-        Destination::GithubToken(_) => &Window::GITHUB_TOKEN,
+        Destination::GithubToken(_) => match &request.access {
+            Access::GithubToken(access) if access.has_sensitive_extra() => {
+                &Window::GITHUB_TOKEN_SENSITIVE
+            }
+            _ => &Window::GITHUB_TOKEN,
+        },
         Destination::Release(_) => &Window::RELEASE,
         Destination::Ssh(_) | Destination::Api(_) => &WINDOWS,
     }
+}
+
+/// The window the picker starts on, from the `choices` the page offers (shortest
+/// first, none above `max`): the one asked for, else the shortest that covers it,
+/// else 1 hour when offered, else the longest offered. A request for 30 days with a
+/// sensitive extra therefore starts on 1 hour.
+fn default_window(choices: &[Window], asked: Window, max: Window) -> Window {
+    let asked = asked.min(max);
+    choices
+        .iter()
+        .copied()
+        .find(|w| *w >= asked)
+        .or_else(|| choices.contains(&Window::H1).then_some(Window::H1))
+        .or_else(|| choices.last().copied())
+        .unwrap_or(asked)
 }

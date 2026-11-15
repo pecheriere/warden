@@ -355,7 +355,7 @@ fn page_says_which_extras_the_allowlist_no_longer_holds() {
     assert!(
         html.contains(
             "This request cannot be approved: this broker does not allow that extra GitHub \
-             permission: actions, checks."
+             permission: <code>actions</code>, <code>checks</code>."
         ),
         "{html}"
     );

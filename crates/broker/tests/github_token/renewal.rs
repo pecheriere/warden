@@ -547,7 +547,8 @@ async fn renewal_with_disallowed_extra_is_unapprovable_and_says_which() {
     let page = broker.get(&format!("/approve/{token}")).await;
     assert!(page.body.contains("cannot be approved"), "{}", page.body);
     assert!(
-        page.body.contains(&format!("{EXTRA_NOT_ALLOWED}checks")),
+        page.body
+            .contains(&format!("{EXTRA_NOT_ALLOWED}<code>checks</code>")),
         "{}",
         page.body
     );
