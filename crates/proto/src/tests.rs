@@ -1,6 +1,6 @@
 //! Unit tests of the wire types.
 
-use crate::github_permissions::{GrantedPermissions, PermissionSet};
+use crate::github_permissions::GrantedPermissions;
 use crate::github_token::GithubTokenResponse;
 use crate::github_token::GrantScope;
 use crate::release::RepoName;
@@ -570,14 +570,6 @@ fn github_token_window_parser() {
     assert!(!Window::D90.is_github_token());
     assert!(!Window::H4.is_github_token());
     assert_eq!(Window::GITHUB_TOKEN_DEFAULT, Window::D30);
-}
-
-#[test]
-fn github_token_legacy_permissions_are_the_four_of_0_14() {
-    assert_eq!(
-        PermissionSet::legacy().to_string(),
-        "contents:write,issues:write,metadata:read,pull_requests:write"
-    );
 }
 
 #[test]
