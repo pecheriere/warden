@@ -17,6 +17,11 @@ use warden_broker_proto::{AgentName, Id, RequestStatus, Window};
 
 use warden_broker::testkit::wait::HANG;
 
+/// How long a change waits for its held entries here: shorter than the real 2 s,
+/// so that these tests do not wait it out. The append is held throughout, so the
+/// change gives up the same way however long it waits.
+const SHORT_WRITE_WAIT: Duration = Duration::from_millis(50);
+
 fn bot() -> AgentName {
     AgentName::try_from("bot".to_owned()).unwrap()
 }
@@ -73,6 +78,11 @@ async fn api_grant() -> (TestBroker, String, Id) {
     let RequestStatus::Approved(view) = status else {
         panic!("expected approved");
     };
+    broker
+        .state()
+        .requests
+        .set_audit_write_wait(SHORT_WRITE_WAIT)
+        .await;
     (broker, key, view.grant_id)
 }
 
@@ -189,9 +199,12 @@ async fn the_agent_revoke_command_path_commits_and_answers_with_appends_held() {
     assert_eq!(refused.status, StatusCode::UNAUTHORIZED, "{}", refused.body);
 
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
-    let written = tokio::time::timeout(HANG, requests::write_entries(pool, &audit, &clock))
-        .await
-        .expect("writing the entries waited for the audit log");
+    let written = tokio::time::timeout(
+        HANG,
+        requests::write_entries_within(pool, &audit, &clock, SHORT_WRITE_WAIT),
+    )
+    .await
+    .expect("writing the entries waited for the audit log");
     assert_eq!(written.outcome, AuditOutcome::Missing);
     assert!(stall.holding() >= 2);
     assert_ne!(requests::unwritten_entries(pool).await.unwrap().len(), 0);
@@ -208,6 +221,11 @@ async fn denying_commits_and_answers_with_appends_held() {
         .create_request("bot", TestBroker::pi_request("first", Window::M15))
         .await;
     until_recorded(&broker, "notified").await;
+    broker
+        .state()
+        .requests
+        .set_audit_write_wait(SHORT_WRITE_WAIT)
+        .await;
     let audit = broker.state().audit.clone();
     let stall = audit.stall_appends(|_| true);
     other_writer_held(&broker, &stall).await;

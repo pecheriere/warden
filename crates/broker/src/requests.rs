@@ -40,6 +40,8 @@ pub mod revocation;
 mod transition;
 
 pub(crate) use self::renewal::renewable;
+#[cfg(feature = "testkit")]
+pub use self::revocation::write_entries_within;
 pub use self::revocation::{AuditOutcome, EntriesWritten, unwritten_entries, write_entries};
 pub(crate) use self::transition::{begin, note_if_not_applied, record};
 
@@ -451,6 +453,10 @@ pub struct Requests {
     proxy_calls: Arc<CallSlots>,
     /// Held while writing the waiting audit entries to the log.
     entry_writer: Arc<tokio::sync::Mutex<()>>,
+    /// How long a change waits for its entries to be written, when a test has
+    /// shortened it: see [`Requests::set_audit_write_wait`].
+    #[cfg(feature = "testkit")]
+    write_wait: Arc<tokio::sync::RwLock<std::time::Duration>>,
     /// Held from checking a change that gives access until it is applied. Its entry
     /// is written in between, outside any transaction, and without this two racing
     /// changes would both pass the check and both be recorded.
@@ -559,6 +565,8 @@ impl Requests {
             sessions: LiveSessions::new(),
             proxy_calls: CallSlots::new(calls.max_calls_per_agent, calls.max_calls),
             entry_writer: Arc::default(),
+            #[cfg(feature = "testkit")]
+            write_wait: Arc::new(tokio::sync::RwLock::new(revocation::WRITE_WAIT)),
             recorded_change: Arc::default(),
             limits: RequestLimits::default(),
             refusals: Arc::default(),
