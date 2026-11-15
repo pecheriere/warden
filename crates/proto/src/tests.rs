@@ -542,6 +542,7 @@ fn github_token_grant_serde_shape() {
         digest: "ab12".to_owned(),
         repositories: GrantScope::Legacy,
         permissions: GrantedPermissions::legacy(),
+        extra_permissions: None,
     });
     let value = serde_json::to_value(&grant).unwrap();
     assert_eq!(

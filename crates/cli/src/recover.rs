@@ -331,6 +331,7 @@ mod tests {
                 digest: "d".repeat(64),
                 repositories: GrantScope::Legacy,
                 permissions: warden_broker_proto::github_permissions::GrantedPermissions::legacy(),
+                extra_permissions: None,
             }),
         };
         assert_eq!(elsewhere_note(&grant, &[]), "");
@@ -358,6 +359,7 @@ mod tests {
                 digest: "d".repeat(64),
                 repositories,
                 permissions: warden_broker_proto::github_permissions::GrantedPermissions::legacy(),
+                extra_permissions: None,
             }),
         }
     }
@@ -395,6 +397,7 @@ mod tests {
     fn access_summary_names_repositories() {
         let access = GithubTokenAccess::new(
             vec![RepoName::try_from("example-owner/example-repo".to_owned()).unwrap()],
+            None,
             None,
         )
         .unwrap();

@@ -6,9 +6,11 @@
 //! agent's minting.
 
 use sqlx::Row as _;
-use warden_broker_proto::github_token::GrantRepository;
+use warden_broker_proto::github_token::{GrantRepository, SENSITIVE_WINDOW};
 use warden_broker_proto::release::RepoName;
-use warden_broker_proto::{AgentName, GithubTokenGrant, GrantAccess, Id, Window};
+use warden_broker_proto::{
+    AgentName, GithubTokenAccess, GithubTokenGrant, GrantAccess, Id, Window,
+};
 
 use super::{RequestError, Requests, parse};
 use crate::audit::{AuditEvent, bounded_text};
@@ -46,6 +48,27 @@ pub const MINTS_PER_HOUR: u32 = 60;
 pub(super) fn check_window(window: Window, max: Window) -> Result<(), String> {
     if !window.is_github_token() {
         return Err("a GitHub token grant lasts 1d, 7d or 30d".to_owned());
+    }
+    super::check_window(window, max, "GitHub tokens")
+}
+
+/// Whether a GitHub token request for `access` may have `window`, under the
+/// server's `max`: a request whose extra permissions include a sensitive one only
+/// the short windows, any other only the long ones.
+pub(super) fn check_window_for(
+    window: Window,
+    max: Window,
+    access: &GithubTokenAccess,
+) -> Result<(), String> {
+    let sensitive = access
+        .extra_permissions
+        .as_ref()
+        .is_some_and(|extras| extras.sensitive().next().is_some());
+    if !sensitive {
+        return check_window(window, max);
+    }
+    if !window.is_github_token_sensitive() {
+        return Err(SENSITIVE_WINDOW.to_owned());
     }
     super::check_window(window, max, "GitHub tokens")
 }

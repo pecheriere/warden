@@ -10,6 +10,7 @@ use warden_broker::testkit::upstream::{HttpsUpstream, Received, installation_jso
 use warden_broker::testkit::{TestBroker, github_app_key};
 use warden_broker_proto::Window;
 
+mod extras;
 mod legacy;
 mod mint;
 mod overlap;

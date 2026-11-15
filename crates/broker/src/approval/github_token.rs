@@ -49,10 +49,18 @@ pub(super) fn grant(
         "the request has no resolved repositories".to_owned(),
     ))?;
     let (not_before, not_after) = validity(window, now)?;
+    let extras = match &view.request.access {
+        Access::GithubToken(access) => access.extra_permissions.clone(),
+        _ => None,
+    };
     Ok(GrantView {
         grant_id: Id::random(),
         not_before,
         not_after,
-        access: GrantAccess::GithubToken(policy.grant(scope, github.permissions.full.clone())),
+        access: GrantAccess::GithubToken(policy.grant(
+            scope,
+            github.permissions.full.clone(),
+            extras,
+        )),
     })
 }

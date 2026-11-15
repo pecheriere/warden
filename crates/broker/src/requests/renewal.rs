@@ -297,8 +297,12 @@ impl Requests {
         let renewing = renewing_scope(&row, kind)?;
         let access = match &renewing {
             Some(scope) => Access::GithubToken(
-                GithubTokenAccess::new(scope.list().iter().map(|r| r.name.clone()).collect(), None)
-                    .map_err(|_| RequestError::Corrupt("a grant's repositories".to_owned()))?,
+                GithubTokenAccess::new(
+                    scope.list().iter().map(|r| r.name.clone()).collect(),
+                    None,
+                    None,
+                )
+                .map_err(|_| RequestError::Corrupt("a grant's repositories".to_owned()))?,
             ),
             None => Access::CommitSigning {},
         };
@@ -325,7 +329,10 @@ impl Requests {
             _ => format!("{agent}|{}", kind.kind()),
         };
         self.expire_due(Scope::Dedupe(dedupe_key.clone())).await?;
-        if let Some(existing) = self.pending_in_slot(&dedupe_key).await? {
+        if let Some(existing) = self
+            .pending_in_request_slot(&dedupe_key, &req.access)
+            .await?
+        {
             // The request already there may hold no resolution yet (the agent's own, not
             // yet opened, or a renewal whose row was not written): without one the page
             // resolves by name, and a repository recreated under it would be taken for

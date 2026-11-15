@@ -26,7 +26,7 @@ pub(crate) async fn request_github(
     goal: Goal,
     context: RequestContext,
 ) -> Result<()> {
-    let access = GithubTokenAccess::new(repositories.clone(), None)
+    let access = GithubTokenAccess::new(repositories.clone(), None, None)
         .map_err(|e| Exit::new(EXIT_USAGE, format!("{e}")))?;
     let (session, link) = resolve_context(context)?;
     let (config, client) = client()?;
@@ -120,8 +120,8 @@ fn tool_access(
 ) -> Result<GithubTokenAccess> {
     let dir = dir.and_then(Path::to_str).map(str::to_owned);
     let automatic = |dir| Some(AutomaticRequest { by: caller, dir });
-    GithubTokenAccess::new(vec![repository.clone()], automatic(dir))
-        .or_else(|_| GithubTokenAccess::new(vec![repository.clone()], automatic(None)))
+    GithubTokenAccess::new(vec![repository.clone()], automatic(dir), None)
+        .or_else(|_| GithubTokenAccess::new(vec![repository.clone()], automatic(None), None))
         .context("cannot build the GitHub token request")
 }
 

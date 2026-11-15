@@ -95,6 +95,17 @@ impl Window {
         matches!(self, Self::D1 | Self::D7 | Self::D30)
     }
 
+    /// The windows of a GitHub token grant whose extra permissions include a
+    /// sensitive one, shortest first. No other GitHub token grant has them.
+    pub const GITHUB_TOKEN_SENSITIVE: [Self; 3] = [Self::M15, Self::M30, Self::H1];
+
+    /// Whether this is one of the windows of a GitHub token grant with a sensitive
+    /// permission.
+    #[must_use]
+    pub const fn is_github_token_sensitive(self) -> bool {
+        matches!(self, Self::M15 | Self::M30 | Self::H1)
+    }
+
     /// The windows a release grant may have: one day.
     pub const RELEASE: [Self; 1] = [Self::D1];
 

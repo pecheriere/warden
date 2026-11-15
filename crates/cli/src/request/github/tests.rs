@@ -72,6 +72,7 @@ fn grant(scope: GrantScope) -> GrantView {
             digest: "ab".repeat(16),
             repositories: scope,
             permissions: warden_broker_proto::github_permissions::GrantedPermissions::legacy(),
+            extra_permissions: None,
         }),
     }
 }

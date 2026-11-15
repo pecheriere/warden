@@ -26,7 +26,7 @@ pub(super) fn name(text: &str) -> RepoName {
 }
 
 pub(super) fn access(names: &[&str], automatic: Option<AutomaticRequest>) -> GithubTokenAccess {
-    GithubTokenAccess::new(names.iter().map(|n| name(n)).collect(), automatic).unwrap()
+    GithubTokenAccess::new(names.iter().map(|n| name(n)).collect(), automatic, None).unwrap()
 }
 
 pub(super) fn github_token_request_for(access: GithubTokenAccess) -> CreateRequest {
@@ -203,7 +203,7 @@ pub(super) fn github_grant(n: u8, scope: GrantScope) -> crate::requests::ActiveG
     let mut grant = active(
         n,
         github_token_request(),
-        GrantAccess::GithubToken(github_token_policy().grant(scope, PermissionSet::legacy())),
+        GrantAccess::GithubToken(github_token_policy().grant(scope, PermissionSet::legacy(), None)),
     );
     grant.not_after = NOW + 26 * 86_400;
     grant

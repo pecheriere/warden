@@ -5,7 +5,6 @@ use std::sync::Arc;
 
 use sqlx::{Row as _, SqliteConnection};
 use url::Url;
-use warden_broker_proto::release::RepoName;
 use warden_broker_proto::{
     Access, AgentName, CreateRequest, CreatedResponse, GithubTokenAccess, Id, TargetName, Window,
     fingerprint,
@@ -95,7 +94,10 @@ impl Requests {
                 let mut conn = self.pool.acquire().await?;
                 check_key_unbound(&mut conn, agent, target, public_key, self.clock.now()).await?;
             }
-            if let Some(existing) = self.pending_in_slot(&dedupe_key).await? {
+            if let Some(existing) = self
+                .pending_in_request_slot(&dedupe_key, &req.access)
+                .await?
+            {
                 return Ok(existing);
             }
             let token = approval_token()?;
@@ -140,7 +142,10 @@ impl Requests {
             match inserted {
                 Ok(created) => return Ok(created),
                 Err(RequestError::Db(sqlx::Error::Database(e))) if e.is_unique_violation() => {
-                    if let Some(existing) = self.pending_in_slot(&dedupe_key).await? {
+                    if let Some(existing) = self
+                        .pending_in_request_slot(&dedupe_key, &req.access)
+                        .await?
+                    {
                         return Ok(existing);
                     }
                     // The other request was decided meanwhile; try again.
@@ -162,13 +167,14 @@ impl Requests {
         github_scope::check_request(github)?;
         // Does not read the key: any enrolled agent can get this far. No App is
         // refused as not configured, an unusable one as unavailable.
-        let permissions = self.new_github_permissions().await?;
-        github_token::check_window(window, self.github_token_max)
+        let permissions = self
+            .new_github_permissions(github.extra_permissions.as_ref())
+            .await?;
+        github_token::check_window_for(window, self.github_token_max, github)
             .map_err(RequestError::Rejected)?;
-        let names: Vec<&str> = github.repositories.iter().map(RepoName::as_str).collect();
         Ok(Checked {
             dedupe_key: format!("{agent}|github_token|{}", github.slot()),
-            subject: format!("github token for {}", names.join(", ")),
+            subject: github.summary(),
             release: None,
             existing: None,
             permissions: Some(permissions),
