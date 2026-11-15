@@ -23,7 +23,7 @@ set it up.
 - **The permissions you configure**: by default `contents` write, `pull_requests` write,
   `issues` write and `metadata` read. You can set a different default (see
   [Permissions](#permissions)). warden asks GitHub for the grant's set and nothing else,
-  whatever the App itself may do. Never `workflows` or `administration`: see the ceiling below.
+  whatever the App itself may do. Keep `workflows` and `administration` out of it: see [Sensitive permissions](#sensitive-permissions).
 - **One hour.** The token lasts as long as GitHub lets it, and the CLI gets a new one when
   less than 5 minutes of the old one remain.
 - **A grant of `1d`, `7d` or `30d`**, 30 days by default, up to
@@ -79,20 +79,29 @@ the `warden:github-app` item ([1Password items](1password-items.md#github-app)):
   `issues:write`, `metadata:read` and `pull_requests:write`, which is what warden granted
   before this setting existed.
 - `extra_permissions`: the permissions an agent may later ask for on top of the default.
-  warden reads and checks the field now, but no request can ask for an extra yet.
+  warden reads and checks the field now, but no request can ask for an extra yet, so listing
+  one has no effect until agents can.
 
 A set is written as `name:level` pairs separated by commas, such as
 `checks:read,contents:write,metadata:read`. The approval page lists the set, so you see it
 before you approve.
 
-**The ceiling.** No configuration lifts these, and a field that names one makes GitHub tokens
-unusable: `administration`, `workflows`, `secrets`, `environments`, `dependabot_secrets`,
-`repository_hooks` and every `organization_*` permission. Repository secrets, environments and
-workflow files let whoever holds a token change what runs with the repository's own
-credentials, which is more than a token that an agent holds for an hour should be able to do.
-A webhook keeps sending the repository's events to whoever created it after the token has
-expired and the grant is revoked, so `repository_hooks` would give access that outlives the
-grant.
+### Sensitive permissions
+
+These reach past a repository's code, or outlive the grant: `administration`, `workflows`,
+`secrets`, `environments`, `dependabot_secrets`, `repository_hooks` and the `organization_*`
+permissions GitHub documents for installation tokens (read from GitHub's REST documentation on
+2026-11-15). Repository secrets, environments and workflow files let whoever holds a token
+change what runs with the repository's own credentials. A webhook keeps sending the
+repository's events to whoever created it after the token has expired and the grant is revoked,
+so `repository_hooks` gives access that outlives the grant.
+
+warden does not refuse them by itself: you decide. They are allowed in `extra_permissions` only,
+so a sensitive permission reaches a grant only when an agent names it and you approve it. In
+`default_permissions` one makes GitHub tokens unusable, because every grant, including the
+30-day automatic ones of the git helper and `gh` wrapper, would hold it. Until agents can ask
+for extras, listing one in `extra_permissions` has no effect. A name that GitHub does not
+document, such as an `organization_*` one missing from its page, stays unknown and is refused.
 
 **The App must hold what you set.** The approval page reads the installation's permissions
 each time it is shown, begun or finished, and refuses a request whose set the installation
@@ -106,7 +115,7 @@ the grant's set, which the grants page lists. Where GitHub instead grants a toke
 the grant holds, the token is served with what GitHub granted, and the response and the audit
 entry list that.
 
-A field that is repeated, present but empty, not a valid set or over the ceiling makes the
+A field that is repeated, present but empty, not a valid set, or a `default_permissions` that holds a sensitive permission, makes the
 App unusable for GitHub tokens, the same as a bad `installation_id`: tokens are refused,
 and `warden-server doctor`'s `github-app` check fails and names the field, never its value.
 SSH, APIs, signing and releases keep working.

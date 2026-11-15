@@ -6,6 +6,15 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- The fixed ceiling on GitHub token permissions is replaced by sensitive permissions
+  (`administration`, `workflows`, `secrets`, `environments`, `dependabot_secrets`,
+  `repository_hooks` and the documented `organization_*` ones). They are refused in
+  `default_permissions`, which makes GitHub tokens unusable and fails doctor's `github-app`
+  check as any bad field does, and allowed in `extra_permissions`, which no request can use
+  yet. ([#308](https://github.com/pecheriere/warden/issues/308))
+
 ### Security
 
 - russh 0.65.1, with the fixes for GHSA-736f-c93q-9fwx and GHSA-9264-jvgf-6w2f. Neither reaches

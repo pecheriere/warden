@@ -55,7 +55,7 @@ owner sees on the phone that those two are extra and approves; from then on
   turns GitHub tokens off with a clear reason, and is never ignored.
 - An allowlist that lets an agent reach past the repository: workflows (run with the
   repository's secrets), administration (branch protection, rulesets), secrets, environments,
-  organization permissions. See the ceiling below.
+  organization permissions. See the sensitive permissions below.
 - A bad GitHub field taking down SSH, APIs or signing: only GitHub tokens stop.
 
 ## Constraints
@@ -115,13 +115,15 @@ names it (`checks`, `actions`, `pull_requests`, …) and `level` `read` or `writ
 - `write` covers `read`: a set that has `checks:write` satisfies a request for `checks:read`.
   This is today's `rank` comparison in `github_app/answer.rs`. **[call]**
 
-### The ceiling (owner's decision)
+### Sensitive permissions (owner's decision, amended 2026-11-15; replaces the ceiling)
 
-A fixed list in code that no configuration can lift: `administration`, `workflows`,
-`secrets`, `environments`, and every `organization_*` permission. A configured field that
-names one makes the GitHub App unusable (below), and the request parser refuses one. Lifting
-it is a code change and a release. The future sensitive tier (#279) is where some of these may
-come back, on short-lived tokens.
+The ceiling is gone: no permission is refused by code. `administration`, `workflows`, `secrets`,
+`environments`, `dependabot_secrets`, `repository_hooks` and the documented `organization_*`
+permissions are **sensitive**. They are allowed in `extra_permissions`, where the owner's
+allowlist decides, and a configured `default_permissions` that holds one makes the GitHub App
+unusable (below). A sensitive permission reaches a grant only when an agent asks for it as an
+extra and the owner approves; such a grant lasts at most one hour and the approval page marks it
+red. See `docs/superpowers/plans/2026-11-15-github-permissions-sensitive-amendment.md`.
 
 ### Owner configuration (owner's decision) (fields), **[call]** (details)
 
@@ -132,12 +134,12 @@ Two optional text fields on the item tagged `warden:github-app`:
 | `default_permissions` | The set every new grant gets. | Today's four. |
 | `extra_permissions` | The permissions a request may add, each at most at the level written. | No extras allowed. |
 
-- Both use the written form above. The default may be any set within the ceiling;
+- Both use the written form above. The default may be any set without a sensitive permission;
   `metadata:read` is added to it.
 - The broker reads the item when it uses it, as it does today (`OnePassword::github_app()`
   fetches and parses it at each mint, resolution, renewal and offers call); nothing reads it
   at startup. A field that is present but empty, cannot be parsed, names an unknown
-  permission or level, or breaks the ceiling makes the App unusable, exactly as a bad
+  permission or level, or a default that holds a sensitive permission, makes the App unusable, exactly as a bad
   `installation_id` does today: GitHub tokens are refused with the existing fixed error,
   and `doctor`'s `github-app` check fails with a fixed reason naming the field, never quoting
   its value. Everything else keeps working. **[call]**
@@ -156,7 +158,7 @@ Two optional text fields on the item tagged `warden:github-app`:
 - The wire access gains an optional `extra_permissions` set: what the agent asked for, stored
   as sent, so the fingerprint stays the agent's. The broker refuses at creation (400, a fixed
   message naming the permission) an extra outside the allowlist, above its allowed level, or
-  under the ceiling. **[call]**
+  a sensitive name the owner did not list. **[call]**
 - The broker then computes the **full set**, the default read at that moment plus the extras,
   and stores it beside the request (not in the agent's access). The full set is the one
   thing the grant will hold. An extra the default already covers is kept in what the agent
@@ -217,7 +219,7 @@ sizes, light and dark.
 - **Renewal rebuilds the set** as the current default plus the grant's extras (none for a
   grant stored before this change), so renewals follow the owner's current default and a
   narrowed default never strands a legacy grant. Each extra is checked against the current
-  allowlist and ceiling; one that is no longer allowed makes the renewal page unapprovable,
+  allowlist; one that is no longer allowed makes the renewal page unapprovable,
   saying which, and the agent asks again. The page marks the extras and shows how the full
   set differs from the grant being renewed, if it does.
 - The grants page and `warden status` show each GitHub grant's extras.
@@ -274,11 +276,11 @@ when the task needs them, name them with `--extra-permissions`, and say why in t
 
 ### Docs to update in the same change
 
-`README`, `docs/github-app.md` (the item fields, the ceiling), `docs/1password-items.md`,
+`README`, `docs/github-app.md` (the item fields, sensitive permissions), `docs/1password-items.md`,
 `docs/configuration.md` (CLI table, cache file version), `docs/agent-usage.md`,
 `docs/agent-instructions.md`, `docs/agent-protocol.md` (wire fields, the info flag),
 `docs/interfaces.md`, `docs/upgrading.md` (old grants keep four; upgrade the broker before
-using the new flags), `docs/threat-model.md` (what an agent can now hold; the ceiling),
+using the new flags), `docs/threat-model.md` (what an agent can now hold; sensitive permissions),
 `docs/assurance-case.md`, `docs/security-assessment.md` and its date (the risk moves),
 `CHANGELOG.md`.
 

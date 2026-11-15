@@ -84,9 +84,16 @@ pub(super) fn parse_permission_fields(
                 "item \"{title}\": field \"{label}\" is present but empty"
             )));
         }
-        PermissionSet::parse(value).map_err(|e: PermissionError| {
+        let set = PermissionSet::parse(value).map_err(|e: PermissionError| {
             PolicyError::GithubApp(format!("item \"{title}\": field \"{label}\": {e}"))
-        })
+        })?;
+        if label == DEFAULT_PERMISSIONS_FIELD && set.sensitive().next().is_some() {
+            return Err(PolicyError::GithubApp(format!(
+                "item \"{title}\": field \"{label}\": {}",
+                PermissionError::SensitiveInDefault
+            )));
+        }
+        Ok(set)
     };
     Ok(GithubPermissionPolicy {
         default: read(DEFAULT_PERMISSIONS_FIELD, PermissionSet::legacy())?,

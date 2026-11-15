@@ -75,7 +75,8 @@ instead of a constant. With no field set, nothing changes: the set is `contents`
 - The `permissions` of a `github_token_minted` entry is now what GitHub granted, in canonical
   order (sorted by name). It was the fixed four in a fixed order.
 - A bad `default_permissions` or `extra_permissions` makes GitHub tokens unusable, and `doctor`
-  names the field.
+  names the field. A sensitive permission (`workflows`, `administration` and the like) is
+  allowed in `extra_permissions` and refused in `default_permissions`.
 
 ## Repository-scoped GitHub grants
 

@@ -295,27 +295,41 @@ async fn bad_permission_field_makes_the_app_unusable() {
     }
 }
 
+const SENSITIVE_SAMPLE: [&str; 4] = [
+    "workflows:write",
+    "administration:read",
+    "secrets:read",
+    "organization_plan:read",
+];
+
 #[tokio::test]
-async fn ceiling_in_allowlist_makes_the_app_unusable() {
-    for ceiling in [
-        "workflows:write",
-        "administration:read",
-        "secrets:read",
-        "organization_plan:read",
-    ] {
-        let server = with_item(with_permissions(None, Some(ceiling))).await;
-        let err = backend(&server).github_permissions().await.unwrap_err();
-        assert!(
-            reason(&err).contains("field \"extra_permissions\""),
-            "{err:?}"
+async fn sensitive_in_allowlist_is_usable() {
+    for sensitive in SENSITIVE_SAMPLE {
+        let server = with_item(with_permissions(None, Some(sensitive))).await;
+        let policy = backend(&server).github_permissions().await.unwrap();
+        assert_eq!(policy.default, PermissionSet::legacy());
+        assert_eq!(
+            policy.allowed_extras,
+            PermissionSet::parse(sensitive).unwrap(),
+            "{sensitive}"
         );
-        assert!(!reason(&err).contains(ceiling), "{err:?}");
-        let server = with_item(with_permissions(Some(ceiling), None)).await;
-        let err = backend(&server).github_permissions().await.unwrap_err();
-        assert!(
-            reason(&err).contains("field \"default_permissions\""),
-            "{err:?}"
-        );
+        backend(&server).github_app().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn sensitive_in_default_makes_the_app_unusable() {
+    for sensitive in SENSITIVE_SAMPLE {
+        let server = with_item(with_permissions(Some(sensitive), None)).await;
+        for err in [
+            backend(&server).github_permissions().await.unwrap_err(),
+            backend(&server).github_app().await.unwrap_err(),
+        ] {
+            let why = reason(&err);
+            assert!(why.contains("field \"default_permissions\""), "{why}");
+            assert!(!why.contains(sensitive), "{why}");
+            assert!(why.contains("never in the default"), "{why}");
+        }
     }
 }
 
