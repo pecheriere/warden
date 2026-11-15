@@ -26,7 +26,11 @@ async fn probe_fails_when_nothing_listens() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     drop(listener);
-    assert!(health::probe(addr).await.is_err());
+    let err = health::probe(addr).await.unwrap_err();
+    assert!(
+        format!("{err:#}").contains("requesting http://127.0.0.1:"),
+        "{err:#}"
+    );
 }
 
 #[test]
@@ -39,7 +43,11 @@ fn listen_address_defaults_and_validates() {
         health::api_listen(|_| Some("0.0.0.0:9000".to_owned())).unwrap(),
         "0.0.0.0:9000".parse().unwrap()
     );
-    assert!(health::api_listen(|_| Some("nonsense".to_owned())).is_err());
+    let err = health::api_listen(|_| Some("nonsense".to_owned())).unwrap_err();
+    assert!(
+        err.to_string().contains("is not a socket address"),
+        "{err:#}"
+    );
 }
 
 #[test]

@@ -213,10 +213,7 @@ async fn write_bounded(
         Ok(Ok(Err(e))) => (Some(e.to_string()), i64::MAX),
         Ok(Err(e)) => (Some(e.to_string()), i64::MAX),
         Err(_) => (
-            Some(format!(
-                "the audit log did not answer within {} s",
-                wait.as_secs()
-            )),
+            Some(format!("the audit log did not answer within {wait:?}")),
             i64::MAX,
         ),
     };
@@ -251,15 +248,41 @@ pub async fn write_entries(
     write_bounded(pool, audit, &Arc::default(), clock, WRITE_WAIT).await
 }
 
+/// [`write_entries`], waiting at most `wait` instead of 2 s, so that a
+/// test of a stalled log does not wait out the real limit. It gives up the same
+/// way. Only the `testkit` feature builds it, so no configuration reaches it.
+#[cfg(feature = "testkit")]
+pub async fn write_entries_within(
+    pool: &SqlitePool,
+    audit: &Arc<AuditLog>,
+    clock: &Arc<dyn Clock>,
+    wait: Duration,
+) -> EntriesWritten {
+    write_bounded(pool, audit, &Arc::default(), clock, wait).await
+}
+
 impl Requests {
+    /// Make each change from now on wait at most `wait` for its entries to be
+    /// written, instead of 2 s, so that a test of a stalled log does
+    /// not wait out the real limit. It gives up the same way. Only the `testkit`
+    /// feature builds it, so no configuration reaches it.
+    #[cfg(feature = "testkit")]
+    pub async fn set_audit_write_wait(&self, wait: Duration) {
+        *self.write_wait.write().await = wait;
+    }
+
     /// Write the waiting entries, and report loudly if any must stay waiting.
     pub(super) async fn settle_entries(&self) -> AuditOutcome {
+        #[cfg(feature = "testkit")]
+        let wait = *self.write_wait.read().await;
+        #[cfg(not(feature = "testkit"))]
+        let wait = WRITE_WAIT;
         let written = write_bounded(
             &self.pool,
             &self.audit,
             &self.entry_writer,
             &self.clock,
-            WRITE_WAIT,
+            wait,
         )
         .await;
         if written.outcome == AuditOutcome::Missing {

@@ -5,12 +5,12 @@
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use ssh_key::{Algorithm, LineEnding};
 use tokio::process::{Child, Command};
 use warden_broker::test_keys::P256;
-use warden_broker::testkit::{CapturingNotifier, TestBroker};
+use warden_broker::testkit::{CapturingNotifier, TestBroker, wait};
 use warden_broker_proto::Window;
 
 const DOC: &str = include_str!("../../../docs/agent-protocol.md");
@@ -56,13 +56,7 @@ impl SshAgent {
             .kill_on_drop(true)
             .spawn()
             .expect("start ssh-agent");
-        for _ in 0..100 {
-            if socket.exists() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        assert!(socket.exists(), "ssh-agent did not create its socket");
+        wait::until("ssh-agent creating its socket", || socket.exists()).await;
         Self {
             socket,
             _child: child,
@@ -225,10 +219,10 @@ async fn run_session(algorithm: Algorithm) {
 #[tokio::test]
 async fn documented_shell_client_works() {
     for tool in ["ssh-keygen", "ssh-agent", "curl"] {
-        if !installed(tool).await {
-            eprintln!("{tool} not installed; skipping the shell client test");
-            return;
-        }
+        assert!(
+            installed(tool).await,
+            "{tool} is not installed; the shell client test needs it"
+        );
     }
     run_session(Algorithm::Ed25519).await;
     run_session(P256).await;

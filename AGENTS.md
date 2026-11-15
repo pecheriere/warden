@@ -90,6 +90,8 @@ uvx zizmor@1.31.1 .   # when a workflow or the Dependabot config changes
   which takes root: `WARDEN_TEST_BIND_MOUNT_SOURCE` names a file you own, and
   `WARDEN_TEST_BIND_MOUNTED_FILE` names where it is mounted (`mount --bind`). It
   fails rather than skips without them. It does not exist on macOS.
+- `doc_client` (the documented shell client) needs `ssh-keygen`, `ssh-agent` and
+  `curl` on the `PATH`; it fails rather than skips without them.
 - Tests must not depend on timing. Wait on a condition, not a sleep.
 - Dependencies: add them to `[workspace.dependencies]` with a comment when
   the reason is not obvious, keep default features off where practical,

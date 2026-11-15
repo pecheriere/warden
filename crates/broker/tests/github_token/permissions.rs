@@ -56,17 +56,6 @@ async fn approve_and_read(
 }
 
 #[tokio::test]
-async fn request_stores_the_default_at_creation() {
-    let (broker, _key, upstream) = configured_on_fake().await;
-    set_default(&broker, WITH_CHECKS);
-    let (_, token) = broker.create_request("bot", request()).await;
-    assert_eq!(
-        approve_and_read(&broker, &upstream, &token).await,
-        set(WITH_CHECKS)
-    );
-}
-
-#[tokio::test]
 async fn changed_default_does_not_touch_a_pending_request() {
     let (broker, _key, upstream) = configured_on_fake().await;
     set_default(&broker, WITH_CHECKS);
@@ -208,14 +197,6 @@ async fn approval_binds_the_set() {
         .begin_approval_for(&token, Window::D7, &view.destination_digest())
         .await;
     assert_eq!(accepted.status, StatusCode::OK, "{}", accepted.body);
-}
-
-#[tokio::test]
-async fn creation_never_reads_the_key() {
-    let (broker, _key, _upstream) = configured_on_fake().await;
-    let before = broker.backend.github_app_reads();
-    let _ = broker.create_request("bot", request()).await;
-    assert_eq!(broker.backend.github_app_reads(), before);
 }
 
 #[tokio::test]

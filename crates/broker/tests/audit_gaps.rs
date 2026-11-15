@@ -486,6 +486,11 @@ async fn the_warning_stays_on_the_page_until_the_entry_is_in_the_log() {
 async fn an_audit_log_that_has_stalled_does_not_stop_a_revocation() {
     let (broker, key, created, grant) = api_grant().await;
     // Another writer holds the log's lock: appends wait, as on a stalled volume.
+    broker
+        .state()
+        .requests
+        .set_audit_write_wait(SHORT_WRITE_WAIT)
+        .await;
     let holder = std::fs::File::open(broker.audit_path()).unwrap();
     holder.lock().unwrap();
 
@@ -520,6 +525,11 @@ async fn an_audit_log_that_has_stalled_does_not_stop_a_revocation() {
     assert!(broker.audit_types().iter().any(|t| t == "grant_revoked"));
 }
 
+/// How long a revocation waits for its entry while another writer holds the log's
+/// lock: shorter than the real 2 s, so that these tests do not wait it out. The lock
+/// is held throughout, so the revocation gives up the same way however long it waits.
+const SHORT_WRITE_WAIT: Duration = Duration::from_millis(50);
+
 // --- writing the log never holds up the database ------------------------------
 
 /// Hold each append to the audit log, as a log that has stalled would, while
@@ -542,8 +552,10 @@ async fn assert_no_write_lock_while_log_waits<T: Send + 'static>(
         .get("file");
     let mut other = SqliteConnectOptions::new()
         .filename(file)
-        // Long enough for a short write to finish; an append is held for longer.
-        .busy_timeout(Duration::from_secs(1))
+        // A write lock held across a held append would never be let go, so this
+        // waits only for a short write, however slow the machine is. Under `HANG`,
+        // which bounds the whole check, so that a held lock is what is reported.
+        .busy_timeout(HANG / 2)
         .connect()
         .await
         .unwrap();
@@ -693,6 +705,11 @@ async fn a_refused_request_holds_no_write_lock_while_the_log_waits() {
 #[tokio::test]
 async fn a_revocation_goes_through_while_another_writer_waits_for_the_log() {
     let (broker, _key, created, grant) = api_grant().await;
+    broker
+        .state()
+        .requests
+        .set_audit_write_wait(SHORT_WRITE_WAIT)
+        .await;
     let holder = std::fs::File::open(broker.audit_path()).unwrap();
     holder.lock().unwrap();
     // A writer that must have its entry first, waiting for the log.

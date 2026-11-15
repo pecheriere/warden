@@ -133,7 +133,10 @@ async fn open_refuses_a_broken_log() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("audit.jsonl");
     fs::write(&path, "garbage\n").unwrap();
-    assert!(AuditLog::open(&path).await.is_err());
+    assert!(matches!(
+        AuditLog::open(&path).await,
+        Err(AuditError::Malformed { line: 1, .. })
+    ));
 }
 
 #[tokio::test]
@@ -195,7 +198,10 @@ async fn midfile_corruption_still_refuses_open() {
     three_lines(&path).await;
     let text = fs::read_to_string(&path).unwrap();
     fs::write(&path, text.replace("original text", "forged text!")).unwrap();
-    assert!(AuditLog::open(&path).await.is_err());
+    assert!(matches!(
+        AuditLog::open(&path).await,
+        Err(AuditError::BrokenChain { seq: 2 })
+    ));
 }
 
 #[tokio::test]
