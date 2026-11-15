@@ -87,7 +87,9 @@ pub async fn wait_for_audit_kind(path: &Path, kind: &str, count: usize) -> Vec<V
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use serde_json::Value;
+
+    use super::{audit_entries, audit_events, audit_text, wait_for_audit_kind};
 
     #[test]
     fn a_half_written_last_line_is_not_an_entry() {

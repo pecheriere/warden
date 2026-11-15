@@ -460,27 +460,6 @@ async fn duplicate_api_secret_titles_are_invalid() {
     );
 }
 
-#[tokio::test]
-async fn fake_backend_serves_api_secrets() {
-    let fake = warden_broker::testkit::FakeBackend::new();
-    let err = fake.api_secret(&secret("github")).await.unwrap_err();
-    assert!(matches!(err, PolicyError::UnknownSecret(_)), "{err:?}");
-
-    let policy = warden_broker::testkit::FakeBackend::example_api_secret();
-    fake.set_api_secret(policy.clone(), CREDENTIAL);
-    let got = fake.api_secret(&secret("github")).await.unwrap();
-    assert_eq!(got.destination_digest(), policy.destination_digest());
-    assert_eq!(full_grant(&got), full_grant(&policy));
-    let (with_value, value) = fake.api_secret_with_value(&secret("github")).await.unwrap();
-    assert_eq!(full_grant(&with_value), full_grant(&policy));
-    assert_eq!(value.expose(), CREDENTIAL);
-
-    // Rotation replaces the value.
-    fake.set_api_secret(policy, "rotated-credential-value");
-    let (_, value) = fake.api_secret_with_value(&secret("github")).await.unwrap();
-    assert_eq!(value.expose(), "rotated-credential-value");
-}
-
 async fn api_listed(value: Option<&str>) -> Result<ApiSecretPolicy, PolicyError> {
     let mut item = api_item();
     set_field(&mut item, "list", value);

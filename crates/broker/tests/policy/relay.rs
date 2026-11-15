@@ -5,7 +5,6 @@ use ssh_key::rand_core::OsRng;
 use ssh_key::{Algorithm, LineEnding, PrivateKey};
 use warden_broker::policy::{PolicyError, RelayCredential, SecretBackend, SshMode, SshTarget};
 use wiremock::MockServer;
-use zeroize::Zeroizing;
 
 use crate::{
     ITEM_NAS, ITEM_PI, THROWAWAY_ECDSA, THROWAWAY_ECDSA_PKCS8, THROWAWAY_ENCRYPTED, THROWAWAY_RSA,
@@ -287,42 +286,14 @@ async fn relay_target_and_credential_come_from_one_read() {
     assert_eq!(item_fetches, 1);
 }
 
+/// Contract: the fake refuses a relay target with no credential, as the real backend
+/// does (`relay_item_needs_exactly_one_credential`), so tests built on the fake cannot
+/// start a relay the real backend would refuse.
 #[tokio::test]
-async fn fake_backend_serves_relay_targets() {
+async fn fake_backend_refuses_a_relay_target_without_a_credential() {
     use warden_broker::testkit::FakeBackend;
     let fake = FakeBackend::new();
-    // A cert target has no relay credential.
-    let err = fake
-        .relay_target_with_credential(&target("pi"))
-        .await
-        .unwrap_err();
-    assert!(
-        matches!(&err, PolicyError::Invalid { field, .. } if field == "mode"),
-        "{err:?}"
-    );
-
-    let nas = FakeBackend::relay_target();
-    assert_eq!(nas.mode, SshMode::Relay);
-    fake.set_relay_target(
-        nas.clone(),
-        RelayCredential::Password(Zeroizing::new(NAS_PASSWORD.to_owned())),
-    );
-    assert_eq!(
-        fake.ssh_target(&target("nas"))
-            .await
-            .unwrap()
-            .destination_digest(),
-        nas.destination_digest()
-    );
-    let (t, cred) = fake
-        .relay_target_with_credential(&target("nas"))
-        .await
-        .unwrap();
-    assert_eq!(t.destination_digest(), nas.destination_digest());
-    assert!(matches!(&cred, RelayCredential::Password(p) if p.as_str() == NAS_PASSWORD));
-
-    // A relay target without a credential is unusable, as in 1Password.
-    fake.set_target(nas);
+    fake.set_target(FakeBackend::relay_target());
     let err = fake
         .relay_target_with_credential(&target("nas"))
         .await

@@ -6,7 +6,7 @@ use std::time::Duration;
 use axum::http::StatusCode;
 use serde_json::json;
 use warden_broker::audit::{self, AuditEvent};
-use warden_broker::testkit::wait::HANG;
+use warden_broker::testkit::wait;
 
 use super::{
     ROTATED, SECRET, assert_clean, audit_events, call_as, get, proxied, proxy_calls, setup,
@@ -141,7 +141,7 @@ async fn revoked_while_a_call_waits_to_record_its_start_sends_nothing() {
     let s = setup().await;
     let holder = std::fs::File::open(s.broker.audit_path()).unwrap();
     holder.lock().unwrap();
-    let call = get(&s, "/delayed");
+    let call = get(&s, "/v1/hello");
     let revoke = async {
         while s
             .broker
@@ -175,17 +175,16 @@ async fn revoked_while_a_call_waits_to_record_its_start_sends_nothing() {
 #[tokio::test]
 async fn overlong_path_is_listed_as_invalid() {
     let s = setup().await;
-    let long = format!("/delayed/{}", "a".repeat(4096));
+    let long = format!("/held/{}", "a".repeat(4096));
     let call = get(&s, &long);
     let live = async {
-        let reached = tokio::time::timeout(HANG, async {
-            while s.upstream.received().is_empty() {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
+        wait::until("the upstream receiving the call", || {
+            !s.upstream.received().is_empty()
         })
         .await;
-        assert!(reached.is_ok(), "the upstream never received the call");
-        s.broker.get("/grants/live").await
+        let live = s.broker.get("/grants/live").await;
+        s.upstream.release_held();
+        live
     };
     let (resp, live) = tokio::join!(call, live);
     let (proxied, _) = proxied(&resp);
@@ -275,7 +274,7 @@ async fn a_call_refused_after_its_start_still_has_its_result() {
         .state()
         .audit
         .stall_appends(|event| matches!(event, AuditEvent::ProxyCallStarted { .. }));
-    let call = get(&s, "/delayed");
+    let call = get(&s, "/v1/hello");
     let revoke = async {
         stall.until_holding(1).await;
         s.broker

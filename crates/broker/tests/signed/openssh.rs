@@ -2,13 +2,12 @@
 //! `ssh-agent`.
 
 use std::path::Path;
-use std::time::Duration;
 
 use axum::http::StatusCode;
 use sha2::{Digest as _, Sha256};
 use warden_broker::agents::{self, AgentPublicKey};
 use warden_broker::requests::Clock as _;
-use warden_broker::testkit::TestBroker;
+use warden_broker::testkit::{TestBroker, wait};
 use warden_broker_proto::signing::{
     AGENT_HEADER, Audience, NONCE_HEADER, Nonce, SIGNATURE_HEADER, TIMESTAMP_HEADER,
 };
@@ -206,12 +205,7 @@ async fn openssh_ssh_keygen_signature_accepted() {
         .kill_on_drop(true)
         .spawn()
         .expect("ssh-agent ships with ssh-keygen");
-    for _ in 0..100 {
-        if sock.exists() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    wait::until("ssh-agent listening on its socket", || sock.exists()).await;
     let added = tokio::process::Command::new("ssh-add")
         .arg(path("p256-agent"))
         .env("SSH_AUTH_SOCK", &sock)
