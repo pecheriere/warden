@@ -73,7 +73,7 @@ fn assert_nowhere(credential: &RelayCredential, broker: &TestBroker, outputs: &[
     );
     // And the SSH library's own debug output, through the `log` bridge.
     assert!(logs.contains("russh"), "the capture saw russh's logs");
-    let audit = std::fs::read_to_string(broker.audit_path()).unwrap();
+    let audit = warden_broker::testkit::audit_text(broker.audit_path());
     for needle in needles(credential) {
         assert!(!logs.contains(&needle), "credential in the logs");
         assert!(!audit.contains(&needle), "credential in the audit log");

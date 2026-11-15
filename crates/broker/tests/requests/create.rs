@@ -10,6 +10,7 @@ use sqlx::Row as _;
 use warden_broker::audit;
 use warden_broker::notify::{Fallback, Notifier};
 use warden_broker::requests::{Destination, RequestError};
+use warden_broker::testkit::wait::HANG;
 use warden_broker::testkit::{CapturingNotifier, FailingNotifier, LongErrorNotifier};
 use warden_broker_proto::{Access, CreatedResponse, RequestStatus, Window, fingerprint};
 use wiremock::matchers::{method, path};
@@ -503,7 +504,7 @@ async fn notify_failure_ends_in_error() {
     };
     assert!(message.contains("failing returned HTTP 503"), "{message}");
     // The change that ended the request comes first; its entry follows.
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(HANG, async {
         while !audit_types(&h).contains(&"notify_failed".to_owned()) {
             tokio::task::yield_now().await;
         }
@@ -538,21 +539,9 @@ async fn a_long_notification_error_is_cut_in_its_entry() {
         message.contains(&reason),
         "the request keeps the whole error"
     );
-    let entry = tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            let found = std::fs::read_to_string(&h.audit_path)
-                .unwrap()
-                .lines()
-                .map(|l| serde_json::from_str::<Value>(l).unwrap()["event"].clone())
-                .find(|e| e["type"] == "notify_failed");
-            if let Some(entry) = found {
-                break entry;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("the entry was written");
+    let entry = warden_broker::testkit::wait_for_audit_kind(&h.audit_path, "notify_failed", 1)
+        .await
+        .remove(0);
     let recorded = entry["reason"].as_str().unwrap();
     let kept = recorded
         .strip_suffix(" (truncated)")
@@ -582,14 +571,13 @@ async fn notified_audit_names_the_channel_that_delivered() {
         .unwrap();
     wait_for(&mut rx, &created.id).await;
     capture.next().await;
-    let channels: Vec<String> = std::fs::read_to_string(&h.audit_path)
-        .unwrap()
-        .lines()
-        .filter_map(|l| {
-            let v: Value = serde_json::from_str(l).unwrap();
-            (v["event"]["type"] == "notified").then(|| v["event"]["channel"].to_string())
-        })
-        .collect();
+    // The capturing notifier answered, but the `notified` entry follows it.
+    let channels: Vec<String> =
+        warden_broker::testkit::wait_for_audit_kind(&h.audit_path, "notified", 1)
+            .await
+            .iter()
+            .map(|event| event["channel"].to_string())
+            .collect();
     assert_eq!(channels, [r#""capture""#]);
 }
 

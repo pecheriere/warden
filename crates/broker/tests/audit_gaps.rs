@@ -13,6 +13,7 @@ use ssh_key::Certificate;
 use warden_broker::agents;
 use warden_broker::approval::passkeys::{self, PasskeyError};
 use warden_broker::requests::{AuditOutcome, Clock as _, RequestError, RequestLimits, sha256_hex};
+use warden_broker::testkit::wait::HANG;
 use warden_broker::testkit::{FakeBackend, SoftAuthenticator, TestBroker, TestResponse};
 use warden_broker_proto::{
     AgentName, CreatedResponse, GrantAccess, GrantView, Id, RequestStatus, SshGrant, UnixUser,
@@ -34,23 +35,23 @@ fn repair_audit_log(broker: &TestBroker, good: &[u8]) {
 }
 
 fn audit_events(broker: &TestBroker) -> Vec<Value> {
-    std::fs::read_to_string(broker.audit_path())
-        .unwrap()
-        .lines()
-        .map(|line| serde_json::from_str::<Value>(line).unwrap()["event"].clone())
+    broker
+        .audit_entries()
+        .iter()
+        .map(|entry| entry["event"].clone())
         .collect()
 }
 
 /// Wait until the request's notification is recorded, the last entry the broker
 /// writes on its own, so that the log stays as a test saves it.
 async fn notification_recorded(broker: &TestBroker) {
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(HANG, async {
         while !broker.audit_types().iter().any(|t| t == "notified") {
             tokio::task::yield_now().await;
         }
     })
     .await
-    .expect("notification recorded within 5 s");
+    .expect("notification recorded");
 }
 
 async fn pending(window: Window) -> (TestBroker, SoftAuthenticator, CreatedResponse, String) {
@@ -208,7 +209,7 @@ async fn the_first_sweep_after_a_start_writes_what_a_crash_left_waiting() {
         Duration::from_secs(3600),
         stopped,
     ));
-    tokio::time::timeout(Duration::from_secs(10), async {
+    tokio::time::timeout(HANG, async {
         while broker
             .state()
             .requests
@@ -236,7 +237,7 @@ async fn making_an_enrollment_code_is_audited_without_the_code() {
     assert_eq!(events.len(), 1, "{events:?}");
     assert_eq!(events[0]["type"], "enrollment_code_created");
     assert_eq!(events[0]["expires_at"], broker.clock.now() + 600);
-    let log = std::fs::read_to_string(broker.audit_path()).unwrap();
+    let log = warden_broker::testkit::audit_text(broker.audit_path());
     assert!(!log.contains(&code), "{log}");
     assert!(!log.contains(&sha256_hex(&code)), "{log}");
 }
@@ -346,7 +347,7 @@ async fn the_owner_can_revoke_an_api_grant_when_the_log_cannot_be_written() {
     assert_eq!(bell.url.path(), "/grants");
 
     // Nothing was added to the log: the entry really is missing.
-    let good = std::fs::read_to_string(broker.audit_path()).unwrap();
+    let good = warden_broker::testkit::audit_text(broker.audit_path());
     let lines = good.lines().count();
     assert_eq!(lines, entries + 1, "only the line added to break it");
 }
@@ -374,7 +375,7 @@ async fn revoking_an_agent_stops_its_key_grants_and_requests_when_the_log_fails(
         .create_request("bot", TestBroker::pi_request("another task", Window::M15))
         .await;
     let bot = AgentName::try_from("bot".to_owned()).unwrap();
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(HANG, async {
         while broker
             .audit_types()
             .iter()
@@ -386,7 +387,7 @@ async fn revoking_an_agent_stops_its_key_grants_and_requests_when_the_log_fails(
         }
     })
     .await
-    .expect("notifications recorded within 5 s");
+    .expect("notifications recorded");
     break_audit_log(&broker);
 
     let outcome = broker.state().requests.revoke_agent(&bot).await.unwrap();
@@ -501,7 +502,7 @@ async fn an_audit_log_that_has_stalled_does_not_stop_a_revocation() {
 
     // The entry follows once the log answers.
     drop(holder);
-    tokio::time::timeout(Duration::from_secs(20), async {
+    tokio::time::timeout(HANG, async {
         while broker
             .state()
             .requests
@@ -717,7 +718,7 @@ async fn the_sweep_goes_on_expiring_while_the_log_has_stalled() {
         stopped,
     ));
     let requests = broker.state().requests.clone();
-    tokio::time::timeout(Duration::from_secs(20), async {
+    tokio::time::timeout(HANG, async {
         while requests
             .history(10)
             .await

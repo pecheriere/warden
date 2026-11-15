@@ -2,7 +2,6 @@
 //! holds. GitHub is a local HTTPS server that answers as each test scripts.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use axum::http::StatusCode;
 use serde_json::{Value, json};
@@ -13,6 +12,7 @@ use warden_broker::testkit::github_app::{
     APP_ID, INSTALLATION_ID, RSA2048_PKCS8, minted_answer, token_answer,
 };
 use warden_broker::testkit::upstream::{Gate, HttpsUpstream, Received, Scripted};
+use warden_broker::testkit::wait::HANG;
 use warden_broker::testkit::{TestBroker, TestResponse};
 use warden_broker_proto::Window;
 use warden_broker_proto::github_token::{
@@ -345,7 +345,7 @@ async fn backend_failure_is_503_with_a_fixed_message() {
         "secret backend unavailable",
     );
     assert!(!resp.body.contains("vault"), "{}", resp.body);
-    let log = std::fs::read_to_string(broker.audit_path()).unwrap();
+    let log = warden_broker::testkit::audit_text(broker.audit_path());
     assert!(!log.contains("vault.internal"), "{log}");
     assert!(mint_calls(&upstream).is_empty());
 }
@@ -372,7 +372,7 @@ async fn audit_never_contains_token_or_jwt() {
             .unwrap()
             .contains("eyJ")
     }));
-    let log = std::fs::read_to_string(broker.audit_path()).unwrap();
+    let log = warden_broker::testkit::audit_text(broker.audit_path());
     assert!(!log.contains("ghs_test"), "{log}");
     assert!(!log.contains("eyJ"), "{log}");
 }
@@ -385,7 +385,7 @@ async fn client_disconnect_still_audits() {
     call.abort();
     assert!(call.await.unwrap_err().is_cancelled());
     gate.open();
-    tokio::time::timeout(Duration::from_secs(30), async {
+    tokio::time::timeout(HANG, async {
         while entries(&broker, "github_token_minted").is_empty() {
             tokio::task::yield_now().await;
         }
@@ -544,7 +544,7 @@ async fn mint_refuses_github_answer_for_other_id() {
         entries(&broker, "github_token_refused")[0]["grant_id"],
         grant
     );
-    let log = std::fs::read_to_string(broker.audit_path()).unwrap();
+    let log = warden_broker::testkit::audit_text(broker.audit_path());
     assert!(!log.contains("ghs_"), "{log}");
 }
 

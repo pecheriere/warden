@@ -8,6 +8,7 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::TcpStream;
 use warden_broker::relay::RelayLimits;
 use warden_broker::requests::Clock as _;
+use warden_broker::testkit::wait::{self, HANG};
 
 use super::{
     OpenSsh, TARGET, approved_agent, assert_each_start_ended, await_events, collect, connect,
@@ -60,15 +61,10 @@ async fn snapshot_tracks_last_activity() {
 
     channel.data(&b"hello"[..]).await.unwrap();
     // The watchdog notes it at its next check.
-    let deadline = Instant::now() + Duration::from_secs(15);
-    while s.broker.live_relay_last_activity() != vec![started + 100] {
-        assert!(
-            Instant::now() < deadline,
-            "last activity never moved: {:?}",
-            s.broker.live_relay_last_activity()
-        );
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    wait::until("the last activity moved", || {
+        s.broker.live_relay_last_activity() == vec![started + 100]
+    })
+    .await;
 
     channel.close().await.unwrap();
     await_events(&s.broker, "relay_session_ended", 1).await;
@@ -110,7 +106,7 @@ async fn concurrency_limits_enforced() {
         .disconnect(Disconnect::ByApplication, "", "")
         .await
         .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + HANG;
     loop {
         let out = ssh_b.run(&["echo", "ok"]).await;
         if out.status.success() {
@@ -149,9 +145,10 @@ async fn unauthenticated_connections_limited_and_timed_out() {
     // A third is closed at once, without a banner.
     let mut third = TcpStream::connect(s.relay).await.unwrap();
     let mut buf = [0_u8; 64];
-    let n = tokio::time::timeout(Duration::from_secs(1), third.read(&mut buf))
+    // Closed with nothing read: a connection let in, at once or once a place
+    // is free, would read the banner.
+    let n = wait::within_hang("the third connection closed", third.read(&mut buf))
         .await
-        .expect("closed at once")
         .unwrap_or(0);
     assert_eq!(n, 0);
 
@@ -159,10 +156,12 @@ async fn unauthenticated_connections_limited_and_timed_out() {
     // goodbye wait (5 s) ...
     for conn in &mut silent {
         let mut rest = Vec::new();
-        tokio::time::timeout(Duration::from_secs(12), conn.read_to_end(&mut rest))
-            .await
-            .expect("closed after the login timeout")
-            .ok();
+        wait::within_hang(
+            "closed after the login timeout",
+            conn.read_to_end(&mut rest),
+        )
+        .await
+        .ok();
     }
     // ... which frees their places.
     let c = login(&s.broker, s.relay, TARGET, &agent.key).await;

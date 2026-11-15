@@ -6,6 +6,7 @@ use std::time::Duration;
 use axum::http::StatusCode;
 use serde_json::json;
 use warden_broker::audit::{self, AuditEvent};
+use warden_broker::testkit::wait::HANG;
 
 use super::{
     ROTATED, SECRET, assert_clean, audit_events, call_as, get, proxied, proxy_calls, setup,
@@ -93,7 +94,7 @@ async fn every_call_audited_without_secret() {
                "url": format!("{origin}/v1/hello")})
     );
 
-    let log = std::fs::read_to_string(s.broker.audit_path()).unwrap();
+    let log = warden_broker::testkit::audit_text(s.broker.audit_path());
     assert!(!log.contains("agent-query-value"));
     assert_clean(&log, SECRET, "audit log");
     assert_clean(&log, ROTATED, "audit log");
@@ -171,7 +172,7 @@ async fn overlong_path_is_listed_as_invalid() {
     let long = format!("/delayed/{}", "a".repeat(4096));
     let call = get(&s, &long);
     let live = async {
-        let reached = tokio::time::timeout(Duration::from_secs(5), async {
+        let reached = tokio::time::timeout(HANG, async {
             while s.upstream.received().is_empty() {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
@@ -245,8 +246,7 @@ async fn an_overlong_header_name_does_not_make_an_overlong_entry() {
         outcome.starts_with("header refused: \"x-forwarded-aaa"),
         "{outcome}"
     );
-    let line = std::fs::read_to_string(s.broker.audit_path())
-        .unwrap()
+    let line = warden_broker::testkit::audit_text(s.broker.audit_path())
         .lines()
         .find(|line| line.contains("\"proxy_call\""))
         .unwrap()

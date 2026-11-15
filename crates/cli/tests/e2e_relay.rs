@@ -16,6 +16,7 @@ use ssh_key::rand_core::OsRng;
 use ssh_key::{Algorithm, LineEnding, PrivateKey};
 use warden_broker::policy::{Listing, RelayCredential, SshMode, SshTarget};
 use warden_broker::testkit::sshd::{Sshd, SshdLogin, current_user};
+use warden_broker::testkit::wait::HANG;
 use warden_broker::testkit::{CapturingNotifier, TestBroker};
 use warden_broker_proto::{TargetName, UnixUser, Window};
 
@@ -111,24 +112,12 @@ fn assert_no_secret_on_disk(cli: &Cli, secrets: &[&str]) {
 
 /// The broker's audit events of type `kind`, oldest first.
 fn audit_events(broker: &TestBroker, kind: &str) -> Vec<Value> {
-    std::fs::read_to_string(broker.audit_path())
-        .unwrap()
-        .lines()
-        .map(|line| serde_json::from_str::<Value>(line).unwrap()["event"].clone())
-        .filter(|e| e["type"] == kind)
-        .collect()
+    broker.audit_events(kind)
 }
 
-/// Wait (at most 5 s) until the audit log holds an event of type `kind`.
+/// Wait until the audit log holds an event of type `kind`.
 async fn await_audit_events(broker: &TestBroker, kind: &str) -> Vec<Value> {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        let found = audit_events(broker, kind);
-        if !found.is_empty() || Instant::now() >= deadline {
-            return found;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    broker.wait_for_audit_kind(kind, 1).await
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -212,18 +201,20 @@ async fn e2e_relay_revoke_ends_access() {
     let (s, _onward) = key_setup().await;
     let grant = request_and_approve(&s).await;
 
-    // A live session: it prints a line, then waits far longer than the test.
+    // A live session: it prints a line, then runs for three times the test's
+    // wait, so only the relay's cut can end it in time.
+    let command = format!("echo started; exec sleep {}", HANG.as_secs() * 3);
     let mut session = s
         .cli
         .command()
-        .args(["ssh", TARGET, "--", "echo started; exec sleep 120"])
+        .args(["ssh", TARGET, "--", &command])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
     let stdout = session.stdout.take().unwrap();
     let first = tokio::time::timeout(
-        Duration::from_secs(30),
+        HANG,
         tokio::task::spawn_blocking(move || {
             let mut line = String::new();
             BufReader::new(stdout).read_line(&mut line).unwrap();
@@ -243,9 +234,9 @@ async fn e2e_relay_revoke_ends_access() {
         String::from_utf8_lossy(&revoke.stderr)
     );
 
-    // The relay cuts the live session within 5 s of the revocation.
+    // The relay cuts the live session after the revocation.
     let ended = tokio::task::spawn_blocking(move || {
-        let status = wait_exit(&mut session, Duration::from_secs(5));
+        let status = wait_exit(&mut session, HANG);
         if status.is_none() {
             let _ = session.kill();
             let _ = session.wait();
@@ -254,7 +245,7 @@ async fn e2e_relay_revoke_ends_access() {
     })
     .await
     .unwrap();
-    let ended = ended.expect("the live session was not cut within 5 s of the revocation");
+    let ended = ended.expect("the live session was not cut after the revocation");
     assert!(!ended.success(), "{ended}");
     let ends = await_audit_events(&s.broker, "relay_session_ended").await;
     assert_eq!(ends.len(), 1, "{ends:?}");

@@ -59,7 +59,7 @@ async fn errors_beyond_ten_a_minute_are_counted() {
     );
 
     broker.state().requests.flush_refusals(true).await;
-    let log = fs::read_to_string(broker.audit_path()).unwrap();
+    let log = warden_broker::testkit::audit_text(broker.audit_path());
     let held: Vec<serde_json::Value> = log
         .lines()
         .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap()["event"].clone())

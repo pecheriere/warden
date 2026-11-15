@@ -17,6 +17,7 @@ use ssh_key::{Algorithm, LineEnding, PrivateKey};
 use tempfile::TempDir;
 use warden_broker::policy::{Listing, SshMode, SshTarget};
 use warden_broker::testkit::sshd::current_user;
+use warden_broker::testkit::wait::HANG;
 use warden_broker::testkit::{BaseUrls, CapturingNotifier, TestBroker};
 use warden_broker_proto::{TargetName, UnixUser, Window};
 
@@ -107,7 +108,7 @@ fn start_sshd(ca_pub: &str, host_target: &str) -> (Sshd, ssh_key::PublicKey) {
         port,
         _dir: dir,
     };
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + HANG;
     while TcpStream::connect((Ipv4Addr::LOCALHOST, port)).is_err() {
         if let Some(status) = sshd.child.try_wait().unwrap() {
             panic!("sshd exited early with {status}");

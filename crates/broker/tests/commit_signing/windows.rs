@@ -142,7 +142,11 @@ async fn a_grant_stops_at_its_daily_limit_and_the_owner_hears_once() {
         sign(&broker, &key).await.status,
         StatusCode::TOO_MANY_REQUESTS
     );
-    let reached = entries(&broker, "commit_signing_limit_reached");
+    // Written before the refusal returns; a repeat would be written by the
+    // refusal just answered, so one read is complete.
+    let reached = broker
+        .wait_for_audit_kind("commit_signing_limit_reached", 1)
+        .await;
     assert_eq!(reached.len(), 1, "once a day");
     assert_eq!(reached[0]["grant_id"], grant);
     assert_eq!(reached[0]["limit"], 2);

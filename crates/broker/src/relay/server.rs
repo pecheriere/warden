@@ -32,7 +32,8 @@
 //!   by a check every [`GRANT_CHECK_EVERY`] when another process revoked
 //!   it), when the grant's window ends, or after
 //!   [`RelayLimits::idle_timeout`] with no bytes either way. When no query
-//!   of the state of grants has succeeded for [`FAIL_CLOSED_AFTER`], the
+//!   of the state of grants has succeeded for
+//!   [`RelayLimits::fail_closed_after`], the
 //!   relay fails closed: every session ends and none starts until one does.
 
 use std::net::IpAddr;
@@ -100,16 +101,13 @@ const SESSION_OVER: &str = "warden relay: session over";
 /// another process; this one's are told at once) and expiry.
 const GRANT_CHECK_EVERY: Duration = Duration::from_secs(1);
 
-/// How long the grant check may go without a successful query before the
-/// relay fails closed: every session ends and none starts until one
-/// succeeds.
+/// The default of [`RelayLimits::fail_closed_after`].
 const FAIL_CLOSED_AFTER: Duration = Duration::from_secs(10);
 
 /// Longest a grant query may take; past it, it counts as failed.
 const GRANT_QUERY_TIMEOUT: Duration = Duration::from_millis(1500);
 
-/// Longest read of a relay target's item (policy and credential) when a
-/// session starts; past it, the session is refused.
+/// The default of [`RelayLimits::target_read_timeout`].
 const TARGET_READ_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A session refused because its grant could not be looked up in time.
@@ -165,6 +163,13 @@ pub struct RelayLimits {
     /// Time from login to starting the session (`shell` or `exec`) before
     /// the connection is hung up (30 s).
     pub start_timeout: Duration,
+    /// Time the grant check may go without a successful query before the
+    /// relay fails closed: every session ends and none starts until one
+    /// succeeds (10 s).
+    pub fail_closed_after: Duration,
+    /// Longest read of a relay target's item (policy and credential) when
+    /// a session starts; past it, the session is refused (10 s).
+    pub target_read_timeout: Duration,
 }
 
 impl Default for RelayLimits {
@@ -181,6 +186,8 @@ impl Default for RelayLimits {
             wedge_timeout: Duration::from_secs(2),
             idle_timeout: Duration::from_mins(15),
             start_timeout: Duration::from_secs(30),
+            fail_closed_after: FAIL_CLOSED_AFTER,
+            target_read_timeout: TARGET_READ_TIMEOUT,
         }
     }
 }
@@ -194,7 +201,7 @@ struct Shared {
     slots: Arc<SessionSlots>,
     preauth: Arc<PreAuthLimiter>,
     /// Whether the relay failed closed: the state of grants has not been
-    /// readable for [`FAIL_CLOSED_AFTER`].
+    /// readable for [`RelayLimits::fail_closed_after`].
     grant_state_lost: AtomicBool,
     /// What has been recorded of sessions refused before they started, per grant.
     /// Keyed by grant ids from stored grants only: a refusal is made after the

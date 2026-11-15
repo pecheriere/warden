@@ -59,10 +59,10 @@ fn github_writes(h: &Harness) -> Vec<String> {
 
 /// The audit entries, oldest first.
 fn events(h: &Harness) -> Vec<Value> {
-    std::fs::read_to_string(h.broker.audit_path())
-        .unwrap()
-        .lines()
-        .map(|line| serde_json::from_str::<Value>(line).unwrap()["event"].clone())
+    h.broker
+        .audit_entries()
+        .iter()
+        .map(|entry| entry["event"].clone())
         .collect()
 }
 

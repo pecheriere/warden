@@ -6,6 +6,7 @@ use warden_broker::policy::{ReleaseAppKey, ReleaseSigningKey};
 use warden_broker::testkit::github_app::RSA2048_PKCS8;
 use warden_broker::testkit::github_release::signed_tag_object;
 use warden_broker::testkit::upstream::Scripted;
+use warden_broker::testkit::wait::HANG;
 use warden_broker_proto::release::{ReleaseSteps, ReleaseTag};
 use warden_broker_proto::{GrantAccess, GrantView, Window};
 
@@ -335,7 +336,7 @@ async fn approving_a_rerun_ends_the_earlier_grant() {
     approve_for(&h, "build-agent", TAG).await;
 
     // The page showing the earlier grant is told it ended.
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    tokio::time::timeout(HANG, async {
         while bus.recv().await.unwrap().as_str() != first_request {}
     })
     .await

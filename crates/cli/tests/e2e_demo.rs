@@ -13,13 +13,25 @@ use webauthn_authenticator_rs::softpasskey::SoftPasskey;
 use webauthn_rs::prelude::{CreationChallengeResponse, RequestChallengeResponse};
 
 /// `warden <args>` in a shell that sourced the demo's settings, and nothing
-/// else from this process's environment that could point it elsewhere.
+/// else from this process's environment that could point it elsewhere. It
+/// runs in the demo's own directory, outside any repository, with that
+/// directory as `HOME` and no global or system git configuration, so that
+/// doctor's git checks see only what the demo sets up, whatever the machine
+/// running the test has configured.
 fn agent(demo: &Demo, args: &[&str]) -> Command {
+    let dir = demo.agent_env().parent().expect("the demo's directory");
     let mut cmd = Command::new("sh");
     cmd.args(["-c", r#". "$1"; shift; exec "$@""#, "sh"])
         .arg(demo.agent_env())
         .arg(env!("CARGO_BIN_EXE_warden"))
         .args(args)
+        .current_dir(dir)
+        .env("HOME", dir)
+        .env("GIT_CONFIG_GLOBAL", dir.join("gitconfig"))
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CEILING_DIRECTORIES", dir.parent().unwrap())
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
         .env_remove("WARDEN_AGENT_KEY")
         .env_remove("XDG_CONFIG_HOME")
         .env_remove("XDG_STATE_HOME")
@@ -227,7 +239,7 @@ async fn the_documented_flow_works_with_real_checks() {
     assert!(!post.status.success(), "{}", text(&post));
 
     // The audit log shows it all, and the chain holds.
-    let log = std::fs::read_to_string(demo.audit_path()).unwrap();
+    let log = warden_broker::testkit::audit_text(&demo.audit_path());
     for event in [
         "request_created",
         "passkey_enrolled",

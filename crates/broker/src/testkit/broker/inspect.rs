@@ -118,19 +118,44 @@ impl TestBroker {
         &self.audit_path
     }
 
+    /// Every complete audit entry, parsed, oldest first. A half-written last
+    /// line is not an entry yet and is left out.
+    ///
+    /// # Panics
+    /// If the log cannot be read or a complete line is not JSON.
+    #[must_use]
+    pub fn audit_entries(&self) -> Vec<Value> {
+        crate::testkit::audit_entries(&self.audit_path)
+    }
+
+    /// The `event` of every complete audit entry of type `kind`, oldest first.
+    ///
+    /// # Panics
+    /// As [`TestBroker::audit_entries`].
+    #[must_use]
+    pub fn audit_events(&self, kind: &str) -> Vec<Value> {
+        crate::testkit::audit_events(&self.audit_path, kind)
+    }
+
+    /// Wait until at least `count` audit entries of type `kind` are written,
+    /// and return their events, oldest first. Use it for entries the broker
+    /// writes after it has answered.
+    ///
+    /// # Panics
+    /// After the hang guard in [`crate::test_wait`].
+    pub async fn wait_for_audit_kind(&self, kind: &str, count: usize) -> Vec<Value> {
+        crate::testkit::wait_for_audit_kind(&self.audit_path, kind, count).await
+    }
+
     /// The `type` of every audit entry, oldest first.
     ///
     /// # Panics
     /// If the log cannot be read.
     #[must_use]
     pub fn audit_types(&self) -> Vec<String> {
-        std::fs::read_to_string(&self.audit_path)
-            .expect("read audit log")
-            .lines()
-            .map(|line| {
-                let v: Value = serde_json::from_str(line).expect("audit line is JSON");
-                v["event"]["type"].as_str().expect("event type").to_owned()
-            })
+        self.audit_entries()
+            .iter()
+            .map(|v| v["event"]["type"].as_str().expect("event type").to_owned())
             .collect()
     }
 
@@ -140,12 +165,9 @@ impl TestBroker {
     /// If the log cannot be read.
     #[must_use]
     pub fn audit_summaries(&self) -> Vec<String> {
-        std::fs::read_to_string(&self.audit_path)
-            .expect("read audit log")
-            .lines()
-            .map(|line| serde_json::from_str::<Value>(line).expect("audit line is JSON"))
-            .filter(|v| v["event"]["type"] == "request_created")
-            .map(|v| v["event"]["summary"].as_str().expect("summary").to_owned())
+        self.audit_events("request_created")
+            .iter()
+            .map(|e| e["summary"].as_str().expect("summary").to_owned())
             .collect()
     }
 }

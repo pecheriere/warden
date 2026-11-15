@@ -1,8 +1,6 @@
 //! Commit signing through the agent API. Keys are generated for each test; time only
 //! moves through the broker's manual clock.
 
-use std::fs;
-
 use axum::http::StatusCode;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
@@ -74,12 +72,7 @@ async fn approve(broker: &TestBroker, agent: &str) -> String {
 
 /// Every audit entry of type `kind`, oldest first.
 fn entries(broker: &TestBroker, kind: &str) -> Vec<Value> {
-    fs::read_to_string(broker.audit_path())
-        .unwrap()
-        .lines()
-        .map(|line| serde_json::from_str::<Value>(line).unwrap()["event"].clone())
-        .filter(|event| event["type"] == kind)
-        .collect()
+    broker.audit_events(kind)
 }
 
 /// Assert `resp` was refused with `status`, carries no signature, and was recorded

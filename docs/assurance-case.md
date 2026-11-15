@@ -108,7 +108,7 @@ falls short.
   - an item with a missing or invalid field is unusable
     ([`policy/onepassword/items.rs`](../crates/broker/src/policy/onepassword/items.rs));
   - if the grant state cannot be read for 10 s, relay sessions end
-    (`FAIL_CLOSED_AFTER` in [`relay/server.rs`](../crates/broker/src/relay/server.rs));
+    (`RelayLimits::fail_closed_after` in [`relay/server.rs`](../crates/broker/src/relay/server.rs));
   - if `proxy_call_started` or `relay_session_started` cannot be written, nothing
     is sent ([`api/proxy_call.rs`](../crates/broker/src/api/proxy_call.rs),
     `relay/server/start.rs`);

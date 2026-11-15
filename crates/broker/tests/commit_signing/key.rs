@@ -1,8 +1,6 @@
 //! The signing key: missing, unusable, replaced or unreadable, kept out of
 //! every answer, and its public half.
 
-use std::fs;
-
 use axum::http::StatusCode;
 use serde_json::Value;
 use ssh_key::LineEnding;
@@ -177,7 +175,7 @@ async fn the_key_stays_out_of_every_answer_and_the_audit_log() {
     ];
     let tag = format!("object {PARENT}\ntype commit\ntag v1\ntagger {AUTHOR}\n\nm\n");
     seen.push(sign_as(&broker, &key, "git", tag.as_bytes()).await.body);
-    seen.push(fs::read_to_string(broker.audit_path()).unwrap());
+    seen.push(warden_broker::testkit::audit_text(broker.audit_path()));
     seen.push(format!(
         "{:?}",
         broker.state().backend.commit_signing_key().await.unwrap()

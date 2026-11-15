@@ -18,11 +18,9 @@ async fn publish(h: &Harness) -> TestResponse {
 }
 
 fn reasons(h: &Harness) -> Vec<String> {
-    std::fs::read_to_string(h.broker.audit_path())
-        .unwrap()
-        .lines()
-        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap()["event"].clone())
-        .filter(|e| e["type"] == "release_published_changed")
+    h.broker
+        .audit_events("release_published_changed")
+        .iter()
         .map(|e| e["reason"].as_str().unwrap().to_owned())
         .collect()
 }

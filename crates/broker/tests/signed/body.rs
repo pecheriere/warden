@@ -10,6 +10,7 @@ use http_body_util::channel::Channel;
 use ssh_key::{Algorithm, HashAlg, PrivateKey};
 use warden_broker::signed::BodyReadTimeout;
 use warden_broker::testkit::TestBroker;
+use warden_broker::testkit::wait::HANG;
 use warden_broker_proto::signing::NAMESPACE;
 
 use super::{BODY_LIMIT, again, head, nonce_rows, set_signature, sign_with};
@@ -59,7 +60,7 @@ async fn send_stalled(
     let started = Instant::now();
     // Far past any limit under test, so only a request that never times out
     // gets here; how far past a limit it answers depends on the machine.
-    let resp = tokio::time::timeout(Duration::from_secs(60), broker.api_send(req))
+    let resp = tokio::time::timeout(HANG, broker.api_send(req))
         .await
         .expect("the stalled request never timed out");
     let waited = started.elapsed();
