@@ -5,11 +5,19 @@ version: 2
 # grouped into one pull request per ecosystem. Security updates skip the
 # cooldown and come one per advisory; a crate release younger than 7 days that
 # fixes an advisory still needs an entry in .github/crate-age-allow.toml.
+#
+# cargo and pip patch and minor updates merge by themselves once their checks
+# pass (.github/workflows/dependabot-automerge.yml). Each ecosystem runs on its
+# own weekday so the pull requests arrive on predictable days and one ecosystem's
+# merge never lands in the middle of another's checks. Main does not require
+# branches to be up to date, so a pull request that falls behind still merges on
+# its own checks. Security updates ignore the schedule.
 updates:
   - package-ecosystem: cargo
     directory: /
     schedule:
       interval: weekly
+      day: monday
     cooldown:
       default-days: 14
     # ssh-key, ssh-encoding and ed25519-dalek move together to their next
@@ -34,6 +42,7 @@ updates:
     directory: /fuzz
     schedule:
       interval: weekly
+      day: monday
     cooldown:
       default-days: 14
     # ssh-key, ssh-encoding and ed25519-dalek move together to their next
@@ -57,6 +66,7 @@ updates:
     directory: /
     schedule:
       interval: weekly
+      day: tuesday
     cooldown:
       default-days: 14
     groups:
@@ -70,6 +80,7 @@ updates:
     directory: /
     schedule:
       interval: weekly
+      day: wednesday
     cooldown:
       default-days: 14
     # The Rust image follows rust-toolchain.toml, which is bumped by hand; only
@@ -86,7 +97,12 @@ updates:
     directory: /.github
     schedule:
       interval: weekly
+      day: thursday
     cooldown:
       default-days: 7
+    groups:
+      pip:
+        applies-to: version-updates
+        update-types: [minor, patch]
     commit-message:
       prefix: ci
