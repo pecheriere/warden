@@ -1,12 +1,12 @@
 //! Notifiers for tests: one that records every doorbell, and two that always fail.
 
 use std::sync::Mutex;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use tokio::sync::mpsc;
 
 use crate::notify::{Doorbell, Notifier, NotifyError};
+use crate::test_wait::HANG;
 
 /// Records every doorbell and always succeeds.
 pub struct CapturingNotifier {
@@ -39,12 +39,12 @@ impl CapturingNotifier {
     /// Wait for the next doorbell not yet returned by `next`.
     ///
     /// # Panics
-    /// If none arrives within 5 s.
+    /// If none arrives within [`HANG`].
     pub async fn next(&self) -> Doorbell {
         let mut rx = self.rx.lock().await;
-        tokio::time::timeout(Duration::from_secs(5), rx.recv())
+        tokio::time::timeout(HANG, rx.recv())
             .await
-            .expect("no doorbell within 5 s")
+            .expect("no doorbell arrived")
             .expect("capture channel closed")
     }
 

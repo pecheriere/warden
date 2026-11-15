@@ -213,11 +213,13 @@ async fn e2e_relay_revoke_ends_access() {
     let (s, _onward) = key_setup().await;
     let grant = request_and_approve(&s).await;
 
-    // A live session: it prints a line, then waits far longer than the test.
+    // A live session: it prints a line, then runs for three times the test's
+    // wait, so only the relay's cut can end it in time.
+    let command = format!("echo started; exec sleep {}", HANG.as_secs() * 3);
     let mut session = s
         .cli
         .command()
-        .args(["ssh", TARGET, "--", "echo started; exec sleep 120"])
+        .args(["ssh", TARGET, "--", &command])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()

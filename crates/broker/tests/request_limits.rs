@@ -5,6 +5,7 @@ use axum::http::StatusCode;
 use serde_json::{Value, json};
 use warden_broker::notify::Doorbell;
 use warden_broker::requests::RequestLimits;
+use warden_broker::testkit::wait::HANG;
 use warden_broker::testkit::{CapturingNotifier, TestBroker, TestResponse};
 use warden_broker_proto::Window;
 
@@ -361,7 +362,7 @@ async fn a_failed_audit_write_still_refuses_and_the_count_is_written_later() {
 
 /// Wait until the audit log holds `count` entries of `kind`.
 async fn wait_for_audit_entries(broker: &TestBroker, kind: &str, count: usize) {
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    tokio::time::timeout(HANG, async {
         while broker.audit_types().iter().filter(|t| *t == kind).count() < count {
             tokio::task::yield_now().await;
         }

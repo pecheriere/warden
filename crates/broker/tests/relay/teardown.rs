@@ -17,9 +17,10 @@ use super::{
 };
 
 /// How long the relay may go without reading the state of grants before it
-/// fails closed, in the tests of that: shorter than the 10 s default, longer
-/// than a grant query's 1.5 s bound and a few checks.
-const FAIL_CLOSED_AFTER: Duration = Duration::from_secs(5);
+/// fails closed, in the tests of that: shorter than the 10 s default, and
+/// well past a grant query's 1.5 s bound and a few checks, so that a loaded
+/// machine does not end a session on a slow query alone.
+const FAIL_CLOSED_AFTER: Duration = Duration::from_secs(8);
 
 /// Connections to `sshd` (the relay's onward ones) not yet ended, by its
 /// log: each is named by its client port.
@@ -174,7 +175,7 @@ async fn revoked_while_a_session_waits_to_record_its_start_opens_nothing() {
 async fn revoke_closes_live_session_while_audit_appends_are_held() {
     let s = key_target().await;
     let agent = approved_agent(&s.broker, "bot").await;
-    let (c, _channel) = hold_session(&s, &agent.key).await;
+    let (c, mut channel) = hold_session(&s, &agent.key).await;
     let audit = s.broker.state().audit.clone();
     let stall = audit.stall_appends(|_| true);
     let revoke = {
@@ -183,6 +184,11 @@ async fn revoke_closes_live_session_while_audit_appends_are_held() {
         tokio::spawn(async move { requests.revoke_grant(&grant, "owner").await })
     };
     assert_both_sides_closed(&s, &c, 0).await;
+    let out = collect(&mut channel).await;
+    assert!(
+        text(&out.stderr).contains("warden relay: access revoked"),
+        "{out:?}"
+    );
     assert_eq!(revoke.await.unwrap().unwrap(), AuditOutcome::Missing);
     assert!(stall.holding() >= 1);
 }
@@ -191,7 +197,7 @@ async fn revoke_closes_live_session_while_audit_appends_are_held() {
 async fn agent_revoke_closes_sessions_when_the_audit_log_cannot_be_written() {
     let s = key_target().await;
     let agent = approved_agent(&s.broker, "bot").await;
-    let (c, _channel) = hold_session(&s, &agent.key).await;
+    let (c, mut channel) = hold_session(&s, &agent.key).await;
     break_audit_log(&s.broker);
     let outcome = s
         .broker
@@ -202,13 +208,18 @@ async fn agent_revoke_closes_sessions_when_the_audit_log_cannot_be_written() {
         .unwrap();
     assert_eq!(outcome, AuditOutcome::Missing);
     assert_both_sides_closed(&s, &c, 0).await;
+    let out = collect(&mut channel).await;
+    assert!(
+        text(&out.stderr).contains("warden relay: access revoked"),
+        "{out:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn db_revoke_with_no_audit_log_closes_session_from_another_process() {
     let s = key_target().await;
     let agent = approved_agent(&s.broker, "bot").await;
-    let (c, _channel) = hold_session(&s, &agent.key).await;
+    let (c, mut channel) = hold_session(&s, &agent.key).await;
     break_audit_log(&s.broker);
     // `warden-server agent revoke`, which never needs the log to revoke.
     let state = s.broker.state();
@@ -220,6 +231,11 @@ async fn db_revoke_with_no_audit_log_closes_session_from_another_process() {
     .await
     .unwrap();
     assert_both_sides_closed(&s, &c, 0).await;
+    let out = collect(&mut channel).await;
+    assert!(
+        text(&out.stderr).contains("warden relay: access revoked"),
+        "{out:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

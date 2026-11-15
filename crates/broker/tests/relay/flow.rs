@@ -83,7 +83,8 @@ async fn slow_agent_gets_the_end_of_its_output() {
     // The agent being late is what is tested, so this is a pause and not a
     // wait on a condition: there is nothing for it to wait for. A relay that
     // hung up once the session was over would do so at once, well within it.
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    // Twice the wedge timeout, so the pause is clearly past it.
+    tokio::time::sleep(RelayLimits::default().wedge_timeout.saturating_mul(2)).await;
 
     // It still gets every byte and the exit status, not a hang-up.
     let out = wait::within_hang("ssh finished", child.wait_with_output())

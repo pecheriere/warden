@@ -125,7 +125,10 @@ impl SignedCli {
             .env("HOME", self.root.path())
             .env("GIT_CONFIG_GLOBAL", self.root.path().join("gitconfig"))
             .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("GIT_CEILING_DIRECTORIES", self.root.path())
+            .env(
+                "GIT_CEILING_DIRECTORIES",
+                self.root.path().parent().unwrap(),
+            )
             .env_remove("GIT_DIR")
             .env_remove("GIT_WORK_TREE")
             .current_dir(self.root.path())

@@ -14,12 +14,13 @@ use serde_json::{Value, json};
 use warden_broker::audit::AuditEvent;
 use warden_broker::proxy::{CallEnd, CallInfo};
 use warden_broker::requests::{AuditOutcome, Clock as _, unwritten_entries};
+use warden_broker::testkit::wait::HANG;
 use warden_broker::testkit::{HttpsUpstream, TestBroker, TestResponse};
 use warden_broker_proto::{AgentName, Id, RequestStatus, Window};
 
 const SECRET: &str = "pr0xy-Cred/+=en&tial~42";
 
-const WAIT: Duration = Duration::from_secs(20);
+const WAIT: Duration = HANG;
 
 struct Setup {
     broker: TestBroker,

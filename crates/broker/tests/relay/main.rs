@@ -424,11 +424,19 @@ async fn reply_keeping_stderr(
     }
 }
 
+/// How long a held session's remote command runs: well past a test's wait
+/// ([`HANG`]) plus the relay's default stall timeout, so that only a cut by
+/// the relay, never the command ending, can close the session in time.
+const HELD_FOR: Duration = HANG.saturating_mul(3);
+
 /// A session holding the relay open until its channel is dropped.
 async fn hold_session(s: &Setup, key: &PrivateKey) -> (Connected, russh::Channel<client::Msg>) {
     let c = login(&s.broker, s.relay, TARGET, key).await;
     let mut channel = c.handle.channel_open_session().await.unwrap();
-    channel.exec(true, "sleep 60").await.unwrap();
+    channel
+        .exec(true, format!("sleep {}", HELD_FOR.as_secs()))
+        .await
+        .unwrap();
     assert!(reply(&mut channel).await);
     (c, channel)
 }

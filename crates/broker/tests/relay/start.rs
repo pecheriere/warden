@@ -111,7 +111,7 @@ async fn assert_refused_once(s: &Setup, reason: &str) {
 async fn stop_during_slow_target_read_is_prompt() {
     let s = key_target().await;
     let agent = approved_agent(&s.broker, "bot").await;
-    // The secret backend takes a minute to answer.
+    // The secret backend answers only after `SLOW_READ`, far past the bound.
     s.broker.backend.set_relay_read_delay(Some(SLOW_READ));
     let (_c, client, _) = exec_in_background(&s, &agent).await;
     wait::until("the target read began", || {
@@ -268,7 +268,7 @@ async fn slow_target_read_is_refused_after_its_bound() {
     let agent = approved_agent(&s.broker, "bot").await;
     s.broker.backend.set_relay_read_delay(Some(SLOW_READ));
     let (_c, client, asked) = exec_in_background(&s, &agent).await;
-    // Refused rather than answered: the read itself takes a minute.
+    // Refused rather than answered: the read itself takes `SLOW_READ`.
     let (replied, stderr, out) =
         wait::within_hang("refused once the target read took too long", client)
             .await

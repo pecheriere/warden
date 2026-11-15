@@ -29,7 +29,7 @@ fn agent(demo: &Demo, args: &[&str]) -> Command {
         .env("HOME", dir)
         .env("GIT_CONFIG_GLOBAL", dir.join("gitconfig"))
         .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CEILING_DIRECTORIES", dir)
+        .env("GIT_CEILING_DIRECTORIES", dir.parent().unwrap())
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
         .env_remove("WARDEN_AGENT_KEY")

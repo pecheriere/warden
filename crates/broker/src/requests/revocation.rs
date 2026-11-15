@@ -443,7 +443,7 @@ mod tests {
         let named = serde_json::to_string(&serde_json::to_string(&entry).unwrap()).unwrap();
 
         let (time, clock) = clock_at(1000);
-        let written = write_within(&pool, &audit, &clock, STALL_WAIT).await;
+        let written = write_within(&pool, &audit, &clock, HANG).await;
         assert_eq!(written.outcome, AuditOutcome::Missing);
         assert!(written.cause.is_some());
         assert_eq!(unwritten_entries(&pool).await.unwrap(), [entry]);

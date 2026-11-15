@@ -160,7 +160,14 @@ mod tests {
     use tokio::time::Instant;
 
     use super::CheckHealth;
-    use crate::relay::server::FAIL_CLOSED_AFTER;
+    use crate::relay::server::{FAIL_CLOSED_AFTER, RelayLimits};
+
+    #[test]
+    fn the_default_limits_hold_the_documented_ten_seconds() {
+        let limits = RelayLimits::default();
+        assert_eq!(limits.fail_closed_after, Duration::from_secs(10));
+        assert_eq!(limits.target_read_timeout, Duration::from_secs(10));
+    }
 
     #[test]
     fn fails_closed_ten_seconds_after_the_last_success() {

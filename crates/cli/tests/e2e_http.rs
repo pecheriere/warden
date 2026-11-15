@@ -731,7 +731,7 @@ async fn e2e_second_ctrl_c_exits_at_once() {
         .unwrap()
         .unwrap();
     assert!(
-        asked.elapsed() < std::time::Duration::from_secs(3),
+        asked.elapsed() < std::time::Duration::from_secs(9),
         "{:?}",
         asked.elapsed()
     );

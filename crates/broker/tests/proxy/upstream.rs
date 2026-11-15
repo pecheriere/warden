@@ -68,7 +68,8 @@ async fn slow_upstream_times_out() {
         ..ProxyLimits::default()
     };
     let s = setup_with(limits, |_| {}).await;
-    // Short of the minute `/slow` takes to end by itself.
+    // Left alone `/slow` ends after a minute with a 200, which the status
+    // check below refuses: only the timeout can give the 504.
     let resp = tokio::time::timeout(HANG, get(&s, "/slow"))
         .await
         .expect("the upstream timeout never fired");
