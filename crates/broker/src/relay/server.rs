@@ -9,7 +9,7 @@
 //!   [`RelayLimits::max_auth_attempts`] public-key attempts. Only public-key
 //!   login exists. An unknown target, a key nobody approved and an inactive
 //!   grant are all refused the same way, as is an attempt whose grant
-//!   lookup takes longer than [`GRANT_QUERY_TIMEOUT`].
+//!   lookup takes longer than [`RelayLimits::grant_query_timeout`].
 //! - After login: at most [`RelayLimits::max_sessions_per_grant`] sessions
 //!   per grant and [`RelayLimits::max_sessions`] overall. A connection that
 //!   starts no session within [`RelayLimits::start_timeout`] is hung up, as
@@ -29,7 +29,7 @@
 //!   connection negotiates only the host key types of the pinned keys.
 //! - A running session ends, both connections cut within seconds, when its
 //!   grant or agent is revoked (told at once by the request service; found
-//!   by a check every [`GRANT_CHECK_EVERY`] when another process revoked
+//!   by a check every [`RelayLimits::grant_check_every`] when another process revoked
 //!   it), when the grant's window ends, or after
 //!   [`RelayLimits::idle_timeout`] with no bytes either way. When no query
 //!   of the state of grants has succeeded for
@@ -97,14 +97,13 @@ const SHUTTING_DOWN: &str = "warden relay: shutting down";
 const NOT_STARTED: &str = "warden relay: no session started in time";
 const SESSION_OVER: &str = "warden relay: session over";
 
-/// How often the grants of live sessions are checked for revocation (by
-/// another process; this one's are told at once) and expiry.
+/// The default of [`RelayLimits::grant_check_every`].
 const GRANT_CHECK_EVERY: Duration = Duration::from_secs(1);
 
 /// The default of [`RelayLimits::fail_closed_after`].
 const FAIL_CLOSED_AFTER: Duration = Duration::from_secs(10);
 
-/// Longest a grant query may take; past it, it counts as failed.
+/// The default of [`RelayLimits::grant_query_timeout`].
 const GRANT_QUERY_TIMEOUT: Duration = Duration::from_millis(1500);
 
 /// The default of [`RelayLimits::target_read_timeout`].
@@ -170,6 +169,14 @@ pub struct RelayLimits {
     /// relay fails closed: every session ends and none starts until one
     /// succeeds (10 s).
     pub fail_closed_after: Duration,
+    /// How often the grants of live sessions are checked for revocation (by
+    /// another process; this one's are told at once) and expiry (1 s). A
+    /// failure of the check is seen at the next one, so the relay fails
+    /// closed within this much after [`RelayLimits::fail_closed_after`].
+    pub grant_check_every: Duration,
+    /// Longest a grant query may take (a check, a login, a session start
+    /// or its daily count); past it, it counts as failed (1.5 s).
+    pub grant_query_timeout: Duration,
     /// Longest read of a relay target's item (policy and credential) when
     /// a session starts; past it, the session is refused (10 s).
     pub target_read_timeout: Duration,
@@ -196,6 +203,8 @@ impl Default for RelayLimits {
             idle_timeout: Duration::from_mins(15),
             start_timeout: Duration::from_secs(30),
             fail_closed_after: FAIL_CLOSED_AFTER,
+            grant_check_every: GRANT_CHECK_EVERY,
+            grant_query_timeout: GRANT_QUERY_TIMEOUT,
             target_read_timeout: TARGET_READ_TIMEOUT,
             agent_left_grace: Duration::from_secs(2),
             auth_rejection_time: AUTH_REJECTION_TIME,
@@ -306,7 +315,7 @@ impl RelayServer {
     /// (recording `relay_session_ended`) and return once all are gone.
     pub async fn serve(self, listener: TcpListener, mut stop: watch::Receiver<bool>) {
         let mut connections = JoinSet::new();
-        let checking = check_grants_every(&self.shared, GRANT_CHECK_EVERY);
+        let checking = check_grants_every(&self.shared, self.shared.limits.grant_check_every);
         tokio::pin!(checking);
         loop {
             tokio::select! {

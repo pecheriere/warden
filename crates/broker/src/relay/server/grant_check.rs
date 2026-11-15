@@ -10,7 +10,7 @@ use warden_broker_proto::Id;
 
 use crate::requests::{GrantEnd, RequestError, Requests};
 
-use super::{CHECK_FAILURE_LOG_EVERY, GRANT_QUERY_TIMEOUT, Shared};
+use super::{CHECK_FAILURE_LOG_EVERY, Shared};
 
 /// End the live sessions whose grant expired or was revoked, every
 /// `every`; fail closed while the state of grants cannot be read. Never
@@ -18,7 +18,7 @@ use super::{CHECK_FAILURE_LOG_EVERY, GRANT_QUERY_TIMEOUT, Shared};
 ///
 /// Expiry is enforced on every tick from memory, whatever the database
 /// does. Revocation needs a query: at most one runs at a time, each bounded
-/// by [`GRANT_QUERY_TIMEOUT`], and the ticks go on meanwhile, so a query
+/// by [`RelayLimits::grant_query_timeout`], and the ticks go on meanwhile, so a query
 /// that hangs counts as failed and the outage (time since the last
 /// successful query) is seen as it grows.
 pub(super) async fn check_grants_every(shared: &Shared, every: Duration) {
@@ -33,7 +33,11 @@ pub(super) async fn check_grants_every(shared: &Shared, every: Duration) {
             _ = ticker.tick() => {
                 sessions.expire_due(requests.now());
                 if query.is_none() {
-                    query = Some(grant_query(requests.clone(), sessions.grant_ids()));
+                    query = Some(grant_query(
+                        requests.clone(),
+                        sessions.grant_ids(),
+                        shared.limits.grant_query_timeout,
+                    ));
                 }
                 mark_grant_state(shared, health.lost(Instant::now()));
             }
@@ -70,18 +74,18 @@ type GrantQuery = Pin<Box<dyn Future<Output = Result<Vec<(Id, GrantEnd)>, CheckF
 pub(super) enum CheckFailure {
     #[error(transparent)]
     Query(#[from] RequestError),
-    #[error("no answer within {GRANT_QUERY_TIMEOUT:?}")]
-    TimedOut,
+    #[error("no answer within {0:?}")]
+    TimedOut(Duration),
 }
 
 /// Which of `grant_ids` ended, asked of the database within
-/// [`GRANT_QUERY_TIMEOUT`]. The lookup runs even with no live session, so
+/// `timeout`. The lookup runs even with no live session, so
 /// it also tells whether the state of grants can be read.
-pub(super) fn grant_query(requests: Requests, grant_ids: Vec<Id>) -> GrantQuery {
+pub(super) fn grant_query(requests: Requests, grant_ids: Vec<Id>, timeout: Duration) -> GrantQuery {
     Box::pin(async move {
-        tokio::time::timeout(GRANT_QUERY_TIMEOUT, requests.ended_grants(&grant_ids))
+        tokio::time::timeout(timeout, requests.ended_grants(&grant_ids))
             .await
-            .map_err(|_| CheckFailure::TimedOut)?
+            .map_err(|_| CheckFailure::TimedOut(timeout))?
             .map_err(CheckFailure::from)
     })
 }
@@ -166,6 +170,8 @@ mod tests {
     fn the_default_limits_hold_the_documented_ten_seconds() {
         let limits = RelayLimits::default();
         assert_eq!(limits.fail_closed_after, Duration::from_secs(10));
+        assert_eq!(limits.grant_check_every, Duration::from_secs(1));
+        assert_eq!(limits.grant_query_timeout, Duration::from_millis(1500));
         assert_eq!(limits.target_read_timeout, Duration::from_secs(10));
         assert_eq!(limits.agent_left_grace, Duration::from_secs(2));
         assert_eq!(limits.auth_rejection_time, Duration::from_secs(1));

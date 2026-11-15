@@ -17,8 +17,8 @@ use super::conn::stopping;
 use super::grant_check::grant_query;
 use super::handler::Login;
 use super::{
-    GRANT_LOOKUP_FAILED, GRANT_QUERY_TIMEOUT, NO_LONGER_VALID, NOT_A_RELAY_TARGET, SHUTTING_DOWN,
-    Shared, UNAVAILABLE, UNRECORDED,
+    GRANT_LOOKUP_FAILED, NO_LONGER_VALID, NOT_A_RELAY_TARGET, SHUTTING_DOWN, Shared, UNAVAILABLE,
+    UNRECORDED,
 };
 
 /// Record that a session ended.
@@ -80,7 +80,7 @@ const DAILY_LIMIT: Refusal = Refusal::new(
 /// and that its target is still the relay destination the owner approved
 /// (address, port and pinned host keys, by digest) with the approved user
 /// allowed; return the target's policy and onward credential, from one read
-/// of its item. The grant lookup is bounded by [`GRANT_QUERY_TIMEOUT`] and
+/// of its item. The grant lookup is bounded by [`super::RelayLimits::grant_query_timeout`] and
 /// the read by [`super::RelayLimits::target_read_timeout`].
 async fn check_session(
     shared: &Shared,
@@ -91,7 +91,7 @@ async fn check_session(
     let lookup = shared
         .requests
         .active_relay_grant(&grant.target, &login.key);
-    match tokio::time::timeout(GRANT_QUERY_TIMEOUT, lookup).await {
+    match tokio::time::timeout(shared.limits.grant_query_timeout, lookup).await {
         Ok(Ok(Some(now))) if now.grant_id == grant.grant_id => {}
         Ok(Ok(_)) => return Err(Refusal::new("grant no longer active", NO_LONGER_VALID)),
         Ok(Err(e)) => {
@@ -99,7 +99,7 @@ async fn check_session(
             return Err(GRANT_LOOKUP_FAILED);
         }
         Err(_) => {
-            tracing::error!(grant = %grant.grant_id, timeout = ?GRANT_QUERY_TIMEOUT, "relay: grant lookup timed out");
+            tracing::error!(grant = %grant.grant_id, timeout = ?shared.limits.grant_query_timeout, "relay: grant lookup timed out");
             return Err(GRANT_LOOKUP_FAILED);
         }
     }
@@ -146,13 +146,14 @@ async fn check_session(
 }
 
 /// Count one more session against the grant's budget for the day, within
-/// [`GRANT_QUERY_TIMEOUT`]. A count that cannot be had refuses the session.
+/// [`super::RelayLimits::grant_query_timeout`]. A count that cannot be had refuses the session.
 async fn take_session(shared: &Shared, grant: &RelayGrantRecord) -> Result<(), Refusal> {
     let day = DailyUse::RelaySession {
         target: grant.target.clone(),
     };
+    let timeout = shared.limits.grant_query_timeout;
     let counted = tokio::time::timeout(
-        GRANT_QUERY_TIMEOUT,
+        timeout,
         shared.requests.take_daily_use(&grant.grant_id, &day),
     )
     .await;
@@ -166,7 +167,7 @@ async fn take_session(shared: &Shared, grant: &RelayGrantRecord) -> Result<(), R
             return Err(DAILY_LIMIT);
         }
         Ok(Err(e)) => e.to_string(),
-        Err(_) => format!("no answer within {GRANT_QUERY_TIMEOUT:?}"),
+        Err(_) => format!("no answer within {timeout:?}"),
     };
     tracing::error!(grant = %grant.grant_id, %error, "relay: could not count a session");
     Err(Refusal::new(
@@ -241,7 +242,12 @@ pub(super) async fn open_target(
     };
     // Writing the log can take long, and a revocation does not wait for it: the
     // grant may have ended meanwhile, and then nothing reaches the target.
-    let ended = grant_query(shared.requests.clone(), vec![grant.grant_id.clone()]).await;
+    let ended = grant_query(
+        shared.requests.clone(),
+        vec![grant.grant_id.clone()],
+        shared.limits.grant_query_timeout,
+    )
+    .await;
     let ending = match ended {
         Ok(ended) => ended.first().map(|(_, end)| match end {
             GrantEnd::Revoked => session::reason::REVOKED,

@@ -17,21 +17,27 @@ use super::{
     reply_keeping_stderr, take_every_connection, text,
 };
 
-/// The relay checks the state of grants every second, so the last successful
-/// check came at most this long before an outage began.
-const CHECK_EVERY: Duration = Duration::from_secs(1);
+/// How often the relay checks the state of grants in the tests of outages,
+/// instead of every second: the last successful check came at most this long
+/// before an outage began.
+const CHECK_EVERY: Duration = Duration::from_millis(100);
 
 /// How long the relay may go without reading the state of grants before it
 /// fails closed, in the test where every query fails at once (an unreadable
-/// database): shorter than the 10 s default, and past two checks, so that a
-/// loaded machine that delays one does not end a session before the outage.
-const FAIL_CLOSED_AFTER: Duration = Duration::from_secs(2);
+/// database): shorter than the 10 s default, and past eight checks, so that a
+/// loaded machine that delays a few does not end a session before the outage.
+const FAIL_CLOSED_AFTER: Duration = Duration::from_millis(800);
 
 /// The window of the test that proves expiry needs no query: a tick runs
 /// the expiry before it marks the grant state lost, so expiry shows only if
 /// the clock is advanced before the window can elapse. Four checks keep
-/// that margin wide.
-const EXPIRY_FIRST_WINDOW: Duration = Duration::from_secs(4);
+/// that margin wide (ten checks).
+const EXPIRY_FIRST_WINDOW: Duration = Duration::from_secs(1);
+
+/// The longest a grant query may take in the test of a hung one, instead of
+/// 1.5 s: past it the query counts as failed and the next tick asks again.
+/// Well above a query that is not held up, which takes milliseconds.
+const HUNG_QUERY_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// The wait of a revocation for its audit entries in the test of held appends,
 /// instead of the 2 s of production.
@@ -417,6 +423,7 @@ async fn unstarted_authenticated_connection_is_closed() {
 async fn db_unreadable_fails_closed() {
     let s = key_target_with(RelayLimits {
         fail_closed_after: FAIL_CLOSED_AFTER,
+        grant_check_every: CHECK_EVERY,
         ..RelayLimits::default()
     })
     .await;
@@ -468,6 +475,8 @@ async fn db_unreadable_fails_closed() {
 async fn hung_grant_query_still_fails_closed_and_expires() {
     let s = key_target_with(RelayLimits {
         fail_closed_after: EXPIRY_FIRST_WINDOW,
+        grant_check_every: CHECK_EVERY,
+        grant_query_timeout: HUNG_QUERY_TIMEOUT,
         ..RelayLimits::default()
     })
     .await;
@@ -480,7 +489,7 @@ async fn hung_grant_query_still_fails_closed_and_expires() {
 
     // Every connection of the pool taken: from now on a grant query waits
     // for one (sqlx's 30 s acquire timeout), as on a hung disk. The last
-    // successful check was at most one tick (1 s) before this.
+    // successful check was at most one tick before this.
     let hung = Instant::now();
     let held = take_every_connection(&s.broker).await;
 
