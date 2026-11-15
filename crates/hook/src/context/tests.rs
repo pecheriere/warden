@@ -354,7 +354,7 @@ fn warden_ssh_config_refuses_each_keyword_and_shape() {
         ("question", format!("Host a?\n{AGENT}")),
         ("star-second", format!("Host a\n{AGENT}Host *\n{AGENT}")),
         ("empty-host", format!("Host\n{AGENT}")),
-        ("no-host", format!("# only a comment\n")),
+        ("no-host", "# only a comment\n".to_owned()),
         (
             "not-warden-agent",
             "Host a\n IdentityAgent ~/pw/agent.sock\n".to_owned(),

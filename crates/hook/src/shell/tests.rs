@@ -367,7 +367,7 @@ fn arithmetic_commands_are_still_skipped() {
     let cmds = simple_commands("((i = 1 + 2)); ssh pi");
     assert_eq!(cmds.len(), 1);
     assert_eq!(cmds[0].argv, v(&["ssh", "pi"]));
-    assert!(!simple_commands("((x) ssh pi").is_empty());
+    assert!(argvs("((x) ssh pi").contains(&v(&["ssh", "pi"])));
 }
 
 #[test]
