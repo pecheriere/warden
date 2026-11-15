@@ -221,15 +221,20 @@ pub(super) fn read_limited(file: impl Read, limit: usize) -> Result<Zeroizing<St
 
 /// The policy file's text. Nothing in it is secret, but warden obeys it, so
 /// only its owner may be able to change it: this user or root, and not
-/// writable by group or others.
-pub(super) fn read_policy(path: &Path, euid: u32) -> Result<Zeroizing<String>, Refusal> {
+/// writable by group or others. At most `limit` bytes: [`MAX_POLICY_BYTES`] outside
+/// tests, which pass less because every read allocates and wipes `limit` bytes.
+pub(super) fn read_policy(
+    path: &Path,
+    euid: u32,
+    limit: usize,
+) -> Result<Zeroizing<String>, Refusal> {
     let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
         return Err(Refusal::Rule("must name a file"));
     };
     let directory = open_directory(parent, euid)?;
     let (file, meta) = open_regular(&directory, Path::new(name))?;
     check_policy_file(&meta, euid)?;
-    read_limited(file, MAX_POLICY_BYTES)
+    read_limited(file, limit)
 }
 
 /// The rules for what was opened as the policy file. It must have exactly one
@@ -444,7 +449,11 @@ mod tests {
         symlink(&real, &link).unwrap();
         assert_eq!(rule(read_secret(&link, "token", euid())), super::SYMLINK);
         assert_eq!(
-            rule(read_policy(&link.join("policy.toml"), euid())),
+            rule(read_policy(
+                &link.join("policy.toml"),
+                euid(),
+                MAX_POLICY_BYTES
+            )),
             super::SYMLINK
         );
     }
@@ -490,7 +499,7 @@ mod tests {
             Err(Refusal::Missing)
         );
         assert_eq!(
-            read_policy(&dir.join("absent"), euid()).map(|_| ()),
+            read_policy(&dir.join("absent"), euid(), MAX_POLICY_BYTES).map(|_| ()),
             Err(Refusal::Missing)
         );
     }
@@ -520,13 +529,16 @@ mod tests {
         for mode in [0o600, 0o640, 0o644, 0o444] {
             let (_guard, dir) = private_dir();
             let path = write(&dir, "policy.toml", b"", mode);
-            assert!(read_policy(&path, euid()).is_ok(), "{mode:o}");
+            assert!(
+                read_policy(&path, euid(), MAX_POLICY_BYTES).is_ok(),
+                "{mode:o}"
+            );
         }
         for mode in [0o660, 0o606, 0o666] {
             let (_guard, dir) = private_dir();
             let path = write(&dir, "policy.toml", b"", mode);
             assert_eq!(
-                rule(read_policy(&path, euid())),
+                rule(read_policy(&path, euid(), MAX_POLICY_BYTES)),
                 "can be written by group or others",
                 "{mode:o}"
             );
@@ -539,11 +551,11 @@ mod tests {
         let path = write(&dir, "policy.toml", b"", 0o600);
         chmod(&dir, 0o777);
         assert_eq!(
-            rule(read_policy(&path, euid())),
+            rule(read_policy(&path, euid(), MAX_POLICY_BYTES)),
             "a directory on the path can be written by group or others"
         );
         chmod(&dir, 0o1777);
-        assert!(read_policy(&path, euid()).is_ok());
+        assert!(read_policy(&path, euid(), MAX_POLICY_BYTES).is_ok());
     }
 
     /// What a bind mount of the single file shows after a rename over its
@@ -567,7 +579,7 @@ mod tests {
         let path = write(&dir, "policy.toml", b"", 0o600);
         fs::hard_link(&path, dir.join("second-name")).unwrap();
         assert_eq!(
-            rule(read_policy(&path, euid())),
+            rule(read_policy(&path, euid(), MAX_POLICY_BYTES)),
             "has more than one name (a hard link)"
         );
     }
@@ -581,7 +593,10 @@ mod tests {
             &vec![b'#'; MAX_POLICY_BYTES + 1],
             0o600,
         );
-        assert_eq!(rule(read_policy(&path, euid())), "is too large");
+        assert_eq!(
+            rule(read_policy(&path, euid(), MAX_POLICY_BYTES)),
+            "is too large"
+        );
     }
 
     /// What the kernel reports decides, and not knowing refuses.
@@ -646,7 +661,10 @@ mod tests {
         let source = std::env::var_os("WARDEN_TEST_BIND_MOUNT_SOURCE")
             .expect("WARDEN_TEST_BIND_MOUNT_SOURCE names the file behind that mount");
         let mounted = Path::new(&mounted);
-        assert_eq!(rule(read_policy(mounted, euid())), super::MOUNTED_ALONE);
+        assert_eq!(
+            rule(read_policy(mounted, euid(), MAX_POLICY_BYTES)),
+            super::MOUNTED_ALONE
+        );
         let (directory, name) = (mounted.parent().unwrap(), mounted.file_name().unwrap());
         assert_eq!(
             rule(read_secret(directory, name.to_str().unwrap(), euid())),
@@ -656,7 +674,7 @@ mod tests {
         let backup = source.with_extension("bak");
         fs::rename(source, &backup).unwrap();
         fs::write(source, b"new").unwrap();
-        let after = rule(read_policy(mounted, euid()));
+        let after = rule(read_policy(mounted, euid(), MAX_POLICY_BYTES));
         fs::remove_file(source).unwrap();
         fs::rename(&backup, source).unwrap();
         assert_eq!(after, super::MOUNTED_ALONE);
@@ -701,11 +719,15 @@ mod tests {
     #[test]
     fn a_path_that_names_no_file_or_climbs_is_refused() {
         assert_eq!(
-            rule(read_policy(Path::new("/"), euid())),
+            rule(read_policy(Path::new("/"), euid(), MAX_POLICY_BYTES)),
             "must name a file"
         );
         assert_eq!(
-            rule(read_policy(Path::new("../policy.toml"), euid())),
+            rule(read_policy(
+                Path::new("../policy.toml"),
+                euid(),
+                MAX_POLICY_BYTES
+            )),
             "the path must be absolute, without .."
         );
         let (_guard, dir) = private_dir();

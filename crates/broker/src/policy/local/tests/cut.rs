@@ -67,7 +67,10 @@ fn a_policy_cut_at_any_byte_does_not_parse() {
 /// one is served unchanged.
 #[tokio::test]
 async fn a_cut_policy_file_is_refused_at_every_line_and_inside_the_marker() {
-    let setup = Setup::new("");
+    let mut setup = Setup::new("");
+    // Every read allocates and wipes the limit, about 9 ms at the real one in a debug
+    // build, and this test reads the file hundreds of times. The policy is far below it.
+    setup.backend.files.max_policy_bytes = 16 * 1024;
     setup.secret("ssh-ca", &ed25519_pem());
     setup.secret("switch-password", "a-password\n");
     let full = full_policy();

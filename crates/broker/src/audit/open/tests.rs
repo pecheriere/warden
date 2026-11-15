@@ -281,8 +281,15 @@ fn a_complete_line_longer_than_the_bound_is_refused() {
     ));
 }
 
+/// Verification reads through a `BufReader`, one line at a time. A log of this many
+/// entries is about 1.2 MB, far more than 100 times the reader's 8 KiB buffer, so
+/// lines straddle its refills many times over. More entries repeat the same work:
+/// the count is checked, not memory use, and 100,000 of them took seconds in a debug
+/// build.
 #[test]
 fn verify_streams_a_large_log() {
-    let (_dir, path, _written) = log_of(100_000);
-    assert_eq!(verify(&path).unwrap(), 100_000);
+    const ENTRIES: u64 = 5_000;
+    let (_dir, path, _written) = log_of(ENTRIES);
+    assert!(fs::metadata(&path).unwrap().len() > 100 * 8 * 1024);
+    assert_eq!(verify(&path).unwrap(), ENTRIES);
 }
