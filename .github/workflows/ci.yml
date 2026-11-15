@@ -4,6 +4,12 @@ on:
   pull_request:
   push:
     branches: [main]
+  # Dependabot pull requests merge through GITHUB_TOKEN, which starts no push
+  # workflow, and main does not require branches to be up to date: two that pass
+  # alone can break main together. The daily run on main catches that within a
+  # day, for the README badge and report-red-main.
+  schedule:
+    - cron: "11 4 * * *"
   workflow_call:
 
 permissions:
@@ -548,7 +554,8 @@ jobs:
   report-red-main:
     needs: [lint, test, coverage, deny, binaries, demo-macos, image]
     if: >-
-      always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+      always() && (github.event_name == 'push' || github.event_name == 'schedule')
+      && github.ref == 'refs/heads/main'
       && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
     runs-on: ubuntu-latest
     timeout-minutes: 5
