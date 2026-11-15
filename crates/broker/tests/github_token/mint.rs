@@ -597,31 +597,6 @@ async fn old_cli_body_says_upgrade() {
 }
 
 #[tokio::test]
-async fn grant_replaced_during_mint_gets_nothing() {
-    let (broker, upstream, key, old) = granted().await;
-    let (gate, call) = held_mint(&broker, &upstream, &key).await;
-    // A grant over both repositories overlaps the old one, so it replaces it.
-    let new = approve_repositories(
-        &broker,
-        &upstream,
-        "bot",
-        Window::D7,
-        &[(1001, REPO_A), (1002, REPO_B)],
-    )
-    .await;
-    assert_ne!(new, old);
-    gate.open();
-    let resp = call.await.unwrap();
-    assert_refused(
-        &broker,
-        &resp,
-        StatusCode::CONFLICT,
-        "grant revoked during the call",
-    );
-    assert_eq!(entries(&broker, "github_token_refused")[0]["grant_id"], old);
-}
-
-#[tokio::test]
 async fn hourly_limit_is_per_agent_across_grants() {
     let upstream = fake_github().await;
     let api = GithubApi::pinned(

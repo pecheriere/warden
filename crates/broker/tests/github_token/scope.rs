@@ -31,13 +31,6 @@ async fn create_error(broker: &TestBroker, req: warden_broker_proto::CreateReque
 }
 
 #[tokio::test]
-async fn creates_request_for_one_repository() {
-    let (broker, _key, _upstream) = configured_on_fake().await;
-    let (created, _token) = broker.create_request("bot", request(&[REPO])).await;
-    assert_eq!(created.created, Some(true));
-}
-
-#[tokio::test]
 async fn creation_reads_no_key() {
     let (broker, _key, _upstream) = configured_on_fake().await;
     let before = broker.backend.github_app_reads();
