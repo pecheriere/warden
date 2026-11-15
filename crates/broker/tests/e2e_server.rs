@@ -401,6 +401,40 @@ async fn spawn_serves_both_routers_on_real_ports() {
     );
 }
 
+/// A restarted broker keeps its ports while it is down: nothing else can take
+/// them, and a connection fails as on a stopped process, until the broker
+/// serves on them again.
+#[tokio::test]
+async fn restart_keeps_the_ports_until_the_broker_serves_again() {
+    let broker = TestBroker::new().await;
+    let urls = broker.spawn_behind_serve().await;
+    let client = reqwest::Client::new();
+    let health = urls.api.join("healthz").unwrap();
+    let history = urls.approval.join("history").unwrap();
+
+    let broker = broker.restart().await;
+    for url in [&health, &history] {
+        let down = client.get(url.clone()).send().await;
+        assert!(down.is_err(), "{url} answered while down: {down:?}");
+    }
+    for url in [&urls.api, &urls.approval] {
+        let port = url.port().unwrap();
+        let squatter = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).await;
+        assert_eq!(
+            squatter.map(|_| ()).unwrap_err().kind(),
+            std::io::ErrorKind::AddrInUse,
+            "port {port} was free while the broker was down"
+        );
+    }
+
+    let back = broker.spawn_behind_serve_at(&urls).await;
+    assert_eq!((&back.api, &back.approval), (&urls.api, &urls.approval));
+    let health = client.get(health).send().await.unwrap();
+    assert_eq!(health.status(), StatusCode::OK);
+    let history = client.get(history).send().await.unwrap();
+    assert_eq!(history.status(), StatusCode::OK);
+}
+
 #[tokio::test]
 async fn sweep_loop_expires_pending_requests_and_stops_on_shutdown() {
     let broker = TestBroker::new().await;
