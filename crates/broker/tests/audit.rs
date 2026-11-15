@@ -7,6 +7,7 @@ use warden_broker::audit::{AuditError, AuditEvent, AuditLog, verify};
 use warden_broker::audit_throttle::{Allowance, Summary};
 use warden_broker::requests::Clock as _;
 use warden_broker::testkit::TestBroker;
+use warden_broker::testkit::wait::within_hang;
 use warden_broker_proto::{AgentName, Id};
 
 fn denied() -> AuditEvent {
@@ -368,16 +369,21 @@ async fn append_times_out_on_held_lock_without_poisoning() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("audit.jsonl");
     let log = AuditLog::open(&path).await.unwrap();
+    // A shorter wait than the real 5 s, which works the same way.
+    let lock_wait = std::time::Duration::from_millis(200);
+    log.set_lock_wait(lock_wait).await;
     let holder = fs::File::open(&path).unwrap();
     holder.lock().unwrap();
 
     let started = std::time::Instant::now();
-    let appended = tokio::time::timeout(std::time::Duration::from_secs(60), log.append(denied()))
-        .await
-        .expect("the append never gave up on the held lock");
+    let appended = within_hang(
+        "the append giving up on the held lock",
+        log.append(denied()),
+    )
+    .await;
     assert!(matches!(appended, Err(AuditError::LockTimeout)));
     let waited = started.elapsed();
-    assert!(waited >= std::time::Duration::from_secs(5), "{waited:?}");
+    assert!(waited >= lock_wait, "{waited:?}");
 
     holder.unlock().unwrap();
     log.append(denied()).await.unwrap();

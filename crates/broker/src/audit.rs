@@ -162,7 +162,8 @@ fn parse_canonical(raw: &[u8]) -> Result<Line, String> {
 /// warden never writes a log it could not open again.
 const MAX_LINE_BYTES: usize = 16 * 1024 * 1024;
 
-/// How long an append waits for another writer to release the file lock.
+/// How long an append waits for another writer to release the file lock,
+/// unless a test shortens it with [`AuditLog::set_lock_wait`].
 const LOCK_WAIT: Duration = Duration::from_secs(5);
 
 /// Longest pause between attempts to take the file lock.
@@ -212,7 +213,13 @@ impl<'a> FileLock<'a> {
     /// Take the lock, waiting at most [`LOCK_WAIT`] with a growing backoff.
     /// Blocking; call from a blocking thread.
     fn acquire(file: &'a File) -> Result<Self, AuditError> {
-        let deadline = Instant::now() + LOCK_WAIT;
+        Self::acquire_within(file, LOCK_WAIT)
+    }
+
+    /// Take the lock, waiting at most `wait` with a growing backoff. Blocking;
+    /// call from a blocking thread.
+    fn acquire_within(file: &'a File, wait: Duration) -> Result<Self, AuditError> {
+        let deadline = Instant::now() + wait;
         let mut backoff = Duration::from_millis(1);
         loop {
             match file.try_lock() {
@@ -430,11 +437,16 @@ enum Failure {
     Write(AuditError),
 }
 
-/// Append `event` under the file lock, first re-syncing from the file if
-/// another writer (or an earlier append of this handle whose result was
-/// lost) changed it since `cached`. Blocking.
-fn append_blocking(file: &File, cached: Head, event: &AuditEvent) -> Result<Head, Failure> {
-    let _lock = FileLock::acquire(file).map_err(Failure::NotWritten)?;
+/// Append `event` under the file lock, waiting at most `lock_wait` for it,
+/// first re-syncing from the file if another writer (or an earlier append of
+/// this handle whose result was lost) changed it since `cached`. Blocking.
+fn append_blocking(
+    file: &File,
+    lock_wait: Duration,
+    cached: Head,
+    event: &AuditEvent,
+) -> Result<Head, Failure> {
+    let _lock = FileLock::acquire_within(file, lock_wait).map_err(Failure::NotWritten)?;
     let len = file
         .metadata()
         .map_err(|e| Failure::NotWritten(e.into()))?
@@ -459,6 +471,9 @@ struct State {
     /// Set when a write or fsync failed; the file tail is untrustworthy until
     /// the log is reopened.
     poisoned: bool,
+    /// How long an append waits for the file lock: [`LOCK_WAIT`], unless a
+    /// test set another with [`AuditLog::set_lock_wait`].
+    lock_wait: Duration,
 }
 
 /// Handle to the append-only audit log.
@@ -483,6 +498,7 @@ impl AuditLog {
                 file,
                 head,
                 poisoned: false,
+                lock_wait: LOCK_WAIT,
             })),
             #[cfg(feature = "testkit")]
             stall: Arc::default(),
@@ -512,11 +528,21 @@ impl AuditLog {
     }
 
     /// Hold every append whose entry `filter` picks, with no time limit, until the
-    /// result is dropped.
+    /// result is dropped. A later call replaces it: appends from then on wait on
+    /// the new stall, and dropping this one lets go only those it holds.
     #[cfg(feature = "testkit")]
     #[must_use]
     pub fn stall_appends(&self, filter: fn(&AuditEvent) -> bool) -> AppendStall {
         self.stall.hold(filter)
+    }
+
+    /// Make each append from now on wait at most `wait` for another writer's
+    /// file lock, instead of the 5 s it waits otherwise, so that a test of a
+    /// held lock does not wait out the real limit. Only the `testkit` feature
+    /// builds it, so no configuration reaches it.
+    #[cfg(feature = "testkit")]
+    pub async fn set_lock_wait(&self, wait: Duration) {
+        self.state.lock().await.lock_wait = wait;
     }
 
     /// Append `event`, fsyncing before returning.
@@ -540,7 +566,7 @@ impl AuditLog {
         }
         tokio::task::spawn_blocking(move || {
             let cached = state.head.clone();
-            match append_blocking(&state.file, cached, &event) {
+            match append_blocking(&state.file, state.lock_wait, cached, &event) {
                 Ok(head) => {
                     state.head = head;
                     Ok(())

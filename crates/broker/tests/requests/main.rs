@@ -45,6 +45,7 @@ struct Harness {
     clock: Arc<ManualClock>,
     capture: Arc<CapturingNotifier>,
     audit_path: std::path::PathBuf,
+    audit: Arc<AuditLog>,
     bot_key: String,
     _connect: MockServer,
     _dir: tempfile::TempDir,
@@ -185,7 +186,7 @@ async fn harness_with_relay(
     let notifier = notifier.unwrap_or_else(|| capture.clone());
     let requests = Requests::new(
         pool.clone(),
-        audit,
+        audit.clone(),
         backend,
         notifier,
         Url::parse(PUBLIC_URL).unwrap(),
@@ -198,6 +199,7 @@ async fn harness_with_relay(
         clock,
         capture,
         audit_path,
+        audit,
         bot_key,
         _connect: connect,
         _dir: dir,

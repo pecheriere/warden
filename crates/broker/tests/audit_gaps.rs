@@ -13,7 +13,7 @@ use ssh_key::Certificate;
 use warden_broker::agents;
 use warden_broker::approval::passkeys::{self, PasskeyError};
 use warden_broker::requests::{AuditOutcome, Clock as _, RequestError, RequestLimits, sha256_hex};
-use warden_broker::testkit::wait::HANG;
+use warden_broker::testkit::wait::{HANG, within_hang};
 use warden_broker::testkit::{FakeBackend, SoftAuthenticator, TestBroker, TestResponse};
 use warden_broker_proto::{
     AgentName, CreatedResponse, GrantAccess, GrantView, Id, RequestStatus, SshGrant, UnixUser,
@@ -522,15 +522,17 @@ async fn an_audit_log_that_has_stalled_does_not_stop_a_revocation() {
 
 // --- writing the log never holds up the database ------------------------------
 
-/// Hold the audit log's lock, as a log that has stalled would, while `work` runs,
-/// and check the whole time that another writer can still get into the database,
-/// as a revocation must.
+/// Hold each append to the audit log, as a log that has stalled would, while
+/// `work` runs, and check during each that another writer can still get into the
+/// database, as a revocation must. The append is held until that check is done,
+/// with no time limit, so a write lock `work` held across it would still be held
+/// when the other writer's busy timeout ran out. Once checked, it is let go and
+/// the next append is held in its turn.
 async fn assert_no_write_lock_while_log_waits<T: Send + 'static>(
     broker: &TestBroker,
     work: impl Future<Output = T> + Send + 'static,
 ) {
-    let holder = std::fs::File::open(broker.audit_path()).unwrap();
-    holder.lock().unwrap();
+    let audit = broker.state().audit.clone();
     let file: String = sqlx::query("PRAGMA database_list")
         .fetch_one(&broker.state().pool)
         .await
@@ -538,22 +540,36 @@ async fn assert_no_write_lock_while_log_waits<T: Send + 'static>(
         .get("file");
     let mut other = SqliteConnectOptions::new()
         .filename(file)
-        // Long enough for a short write to finish, far less than a log can stall.
+        // Long enough for a short write to finish; an append is held for longer.
         .busy_timeout(Duration::from_secs(1))
         .connect()
         .await
         .unwrap();
-    let task = tokio::spawn(work);
-    while !task.is_finished() {
-        sqlx::query("BEGIN IMMEDIATE")
-            .execute(&mut other)
-            .await
-            .expect("a writer holds the database while it waits for the audit log");
-        sqlx::query("ROLLBACK").execute(&mut other).await.unwrap();
-        tokio::task::yield_now().await;
-    }
-    drop(holder);
-    task.await.unwrap();
+    let mut stall = audit.stall_appends(|_| true);
+    let mut task = tokio::spawn(work);
+    let held = within_hang("the work finishing", async {
+        let mut held = 0_usize;
+        loop {
+            tokio::select! {
+                () = stall.until_holding(1) => {}
+                finished = &mut task => {
+                    finished.unwrap();
+                    return held;
+                }
+            }
+            sqlx::query("BEGIN IMMEDIATE")
+                .execute(&mut other)
+                .await
+                .expect("a writer holds the database while it waits for the audit log");
+            sqlx::query("ROLLBACK").execute(&mut other).await.unwrap();
+            held += 1;
+            // Hold the next append before letting this one go.
+            let next = audit.stall_appends(|_| true);
+            drop(std::mem::replace(&mut stall, next));
+        }
+    })
+    .await;
+    assert!(held > 0, "the work wrote nothing to the audit log");
 }
 
 #[tokio::test]

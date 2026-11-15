@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use axum::http::StatusCode;
 use ssh_key::{Algorithm, PrivateKey};
-use warden_broker::requests;
+use warden_broker::requests::{self, Clock as _};
 use warden_broker::signed::NONCE_RETENTION_SECS;
 use warden_broker::testkit::TestBroker;
 use warden_broker::testkit::wait::HANG;
@@ -115,9 +115,33 @@ async fn sweep_loop_forgets_expired_nonces() {
         Duration::from_millis(10),
         stop_rx,
     ));
-    // Several sweeps run while the nonce is still within its retention.
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    assert_eq!(nonce_rows(&broker).await, 1);
+    // Several sweeps run while the nonce is still within its retention: each
+    // removes a nonce left already expired, and leaves this one.
+    for sweep in 0..3 {
+        sqlx::query("INSERT INTO agent_nonces (agent, nonce, expires_at) VALUES ('bot', ?, ?)")
+            .bind(format!("expired-{sweep}"))
+            .bind(broker.clock.now())
+            .execute(&broker.state().pool)
+            .await
+            .unwrap();
+        let deadline = Instant::now() + HANG;
+        while nonce_rows(&broker).await != 1 {
+            assert!(
+                Instant::now() < deadline,
+                "no sweep removed the expired nonce"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+    let kept: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM agent_nonces WHERE nonce NOT LIKE 'expired-%'")
+            .fetch_one(&broker.state().pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        kept, 1,
+        "the sweeps removed the nonce still within its retention"
+    );
 
     broker.clock.advance(NONCE_RETENTION_SECS);
     let deadline = Instant::now() + HANG;

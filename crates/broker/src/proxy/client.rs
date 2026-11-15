@@ -16,6 +16,7 @@ use warden_broker_proto::ProxyResponse;
 use super::redact::{Needles, redact, redact_name};
 use super::rules::{OUTBOUND_ACCEPT_ENCODING, Prepared};
 use super::slots::CallProgress;
+use super::watch::GrantChecks;
 use crate::policy::{ApiSecretPolicy, SecretValue};
 
 /// Size and time limits of one proxied call.
@@ -34,11 +35,14 @@ pub struct ProxyLimits {
     pub max_calls_per_agent: usize,
     /// Calls in flight at once, across all agents.
     pub max_calls: usize,
+    /// How a call in flight checks its grant, and how long the grant's state may
+    /// stay unreadable before the call stops. No setting changes it.
+    pub grant_checks: GrantChecks,
 }
 
 impl Default for ProxyLimits {
     /// 1 MiB each way, 30 s in total, 10 s to connect, 4 calls in flight per
-    /// agent and 16 overall.
+    /// agent and 16 overall, and the default [`GrantChecks`].
     fn default() -> Self {
         Self {
             max_request_bytes: 1024 * 1024,
@@ -47,6 +51,7 @@ impl Default for ProxyLimits {
             connect_timeout: Duration::from_secs(10),
             max_calls_per_agent: 4,
             max_calls: 16,
+            grant_checks: GrantChecks::default(),
         }
     }
 }

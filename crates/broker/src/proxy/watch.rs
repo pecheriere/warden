@@ -85,6 +85,16 @@ mod tests {
         lost_after: Duration::from_secs(600),
     };
 
+    /// Tests shorten these; the broker runs with them as documented.
+    #[test]
+    fn the_default_checks_fail_closed_after_ten_seconds() {
+        let checks = GrantChecks::default();
+        assert_eq!(checks.every, Duration::from_secs(1));
+        assert_eq!(checks.check_limit, Duration::from_millis(1500));
+        assert_eq!(checks.lost_after, Duration::from_secs(10));
+        assert_eq!(crate::proxy::ProxyLimits::default().grant_checks, checks);
+    }
+
     #[tokio::test]
     async fn checks_until_the_grant_is_found_ended() {
         for end in [CallEnd::Revoked, CallEnd::Expired] {

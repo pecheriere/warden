@@ -42,6 +42,8 @@ impl Gate {
     }
 
     /// Hold every append whose entry `filter` picks, until the result is dropped.
+    /// It replaces the stall in place, if any: appends from then on wait on the
+    /// new one, and dropping the earlier one lets go only those it holds.
     pub(super) fn hold(self: &Arc<Self>, filter: Filter) -> AppendStall {
         let (release, released) = watch::channel(false);
         let waiting = Arc::new(watch::Sender::new(0));
@@ -87,11 +89,19 @@ impl AppendStall {
 
 impl Drop for AppendStall {
     fn drop(&mut self) {
-        *self
+        let mut current = self
             .gate
             .stall
             .lock()
-            .unwrap_or_else(PoisonError::into_inner) = None;
+            .unwrap_or_else(PoisonError::into_inner);
+        // A stall that replaced this one stays in place.
+        if current
+            .as_ref()
+            .is_some_and(|stall| Arc::ptr_eq(&stall.waiting, &self.waiting))
+        {
+            *current = None;
+        }
+        drop(current);
         self.release.send_replace(true);
     }
 }

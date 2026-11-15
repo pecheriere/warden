@@ -10,6 +10,7 @@ use warden_broker::config::SecretUrl;
 use warden_broker::notify::{
     ChannelSettings, Doorbell, Fallback, HaWebhook, Notifier, NotifyError, Ntfy, doorbell,
 };
+use warden_broker::testkit::wait::HANG;
 use warden_broker_proto::{Access, AgentName, CreateRequest, Goal, TargetName, UnixUser, Window};
 use wiremock::matchers::{body_json, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -123,7 +124,7 @@ async fn fallback_uses_secondary_on_primary_timeout() {
     let primary = MockServer::start().await;
     let secondary = MockServer::start().await;
     Mock::given(method("POST"))
-        .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(6)))
+        .respond_with(ResponseTemplate::new(200).set_delay(HANG))
         .mount(&primary)
         .await;
     Mock::given(method("POST"))
@@ -131,7 +132,9 @@ async fn fallback_uses_secondary_on_primary_timeout() {
         .expect(1)
         .mount(&secondary)
         .await;
-    let f = Fallback::new(ha(&primary), vec![ntfy(&secondary)]);
+    // Each notifier gets less time than the real 5 s, which works the same way.
+    let f = Fallback::new(ha(&primary), vec![ntfy(&secondary)])
+        .with_timeout(Duration::from_millis(200));
     // The primary would answer after its delay, so only its timeout gets the
     // fallback to ring the secondary.
     assert_eq!(f.ring(&bell()).await.unwrap(), "ntfy");

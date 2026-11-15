@@ -701,7 +701,9 @@ async fn e2e_second_ctrl_c_exits_at_once() {
     use std::io::Read as _;
 
     // A broker that accepts connections and never answers: after Ctrl-C the
-    // CLI would wait up to 10 s for it to confirm the withdrawal.
+    // CLI would wait 5 s for its answer, then exit 130 saying the request may
+    // have been made. Only the at-once path says "interrupted again", so the
+    // output, not a time, tells the two exits apart.
     let s = setup().await;
     let hole = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let server = url::Url::parse(&format!("http://{}/", hole.local_addr().unwrap())).unwrap();
@@ -724,21 +726,16 @@ async fn e2e_second_ctrl_c_exits_at_once() {
     let stderr = BufReader::new(child.stderr.take().unwrap());
     let mut stderr = wait_for_line(stderr, "Ctrl-C again").await;
     // ...and the second ends the process at once, with exit 130.
-    let asked = std::time::Instant::now();
     int();
     let out = tokio::task::spawn_blocking(move || child.wait_with_output())
         .await
         .unwrap()
         .unwrap();
-    assert!(
-        asked.elapsed() < std::time::Duration::from_secs(9),
-        "{:?}",
-        asked.elapsed()
-    );
     assert_eq!(out.status.code(), Some(130));
     let mut rest = String::new();
     stderr.read_to_string(&mut rest).unwrap();
     assert!(rest.contains("interrupted again"), "{rest}");
+    assert!(!rest.contains("expires unanswered"), "{rest}");
 }
 
 /// Kill a waiting `warden request` the hard way: it gets to withdraw nothing.

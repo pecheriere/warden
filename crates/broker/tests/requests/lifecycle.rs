@@ -7,6 +7,7 @@ use sha2::{Digest as _, Sha256};
 use sqlx::Row as _;
 use warden_broker::requests::RequestError;
 use warden_broker::testkit::CapturingNotifier;
+use warden_broker::testkit::wait::within_hang;
 use warden_broker::{agents, audit};
 use warden_broker_proto::{RequestStatus, Window};
 
@@ -181,21 +182,22 @@ async fn every_transition_is_audited() {
 #[tokio::test]
 async fn dropped_create_still_rings() {
     let h = harness().await;
-    // Hold the audit log's file lock so the insert blocks inside its
-    // transaction, after the row is written but before it commits.
-    let lock = std::fs::File::open(&h.audit_path).unwrap();
-    lock.try_lock().unwrap();
+    // Hold the request's audit entry, as a log that has stalled would, so the
+    // insert blocks inside its transaction, after the row is written but before
+    // it commits.
+    let stall = h
+        .audit
+        .stall_appends(|event| matches!(event, audit::AuditEvent::RequestCreated { .. }));
     let create = tokio::spawn({
         let requests = h.requests.clone();
         async move { requests.create(&agent("bot"), pi_request()).await }
     });
-    // Policy lookup against the local mock takes milliseconds; give the
-    // create ample time to reach the blocked insert, then drop the caller.
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // Once the create has reached the blocked insert, drop the caller.
+    within_hang("the create reaching the insert", stall.until_holding(1)).await;
     assert!(!create.is_finished());
     create.abort();
     assert!(create.await.unwrap_err().is_cancelled());
-    lock.unlock().unwrap();
+    drop(stall);
 
     // The insert still commits, and the owner is still notified about it.
     let bell = h.capture.next().await;

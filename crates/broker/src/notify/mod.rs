@@ -126,6 +126,16 @@ impl Fallback {
         }
     }
 
+    /// Give each notifier `timeout` instead of 5 s, so that a test of a notifier
+    /// that does not answer need not wait out the real limit. Only the `testkit`
+    /// feature builds it, so no configuration reaches it.
+    #[cfg(feature = "testkit")]
+    #[must_use]
+    pub const fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
     async fn ring_one(
         &self,
         n: &Arc<dyn Notifier>,
