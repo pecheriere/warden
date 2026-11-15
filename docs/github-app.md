@@ -100,7 +100,8 @@ warden does not refuse them by itself: you decide. They are allowed in `extra_pe
 so a sensitive permission reaches a grant only when an agent names it and you approve it. In
 `default_permissions` one makes GitHub tokens unusable, because every grant, including the
 30-day automatic ones of the git helper and `gh` wrapper, would hold it. Until agents can ask
-for extras, listing one in `extra_permissions` has no effect. A name that GitHub does not
+for extras, listing one in `extra_permissions` has no effect. Once they can, a grant that holds a
+sensitive permission will last at most 1 hour, and the approval page will mark it. A name that GitHub does not
 document, such as an `organization_*` one missing from its page, stays unknown and is refused.
 
 **The App must hold what you set.** The approval page reads the installation's permissions

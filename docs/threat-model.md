@@ -1080,7 +1080,7 @@ What an attacker gets, and what stops it:
   write repository secrets, and it cannot create a webhook that would keep sending events after the grant
   ends. The risk moves to the owner's `extra_permissions`: a name listed there is a permission an agent
   may ask for once agents can send extras, which is not yet, and then only for a grant the owner approves
-  on the phone. The approval is
+  on the phone, lasting at most 1 hour. The approval is
   refused when the installation does not hold the set, which the broker reads at each view,
   begin and finish of the page; a read it cannot make refuses too.
 - **Within a grant, the agent gets tokens with no prompt**, up to 60 an hour (UTC), per

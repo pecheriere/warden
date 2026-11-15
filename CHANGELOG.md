@@ -13,7 +13,8 @@ All notable changes to this project are recorded here. The format follows
   `repository_hooks` and the documented `organization_*` ones). They are refused in
   `default_permissions`, which makes GitHub tokens unusable and fails doctor's `github-app`
   check as any bad field does, and allowed in `extra_permissions`, which no request can use
-  yet. ([#308](https://github.com/pecheriere/warden/issues/308))
+  yet; once requests can name extras, a grant holding a sensitive one will last at most 1 hour.
+  ([#308](https://github.com/pecheriere/warden/issues/308))
 
 ### Security
 
