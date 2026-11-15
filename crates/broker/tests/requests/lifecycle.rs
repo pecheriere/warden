@@ -73,7 +73,9 @@ async fn revoking_agent_cancels_pending_and_wakes_waiters() {
     wait_for_waiter(&h).await;
     h.requests.revoke_agent(&agent("bot")).await.unwrap();
 
-    let woke = tokio::time::timeout(Duration::from_secs(5), poller)
+    // Short of the 30 s wait, whose end would also find the request revoked:
+    // as long as a loaded machine could need, while still telling them apart.
+    let woke = tokio::time::timeout(Duration::from_secs(20), poller)
         .await
         .expect("long-poll not woken")
         .unwrap();

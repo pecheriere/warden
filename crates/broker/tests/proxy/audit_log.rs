@@ -6,6 +6,7 @@ use std::time::Duration;
 use axum::http::StatusCode;
 use serde_json::json;
 use warden_broker::audit::{self, AuditEvent};
+use warden_broker::testkit::wait::HANG;
 
 use super::{
     ROTATED, SECRET, assert_clean, audit_events, call_as, get, proxied, proxy_calls, setup,
@@ -171,7 +172,7 @@ async fn overlong_path_is_listed_as_invalid() {
     let long = format!("/delayed/{}", "a".repeat(4096));
     let call = get(&s, &long);
     let live = async {
-        let reached = tokio::time::timeout(Duration::from_secs(5), async {
+        let reached = tokio::time::timeout(HANG, async {
             while s.upstream.received().is_empty() {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }

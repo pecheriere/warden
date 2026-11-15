@@ -9,6 +9,7 @@ use warden_broker::audit;
 use warden_broker::proxy::ProxyLimits;
 use warden_broker::testkit::HttpsUpstream;
 use warden_broker::testkit::upstream::{HUGE_BYTES, SLOW_PREFIX};
+use warden_broker::testkit::wait::HANG;
 
 use super::{
     SECRET, assert_clean, audit_events, call_as, get, proxied, proxy_calls, setup, setup_with,
@@ -68,7 +69,7 @@ async fn slow_upstream_times_out() {
     };
     let s = setup_with(limits, |_| {}).await;
     // Short of the minute `/slow` takes to end by itself.
-    let resp = tokio::time::timeout(Duration::from_secs(30), get(&s, "/slow"))
+    let resp = tokio::time::timeout(HANG, get(&s, "/slow"))
         .await
         .expect("the upstream timeout never fired");
     assert_eq!(resp.status, StatusCode::GATEWAY_TIMEOUT, "{}", resp.body);
@@ -110,7 +111,7 @@ async fn upstream_connect_timeout_is_a_fixed_504() {
     let url = format!("https://127.0.0.1:{port}/v1/hello");
     // Far short of the overall timeout, which would answer the same.
     let resp = tokio::time::timeout(
-        Duration::from_secs(60),
+        HANG,
         call_as(&s.broker, &s.key, &s.grant, "GET", &url, None),
     )
     .await

@@ -10,6 +10,7 @@ use sqlx::Row as _;
 use warden_broker::audit;
 use warden_broker::notify::{Fallback, Notifier};
 use warden_broker::requests::{Destination, RequestError};
+use warden_broker::testkit::wait::HANG;
 use warden_broker::testkit::{CapturingNotifier, FailingNotifier, LongErrorNotifier};
 use warden_broker_proto::{Access, CreatedResponse, RequestStatus, Window, fingerprint};
 use wiremock::matchers::{method, path};
@@ -503,7 +504,7 @@ async fn notify_failure_ends_in_error() {
     };
     assert!(message.contains("failing returned HTTP 503"), "{message}");
     // The change that ended the request comes first; its entry follows.
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(HANG, async {
         while !audit_types(&h).contains(&"notify_failed".to_owned()) {
             tokio::task::yield_now().await;
         }
@@ -538,7 +539,7 @@ async fn a_long_notification_error_is_cut_in_its_entry() {
         message.contains(&reason),
         "the request keeps the whole error"
     );
-    let entry = tokio::time::timeout(Duration::from_secs(5), async {
+    let entry = tokio::time::timeout(HANG, async {
         loop {
             let found = std::fs::read_to_string(&h.audit_path)
                 .unwrap()

@@ -43,6 +43,7 @@ pub struct FakeBackend {
     ca_state: Mutex<CaState>,
     api_outage: Mutex<Option<String>>,
     relay_read_delay: Mutex<Option<Duration>>,
+    relay_reads_started: std::sync::atomic::AtomicUsize,
 }
 
 /// What [`FakeBackend`] has for an SSH CA.
@@ -87,6 +88,7 @@ impl FakeBackend {
             ca_state: Mutex::new(CaState::Usable),
             api_outage: Mutex::new(None),
             relay_read_delay: Mutex::new(None),
+            relay_reads_started: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -480,6 +482,13 @@ impl FakeBackend {
         *self.relay_read_delay.lock().expect("delay lock poisoned") = delay;
     }
 
+    /// How many reads of a relay target with its credential have begun.
+    #[must_use]
+    pub fn relay_reads_started(&self) -> usize {
+        self.relay_reads_started
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     fn outage(slot: &Mutex<Option<String>>) -> Result<(), PolicyError> {
         match slot
             .lock()
@@ -514,6 +523,8 @@ impl SecretBackend for FakeBackend {
         &self,
         name: &TargetName,
     ) -> Result<(SshTarget, RelayCredential), PolicyError> {
+        self.relay_reads_started
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let delay = *self
             .relay_read_delay
             .lock()

@@ -18,7 +18,7 @@ use super::grant_check::grant_query;
 use super::handler::Login;
 use super::{
     GRANT_LOOKUP_FAILED, GRANT_QUERY_TIMEOUT, NO_LONGER_VALID, NOT_A_RELAY_TARGET, SHUTTING_DOWN,
-    Shared, TARGET_READ_TIMEOUT, UNAVAILABLE, UNRECORDED,
+    Shared, UNAVAILABLE, UNRECORDED,
 };
 
 /// Record that a session ended.
@@ -81,7 +81,7 @@ const DAILY_LIMIT: Refusal = Refusal::new(
 /// (address, port and pinned host keys, by digest) with the approved user
 /// allowed; return the target's policy and onward credential, from one read
 /// of its item. The grant lookup is bounded by [`GRANT_QUERY_TIMEOUT`] and
-/// the read by [`TARGET_READ_TIMEOUT`].
+/// the read by [`super::RelayLimits::target_read_timeout`].
 async fn check_session(
     shared: &Shared,
     login: &Login,
@@ -105,7 +105,9 @@ async fn check_session(
     }
     // The policy and the credential, in one read.
     let read = shared.backend.relay_target_with_credential(&grant.target);
-    let (target, credential) = match tokio::time::timeout(TARGET_READ_TIMEOUT, read).await {
+    let (target, credential) = match tokio::time::timeout(shared.limits.target_read_timeout, read)
+        .await
+    {
         Ok(Ok(read)) => read,
         Ok(Err(PolicyError::Invalid { field, .. })) if field == "mode" => {
             return Err(NOT_A_RELAY_TARGET);
@@ -122,7 +124,7 @@ async fn check_session(
             return Err(Refusal::new("target policy invalid", NO_LONGER_VALID));
         }
         Err(_) => {
-            tracing::error!(grant = %grant.grant_id, timeout = ?TARGET_READ_TIMEOUT, "relay: target lookup timed out");
+            tracing::error!(grant = %grant.grant_id, timeout = ?shared.limits.target_read_timeout, "relay: target lookup timed out");
             return Err(Refusal::new("target lookup failed", UNAVAILABLE));
         }
     };

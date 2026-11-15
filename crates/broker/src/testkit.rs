@@ -12,6 +12,8 @@ mod notify;
 pub mod sshd;
 pub mod upstream;
 
+/// Waiting on a condition, bounded by one hang guard.
+pub use crate::test_wait as wait;
 pub use backend::{CaState, FakeBackend};
 pub use broker::{BaseUrls, LiveHold, TestBroker, TestResponse, request_signature};
 pub use clock::ManualClock;

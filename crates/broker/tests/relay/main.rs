@@ -26,6 +26,7 @@ use warden_broker::policy::{Listing, RelayCredential, SshMode, SshTarget};
 use warden_broker::relay::RelayLimits;
 use warden_broker::testkit::TestBroker;
 use warden_broker::testkit::sshd::{Sshd, SshdLogin, current_user};
+use warden_broker::testkit::wait::{self, HANG};
 use warden_broker_proto::{
     Access, AgentName, CreateRequest, Goal, Id, TargetName, UnixUser, Window,
 };
@@ -234,9 +235,8 @@ impl OpenSsh {
             // ssh may exit (and close its stdin) before reading it all.
             let _ = input.write_all(&stdin).await;
         });
-        let out = tokio::time::timeout(Duration::from_secs(60), child.wait_with_output())
+        let out = wait::within_hang("ssh finished", child.wait_with_output())
             .await
-            .expect("ssh finished")
             .unwrap();
         writer.await.unwrap();
         out
@@ -280,18 +280,7 @@ fn events_of(broker: &TestBroker, kind: &str) -> Vec<Value> {
 
 /// Wait until the audit log holds `count` entries of `kind`.
 async fn await_events(broker: &TestBroker, kind: &str, count: usize) -> Vec<Value> {
-    await_events_within(broker, kind, count, Duration::from_secs(15)).await
-}
-
-/// Wait until the audit log holds `count` entries of `kind`, failing after
-/// `limit`.
-async fn await_events_within(
-    broker: &TestBroker,
-    kind: &str,
-    count: usize,
-    limit: Duration,
-) -> Vec<Value> {
-    let deadline = Instant::now() + limit;
+    let deadline = Instant::now() + HANG;
     loop {
         let found = events_of(broker, kind);
         if found.len() >= count {
@@ -304,6 +293,24 @@ async fn await_events_within(
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+}
+
+/// Every connection of the broker's pool, so that a query now waits for one
+/// (sqlx's 30 s acquire timeout), as on a hung disk. Each is waited for, so
+/// none is left free however busy the pool was.
+async fn take_every_connection(
+    broker: &TestBroker,
+) -> Vec<sqlx::pool::PoolConnection<sqlx::Sqlite>> {
+    let pool = &broker.state().pool;
+    let mut held = Vec::new();
+    for _ in 0..pool.options().get_max_connections() {
+        held.push(
+            wait::within_hang("a connection of the pool", pool.acquire())
+                .await
+                .unwrap(),
+        );
+    }
+    held
 }
 
 /// Number of connections `sshd` has seen.
@@ -379,7 +386,7 @@ struct Collected {
 
 async fn collect(channel: &mut russh::Channel<client::Msg>) -> Collected {
     let mut out = Collected::default();
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let deadline = tokio::time::Instant::now() + HANG;
     while let Ok(Some(msg)) = tokio::time::timeout_at(deadline, channel.wait()).await {
         match msg {
             ChannelMsg::Data { data } => out.stdout.extend_from_slice(&data),
@@ -404,7 +411,7 @@ async fn reply_keeping_stderr(
     stderr: &mut Vec<u8>,
 ) -> bool {
     loop {
-        match tokio::time::timeout(Duration::from_secs(30), channel.wait())
+        match tokio::time::timeout(HANG, channel.wait())
             .await
             .expect("a reply")
         {
@@ -432,8 +439,8 @@ fn too_many(out: &Output, what: &str) {
 }
 
 /// Every `relay_session_started` has exactly one `relay_session_ended`
-/// for its grant (sessions of one grant end in any order), waiting a
-/// little for ends still being written.
+/// for its grant (sessions of one grant end in any order), waiting for
+/// ends still being written.
 async fn assert_each_start_ended(broker: &TestBroker) {
     let tally = |kind| {
         let mut per_grant = std::collections::BTreeMap::<String, usize>::new();
@@ -444,7 +451,7 @@ async fn assert_each_start_ended(broker: &TestBroker) {
         }
         per_grant
     };
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = Instant::now() + HANG;
     loop {
         let (started, ended) = (tally("relay_session_started"), tally("relay_session_ended"));
         for (grant, n) in &ended {

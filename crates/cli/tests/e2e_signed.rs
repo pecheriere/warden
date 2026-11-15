@@ -17,6 +17,7 @@ use tempfile::TempDir;
 use warden_broker::policy::{Listing, RelayCredential, SshMode, SshTarget};
 use warden_broker::test_keys::P256;
 use warden_broker::testkit::sshd::{Sshd, SshdLogin, current_user};
+use warden_broker::testkit::wait::HANG;
 use warden_broker::testkit::{CapturingNotifier, HttpsUpstream, TestBroker};
 use warden_broker_proto::{TargetName, UnixUser, Window};
 
@@ -65,7 +66,7 @@ impl TestAgent {
             .stderr(Stdio::null())
             .spawn()
             .expect("ssh-agent (OpenSSH) is needed for this test");
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + HANG;
         while std::os::unix::net::UnixStream::connect(&socket).is_err() {
             assert!(Instant::now() < deadline, "ssh-agent did not start");
             std::thread::sleep(Duration::from_millis(20));
@@ -113,12 +114,21 @@ impl SignedCli {
         }
     }
 
+    /// `warden` in the throwaway directory, which is also its `HOME`, with no
+    /// global or system git configuration: doctor reads only what a test sets up.
     fn command(&self) -> Command {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_warden"));
         cmd.env("XDG_CONFIG_HOME", self.root.path().join("config"))
             .env("XDG_STATE_HOME", self.root.path().join("state"))
             .env("TMPDIR", self.root.path().join("tmp"))
             .env("SSH_AUTH_SOCK", &self.agent.socket)
+            .env("HOME", self.root.path())
+            .env("GIT_CONFIG_GLOBAL", self.root.path().join("gitconfig"))
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CEILING_DIRECTORIES", self.root.path())
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .current_dir(self.root.path())
             .env_remove("WARDEN_AGENT_KEY")
             .env_remove("WARDEN_SESSION")
             .stdin(Stdio::null());

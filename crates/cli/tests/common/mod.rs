@@ -60,12 +60,22 @@ impl Cli {
         Self { root, key }
     }
 
+    /// `warden` in the throwaway directory, which is also its `HOME`, with no
+    /// global or system git configuration: nothing on the machine running the
+    /// test reaches it.
     pub fn command(&self) -> Command {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_warden"));
         cmd.env("XDG_CONFIG_HOME", self.root.path().join("config"))
             .env("XDG_STATE_HOME", self.root.path().join(STATE_DIR))
             .env("TMPDIR", self.root.path().join(TMP_DIR))
             .env("WARDEN_AGENT_KEY", &self.key)
+            .env("HOME", self.root.path())
+            .env("GIT_CONFIG_GLOBAL", self.root.path().join("gitconfig"))
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CEILING_DIRECTORIES", self.root.path())
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .current_dir(self.root.path())
             .stdin(Stdio::null());
         cmd
     }

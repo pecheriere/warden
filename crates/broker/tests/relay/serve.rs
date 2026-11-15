@@ -3,11 +3,11 @@
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
-use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt as _, AsyncRead, AsyncReadExt as _, BufReader};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
+use warden_broker::testkit::wait::HANG;
 
 /// A running `warden-server serve`, with the lines it has printed so far.
 struct Server {
@@ -100,7 +100,7 @@ impl Server {
         }
         // Only a guard against a hung server: a healthy one starts in well
         // under a second, and one that fails exits.
-        let waited = tokio::time::timeout(Duration::from_secs(60), async {
+        let waited = tokio::time::timeout(HANG, async {
             loop {
                 tokio::select! {
                     line = self.lines.recv() => {
@@ -121,7 +121,7 @@ impl Server {
         .await;
         let Ok(found) = waited else {
             panic!(
-                "warden-server did not print {needle:?} within 60 s:\n{}",
+                "warden-server did not print {needle:?}:\n{}",
                 self.output.join("\n")
             );
         };
@@ -141,7 +141,7 @@ impl Server {
     /// All the server printed, once both of its streams have closed. Only a
     /// guard against a process that inherited a stream and keeps it open.
     async fn rest_of_output(&mut self) -> String {
-        let closed = tokio::time::timeout(Duration::from_secs(15), async {
+        let closed = tokio::time::timeout(HANG, async {
             while let Some(line) = self.lines.recv().await {
                 self.output.push(line);
             }
@@ -150,7 +150,7 @@ impl Server {
         let output = self.output.join("\n");
         assert!(
             closed.is_ok(),
-            "warden-server's output did not close within 15 s of its exit:\n{output}"
+            "warden-server's output did not close after its exit:\n{output}"
         );
         output
     }
@@ -161,7 +161,7 @@ impl Server {
         let pid = rustix::process::Pid::from_raw(i32::try_from(self.child.id().unwrap()).unwrap())
             .unwrap();
         rustix::process::kill_process(pid, rustix::process::Signal::TERM).unwrap();
-        let status: ExitStatus = tokio::time::timeout(Duration::from_secs(15), self.child.wait())
+        let status: ExitStatus = tokio::time::timeout(HANG, self.child.wait())
             .await
             .expect("warden-server stopped")
             .unwrap();
@@ -197,7 +197,7 @@ async fn serve_runs_the_relay_only_when_configured() {
     server.terminate().await;
     // Stopping closed the relay's connections too.
     let mut rest = Vec::new();
-    tokio::time::timeout(Duration::from_secs(5), conn.read_to_end(&mut rest))
+    tokio::time::timeout(HANG, conn.read_to_end(&mut rest))
         .await
         .expect("connection closed")
         .ok();
