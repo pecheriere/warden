@@ -59,10 +59,9 @@ impl Ports {
                 .iter_mut()
                 .find(|held| local_port(&held.listener) == port)
                 .unwrap_or_else(|| panic!("port {port} was never served by this broker"));
-            let refuser = held
-                .refuser
-                .take()
-                .unwrap_or_else(|| panic!("the broker is already serving on port {port}"));
+            let refuser = held.refuser.take().unwrap_or_else(|| {
+                panic!("the broker is already serving on port {port} (not restarted since)")
+            });
             (refuser, copy(&held.listener))
         };
         // Once the refuser has ended, it accepts nothing more, so every new
@@ -114,11 +113,16 @@ impl Drop for Ports {
 /// with nothing listening would refuse it.
 async fn refuse(listener: tokio::net::TcpListener) {
     loop {
-        let (stream, _) = listener.accept().await.expect("accept on a held port");
-        // Closing with no linger sends a reset rather than an orderly end.
-        stream
-            .set_zero_linger()
-            .expect("reset a refused connection");
+        let Ok((stream, _)) = listener.accept().await else {
+            // A connection its peer gave up on before it was accepted needs
+            // no refusal, as in `serve`: keep refusing the others.
+            tokio::task::yield_now().await;
+            continue;
+        };
+        // Closing with no linger sends a reset rather than an orderly end. If
+        // the option cannot be set (the peer reset first), dropping the stream
+        // still ends the connection, which is all a refusal needs.
+        let _ = stream.set_zero_linger();
     }
 }
 
