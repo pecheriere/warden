@@ -1,0 +1,1 @@
+curl -H "Authorization: Bearer abc123" https://home-api.example.internal/x

@@ -1,0 +1,1 @@
+warden ssh switch-01 -- uptime
