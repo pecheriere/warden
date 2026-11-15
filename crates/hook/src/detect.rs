@@ -58,9 +58,6 @@ fn matches_of(command: &SimpleCommand, ctx: &Context) -> Vec<Match> {
         return Vec::new();
     };
     let program = args::program_name(first);
-    if program == "warden" {
-        return Vec::new();
-    }
     let socket = command
         .env
         .iter()
@@ -68,6 +65,7 @@ fn matches_of(command: &SimpleCommand, ctx: &Context) -> Vec<Match> {
         .map(|(_, value)| value.clone())
         .or_else(|| wrapper_socket(command, words));
     let socket = socket.as_deref();
+    // `warden ssh` and `warden http` are no match: the program is `warden`.
     let mut found = match program {
         "ssh" | "scp" | "sftp" => ssh::ssh_like(program, rest, socket, ctx),
         "rsync" => ssh::rsync(rest, socket, ctx),
