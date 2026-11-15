@@ -22,6 +22,7 @@ mod recover;
 mod release;
 mod request;
 mod request_context;
+mod setup_claude;
 mod setup_git;
 mod setup_github;
 mod sign;
@@ -197,6 +198,9 @@ async fn run(cmd: Cmd) -> Result<()> {
         Cmd::Setup {
             what: SetupWhat::Github,
         } => setup_github::run(),
+        Cmd::Setup {
+            what: SetupWhat::Claude { dry_run },
+        } => setup_claude::run(dry_run),
         Cmd::Github {
             what:
                 GithubCmd::Token {

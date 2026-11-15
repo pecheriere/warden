@@ -237,6 +237,13 @@ pub(crate) enum SetupWhat {
     /// and ~/.local/bin/gh a wrapper that runs the real gh with a token. Changes
     /// git's global configuration; never replaces a ~/.local/bin/gh it did not write.
     Github,
+    /// Install the warden plugin for Claude Code, pinned to this version's release
+    /// tag, by running `claude plugin`. Run it again after upgrading warden.
+    Claude {
+        /// Print the commands without running them.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]

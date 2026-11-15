@@ -41,8 +41,10 @@ In short:
    `warden login` command for the agent's machine.
 3. Install the CLI there and run that command. `warden doctor` then checks
    the setup ([what it checks](configuration.md#checking-an-agent-machine)).
-4. Give the agent [the instructions](agent-instructions.md): a session-start
-   hook that runs `warden prime --brief`, or the one-line rule, as
+4. Give the agent [the instructions](agent-instructions.md). For Claude Code,
+   run `warden setup claude`, which installs
+   [the warden plugin](#the-claude-code-plugin); for other agents, a
+   session-start hook that runs `warden prime --brief`, or the one-line rule, as
    [Instructions to give an agent](#instructions-to-give-an-agent) says.
 
 The rest of this section gives the details.
@@ -1122,8 +1124,47 @@ happens, so a broken hook never stops the agent.
   or one older than 24 hours, they are not raised.
 
 The hook catches honest mistakes. It is not a security boundary: the agent runs
-as the same user and can edit the configuration or obfuscate a command.
-Warden's boundary stays that the agent never holds the secret or the key.
+as the same user and can edit the configuration or obfuscate a command, and the
+hook sees only shell commands, not the agent's other tools, such as reading a
+file or fetching a page. Warden's boundary stays that the agent never holds the
+secret or the key.
+
+### The Claude Code plugin
+
+The `warden` plugin for Claude Code wires these two commands to its hooks:
+`warden hook session-start` at every session start (startup, resume, clear and
+compact) and `warden hook check` before every Bash tool call. It holds no
+instructions or patterns of its own, so it says and checks what the installed
+`warden` does. Install it on the agent's machine with:
+
+```sh
+warden setup claude
+```
+
+This runs `claude plugin` three times, without a shell, and stops at the first
+command that fails, with its exit status:
+
+```sh
+claude plugin marketplace add pecheriere/warden#v<version> --scope user
+claude plugin install warden@warden --scope user
+claude plugin update warden@warden --scope user
+```
+
+`<version>` is the CLI's own, so the plugin never gets ahead of the installed
+`warden`. Run it from a released CLI: the tag must exist, and the plugin is in
+the releases after 0.15.0. Adding a marketplace named `warden` again points it at
+the new tag, and the update moves an installed plugin there, so running `warden
+setup claude` again after upgrading warden upgrades the plugin. `--dry-run`
+prints the commands without running them. If `claude` is not on the `PATH`, it
+prints the `/plugin marketplace add` and `/plugin install` commands to type in a
+Claude Code session instead, and exits 0. It changes no file itself and needs no
+grant; Claude Code records the marketplace and the plugin in its own user
+settings. [The plugin's README](../plugins/warden/README.md) says what it holds
+and what happens when `warden` is missing or too old.
+
+The session-start hook calls the broker, as `warden prime --brief` does: use a
+key that signs without a prompt, or a key that prompts would prompt at every
+session start.
 
 ## Instructions to give an agent
 
@@ -1142,10 +1183,14 @@ warden prime
 warden prime --brief
 ```
 
-Give the instructions to an agent one of three ways:
+Give the instructions to an agent one of these ways:
 
-- **A session-start hook** that runs `warden prime --brief`, for example a
-  Claude Code `SessionStart` hook. Use it with a key that signs without a
+- **The Claude Code plugin**, for Claude Code: `warden setup claude` installs it,
+  as [The Claude Code plugin](#the-claude-code-plugin) says. It prints the
+  brief at every session start, as the hook below does, and checks shell
+  commands too.
+- **A session-start hook** that runs `warden prime --brief`, for an agent
+  with hooks but no plugin. Use it with a key that signs without a
   prompt, such as a dedicated agent socket as `warden login` sets up: every
   call is signed, and a key that prompts for each signature would prompt at
   every session start.

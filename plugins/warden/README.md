@@ -25,18 +25,21 @@ configuration and can obfuscate a command. See "Agent hooks" in
 warden setup claude
 ```
 
-This adds the marketplace pinned to the tag of your `warden` version and installs
-the plugin. By hand, the same thing is:
+This adds the marketplace pinned to the tag of your `warden` version, installs
+the plugin and updates it. By hand, the same thing is:
 
 ```sh
-claude plugin marketplace add pecheriere/warden#v<version>
-claude plugin install warden@warden
+claude plugin marketplace add pecheriere/warden#v<version> --scope user
+claude plugin install warden@warden --scope user
+claude plugin update warden@warden --scope user
 ```
 
 `#<ref>` after `owner/repo` pins a branch or tag (`owner/repo@ref` is accepted
 too), and a pinned marketplace stays on that tag until you add another. Claude
 Code documents this under "Add a marketplace" in its plugin commands reference
-and in "Host and distribute marketplaces".
+and in "Host and distribute marketplaces". Adding the `warden` marketplace again
+points it at the new tag, and the update moves an installed plugin there, so
+after upgrading `warden`, run `warden setup claude` again.
 
 ## Requirements
 

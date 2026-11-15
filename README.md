@@ -282,7 +282,10 @@ it; follow it for a real setup.
    instructions: `warden prime` prints them, with what the broker offers it, and
    `warden list` shows what it may ask for. [Agent instructions](docs/agent-instructions.md)
    says how to hand them over, with a session-start hook or one line in its
-   `AGENTS.md`.
+   `AGENTS.md`. For Claude Code, `warden setup claude` installs the warden plugin,
+   which runs that hook and checks each shell command for a way around warden
+   ([The Claude Code plugin](docs/agent-usage.md#the-claude-code-plugin)). The
+   check catches honest mistakes; it is not a security boundary.
 
 8. **Request and use access:**
 
