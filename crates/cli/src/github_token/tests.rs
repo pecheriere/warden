@@ -254,6 +254,18 @@ fn discard_drops_only_that_grants_entries() {
     assert!(!cache.discard(&grant));
 }
 
+#[test]
+fn discard_repositories_drops_those_repositories_whatever_the_grant() {
+    let mut cache = Cache::empty(identity());
+    cache.put(entry("ghs_a", NOW + 3600, REPO, 1001));
+    cache.put(entry("ghs_b", NOW + 3600, OTHER_REPO, 1002));
+    let upper = repo(&REPO.to_uppercase());
+    assert!(cache.discard_repositories(&[upper]));
+    assert_eq!(cache.entries.len(), 1);
+    assert_eq!(cache.entries[0].token.as_str(), "ghs_b");
+    assert!(!cache.discard_repositories(&[repo(REPO)]));
+}
+
 #[tokio::test]
 async fn cache_discards_version_one_file() {
     let d = dir();

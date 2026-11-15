@@ -1,5 +1,6 @@
 use super::{
-    GrantedPermissions, Level, Permission, PermissionError, PermissionSet, SENSITIVE, is_sensitive,
+    GrantedPermissions, Level, MEANINGS, Permission, PermissionError, PermissionSet, SENSITIVE,
+    is_sensitive, sensitive_meaning,
 };
 
 fn set(text: &str) -> PermissionSet {
@@ -45,13 +46,11 @@ fn refuses_typos() {
 fn sensitive_names_parse() {
     for name in [
         "administration",
-        "workflows",
         "secrets",
         "environments",
         "dependabot_secrets",
         "repository_hooks",
         "organization_projects",
-        "organization_plan",
     ] {
         for level in ["read", "write"] {
             let permission: Permission = format!("{name}:{level}").parse().unwrap();
@@ -67,15 +66,54 @@ fn sensitive_names_parse() {
 
 #[test]
 fn every_sensitive_name_parses_and_is_flagged() {
-    for name in SENSITIVE {
+    for (name, read, write) in MEANINGS {
         assert!(is_sensitive(name));
-        assert!(
-            format!("{name}:read").parse::<Permission>().is_ok(),
-            "{name}"
-        );
+        for (level, documented) in [("read", read), ("write", write)] {
+            assert_eq!(
+                format!("{name}:{level}").parse::<Permission>().is_ok(),
+                documented.is_some(),
+                "{name}:{level}"
+            );
+        }
     }
     assert!(!is_sensitive("checks"));
     assert!(!is_sensitive("organization_anything"));
+}
+
+#[test]
+fn levels_github_does_not_document_are_refused() {
+    for (text, name, level) in [
+        ("workflows:read", "workflows", Level::Read),
+        (
+            "organization_copilot_requests:write",
+            "organization_copilot_requests",
+            Level::Write,
+        ),
+        (
+            "organization_events:write",
+            "organization_events",
+            Level::Write,
+        ),
+        ("organization_plan:write", "organization_plan", Level::Write),
+    ] {
+        let err = PermissionSet::parse(text).unwrap_err();
+        assert_eq!(
+            err,
+            PermissionError::LevelNotDocumented(name, level),
+            "{text}"
+        );
+        assert!(err.to_string().contains(name), "{text}");
+        assert!(text.parse::<Permission>().is_err(), "{text}");
+    }
+    // The levels it does document still parse.
+    for text in [
+        "workflows:write",
+        "organization_copilot_requests:read",
+        "organization_events:read",
+        "organization_plan:read",
+    ] {
+        assert!(text.parse::<Permission>().is_ok(), "{text}");
+    }
 }
 
 #[test]
@@ -223,4 +261,68 @@ fn granted_permissions_refuse_malformed_entries() {
         );
     }
     assert!(GrantedPermissions::parse(&format!("{}:read", "a".repeat(64))).is_ok());
+}
+
+#[test]
+fn every_sensitive_name_has_its_own_meaning() {
+    let names: Vec<_> = MEANINGS.iter().map(|(name, _, _)| *name).collect();
+    assert_eq!(names, SENSITIVE);
+    let checks: Permission = "checks:read".parse().unwrap();
+    for name in SENSITIVE {
+        for level in ["read", "write"] {
+            let Ok(permission) = format!("{name}:{level}").parse::<Permission>() else {
+                continue;
+            };
+            let meaning = sensitive_meaning(&permission);
+            assert!(!meaning.is_empty(), "{permission}");
+            assert_ne!(meaning, sensitive_meaning(&checks), "{permission}");
+        }
+    }
+    let workflows: Permission = "workflows:write".parse().unwrap();
+    assert_eq!(
+        sensitive_meaning(&workflows),
+        "create and change GitHub Actions workflow files, which run with the repository's secrets"
+    );
+}
+
+#[test]
+fn meanings_follow_the_level() {
+    let meaning = |text: &str| sensitive_meaning(&text.parse::<Permission>().unwrap());
+    // Secret values are never readable through the API, so read only lists names.
+    for name in ["secrets", "dependabot_secrets", "organization_secrets"] {
+        let read = meaning(&format!("{name}:read"));
+        let write = meaning(&format!("{name}:write"));
+        assert!(read.starts_with("list the names of"), "{name}: {read}");
+        assert!(
+            write.starts_with("create, replace and delete"),
+            "{name}: {write}"
+        );
+    }
+    // A read never says more than reading.
+    for (name, read, write) in MEANINGS {
+        if let (Some(read), Some(write)) = (read, write) {
+            for word in [
+                "manage",
+                "create",
+                "delete",
+                "publish",
+                "approve",
+                "block and",
+            ] {
+                assert!(!read.contains(word), "{name}: {read}");
+            }
+            assert!(!write.is_empty(), "{name}");
+        }
+    }
+}
+
+#[test]
+fn written_form_without_metadata() {
+    let parsed = GrantedPermissions::parse("workflows:write,checks:read").unwrap();
+    assert_eq!(
+        parsed.without_metadata().as_deref(),
+        Some("checks:read,workflows:write")
+    );
+    let only = GrantedPermissions::parse("metadata:read").unwrap();
+    assert_eq!(only.without_metadata(), None);
 }

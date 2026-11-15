@@ -4,8 +4,12 @@
 //! a minted token outlives the grant's revocation.
 
 use maud::{Markup, html};
-use warden_broker_proto::github_permissions::{GrantedPermissions, Permission, PermissionSet};
-use warden_broker_proto::github_token::{AutomaticCaller, GithubTokenAccess, GrantScope};
+use warden_broker_proto::github_permissions::{
+    GrantedPermissions, Level, Permission, PermissionSet, sensitive_meaning,
+};
+use warden_broker_proto::github_token::{
+    AutomaticCaller, EXTRA_NOT_ALLOWED, EXTRAS_NOT_ALLOWED, GithubTokenAccess, GrantScope,
+};
 use warden_broker_proto::{Access, AgentName};
 
 use super::{icon, warning_icon};
@@ -39,6 +43,21 @@ pub(super) fn not_approvable(view: &PendingView) -> Option<Markup> {
             }
         });
     }
+    // Before the installation: an extra the owner no longer allows is the owner's
+    // own configuration, and holds whatever the App has.
+    if !github.not_allowed.is_empty() {
+        return Some(html! {
+            p.cannot #cannot-approve role="alert" {
+                "This request cannot be approved: "
+                (if github.not_allowed.len() == 1 { EXTRA_NOT_ALLOWED } else { EXTRAS_NOT_ALLOWED })
+                @for (i, refused) in github.not_allowed.iter().enumerate() {
+                    @if i > 0 { ", " }
+                    code { (refused.to_string()) }
+                }
+                "."
+            }
+        });
+    }
     // Only after the repositories: what the installation holds is moot for a
     // repository the App cannot reach.
     match &github.installation {
@@ -62,22 +81,58 @@ pub(super) fn not_approvable(view: &PendingView) -> Option<Markup> {
     }
 }
 
-/// A permission as the page writes it: `name: level`.
-fn permission(permission: &Permission) -> Markup {
-    html! { code.perm { (permission.name()) ": " (permission.level().as_str()) } }
+/// A permission as the page writes it: `name: level`. One in `extras` is marked
+/// as an extra, a write one more strongly than a read one; a sensitive one, which
+/// is always an extra, is in the danger colour instead of either.
+fn permission(permission: &Permission, extras: &[Permission]) -> Markup {
+    let class = if permission.is_sensitive() {
+        "perm sensitive"
+    } else if !extras.contains(permission) {
+        "perm"
+    } else if permission.level() == Level::Write {
+        "perm extra-write"
+    } else {
+        "perm extra-read"
+    };
+    html! { code class=(class) { (permission.name()) ": " (permission.level().as_str()) } }
 }
 
-/// The permissions a token has: the whole set, and how many go beyond the owner's
-/// default.
-fn permissions(set: &PermissionSet, beyond_default: &[Permission]) -> Markup {
+/// What each sensitive permission among `extras` allows, one fixed line each, under
+/// the list: the owner decides on these as much as on the repositories.
+fn sensitive_note(extras: &[Permission]) -> Markup {
+    let sensitive: Vec<&Permission> = extras.iter().filter(|p| p.is_sensitive()).collect();
+    html! {
+        @if !sensitive.is_empty() {
+            div.sensitive-note {
+                strong {
+                    (icon(14, "2.4", &warning_icon()))
+                    span { "Sensitive permissions" }
+                }
+                ul {
+                    @for item in sensitive {
+                        li {
+                            (permission(item, extras)) " can "
+                            (sensitive_meaning(item)) "."
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The permissions a token has: the whole set with its extras marked, how many
+/// there are beyond what `beyond` says (`what`), and what the sensitive ones allow.
+fn permissions(set: &PermissionSet, extras: &[Permission], beyond: &str) -> Markup {
     html! {
         span.detail {
             "Permissions: "
-            (permission_list(set))
+            (permission_list(set, extras))
         }
-        @if !beyond_default.is_empty() {
-            span.detail { (beyond_default.len()) " beyond the default" }
+        @if !extras.is_empty() {
+            span.detail { (extras.len()) " " (beyond) }
         }
+        (sensitive_note(extras))
     }
 }
 
@@ -93,17 +148,17 @@ fn was(set: &PermissionSet, replaces: &[ReplacedGrant]) -> Markup {
     }
     html! {
         @for old in earlier {
-            span.detail { "was " (permission_list(old)) }
+            span.detail { "was " (permission_list(old, &[])) }
         }
     }
 }
 
 /// The permissions of `set`, comma separated.
-fn permission_list(set: &PermissionSet) -> Markup {
+fn permission_list(set: &PermissionSet, extras: &[Permission]) -> Markup {
     html! {
         @for (i, item) in set.iter().enumerate() {
             @if i > 0 { ", " }
-            (permission(&item))
+            (permission(&item, extras))
         }
     }
 }
@@ -218,7 +273,7 @@ fn replaced(agent: &AgentName, replaces: &[ReplacedGrant]) -> Markup {
                                 }
                             }
                         }
-                        ". Its permissions: " (permission_list(&grant.permissions))
+                        ". Its permissions: " (permission_list(&grant.permissions, &[]))
                     }
                 }
             }
@@ -281,7 +336,7 @@ pub(super) fn access(
         }
         // The pending list has no stored set to show, only the approval page does.
         @if let Some(pending) = pending {
-            (permissions(&pending.permissions.full, &pending.permissions.beyond_default))
+            (permissions(&pending.permissions.full, &pending.permissions.beyond_default, "beyond the default"))
             (was(&pending.permissions.full, &pending.replaces))
         }
         (automatic(request))
@@ -300,6 +355,7 @@ pub(super) fn grant_access(
     installation_id: u64,
     scope: &GrantScope,
     granted: &GrantedPermissions,
+    extras: Option<&GrantedPermissions>,
 ) -> Markup {
     let repos: Vec<Named> = scope
         .list()
@@ -321,14 +377,27 @@ pub(super) fn grant_access(
         } @else {
             span.detail { "Mints tokens for " (app(app_id, installation_id)) }
         }
-        @match granted.known() {
-            Ok(set) => (permissions(&set, &[])),
+        @match (granted.known(), extra_list(extras)) {
+            (Ok(set), Some(extras)) => (permissions(&set, &extras, "extra")),
             // Not reachable: grants are read from storage strictly, which refuses a set
             // this version cannot act on.
-            Err(_) => span.detail { "Permissions this broker cannot read" },
+            _ => span.detail { "Permissions this broker cannot read" },
         }
         span.detail { (REVOKING) }
     }
+}
+
+/// The extras a grant was asked for, without `metadata`, in name order; `None` when
+/// the stored set cannot be read.
+fn extra_list(extras: Option<&GrantedPermissions>) -> Option<Vec<Permission>> {
+    let Some(extras) = extras else {
+        return Some(Vec::new());
+    };
+    extras.known().ok().map(|set| {
+        set.extras_beyond(&PermissionSet::metadata_only())
+            .iter()
+            .collect()
+    })
 }
 
 /// The grants page's note where other grants show what they are doing.

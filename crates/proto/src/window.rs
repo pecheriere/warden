@@ -95,6 +95,17 @@ impl Window {
         matches!(self, Self::D1 | Self::D7 | Self::D30)
     }
 
+    /// The windows of a GitHub token grant whose extra permissions include a
+    /// sensitive one, shortest first. No other GitHub token grant has them.
+    pub const GITHUB_TOKEN_SENSITIVE: [Self; 3] = [Self::M15, Self::M30, Self::H1];
+
+    /// Whether this is one of the windows of a GitHub token grant with a sensitive
+    /// permission.
+    #[must_use]
+    pub const fn is_github_token_sensitive(self) -> bool {
+        matches!(self, Self::M15 | Self::M30 | Self::H1)
+    }
+
     /// The windows a release grant may have: one day.
     pub const RELEASE: [Self; 1] = [Self::D1];
 
@@ -115,6 +126,22 @@ impl Window {
             "7d" => Ok(Self::D7),
             "30d" => Ok(Self::D30),
             _ => Err(ParseError::new("window", "must be one of 1d, 7d, 30d")),
+        }
+    }
+
+    /// Parse the window of a request for a GitHub token grant that may name extra
+    /// permissions: `15m`, `30m` or `1h` (for a sensitive one) or `1d`, `7d` or
+    /// `30d`. Which of them the request may have is the broker's to say.
+    ///
+    /// # Errors
+    /// If `s` is anything else.
+    pub fn github_token_request(s: &str) -> Result<Self, ParseError> {
+        match s {
+            "15m" => Ok(Self::M15),
+            "30m" => Ok(Self::M30),
+            "1h" => Ok(Self::H1),
+            _ => Self::github_token(s)
+                .map_err(|_| ParseError::new("window", "must be one of 15m, 30m, 1h, 1d, 7d, 30d")),
         }
     }
 

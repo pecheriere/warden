@@ -78,9 +78,11 @@ the `warden:github-app` item ([1Password items](1password-items.md#github-app)):
 - `default_permissions`: the set every request gets. Missing means `contents:write`,
   `issues:write`, `metadata:read` and `pull_requests:write`, which is what warden granted
   before this setting existed.
-- `extra_permissions`: the permissions an agent may later ask for on top of the default.
-  warden reads and checks the field now, but no request can ask for an extra yet, so listing
-  one has no effect until agents can.
+- `extra_permissions`: the permissions an agent may ask for on top of the default, with
+  `warden request github --extra-permissions <set>`. A request that names one outside this
+  list, or at a higher level than listed, is refused before you are asked. The approval page
+  marks each extra, read or write, and a sensitive one in red. `warden list` shows the agent
+  the default set and the extras it may ask for.
 
 A set is written as `name:level` pairs separated by commas, such as
 `checks:read,contents:write,metadata:read`. The approval page lists the set, so you see it
@@ -99,10 +101,21 @@ so `repository_hooks` gives access that outlives the grant.
 warden does not refuse them by itself: you decide. They are allowed in `extra_permissions` only,
 so a sensitive permission reaches a grant only when an agent names it and you approve it. In
 `default_permissions` one makes GitHub tokens unusable, because every grant, including the
-30-day automatic ones of the git helper and `gh` wrapper, would hold it. Until agents can ask
-for extras, listing one in `extra_permissions` has no effect. Once they can, a grant that holds a
-sensitive permission will last at most 1 hour, and the approval page will mark it. A name that GitHub does not
-document, such as an `organization_*` one missing from its page, stays unknown and is refused.
+30-day automatic ones of the git helper and `gh` wrapper, would hold it. Agents can ask for
+extras. A grant that holds a sensitive permission lasts 15 minutes, 30 minutes or 1 hour at
+most: the approval page offers only those windows, marks the permission with what it lets
+the holder do at the level asked, and a longer window is refused. A token minted at the end
+of such a grant lives up to an hour more, so the access can last about 2 hours. The request
+defaults to `1h` when it names one, and its goal should say exactly why the agent needs it. A name that GitHub does not
+document, such as an `organization_*` one missing from its page, stays unknown and is refused,
+and so is a level GitHub does not document for a name: `workflows` has only `write`, and
+`organization_copilot_requests`, `organization_events` and `organization_plan` have only
+`read`. Such an entry in `extra_permissions` makes GitHub tokens unusable, and
+`warden-server doctor` names the field.
+
+An agent holding a grant with extras can mint a token with fewer permissions than the grant
+holds: the mint endpoint takes a `permissions` field, and the CLI does not send one yet, so
+narrowing is available on the wire only. Nothing can mint more than the grant.
 
 **The App must hold what you set.** The approval page reads the installation's permissions
 each time it is shown, begun or finished, and refuses a request whose set the installation

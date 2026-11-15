@@ -80,6 +80,184 @@ pub fn is_sensitive(name: &str) -> bool {
     SENSITIVE.contains(&name)
 }
 
+/// What each [`SENSITIVE`] permission allows at each level, as phrases that
+/// complete "can ...", in the order of [`SENSITIVE`]: name, read, write. Worded after
+/// GitHub's documentation of fine-grained permissions, and no stronger than it. A
+/// level GitHub does not document for a name is `None`: [`Permission`] refuses it, so
+/// [`sensitive_meaning`] never meets it. A test holds the names to [`SENSITIVE`].
+const MEANINGS: &[(&str, Option<&str>, Option<&str>)] = &[
+    (
+        "administration",
+        Some("read the repository's settings, teams and collaborators"),
+        Some("change the repository's settings, teams and collaborators, and delete it"),
+    ),
+    (
+        "dependabot_secrets",
+        Some(
+            "list the names of the repository's Dependabot secrets (their values cannot be read through the API)",
+        ),
+        Some(
+            "create, replace and delete the repository's Dependabot secrets, which Dependabot then uses",
+        ),
+    ),
+    (
+        "environments",
+        Some(
+            "list the repository's environment secrets and variables (secret values cannot be read through the API)",
+        ),
+        Some("create, change and delete the repository's environment secrets and variables"),
+    ),
+    (
+        "organization_administration",
+        Some("read the organization's settings, rulesets and policies"),
+        Some("change the organization's settings, rulesets and policies"),
+    ),
+    (
+        "organization_announcement_banners",
+        Some("read the organization's announcement banner"),
+        Some("change the organization's announcement banner"),
+    ),
+    (
+        "organization_copilot_agent_settings",
+        Some("read the organization's Copilot agent settings"),
+        Some("change the organization's Copilot agent settings"),
+    ),
+    (
+        "organization_copilot_requests",
+        Some("make Copilot requests billed to the organization"),
+        None,
+    ),
+    (
+        "organization_copilot_seat_management",
+        Some("read the organization's Copilot seats"),
+        Some("add and remove the organization's Copilot seats"),
+    ),
+    (
+        "organization_custom_org_roles",
+        Some("read the organization's custom organization roles"),
+        Some("manage the organization's custom organization roles"),
+    ),
+    (
+        "organization_custom_properties",
+        Some("read the organization's custom properties"),
+        Some("set custom property values on the organization's repositories"),
+    ),
+    (
+        "organization_custom_roles",
+        Some("read the organization's custom repository roles"),
+        Some("read and define the organization's custom repository roles"),
+    ),
+    (
+        "organization_events",
+        Some("read events from activity in the organization"),
+        None,
+    ),
+    (
+        "organization_external_properties_for_repos",
+        Some("read the schema of the app's external custom properties"),
+        Some("set and delete the app's external custom property values on repositories"),
+    ),
+    (
+        "organization_hooks",
+        Some("list the organization's webhooks"),
+        Some(
+            "create and change the organization's webhooks, which keep sending its events after the grant ends",
+        ),
+    ),
+    (
+        "organization_packages",
+        Some("read the organization's packages"),
+        Some("change the organization's packages in GitHub Packages"),
+    ),
+    (
+        "organization_personal_access_token_requests",
+        Some("list requests for personal access tokens on the organization"),
+        Some("approve or deny requests for personal access tokens on the organization"),
+    ),
+    (
+        "organization_personal_access_tokens",
+        Some("list the personal access tokens that can reach the organization"),
+        Some("list and revoke the personal access tokens that can reach the organization"),
+    ),
+    (
+        "organization_plan",
+        Some("read the organization's plan"),
+        None,
+    ),
+    (
+        "organization_projects",
+        Some("read all of the organization's projects"),
+        Some("read and change all of the organization's projects"),
+    ),
+    (
+        "organization_secrets",
+        Some(
+            "list the names of the organization's secrets (their values cannot be read through the API)",
+        ),
+        Some("create, replace and delete the organization's secrets, which its workflows then use"),
+    ),
+    (
+        "organization_self_hosted_runners",
+        Some("list the organization's self-hosted runners"),
+        Some("manage the organization's self-hosted runners, which run its workflows"),
+    ),
+    (
+        "organization_user_blocking",
+        Some("list the users the organization has blocked"),
+        Some("block and unblock users from the organization"),
+    ),
+    (
+        "repository_hooks",
+        Some("list the repository's webhooks and their settings"),
+        Some(
+            "create and change the repository's webhooks, which keep sending its events after the grant ends",
+        ),
+    ),
+    (
+        "secrets",
+        Some(
+            "list the names of the repository's secrets (their values cannot be read through the API)",
+        ),
+        Some("create, replace and delete the repository's secrets, which its workflows then use"),
+    ),
+    (
+        "workflows",
+        None,
+        Some(
+            "create and change GitHub Actions workflow files, which run with the repository's secrets",
+        ),
+    ),
+];
+
+/// What `permission` allows, as one fixed phrase that completes "can ...", true at
+/// the level it names. A permission that is not sensitive gets a general phrase, so
+/// a caller never shows nothing.
+#[must_use]
+pub fn sensitive_meaning(permission: &Permission) -> &'static str {
+    const GENERAL: &str = "reach beyond the repository's code";
+    MEANINGS
+        .iter()
+        .find(|(known, _, _)| *known == permission.name)
+        .map_or(GENERAL, |(_, read, write)| {
+            match permission.level {
+                Level::Read => read,
+                Level::Write => write,
+            }
+            .unwrap_or(GENERAL)
+        })
+}
+
+/// Whether GitHub documents `name` at `level`. A name that is not sensitive has both.
+fn level_documented(name: &str, level: Level) -> bool {
+    MEANINGS
+        .iter()
+        .find(|(known, _, _)| *known == name)
+        .is_none_or(|(_, read, write)| match level {
+            Level::Read => read.is_some(),
+            Level::Write => write.is_some(),
+        })
+}
+
 /// How much a permission allows. `write` covers `read`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Level {
@@ -116,6 +294,9 @@ pub enum PermissionError {
     SensitiveInDefault,
     /// The `admin` level, which warden never grants, on a known permission.
     Admin(&'static str),
+    /// A level GitHub does not document for a known permission, such as
+    /// `workflows:read`.
+    LevelNotDocumented(&'static str, Level),
     /// Not `name:level` entries, or an empty or repeated one, or
     /// `metadata:write`.
     Malformed,
@@ -131,6 +312,9 @@ impl fmt::Display for PermissionError {
                  extras, never in the default",
             ),
             Self::Admin(name) => write!(f, "the admin level of {name} is never granted"),
+            Self::LevelNotDocumented(name, level) => {
+                write!(f, "GitHub documents no {level} level for {name}")
+            }
             Self::Malformed => f.write_str(
                 "permissions are name:level entries (level read or write) joined with commas, \
                  each name once, and metadata only read",
@@ -184,6 +368,9 @@ impl FromStr for Permission {
             "admin" => return Err(PermissionError::Admin(name)),
             _ => return Err(PermissionError::Malformed),
         };
+        if !level_documented(name, level) {
+            return Err(PermissionError::LevelNotDocumented(name, level));
+        }
         Ok(Self { name, level })
     }
 }
@@ -399,6 +586,18 @@ impl GrantedPermissions {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// The written form without `metadata:read`, which every set holds, or `None`
+    /// when nothing else is in it. This is how a line about extras names them.
+    #[must_use]
+    pub fn without_metadata(&self) -> Option<String> {
+        let rest: Vec<&str> = self
+            .0
+            .split(',')
+            .filter(|entry| *entry != "metadata:read")
+            .collect();
+        (!rest.is_empty()).then(|| rest.join(","))
     }
 
     /// The set, read strictly: every name known, sensitive ones included.

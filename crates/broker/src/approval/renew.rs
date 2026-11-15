@@ -32,6 +32,15 @@ pub(super) async fn renew(State(state): State<AppState>, Path(id): Path<Id>) -> 
         Err(e @ RequestError::Limited(_)) => {
             return json_error(StatusCode::TOO_MANY_REQUESTS, e.to_string());
         }
+        // The agent's own text tells it to cancel the request; the owner decides
+        // that one first, so it is told to.
+        Err(RequestError::OtherPermissionsPending(_)) => {
+            return json_error(
+                StatusCode::CONFLICT,
+                "this agent already has a request waiting for these repositories with other \
+                 GitHub permissions: approve or deny that one first, then renew",
+            );
+        }
         Err(e) => return request_error(&e),
     };
     // A ceremony begun on a link this replaced can no longer finish.

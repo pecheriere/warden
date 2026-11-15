@@ -34,6 +34,8 @@ fn empty() -> Offers {
         github: GithubOffer {
             configured: false,
             max_window: None,
+            default_permissions: None,
+            extra_permissions: None,
         },
         commit_signing: Availability { available: false },
         releases: Availability { available: false },
@@ -158,6 +160,8 @@ async fn prime_includes_repository_answer_in_github_checkout() {
     offers.github = GithubOffer {
         configured: true,
         max_window: None,
+        default_permissions: None,
+        extra_permissions: None,
     };
     let fake = broker(Some(&offers), Some(&repository())).await;
     let checkout = github_checkout();
@@ -204,6 +208,8 @@ async fn brief_is_short() {
     offers.github = GithubOffer {
         configured: true,
         max_window: Some(Window::D30),
+        default_permissions: None,
+        extra_permissions: None,
     };
     let fake = broker(Some(&offers), None).await;
     let text = prime(ready(&fake.url), None, true).await;

@@ -2,6 +2,7 @@ use std::path::Path;
 use std::process::Command;
 
 use warden_broker_proto::Window;
+use warden_broker_proto::github_permissions::GrantedPermissions;
 use warden_broker_proto::offers::{
     ApiSecretOffer, Availability, Destination, GithubOffer, GithubTokenStatus, OfferPart, Offers,
     ReleaseStatus, RepositoryOffer, SshModeName, SshTargetOffer,
@@ -19,6 +20,8 @@ fn empty() -> Offers {
         github: GithubOffer {
             configured: false,
             max_window: None,
+            default_permissions: None,
+            extra_permissions: None,
         },
         commit_signing: Availability { available: false },
         releases: Availability { available: false },
@@ -81,6 +84,8 @@ fn render_full_and_name_items() {
     offers.github = GithubOffer {
         configured: true,
         max_window: Some(Window::D30),
+        default_permissions: None,
+        extra_permissions: None,
     };
     offers.commit_signing = Availability { available: true };
     offers.releases = Availability { available: true };
@@ -415,4 +420,36 @@ async fn client_reads_both_offers_routes() {
     assert_eq!(read_offer::<RepositoryOffer>(&body), Ok(expected));
     let old = client(&answering(404, "").await);
     assert_eq!(old.repository_offer(&repo).await, Ok(None));
+}
+
+#[test]
+fn render_shows_the_default_and_the_extras_with_sensitive_ones_marked() {
+    let mut offers = empty();
+    offers.github = GithubOffer {
+        configured: true,
+        max_window: Some(Window::D30),
+        default_permissions: Some(
+            GrantedPermissions::parse("contents:write,metadata:read").unwrap(),
+        ),
+        extra_permissions: Some(GrantedPermissions::parse("actions:read,workflows:write").unwrap()),
+    };
+    let text = render(&offers, None);
+    assert!(text.contains("  Default permissions: contents:write,metadata:read\n"));
+    assert!(text.contains("actions:read, workflows:write (sensitive)\n"));
+    assert!(!text.contains("actions:read (sensitive)"));
+    assert!(text.contains("15m, 30m or 1h only"));
+}
+
+#[test]
+fn render_omits_the_sensitive_note_when_no_extra_is_sensitive() {
+    let mut offers = empty();
+    offers.github = GithubOffer {
+        configured: true,
+        max_window: None,
+        default_permissions: None,
+        extra_permissions: Some(GrantedPermissions::parse("actions:read").unwrap()),
+    };
+    let text = render(&offers, None);
+    assert!(text.contains("actions:read\n"));
+    assert!(!text.contains("sensitive"));
 }

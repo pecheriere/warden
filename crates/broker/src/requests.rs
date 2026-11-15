@@ -20,8 +20,9 @@ use sqlx::sqlite::SqliteRow;
 use sqlx::{Row as _, SqlitePool};
 use url::Url;
 use warden_broker_proto::github_permissions::PermissionSet;
+use warden_broker_proto::github_token::OTHER_PERMISSIONS_PENDING;
 use warden_broker_proto::{
-    AgentName, CreateRequest, Fingerprint, GithubTokenGrant, GrantAccess, GrantView, Id,
+    Access, AgentName, CreateRequest, Fingerprint, GithubTokenGrant, GrantAccess, GrantView, Id,
     TargetName, UnixUser, Window,
 };
 
@@ -177,6 +178,10 @@ pub enum RequestError {
     /// another agent, or of this agent for another target.
     #[error("this public key is already bound to another request or grant")]
     KeyInUse,
+    /// The agent has a request waiting for the same repositories that asks for other
+    /// extra permissions, whose id follows. Nothing was stored.
+    #[error("{}: {}", OTHER_PERMISSIONS_PENDING, .0)]
+    OtherPermissionsPending(Id),
     /// The agent is over one of its [`RequestLimits`]; nothing was stored and
     /// the owner was not asked about this request.
     #[error(transparent)]
@@ -306,6 +311,21 @@ impl Destination {
             Self::CommitSigning(policy) => policy.max_window,
             Self::GithubToken(policy) => policy.max_window,
             Self::Release(_) => Window::D1,
+        }
+    }
+
+    /// Whether the policy allows granting `window` for a request for `access`:
+    /// [`Self::check_window`], except that a GitHub token request whose extra
+    /// permissions include a sensitive one is granted only for a short window.
+    ///
+    /// # Errors
+    /// Why not.
+    pub fn check_request_window(&self, window: Window, access: &Access) -> Result<(), String> {
+        match (self, access) {
+            (Self::GithubToken(policy), Access::GithubToken(github)) => {
+                github_token::check_window_for(window, policy.max_window, github)
+            }
+            _ => self.check_window(window),
         }
     }
 

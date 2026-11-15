@@ -332,7 +332,9 @@ The token is the one credential in warden that the agent holds and can use on it
 lasts an hour, covers one repository of its grant, with the permissions you set
 (by default `contents`, `pull_requests` and `issues` write), can still open issues and, to be assumed, comment on public repositories, installed or not, and **revoking a grant does not recall a token already
 minted**. What an agent can do with it is decided on GitHub, by where you install the App
-and the rules you set there. See [GitHub tokens for agents](docs/github-app.md) and the
+and the rules you set there. An agent can ask for more than your default set, with
+`--extra-permissions`, only from the list you allow, and you see each extra on the approval
+page; a sensitive one, such as `workflows`, is granted for an hour at most. See [GitHub tokens for agents](docs/github-app.md) and the
 [threat model](docs/threat-model.md#github-tokens).
 
 ## Releases

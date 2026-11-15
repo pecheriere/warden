@@ -2,10 +2,13 @@
 //! stored with it, and checked against what the App's installation holds each time
 //! the approval page is rendered or approved.
 
+use sqlx::sqlite::SqliteRow;
 use sqlx::{Row as _, SqliteConnection};
 use warden_broker_proto::github_permissions::{Permission, PermissionSet};
-use warden_broker_proto::github_token::{INSTALLATION_LACKS, INSTALLATION_UNREADABLE};
-use warden_broker_proto::{Access, Id};
+use warden_broker_proto::github_token::{
+    EXTRA_NOT_ALLOWED, INSTALLATION_LACKS, INSTALLATION_UNREADABLE,
+};
+use warden_broker_proto::{Access, CreateRequest, CreatedResponse, GrantAccess, Id};
 
 use super::{RequestError, Requests};
 use crate::github_app;
@@ -32,13 +35,90 @@ impl StoredPermissions {
             beyond_default: Vec::new(),
         }
     }
+}
 
-    /// What a new request asking for no extras gets: the owner's default.
-    pub(super) fn of_default(policy: &GithubPermissionPolicy) -> Self {
-        Self {
-            full: policy.default.clone(),
+/// The extras, in name order, that the owner's allowlist does not hold at the level
+/// asked or higher. `metadata:read`, which every set has, is never one.
+pub(super) fn refused_extras(
+    extras: &PermissionSet,
+    policy: &GithubPermissionPolicy,
+) -> Vec<Permission> {
+    extras
+        .iter()
+        .filter(|p| p.name() != "metadata" && !policy.allowed_extras.covers(p))
+        .collect()
+}
+
+/// The first of `extras`, in name order, that the owner's allowlist does not hold
+/// at the level asked or higher (see [`refused_extras`]).
+///
+/// # Errors
+/// The permission refused.
+pub(super) fn check_extras(
+    extras: &PermissionSet,
+    policy: &GithubPermissionPolicy,
+) -> Result<(), Permission> {
+    match refused_extras(extras, policy).into_iter().next() {
+        Some(refused) => Err(refused),
+        None => Ok(()),
+    }
+}
+
+/// The refusal of `refused`, a permission [`check_extras`] returned: a fixed text
+/// and the known permission name, with the level the allowlist holds when it
+/// holds the name at a lower one.
+pub(super) fn not_allowed_text(refused: &Permission, policy: &GithubPermissionPolicy) -> String {
+    let held = policy
+        .allowed_extras
+        .iter()
+        .find(|p| p.name() == refused.name());
+    match held {
+        Some(held) => format!(
+            "{EXTRA_NOT_ALLOWED}{refused} (only {} is allowed)",
+            held.level()
+        ),
+        None => format!("{EXTRA_NOT_ALLOWED}{refused}"),
+    }
+}
+
+/// The extras the GitHub token grant in `row` (its `view` column) was approved with,
+/// for its renewal. They are read strictly, so a stored name this version no longer
+/// knows refuses the renewal instead of dropping the extra.
+///
+/// # Errors
+/// [`RequestError::Corrupt`] for a view that does not parse, is not a GitHub token
+/// grant, or holds extras that do not parse as a permission set.
+pub(super) fn grant_extras(row: &SqliteRow) -> Result<Option<PermissionSet>, RequestError> {
+    let view: String = row.try_get("view")?;
+    let GrantAccess::GithubToken(grant) = super::stored_view(&view)?.access else {
+        return Err(RequestError::Corrupt(
+            "GitHub token grant changed kind".to_owned(),
+        ));
+    };
+    grant
+        .extra_permissions
+        .map(|extras| extras.known())
+        .transpose()
+        .map_err(|_| RequestError::Corrupt("a grant's extra permissions".to_owned()))
+}
+
+/// What a grant holds when the agent asked for `extras` on top of `default`: both
+/// together, with the extras the default did not cover noted as beyond it.
+pub(super) fn full_set(
+    default: &PermissionSet,
+    extras: Option<&PermissionSet>,
+) -> StoredPermissions {
+    let Some(extras) = extras else {
+        return StoredPermissions {
+            full: default.clone(),
             beyond_default: Vec::new(),
-        }
+        };
+    };
+    let full = default.union(extras);
+    let beyond_default = full.extras_beyond(default).iter().collect();
+    StoredPermissions {
+        full,
+        beyond_default,
     }
 }
 
@@ -157,31 +237,93 @@ impl Requests {
     }
 
     /// The permissions a new GitHub token request gets, read through the backend
-    /// call that leaves the App's private key unread. PR A takes no extras: the
-    /// owner's default.
+    /// call that leaves the App's private key unread: the owner's default, and the
+    /// extras the agent named.
     ///
     /// # Errors
     /// What the backend says, as [`RequestError`]: a request is refused when the
-    /// App or its permission fields cannot be used.
-    pub(super) async fn new_github_permissions(&self) -> Result<StoredPermissions, RequestError> {
+    /// App or its permission fields cannot be used. [`RequestError::Rejected`], with
+    /// a fixed text and the permission's name, for an extra the owner's allowlist
+    /// does not hold: the owner is not asked.
+    pub(super) async fn new_github_permissions(
+        &self,
+        extras: Option<&PermissionSet>,
+    ) -> Result<StoredPermissions, RequestError> {
         let policy = self.backend.github_permissions().await?;
-        Ok(StoredPermissions::of_default(&policy))
+        if let Some(extras) = extras
+            && let Err(refused) = check_extras(extras, &policy)
+        {
+            return Err(RequestError::Rejected(not_allowed_text(&refused, &policy)));
+        }
+        Ok(full_set(&policy.default, extras))
     }
 
     /// The permissions a renewal of a grant to `access` gets: the owner's current
-    /// default, so that renewals follow it and a narrowed default never strands a
-    /// grant stored before permission sets. `None` for access that holds no GitHub
+    /// default and the extras `access` names, so that renewals follow the default
+    /// and a narrowed default never strands a grant stored before permission sets. The
+    /// extras are not checked against the allowlist, so that the approval page can
+    /// say which one is no longer allowed. `None` for access that holds no GitHub
     /// token permissions.
     ///
     /// # Errors
-    /// As [`Self::new_github_permissions`].
+    /// What the backend says, as [`RequestError`].
     pub(super) async fn renewal_permissions(
         &self,
         access: &Access,
     ) -> Result<Option<StoredPermissions>, RequestError> {
         match access {
-            Access::GithubToken(_) => self.new_github_permissions().await.map(Some),
+            Access::GithubToken(github) => {
+                // The allowlist is not asked here: a renewal whose extras it no
+                // longer holds is created, and its page says which one.
+                let policy = self.backend.github_permissions().await?;
+                Ok(Some(full_set(
+                    &policy.default,
+                    github.extra_permissions.as_ref(),
+                )))
+            }
             _ => Ok(None),
+        }
+    }
+
+    /// The agent's pending request in the slot `dedupe_key`, for `access`, if any.
+    /// A GitHub token request holds the slot of its repositories whatever extras it
+    /// names, so one that is waiting with other extras (or none) than `access` is
+    /// not the same request: it is refused, naming the waiting one, instead of
+    /// being returned for the owner to approve with permissions the agent did not
+    /// ask for this time.
+    ///
+    /// # Errors
+    /// [`RequestError::OtherPermissionsPending`]; [`RequestError::Corrupt`] for a
+    /// stored request that does not parse; storage failures.
+    pub(super) async fn pending_in_request_slot(
+        &self,
+        dedupe_key: &str,
+        access: &Access,
+    ) -> Result<Option<CreatedResponse>, RequestError> {
+        let Some(found) = self.pending_in_slot(dedupe_key).await? else {
+            return Ok(None);
+        };
+        let Access::GithubToken(wanted) = access else {
+            return Ok(Some(found));
+        };
+        let body: String = sqlx::query("SELECT body FROM requests WHERE id = ?")
+            .bind(found.id.as_str())
+            .fetch_one(&self.pool)
+            .await?
+            .try_get("body")?;
+        let stored: CreateRequest = serde_json::from_str(&body).map_err(|_| {
+            RequestError::Corrupt(format!("the stored body of request {}", found.id))
+        })?;
+        let Access::GithubToken(waiting) = stored.access else {
+            return Err(RequestError::Corrupt(format!(
+                "request {} changed kind",
+                found.id
+            )));
+        };
+        if waiting.extra_permissions == wanted.extra_permissions {
+            Ok(Some(found))
+        } else {
+            Err(RequestError::OtherPermissionsPending(found.id))
         }
     }
 
@@ -263,6 +405,74 @@ mod tests {
                 "{full:?} / {beyond:?}"
             );
         }
+    }
+
+    fn policy(default: &str, allowed: &str) -> GithubPermissionPolicy {
+        GithubPermissionPolicy {
+            default: PermissionSet::parse(default).unwrap(),
+            allowed_extras: PermissionSet::parse(allowed).unwrap(),
+        }
+    }
+
+    fn extras(text: &str) -> PermissionSet {
+        PermissionSet::parse(text).unwrap()
+    }
+
+    #[test]
+    fn extras_must_be_listed_at_the_level_asked_or_higher() {
+        let owner = policy("contents:write", "checks:read,actions:write");
+        assert_eq!(check_extras(&extras("checks:read"), &owner), Ok(()));
+        assert_eq!(check_extras(&extras("actions:read"), &owner), Ok(()));
+        let refused =
+            check_extras(&extras("actions:read,checks:write,issues:read"), &owner).unwrap_err();
+        assert_eq!(refused.to_string(), "checks:write");
+        let refused = check_extras(&extras("workflows:write"), &owner).unwrap_err();
+        assert_eq!(refused.to_string(), "workflows:write");
+    }
+
+    #[test]
+    fn refused_extras_lists_every_one_in_name_order() {
+        let owner = policy("contents:write", "checks:read");
+        let refused = refused_extras(&extras("checks:write,actions:read,issues:read"), &owner);
+        let written: Vec<String> = refused.iter().map(ToString::to_string).collect();
+        assert_eq!(written, ["actions:read", "checks:write", "issues:read"]);
+        assert_eq!(
+            refused_extras(&extras("checks:read"), &owner),
+            Vec::<Permission>::new()
+        );
+    }
+
+    #[test]
+    fn refusal_names_the_permission_and_the_level_held() {
+        let owner = policy("contents:write", "checks:read");
+        assert_eq!(
+            not_allowed_text(&"checks:write".parse().unwrap(), &owner),
+            format!("{EXTRA_NOT_ALLOWED}checks:write (only read is allowed)")
+        );
+        assert_eq!(
+            not_allowed_text(&"workflows:write".parse().unwrap(), &owner),
+            format!("{EXTRA_NOT_ALLOWED}workflows:write")
+        );
+    }
+
+    #[test]
+    fn full_set_is_the_default_with_the_extras_it_lacks_marked() {
+        let default = extras("contents:write,issues:read");
+        let none = full_set(&default, None);
+        assert_eq!(none.full, default);
+        assert_eq!(none.beyond_default, Vec::<Permission>::new());
+        let stored = full_set(&default, Some(&extras("checks:read,issues:read")));
+        assert_eq!(
+            stored.full.to_string(),
+            "checks:read,contents:write,issues:read,metadata:read"
+        );
+        assert_eq!(written(&stored.beyond_default), "checks:read");
+        let raised = full_set(&default, Some(&extras("issues:write")));
+        assert_eq!(written(&raised.beyond_default), "issues:write");
+        assert_eq!(
+            raised.full.to_string(),
+            "contents:write,issues:write,metadata:read"
+        );
     }
 
     #[test]

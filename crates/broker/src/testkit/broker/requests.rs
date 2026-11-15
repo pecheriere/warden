@@ -11,6 +11,7 @@ use ssh_encoding::Encode as _;
 use ssh_key::rand_core::OsRng;
 use ssh_key::{Algorithm, HashAlg, PrivateKey};
 use tower::ServiceExt as _;
+use warden_broker_proto::github_permissions::PermissionSet;
 use warden_broker_proto::release::RepoName;
 use warden_broker_proto::signing::{
     AGENT_HEADER, NAMESPACE, NONCE_HEADER, Nonce, SIGNATURE_HEADER, SignedRequestParts,
@@ -186,12 +187,31 @@ impl TestBroker {
         CreateRequest {
             goal: Goal::try_from(goal.to_owned()).expect("valid goal"),
             access: Access::GithubToken(
-                GithubTokenAccess::new(repositories, None).expect("valid repositories"),
+                GithubTokenAccess::new(repositories, None, None).expect("valid repositories"),
             ),
             window,
             session: None,
             link: None,
         }
+    }
+
+    /// A request for a GitHub App installation token that asks for the extra
+    /// permissions `extras` (`name:level` entries joined with `,`).
+    ///
+    /// # Panics
+    /// If `goal` or `extras` is not valid or a repository is not valid.
+    #[must_use]
+    pub fn github_token_request_with_extras(
+        goal: &str,
+        window: Window,
+        repositories: &[&str],
+        extras: &str,
+    ) -> CreateRequest {
+        let mut request = Self::github_token_request(goal, window, repositories);
+        if let Access::GithubToken(github) = &mut request.access {
+            github.extra_permissions = Some(PermissionSet::parse(extras).expect("valid extras"));
+        }
+        request
     }
 
     /// A request to release `tag` of `repository` at `commit`.

@@ -1079,8 +1079,26 @@ What an attacker gets, and what stops it:
   grant holds one, and GitHub still refuses a push that changes a workflow file, a token cannot read or
   write repository secrets, and it cannot create a webhook that would keep sending events after the grant
   ends. The risk moves to the owner's `extra_permissions`: a name listed there is a permission an agent
-  may ask for once agents can send extras, which is not yet, and then only for a grant the owner approves
-  on the phone, lasting at most 1 hour. The approval is
+  may ask for with `--extra-permissions`, and then only for a grant the owner approves on the
+  phone, which shows each extra and marks a sensitive one in red. The broker refuses a name
+  outside the list, or above its listed level, before the owner is asked and again at each
+  view, begin and finish of the page. A grant holding a sensitive extra lasts 15 minutes, 30 minutes or
+  1 hour: the broker refuses a longer window at the request and at approval, and a renewal
+  keeps the extras and the short window. A mint may ask for fewer permissions than the grant
+  holds and is refused (403) for one it does not hold, so an agent can only narrow a
+  token. What an agent can hold is therefore the default set, plus extras the owner
+  listed and approved for that grant. An agent with a prompt-injected goal can ask for
+  a listed sensitive extra, so the owner's allowlist and the goal on the phone are the
+  controls: list only what an agent may need. Narrowing the allowlist does not end a grant
+  that is live: one holding a non-sensitive extra keeps minting for up to 30 days, and the
+  owner revokes it. A token minted at the end of a grant lives up to an hour more, so
+  access to a sensitive extra can last about 2 hours after approval (1 hour of grant and
+  1 hour of the last token). At each mint the broker reads the stored `window_secs`,
+  `not_before` and `not_after` of the grant, and the same bounds in its stored view, and refuses, with an audit entry, when a
+  grant that holds a sensitive permission spans more than 1 hour by any of them, in case a stored
+  row was changed. It does not check anything else about the row.
+  Refused requests for an extra outside the allowlist, a sensitive extra for a long window
+  and a second set of extras are in the audit log as `github_token_refused`. The approval is
   refused when the installation does not hold the set, which the broker reads at each view,
   begin and finish of the page; a read it cannot make refuses too.
 - **Within a grant, the agent gets tokens with no prompt**, up to 60 an hour (UTC), per

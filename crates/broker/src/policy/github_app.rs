@@ -321,15 +321,21 @@ impl GithubTokenPolicy {
     }
 
     /// The grant details approving this policy gives, for these repositories and
-    /// permissions.
+    /// permissions, and the extras the agent asked for.
     #[must_use]
-    pub fn grant(&self, repositories: GrantScope, permissions: PermissionSet) -> GithubTokenGrant {
+    pub fn grant(
+        &self,
+        repositories: GrantScope,
+        permissions: PermissionSet,
+        extra_permissions: Option<PermissionSet>,
+    ) -> GithubTokenGrant {
         GithubTokenGrant {
             app_id: self.app_id.clone(),
             installation_id: self.installation_id,
             digest: self.destination_digest(),
             repositories,
             permissions: permissions.into(),
+            extra_permissions: extra_permissions.map(Into::into),
         }
     }
 }
@@ -466,7 +472,7 @@ mod tests {
             b.policy(Window::D30).destination_digest()
         );
         let wider = super::PermissionSet::parse("checks:read,contents:write").unwrap();
-        let grant = base.grant(GrantScope::Legacy, wider.clone());
+        let grant = base.grant(GrantScope::Legacy, wider.clone(), None);
         assert_eq!(grant.permissions.known().unwrap(), wider);
         assert_eq!(grant.app_id, APP_ID);
         assert_eq!(grant.installation_id, INSTALLATION_ID);

@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 use url::Url;
+use warden_broker_proto::github_permissions::PermissionSet;
 use warden_broker_proto::release::{CommitId, ReleaseTag, RepoName};
 use warden_broker_proto::signing::Audience;
 use warden_broker_proto::{AgentName, Goal, Id, SecretName, TargetName, UnixUser, Window};
@@ -281,9 +282,17 @@ pub(crate) enum RequestKind {
         /// The repositories, `owner/name`: at least one, at most 10.
         #[arg(required = true)]
         repositories: Vec<RepoName>,
-        /// Window length: 1d, 7d or 30d, up to what the server allows.
-        #[arg(long = "for", default_value = "30d", value_parser = Window::github_token)]
-        window: Window,
+        /// Window length: 1d, 7d or 30d, up to what the server allows (30d unless
+        /// the extra permissions hold a sensitive one, which takes 15m, 30m or 1h
+        /// and defaults to 1h).
+        #[arg(long = "for", value_parser = Window::github_token_request)]
+        window: Option<Window>,
+        /// Permissions to ask for beyond the owner's default, as `name:level`
+        /// joined with commas, such as `checks:read,actions:read`: only what the
+        /// owner allows, which `warden list` shows. The owner sees them marked on
+        /// the approval page.
+        #[arg(long, value_parser = parse_permissions)]
+        extra_permissions: Option<PermissionSet>,
         /// What the access is for, shown to the owner.
         #[arg(long)]
         goal: Goal,
@@ -322,6 +331,11 @@ pub(crate) enum RequestKind {
         /// Grant identifier, as listed by `warden status`.
         grant: Id,
     },
+}
+
+/// Read the value of `--extra-permissions`.
+fn parse_permissions(text: &str) -> Result<PermissionSet, String> {
+    PermissionSet::parse(text).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

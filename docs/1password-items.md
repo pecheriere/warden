@@ -164,8 +164,8 @@ App's RSA private key as PEM, PKCS#1 or PKCS#8, unencrypted, at least 2048 bits)
 does not matter. Two optional fields set the permissions of the tokens, each a list of
 `name:level` pairs separated by commas (`level` is `read` or `write`):
 `default_permissions` (what every request gets; missing means `contents:write,issues:write,metadata:read,pull_requests:write`) and
-`extra_permissions` (what a request may add to the default; missing means none, and no request can
-ask for one yet). A field that is repeated, empty or malformed, or a `default_permissions` that names a
+`extra_permissions` (what a request may add to the default; missing means none, so no request can
+ask for one). A field that is repeated, empty or malformed, or a `default_permissions` that names a
 sensitive permission (`administration`, `workflows`, `secrets`, `environments`, `dependabot_secrets`,
 `repository_hooks`, `organization_*`), makes GitHub tokens unusable until you fix it, and `warden-server doctor`
 names the field. A sensitive permission is allowed in `extra_permissions`. See

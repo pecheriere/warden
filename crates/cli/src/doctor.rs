@@ -507,6 +507,7 @@ mod tests {
         InfoResponse {
             github_token_max_window: None,
             scoped_github_tokens: true,
+            github_token_permissions: true,
             protocols: protocols.iter().map(|p| (*p).to_owned()).collect(),
             audience: audience(id),
         }

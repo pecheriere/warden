@@ -14,17 +14,18 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::Value;
 use tempfile::TempDir;
 use warden_broker::github_app::GithubApi;
-use warden_broker::policy::Listing;
+use warden_broker::policy::{GithubPermissionPolicy, Listing};
 use warden_broker::testkit::github_app::token_answer;
 use warden_broker::testkit::upstream::HttpsUpstream;
 use warden_broker::testkit::{FakeBackend, TestBroker, github_app_key};
+use warden_broker_proto::github_permissions::PermissionSet;
 
 const AGENT: &str = "build-agent";
 const REPO: &str = "example-org/example-repo";
 
 struct Setup {
     // Held so the broker and the fake GitHub outlive every command.
-    _broker: TestBroker,
+    broker: TestBroker,
     upstream: HttpsUpstream,
     /// Everything the CLI and git write, under one throwaway root.
     root: TempDir,
@@ -81,7 +82,7 @@ async fn setup() -> Setup {
     write!(config, "server = \"{}\"\nagent = \"{AGENT}\"\n", urls.api).unwrap();
     fs::write(root.path().join("gitconfig"), "").unwrap();
     Setup {
-        _broker: broker,
+        broker,
         upstream,
         root,
         key,
@@ -212,6 +213,35 @@ async fn e2e_list_json_shows_only_what_is_listed() {
     for absent in ["pi.example.internal", "db-01", "e2e-secret-value"] {
         assert!(!stdout.contains(absent), "{absent} in {stdout}");
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn list_shows_default_and_extras() {
+    let s = setup().await;
+    let set = |text: &str| PermissionSet::parse(text).unwrap();
+    s.broker
+        .backend
+        .set_github_permissions(Some(GithubPermissionPolicy {
+            default: set("contents:write,metadata:read"),
+            allowed_extras: set("actions:read,workflows:write"),
+        }));
+    let listed = text(&s.warden_in(&s.outside(), &["list"]).stdout);
+    assert!(
+        listed.contains("  Default permissions: contents:write,metadata:read\n"),
+        "{listed}"
+    );
+    assert!(
+        listed.contains("actions:read, workflows:write (sensitive)\n"),
+        "{listed}"
+    );
+    assert!(!listed.contains("actions:read (sensitive)"), "{listed}");
+
+    let json: Value =
+        serde_json::from_slice(&s.warden_in(&s.outside(), &["list", "--json"]).stdout).unwrap();
+    assert_eq!(
+        json["offers"]["github"]["extra_permissions"],
+        "actions:read,metadata:read,workflows:write"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

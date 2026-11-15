@@ -4,14 +4,14 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use sqlx::Row as _;
-use warden_broker_proto::github_permissions::PermissionSet;
+use warden_broker_proto::github_permissions::{Permission, PermissionSet};
 use warden_broker_proto::github_token::{
     GithubTokenAccess, GrantRepository, GrantScope, OLD_CLIENT,
 };
 use warden_broker_proto::release::RepoName;
 use warden_broker_proto::{AgentName, Id};
 
-use super::github_permissions::{InstallationCheck, StoredPermissions};
+use super::github_permissions::{InstallationCheck, StoredPermissions, refused_extras};
 use super::revocation::commit_with_entries;
 use super::{RequestError, Requests, begin, parse};
 use crate::audit::AuditEvent;
@@ -102,6 +102,9 @@ pub struct GithubPending {
     pub replaces: Vec<ReplacedGrant>,
     /// The permissions the request was created with, which the grant will hold.
     pub permissions: StoredPermissions,
+    /// The request's extras that the owner's allowlist does not hold now, in name
+    /// order, read at this render: approving is refused while there are any.
+    pub not_allowed: Vec<Permission>,
     /// Whether the App's installation holds them, read at this render.
     pub installation: InstallationCheck,
 }
@@ -218,6 +221,7 @@ impl Requests {
                 resolution: Resolution::Resolved(Vec::new()),
                 replaces: Vec::new(),
                 permissions,
+                not_allowed: Vec::new(),
                 installation: InstallationCheck::Unreadable,
             });
         }
@@ -226,11 +230,17 @@ impl Requests {
             None => self.resolve_and_store(id, access).await?,
         };
         let replaces = self.replaced_grants(agent, &resolution).await?;
+        let allowlist = self.backend.github_permissions().await?;
+        let not_allowed = access
+            .extra_permissions
+            .as_ref()
+            .map_or_else(Vec::new, |extras| refused_extras(extras, &allowlist));
         let installation = self.installation_check(&permissions.full).await?;
         Ok(GithubPending {
             resolution,
             replaces,
             permissions,
+            not_allowed,
             installation,
         })
     }

@@ -8,8 +8,11 @@ use warden_broker::requests::RequestError;
 use warden_broker::testkit::TestBroker;
 use warden_broker_proto::Window;
 use warden_broker_proto::github_permissions::PermissionSet;
-use warden_broker_proto::github_token::{INSTALLATION_LACKS, INSTALLATION_UNREADABLE};
+use warden_broker_proto::github_token::{
+    EXTRA_NOT_ALLOWED, INSTALLATION_LACKS, INSTALLATION_UNREADABLE,
+};
 
+use super::extras::{LEGACY, allow, installation_with, with_extras};
 use super::{active_for, configured_on_fake, entries, installation, resolved};
 
 const REPO: &str = "example-owner/example-repo";
@@ -280,4 +283,35 @@ async fn approved_entry_records_permissions() {
     approve_and_read(&broker, &upstream, &token).await;
     let approved = entries(&broker, "approved");
     assert_eq!(approved.last().unwrap()["permissions"], WITH_CHECKS);
+}
+
+#[tokio::test]
+async fn pending_request_unapprovable_after_allowlist_narrowed() {
+    let (broker, _key, upstream) = configured_on_fake().await;
+    allow(&broker, LEGACY, "checks:read");
+    let (_, token) = broker
+        .create_request("bot", with_extras(Window::D7, "checks:read"))
+        .await;
+    allow(&broker, LEGACY, "metadata:read");
+    upstream.answer_github_installation(Some(installation_with(&[("checks", "read")])));
+    upstream.script_github_token(resolved(&broker, &[(1001, REPO)]));
+    let page = broker.get(&format!("/approve/{token}")).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    assert!(page.body.contains("cannot be approved"), "{}", page.body);
+    assert!(
+        page.body
+            .contains(&format!("{EXTRA_NOT_ALLOWED}<code>checks:read</code>")),
+        "{}",
+        page.body
+    );
+    assert!(!page.body.contains("id=\"approve\""), "{}", page.body);
+    broker.enroll_soft_passkey().await;
+    let begin = broker.begin_approval(&token, Window::D7).await;
+    assert_eq!(begin.status, StatusCode::BAD_REQUEST, "{}", begin.body);
+    assert!(begin.body.contains(EXTRA_NOT_ALLOWED), "{}", begin.body);
+    assert!(active_for(&broker, "bot", REPO).await.is_none());
+    // Widened again, the same request approves.
+    allow(&broker, LEGACY, "checks:read");
+    let approved = broker.approve(&token, Window::D7).await;
+    assert_eq!(approved.status, StatusCode::OK, "{}", approved.body);
 }

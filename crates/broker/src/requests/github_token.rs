@@ -6,9 +6,11 @@
 //! agent's minting.
 
 use sqlx::Row as _;
-use warden_broker_proto::github_token::GrantRepository;
+use warden_broker_proto::github_token::{GrantRepository, SENSITIVE_WINDOW};
 use warden_broker_proto::release::RepoName;
-use warden_broker_proto::{AgentName, GithubTokenGrant, GrantAccess, Id, Window};
+use warden_broker_proto::{
+    AgentName, GithubTokenAccess, GithubTokenGrant, GrantAccess, Id, Window,
+};
 
 use super::{RequestError, Requests, parse};
 use crate::audit::{AuditEvent, bounded_text};
@@ -23,6 +25,10 @@ pub struct ActiveGithubToken {
     pub grant: GithubTokenGrant,
     /// The repository asked for, as the grant stores it.
     pub repository: GrantRepository,
+    /// How long the grant lasts, in seconds: the longest that its `window_secs`,
+    /// `not_before` and `not_after` columns and its view say, so that a row changed
+    /// since approval in any one of them cannot shorten it.
+    pub window_secs: u64,
 }
 
 /// What an agent's active grants say about one repository.
@@ -46,6 +52,23 @@ pub const MINTS_PER_HOUR: u32 = 60;
 pub(super) fn check_window(window: Window, max: Window) -> Result<(), String> {
     if !window.is_github_token() {
         return Err("a GitHub token grant lasts 1d, 7d or 30d".to_owned());
+    }
+    super::check_window(window, max, "GitHub tokens")
+}
+
+/// Whether a GitHub token request for `access` may have `window`, under the
+/// server's `max`: a request whose extra permissions include a sensitive one only
+/// the short windows, any other only the long ones.
+pub(super) fn check_window_for(
+    window: Window,
+    max: Window,
+    access: &GithubTokenAccess,
+) -> Result<(), String> {
+    if !access.has_sensitive_extra() {
+        return check_window(window, max);
+    }
+    if !window.is_github_token_sensitive() {
+        return Err(SENSITIVE_WINDOW.to_owned());
     }
     super::check_window(window, max, "GitHub tokens")
 }
@@ -128,27 +151,46 @@ impl Requests {
         for row in self.active_rows(agent, "github_token").await? {
             let view: String = row.try_get("view")?;
             let view = super::stored_view(&view)?;
+            // The longest any of the stored bounds says: the row's window, its
+            // `not_before` and `not_after` columns (which decide whether the grant
+            // is active), and the view's, so that a row changed since approval in
+            // any one of them cannot shorten what the recheck at mint measures.
+            let window: i64 = row.try_get("window_secs")?;
+            let not_before: i64 = row.try_get("not_before")?;
+            let not_after: i64 = row.try_get("not_after")?;
+            let window_secs = [
+                window,
+                not_after.saturating_sub(not_before),
+                view.not_after.saturating_sub(view.not_before),
+                not_after.saturating_sub(view.not_before),
+                view.not_after.saturating_sub(not_before),
+            ]
+            .into_iter()
+            .max()
+            .unwrap_or(0)
+            .max(0)
+            .unsigned_abs();
             let GrantAccess::GithubToken(grant) = view.access else {
                 return Err(RequestError::Corrupt(
                     "GitHub token grant changed kind".to_owned(),
                 ));
             };
-            grants.push((parse::<Id>(&row, "id")?, grant));
+            grants.push((parse::<Id>(&row, "id")?, grant, window_secs));
         }
-        let mut covering = grants.iter().filter_map(|(grant_id, grant)| {
+        let mut covering = grants.iter().filter_map(|(grant_id, grant, window_secs)| {
             grant
                 .repositories
                 .covering(repository)
-                .map(|found| (grant_id, grant, found))
+                .map(|found| (grant_id, grant, *window_secs, found))
         });
-        let Some((grant_id, grant, found)) = covering.next() else {
+        let Some((grant_id, grant, window_secs, found)) = covering.next() else {
             return Ok(GithubLookup::None);
         };
         let found_id = found.id;
         let found = found.clone();
         let sharing = grants
             .iter()
-            .filter(|(_, other)| other.repositories.list().iter().any(|r| r.id == found_id))
+            .filter(|(_, other, _)| other.repositories.list().iter().any(|r| r.id == found_id))
             .count();
         if covering.next().is_some() || sharing > 1 {
             return Ok(GithubLookup::Ambiguous(grant_id.clone()));
@@ -157,6 +199,7 @@ impl Requests {
             grant_id: grant_id.clone(),
             grant: grant.clone(),
             repository: found,
+            window_secs,
         }))
     }
 

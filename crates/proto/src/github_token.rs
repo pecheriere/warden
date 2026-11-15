@@ -6,7 +6,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::github_permissions::GrantedPermissions;
+use crate::github_permissions::{GrantedPermissions, PermissionSet};
 use crate::release::RepoName;
 use crate::{FreeTextCheck, ParseError, check_new_free_text, check_stored_free_text};
 
@@ -57,6 +57,31 @@ pub const INSTALLATION_LACKS: &str =
 pub const INSTALLATION_UNREADABLE: &str = "this request cannot be approved: the broker could \
                                            not read the permissions of the App's installation";
 
+/// Why a GitHub token request naming an extra permission is refused when the
+/// owner's allowlist does not hold it. The known permission name follows, with
+/// the level that is allowed when the name is listed at a lower one.
+pub const EXTRA_NOT_ALLOWED: &str = "this broker does not allow that extra GitHub permission: ";
+
+/// [`EXTRA_NOT_ALLOWED`] for several permissions, which an approval page or the
+/// approval itself names, each as `name:level`, when the owner's allowlist changed
+/// after the request was made.
+pub const EXTRAS_NOT_ALLOWED: &str = "this broker does not allow these extra GitHub permissions: ";
+
+/// What the broker says when the agent has a request waiting for the same
+/// repositories that asks for other extra permissions. The id of that request
+/// follows: it is the broker's, not text the agent wrote.
+pub const OTHER_PERMISSIONS_PENDING: &str = "a request for these repositories with other \
+    permissions is pending; cancel it with `warden request cancel <id>` or wait for it";
+
+/// What the broker says when a mint asks for permissions the agent's grant does not
+/// hold. The first such known permission name follows, as `name:level`.
+pub const PERMISSIONS_NOT_IN_GRANT: &str = "the grant does not hold this GitHub permission: ";
+
+/// Why a GitHub token request whose extra permissions include a sensitive one is
+/// refused for any other window.
+pub const SENSITIVE_WINDOW: &str =
+    "a GitHub token grant with a sensitive permission lasts 15m, 30m or 1h";
+
 /// What asked for the token without the agent typing a command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -102,6 +127,11 @@ pub struct GithubTokenAccess {
     /// Set when a tool asked: then exactly one repository.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub automatic: Option<AutomaticRequest>,
+    /// The permissions the agent asks for beyond the owner's default, always with
+    /// `metadata:read` as every set has, and never only that. Sent by an explicit
+    /// request only: a tool's automatic request sends none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra_permissions: Option<PermissionSet>,
 }
 
 #[derive(Deserialize)]
@@ -111,20 +141,28 @@ struct RawGithubTokenAccess {
     repositories: Vec<RepoName>,
     #[serde(default)]
     automatic: Option<AutomaticRequest>,
+    #[serde(default)]
+    extra_permissions: Option<PermissionSet>,
 }
 
 impl TryFrom<RawGithubTokenAccess> for GithubTokenAccess {
     type Error = ParseError;
 
     fn try_from(raw: RawGithubTokenAccess) -> Result<Self, Self::Error> {
-        Self::build(raw.repositories, raw.automatic, check_stored_free_text)
+        Self::build(
+            raw.repositories,
+            raw.automatic,
+            raw.extra_permissions,
+            check_stored_free_text,
+        )
     }
 }
 
 impl GithubTokenAccess {
     /// Checks the list: at most [`MAX_REPOSITORIES`], no repeat ignoring case,
     /// and `automatic` only with exactly one repository, its directory checked
-    /// with the rules for text sent now.
+    /// with the rules for text sent now. An automatic request names no extra
+    /// permissions, and extras are never only `metadata:read`.
     ///
     /// # Errors
     ///
@@ -132,8 +170,14 @@ impl GithubTokenAccess {
     pub fn new(
         repositories: Vec<RepoName>,
         automatic: Option<AutomaticRequest>,
+        extra_permissions: Option<PermissionSet>,
     ) -> Result<Self, ParseError> {
-        Self::build(repositories, automatic, check_new_free_text)
+        Self::build(
+            repositories,
+            automatic,
+            extra_permissions,
+            check_new_free_text,
+        )
     }
 
     /// The checks of [`new`](Self::new), with `check` for the directory: a stored
@@ -141,6 +185,7 @@ impl GithubTokenAccess {
     fn build(
         repositories: Vec<RepoName>,
         automatic: Option<AutomaticRequest>,
+        extra_permissions: Option<PermissionSet>,
         check: FreeTextCheck,
     ) -> Result<Self, ParseError> {
         if repositories.len() > MAX_REPOSITORIES {
@@ -161,10 +206,26 @@ impl GithubTokenAccess {
                 ));
             }
             automatic.check(check)?;
+            if extra_permissions.is_some() {
+                return Err(ParseError::new(
+                    "automatic request",
+                    "names no extra permissions",
+                ));
+            }
+        }
+        if extra_permissions
+            .as_ref()
+            .is_some_and(PermissionSet::is_only_metadata)
+        {
+            return Err(ParseError::new(
+                "extra permissions",
+                "must name more than metadata:read",
+            ));
         }
         Ok(Self {
             repositories,
             automatic,
+            extra_permissions,
         })
     }
 
@@ -182,6 +243,15 @@ impl GithubTokenAccess {
         self.repositories.is_empty()
     }
 
+    /// Whether the extra permissions include a sensitive one, which limits the grant
+    /// to [`crate::Window::GITHUB_TOKEN_SENSITIVE`].
+    #[must_use]
+    pub fn has_sensitive_extra(&self) -> bool {
+        self.extra_permissions
+            .as_ref()
+            .is_some_and(|extras| extras.sensitive().next().is_some())
+    }
+
     /// The repository names joined with `, `, as the pages and `warden status` show them.
     #[must_use]
     pub fn names(&self) -> String {
@@ -189,10 +259,19 @@ impl GithubTokenAccess {
     }
 
     /// One line about the request: `github token for <names>`, or
-    /// `github token (all repositories)` for one that names none.
+    /// `github token (all repositories)` for one that names none; with extra
+    /// permissions, ` +<extras>` follows, in their written form without
+    /// `metadata:read`.
     #[must_use]
     pub fn summary(&self) -> String {
-        summary(&self.names())
+        let line = summary(&self.names());
+        match &self.extra_permissions {
+            Some(extras) => format!(
+                "{line} +{}",
+                extras.extras_beyond(&PermissionSet::metadata_only())
+            ),
+            None => line,
+        }
     }
 
     /// The repositories lowercased, sorted and joined with `,`: equal for the
@@ -374,6 +453,11 @@ pub struct GithubTokenGrant {
     /// kept as text: the broker reads it strictly before acting on it.
     #[serde(default = "GrantedPermissions::legacy")]
     pub permissions: GrantedPermissions,
+    /// The extra permissions the agent asked for, kept for the grant's renewal;
+    /// absent when it asked for none. Read as [`GrantedPermissions`] by CLIs, which
+    /// must not fail on a name a newer broker knows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra_permissions: Option<GrantedPermissions>,
 }
 
 /// Body of `POST /v1/github-token`: the repository to mint a token for.
@@ -382,6 +466,11 @@ pub struct GithubTokenGrant {
 pub struct GithubTokenRequest {
     /// The repository.
     pub repository: RepoName,
+    /// The permissions the token should have, which the grant's must cover. Absent
+    /// means all of the grant's. Sent by a CLI that narrows; a broker that predates
+    /// this field refuses a body that holds it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permissions: Option<PermissionSet>,
 }
 
 /// A token the broker minted and recorded.

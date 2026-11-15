@@ -26,7 +26,7 @@ pub(super) fn name(text: &str) -> RepoName {
 }
 
 pub(super) fn access(names: &[&str], automatic: Option<AutomaticRequest>) -> GithubTokenAccess {
-    GithubTokenAccess::new(names.iter().map(|n| name(n)).collect(), automatic).unwrap()
+    GithubTokenAccess::new(names.iter().map(|n| name(n)).collect(), automatic, None).unwrap()
 }
 
 pub(super) fn github_token_request_for(access: GithubTokenAccess) -> CreateRequest {
@@ -64,6 +64,7 @@ pub(super) fn resolved(list: Vec<ScopedRepository>) -> GithubPending {
         resolution: Resolution::Resolved(list),
         replaces: Vec::new(),
         permissions: StoredPermissions::legacy(),
+        not_allowed: Vec::new(),
         installation: InstallationCheck::Holds,
     }
 }
@@ -142,6 +143,7 @@ pub(super) fn unreachable_view() -> crate::requests::PendingView {
             resolution: Resolution::NotAccessible,
             replaces: Vec::new(),
             permissions: StoredPermissions::legacy(),
+            not_allowed: Vec::new(),
             installation: InstallationCheck::Holds,
         }),
     )
@@ -179,9 +181,40 @@ pub(super) fn replaces_view_with(n: usize) -> crate::requests::PendingView {
             .take(n)
             .collect(),
             permissions: StoredPermissions::legacy(),
+            not_allowed: Vec::new(),
             installation: InstallationCheck::Holds,
         }),
     )
+}
+
+/// The approval page of a request for `REPO` with the extras `extras` (written form,
+/// with `metadata:read`) on top of the legacy default. A request for 30 days, as an
+/// agent's usual one; for 30 minutes when an extra is sensitive, which the broker
+/// accepts for no longer than an hour.
+pub(super) fn extras_view(extras: &str) -> crate::requests::PendingView {
+    let extras = PermissionSet::parse(extras).unwrap();
+    let default = PermissionSet::legacy();
+    let full = default.union(&extras);
+    let beyond_default = full.extras_beyond(&default).iter().collect();
+    let mut github = resolved(vec![scoped(1001, REPO, None)]);
+    github.permissions = StoredPermissions {
+        full,
+        beyond_default,
+    };
+    let access = GithubTokenAccess::new(vec![name(REPO)], None, Some(extras)).unwrap();
+    let sensitive = access.has_sensitive_extra();
+    let mut view = github_view(access, Some(github));
+    if sensitive {
+        view.request.window = Window::M30;
+    }
+    view
+}
+
+/// A request for an extra the owner's allowlist no longer holds.
+fn not_allowed_view() -> crate::requests::PendingView {
+    let mut view = extras_view("checks:read,metadata:read");
+    view.github.as_mut().unwrap().not_allowed = vec!["checks:read".parse().unwrap()];
+    view
 }
 
 /// A tool asked, from a directory.
@@ -200,12 +233,30 @@ pub(super) fn automatic_view(dir: Option<&str>) -> crate::requests::PendingView 
 
 /// An active GitHub token grant of `scope`.
 pub(super) fn github_grant(n: u8, scope: GrantScope) -> crate::requests::ActiveGrant {
+    grant_with_extras(n, scope, None)
+}
+
+/// An active GitHub token grant of `scope` that was asked for `extras` (written form).
+pub(super) fn grant_with_extras(
+    n: u8,
+    scope: GrantScope,
+    extras: Option<&str>,
+) -> crate::requests::ActiveGrant {
+    let extras = extras.map(|e| PermissionSet::parse(e).unwrap());
+    let sensitive = extras
+        .as_ref()
+        .is_some_and(|e| e.iter().any(|p| p.is_sensitive()));
+    let full = extras
+        .as_ref()
+        .map_or_else(PermissionSet::legacy, |e| PermissionSet::legacy().union(e));
     let mut grant = active(
         n,
         github_token_request(),
-        GrantAccess::GithubToken(github_token_policy().grant(scope, PermissionSet::legacy())),
+        GrantAccess::GithubToken(github_token_policy().grant(scope, full, extras)),
     );
-    grant.not_after = NOW + 26 * 86_400;
+    // A grant with a sensitive permission lasts at most an hour, and this one has
+    // 40 minutes left.
+    grant.not_after = NOW + if sensitive { 40 * 60 } else { 26 * 86_400 };
     grant
 }
 
@@ -333,6 +384,42 @@ pub(super) fn github_token_pages() -> Vec<(&'static str, Markup)> {
         (
             "history-github-token",
             history(&[history_entry(&[REPO, TAP])], &lnk),
+        ),
+    ]
+}
+
+/// The pages of a GitHub token request or grant with extra permissions.
+pub(super) fn github_extras_pages() -> Vec<(&'static str, Markup)> {
+    let with_extras = vec![grant_with_extras(
+        12,
+        scope_of(&[(1001, REPO)]),
+        Some("checks:read,deployments:write,metadata:read,workflows:write"),
+    )];
+    let lnk = LinkHosts::default();
+    vec![
+        (
+            "approve-github-token-extras",
+            approve(
+                &extras_view("actions:read,checks:read,deployments:write,metadata:read"),
+                &lnk,
+                NOW,
+            ),
+        ),
+        (
+            "approve-github-token-sensitive",
+            approve(
+                &extras_view("checks:read,metadata:read,secrets:read,workflows:write"),
+                &lnk,
+                NOW,
+            ),
+        ),
+        (
+            "approve-github-token-extra-not-allowed",
+            approve(&not_allowed_view(), &lnk, NOW),
+        ),
+        (
+            "grants-github-token-extras",
+            grants(&with_extras, &idle(&with_extras), &lnk, NOW, 0),
         ),
     ]
 }

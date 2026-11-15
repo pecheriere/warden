@@ -511,7 +511,7 @@ fn info_response_wire_shape() {
     assert!(!info.scoped_github_tokens);
     assert_eq!(
         serde_json::to_string(&info).unwrap(),
-        r#"{"protocols":["warden-request-v1"],"audience":"40ad20029e94984d193159667b296d8a","scoped_github_tokens":false}"#
+        r#"{"protocols":["warden-request-v1"],"audience":"40ad20029e94984d193159667b296d8a","scoped_github_tokens":false,"github_token_permissions":false}"#
     );
     assert!(serde_json::from_str::<InfoResponse>(r#"{"protocols":[],"audience":"nope"}"#).is_err());
 }
@@ -542,6 +542,7 @@ fn github_token_grant_serde_shape() {
         digest: "ab12".to_owned(),
         repositories: GrantScope::Legacy,
         permissions: GrantedPermissions::legacy(),
+        extra_permissions: None,
     });
     let value = serde_json::to_value(&grant).unwrap();
     assert_eq!(
@@ -568,6 +569,23 @@ fn github_token_window_parser() {
         assert!(Window::github_token(text).is_err(), "{text:?}");
     }
     assert!(!Window::D90.is_github_token());
+    for (text, window) in [
+        ("15m", Window::M15),
+        ("30m", Window::M30),
+        ("1h", Window::H1),
+    ] {
+        assert_eq!(Window::github_token_request(text).unwrap(), window);
+        assert!(window.is_github_token_sensitive());
+    }
+    for text in ["1d", "7d", "30d"] {
+        assert_eq!(
+            Window::github_token_request(text).unwrap(),
+            Window::github_token(text).unwrap()
+        );
+    }
+    for text in ["4h", "90d", "", "2d"] {
+        assert!(Window::github_token_request(text).is_err(), "{text:?}");
+    }
     assert!(!Window::H4.is_github_token());
     assert_eq!(Window::GITHUB_TOKEN_DEFAULT, Window::D30);
 }

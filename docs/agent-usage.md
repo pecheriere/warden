@@ -550,6 +550,40 @@ broker that does not support repository-scoped grants (upgrade the broker first)
 Unlike every other grant, this one hands you a credential: revoking the grant stops new
 tokens, and does not recall one already minted. Do not copy the token anywhere.
 
+**Extra permissions.** A grant holds the owner's default set (`warden list` prints it; by
+default `contents`, `pull_requests` and `issues` write). When the task needs more, such as
+`checks:read` to read CI results, name it:
+
+```sh
+warden request github example-owner/example-repo --extra-permissions checks:read,actions:read --goal "Read the failing CI run of PR 42 to fix the test"
+```
+
+Ask only for what the task needs, and say why in the goal: the owner sees each extra, marked,
+and decides from the goal. You may name only the extras the owner allows, at the level
+listed: `warden list` shows them, and the broker refuses another with `this broker does not
+allow that extra GitHub permission: <name>`. A set is `name:level` pairs joined with commas,
+each `read` or `write`; a bad one is a usage error (exit 64). The permissions are held by the
+grant, so it is for that task: renewing it keeps them. A request for the same repositories
+with other extras while one waits is refused (`409`, "a request for these repositories with
+other permissions is pending"): cancel it with `warden request cancel <id>` or wait. The
+automatic request of `git` and `gh` never has extras. After the owner approves, the CLI drops
+the cached tokens of those repositories, so the next token holds the new set.
+
+**A sensitive extra** (`administration`, `workflows`, `secrets`, `environments`,
+`dependabot_secrets`, `repository_hooks` or an `organization_*` permission) lets whoever holds the token change
+what runs with the repository's credentials or keep access after the grant ends.
+Its grant lasts `15m`, `30m` or `1h`: without `--for` the CLI asks for `1h`, and a longer
+`--for` is refused (`a GitHub token grant with a sensitive permission lasts 15m, 30m or 1h`). Make the
+goal say exactly why this permission is needed, for what change, and nothing wider.
+`warden list` marks these among the extras, `warden status` lists a grant's extras after
+the repositories (`+checks:read`), and the owner sees them in red on the approval page.
+Without extras `--for` is `1d`, `7d` or `30d`, and `30d` when left out.
+
+A token can be narrower than its grant: `warden github token --repo owner/name` mints the grant's
+whole set. The broker also accepts a smaller `permissions` in the mint
+([protocol](agent-protocol.md#post-v1github-token)), and refuses one the grant does not
+hold (`403`, "the grant does not hold this GitHub permission: <name>").
+
 ### Releases
 
 ```sh
@@ -932,7 +966,7 @@ warden does not take for a repository, so it gets no token.
 
 After that `git push`, `git fetch` and `gh` work against GitHub as usual, with a token from
 warden. Each token covers **one repository**, the one git or `gh` is working on, with the
-permissions the owner approved (by default `contents`, `pull_requests` and `issues` write), and
+permissions the owner approved (by default `contents`, `pull_requests` and `issues` write, and any extras you asked for), and
 lasts an hour. It cannot push, open pull requests,
 comment or edit issues on another repository the App is installed on, but it can still open
 a new issue on a public repository the App is installed on, and you should assume it can open

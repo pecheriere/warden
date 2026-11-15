@@ -5,12 +5,15 @@ use serde_json::Value;
 use ssh_key::rand_core::OsRng;
 use ssh_key::{Algorithm, PrivateKey};
 use warden_broker_proto::Window;
+use warden_broker_proto::github_permissions::PermissionSet;
 use warden_broker_proto::offers::{OfferPart, Offers, SshModeName};
 use zeroize::Zeroizing;
 
 use crate::config::LocalSettings;
 use crate::policy::local::LocalBackend;
-use crate::policy::{ApiSecretPolicy, Listing, ReleaseAppKey, ReleaseSigningKey, SshTarget};
+use crate::policy::{
+    ApiSecretPolicy, GithubPermissionPolicy, Listing, ReleaseAppKey, ReleaseSigningKey, SshTarget,
+};
 use crate::policy::{RelayCredential, SshMode};
 use crate::testkit::github_app::RSA2048_PKCS8;
 use crate::testkit::{FakeBackend, TestBroker, github_app_key};
@@ -186,6 +189,40 @@ async fn github_window_follows_the_configured_maximum() {
     assert_eq!(
         offers(&broker, &key).await.github.max_window,
         Some(Window::H1)
+    );
+}
+
+#[tokio::test]
+async fn github_offers_the_default_and_the_extras() {
+    let (broker, key) = broker().await;
+    let none = offers(&broker, &key).await;
+    assert!(none.github.default_permissions.is_none());
+    assert!(none.github.extra_permissions.is_none());
+
+    broker.backend.set_github_app(Some(github_app_key().0));
+    // No extras listed: the default only.
+    let got = offers(&broker, &key).await.github;
+    assert_eq!(
+        got.default_permissions.unwrap().as_str(),
+        "contents:write,issues:write,metadata:read,pull_requests:write"
+    );
+    assert!(got.extra_permissions.is_none());
+
+    let set = |text: &str| PermissionSet::parse(text).unwrap();
+    broker
+        .backend
+        .set_github_permissions(Some(GithubPermissionPolicy {
+            default: set("contents:read"),
+            allowed_extras: set("actions:read,workflows:write"),
+        }));
+    let got = offers(&broker, &key).await.github;
+    assert_eq!(
+        got.default_permissions.unwrap().as_str(),
+        "contents:read,metadata:read"
+    );
+    assert_eq!(
+        got.extra_permissions.unwrap().as_str(),
+        "actions:read,metadata:read,workflows:write"
     );
 }
 

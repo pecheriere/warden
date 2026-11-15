@@ -43,7 +43,7 @@ target for the approval UI (#33), not code the broker serves.
 | `--accent` | `#F5B800` | `#F5B800` | Mascot plume and keyhole, live dot; never text |
 | `--accent-edge` | `#9A6B00` | `#F5B800` | Edge of the live dot, so it keeps 3:1 against a light card |
 | `--warn-bg` / `--warn-ink` / `--warn-line` | `#FFF1D6` / `#7A3300` / `#C25100` | `#3A2306` / `#FFD08A` / `#E08A2C` | "Can modify" badge; the grants page's warning that audit log entries are waiting |
-| `--deny` | `#B42318` | `#FF8A80` | Deny and Revoke buttons |
+| `--deny` | `#B42318` | `#FF8A80` | Deny and Revoke buttons; a sensitive GitHub permission and its note |
 | `--fp-bg` | `#F7F9FF` | `#101D40` | Fingerprint box |
 
 Dark mode follows `prefers-color-scheme`. (The reference pages switch with a
@@ -77,6 +77,15 @@ WCAG AA contrast in both modes.
   without border or icon, saying how many repositories a GitHub token request
   covers. It informs and is never a warning: the one orange badge stays the push
   warning.
+- **Extra GitHub permissions** (`code.perm`): the permissions a token request or
+  grant holds beyond the owner's default are marked in the permission list, never
+  by colour alone. A read extra (`.extra-read`) has a dotted underline, a write
+  extra (`.extra-write`) is bold with a solid underline, and the count ("N beyond
+  the default") follows the list. A sensitive permission (`.sensitive`) is in
+  `--deny`, bold, with a double underline, and wins over the read and write marks.
+  The sensitive note (`.sensitive-note`) under the list has a 1.5 px `--deny`
+  frame, a warning icon and the heading "Sensitive permissions", then one fixed
+  line for each: the permission and what it can do. It uses no new colour.
 - **Repository headline** (`.repos.headline`): the single repository of a GitHub token
   request, at 17 px / 600 like the agent's name; several repositories are a list.
 - **Fingerprint box**: dashed 2 px `--primary` frame, with the fingerprint's

@@ -547,7 +547,7 @@ Not signed. `200` with the plain-text body `ok`.
 Not signed (the tailnet policy still decides who can reach it). `200`:
 
 ```json
-{"protocols":["warden-request-v1"],"audience":"40ad20029e94984d193159667b296d8a","github_token_max_window":"30d","scoped_github_tokens":true}
+{"protocols":["warden-request-v1"],"audience":"40ad20029e94984d193159667b296d8a","github_token_max_window":"30d","scoped_github_tokens":true,"github_token_permissions":true}
 ```
 
 `protocols` lists the signing protocols the broker accepts; `audience` is
@@ -555,7 +555,9 @@ the value to pin (section 2). `github_token_max_window` is the longest GitHub to
 the broker allows (`1d`, `7d` or `30d`, from `WARDEN_GITHUB_TOKEN_MAX_WINDOW`): a request
 for a longer one is refused. `scoped_github_tokens` is `true` when the broker scopes GitHub
 grants and tokens to repositories (a client that asks for either must refuse a broker that
-leaves it out or says `false`). Brokers older than GitHub tokens leave `github_token_max_window`
+leaves it out or says `false`). `github_token_permissions` is `true` when a request may name
+`extra_permissions` and a mint may name `permissions`; a broker that leaves it out or says
+`false` refuses bodies that hold them, and a client must not send them. Brokers older than GitHub tokens leave `github_token_max_window`
 out; ignore any field you do not know.
 
 ### `POST /v1/requests`
@@ -566,7 +568,7 @@ Ask the owner for access. Signed; JSON body:
 |-------|------|---------|
 | `goal` | string | Why access is needed: what you will do and why, naming the change, issue or error. 1 to 500 characters after trimming whitespace, one line: no control characters, no line or paragraph separators (U+2028, U+2029) and no invisible characters (Unicode category Cf: bidi controls, zero-width characters, BOM, soft hyphen…; the Hangul fillers, the combining grapheme joiner, the variation selectors other than U+FE0E and U+FE0F, which emoji use, and the blank braille pattern). The session label and the working directory of an automatic request follow the same rule. Requests stored by an earlier version, which refused only control and Cf characters (and separators in a label), are still read and answered as they are. The owner decides on it alone; the notification shows the first 200 characters. |
 | `access` | object | What is asked for; see below. |
-| `window` | string | How long the access should last: `15m`, `30m`, `1h` or `4h`, for commit signing, and nothing else, `1d`, `7d`, `30d` or `90d`, and for GitHub tokens, and nothing else, `1d`, `7d` or `30d`. The target's or secret's policy caps it, for commit signing the server's `WARDEN_COMMIT_SIGNING_MAX_WINDOW`, and for GitHub tokens `WARDEN_GITHUB_TOKEN_MAX_WINDOW`. The owner chooses the window when approving, anything up to that cap, so it may be shorter or longer than the one asked for. |
+| `window` | string | How long the access should last: `15m`, `30m`, `1h` or `4h`, for commit signing, and nothing else, `1d`, `7d`, `30d` or `90d`, and for GitHub tokens, and nothing else, `1d`, `7d` or `30d`, or, when `extra_permissions` holds a sensitive permission, `15m`, `30m` or `1h` and nothing else. The target's or secret's policy caps it, for commit signing the server's `WARDEN_COMMIT_SIGNING_MAX_WINDOW`, and for GitHub tokens `WARDEN_GITHUB_TOKEN_MAX_WINDOW`. The owner chooses the window when approving, anything up to that cap, so it may be shorter or longer than the one asked for. |
 | `session` | string, optional | The name the session states for itself, shown to the owner as the agent's claim, and written to the notification and the audit log. 1 to 64 characters after trimming whitespace, under the rules of `goal`, and no line or paragraph separators. |
 | `link` | string, optional | A page about this work, shown to the owner as the agent's claim, and in no notification and no audit entry. `https://<host>/<path>`, at most 256 bytes: lowercase `https://`, a host name of letters, digits, dots and hyphens (no user, password, port, IP address or percent-encoding; an international name as `xn--…`), and a path of printable ASCII without a backslash, a query or a fragment. A `400` otherwise, without quoting the value, and also if the host is not in the owner's [`WARDEN_REQUEST_LINK_HOSTS`](configuration.md#links-in-requests), which is empty by default. It is stored and hashed in its normal form: the host in lowercase, a path of at least `/`, dot segments resolved, and characters such as `<` percent-encoded. |
 
@@ -832,7 +834,9 @@ holds decisions and grants. The broker's own log notes that an agent listed offe
     {"name":"home-api","origin":"https://home-api.example.internal",
      "methods":["GET"],"path_prefix":"/api/","max_window":"1h"}
   ],
-  "github": {"configured":true,"max_window":"30d"},
+  "github": {"configured":true,"max_window":"30d",
+             "default_permissions":"contents:write,issues:write,metadata:read,pull_requests:write",
+             "extra_permissions":"actions:read,checks:read"},
   "commit_signing": {"available":true},
   "releases": {"available":true},
   "unavailable": ["api_secrets"]
@@ -844,6 +848,11 @@ holds decisions and grants. The broker's own log notes that an agent listed offe
   absent. Hiding changes only what
   is listed, never what can be requested. A relay target shows its host and port when
   listed in full, although the agent never connects there.
+- `github.default_permissions` and `github.extra_permissions` are the owner's default set and
+  the permissions an agent may ask for beyond it, in the written form of a grant's and read
+  leniently by a client (an unknown name is text). Both are left out when no GitHub App is
+  configured, and when the owner's fields cannot be read, which marks `github` unavailable;
+  `extra_permissions` is also left out when the owner listed none beyond `metadata`. The CLI shows a sensitive extra marked.
 - `github.max_window` is present only when a GitHub App is configured. No repository is
   named: the broker does not list the repositories it covers.
 - A part the broker could not read is named in `unavailable` and the rest stands. Only
@@ -965,17 +974,24 @@ Have a commit signed under the agent's active commit signing grant; see
 
 Mint a GitHub App installation token for one repository, under the agent's active GitHub
 token grant that covers it, read anew for each call; the grant id is not sent. Signed. The
-body names the repository, as `owner/name`, and nothing else: permissions are the grant's, not
-the agent's to choose, and any other field is refused.
+body names the repository, as `owner/name`, and optionally `permissions`, and nothing else: any
+other field is refused. A token has the grant's permissions, or fewer when the agent narrows
+them; it never has more.
 
 ```json
 {"repository":"example-owner/example-repo"}
+{"repository":"example-owner/example-repo","permissions":"contents:read,metadata:read"}
 ```
+
+`permissions` is a set in the written form of the token's (`name:level` pairs joined with
+commas, each a known name, `read` or `write`). The token then holds that set and the
+grant must cover each pair, `write` covering `read`. Sent only when the broker's
+`/v1/info` says `github_token_permissions` is `true`: an older broker refuses the body.
 
 - `200`: `{"token":"ghs_…","expires_at":1793095212,"grant_id":"5e1c…","repository":"example-owner/example-repo","repository_id":1001,"permissions":"contents:write,issues:write,metadata:read,pull_requests:write"}`.
   `expires_at` is when GitHub ends the token, in Unix seconds, an hour after it was minted.
-  The token is scoped to that repository's id and has the permissions of the grant, and
-  nothing else. `permissions` is what GitHub says the token holds: `name:level` pairs sorted by
+  The token is scoped to that repository's id and has the permissions of the grant, or the
+  narrower `permissions` the body asked for, and nothing else. `permissions` is what GitHub says the token holds: `name:level` pairs sorted by
   name, joined with commas, and fewer than the grant's where GitHub gave fewer. If the owner
   removed a permission from the App after the grant was approved, GitHub may instead refuse
   the token, which is the `409` repository-unreachable answer below. A name the client does
@@ -987,6 +1003,11 @@ the agent's to choose, and any other field is refused.
   (`{"error":"GitHub tokens are not configured on this broker"}`).
 - `400` `{"error":"this warden CLI predates repository-scoped GitHub grants; upgrade it"}`
   (`OLD_CLIENT`): the body is `{}`, which is what clients sent before grants were scoped.
+- `400`: `permissions` is not a valid set, or names a permission the broker does not know. The
+  answer is fixed and does not quote the value. Audited as `github_token_refused`.
+- `403` `{"error":"the grant does not hold this GitHub permission: contents:write"}`
+  (`PERMISSIONS_NOT_IN_GRANT`, followed by the first permission asked for that the grant does
+  not cover): checked before GitHub or the key is used. Audited as `github_token_refused`.
 - `403` `{"error":"no active GitHub token grant for this agent and repository"}`
   (`NO_ACTIVE_GRANT`): no grant covering the repository was ever approved, or it ended or
   was revoked. Names are matched ignoring case.
@@ -1310,7 +1331,7 @@ last step is done.
 ### GitHub token grants (`"kind":"github_token"`)
 
 Asked for with `{"kind":"github_token","repositories":["example-owner/example-repo"]}` as
-`access` and a `window` of `1d`, `7d` or `30d`. `repositories` is one to 10 distinct
+`access` and a `window` of `1d`, `7d` or `30d` (`15m`, `30m` or `1h` with a sensitive extra). `repositories` is one to 10 distinct
 `owner/name` values (repeats are compared ignoring case); it is required, and a request
 without it is refused. The CLI's own requests for `git` and `gh` also set `automatic` (`by`:
 `git_credential` or `gh_wrapper`, and an optional `dir`), with exactly one repository, so that
@@ -1323,10 +1344,40 @@ when it is created:
 ```
 
 `permissions` is the grant's set, in the same written form as the token's; a grant from a
-broker before 0.15 leaves it out and means those four.
+broker before 0.15 leaves it out and means those four. A grant approved with extras also holds
+`extra_permissions`, the extras alone, in the same form and sorted: they are part of
+`permissions`, and let a client tell which were asked for. A client reads it leniently, as
+text for a name it does not know.
+
+**Extra permissions.** A request may add `"extra_permissions":"checks:read,actions:read"` to the
+`access`: a set of `name:level` pairs, in the written form of a grant's (sorted, each name once, with
+`metadata:read` as every set has, and more than that) and strict, so that a malformed or unknown name is a `400`. It cannot be combined with
+`automatic`. Only the owner's `extra_permissions` allowlist may be named, at the level
+listed or lower. The broker checks it when the request is made and again each time the approval page is
+shown, begun or finished, and the grant holds the owner's default plus these. Texts, all `400`
+unless noted, and fixed apart from the name:
+
+- `this broker does not allow that extra GitHub permission: ` and the permission
+  (`EXTRA_NOT_ALLOWED`), or `<name>:<level> (only <level> is allowed)` when a lower level
+  is listed.
+- `a GitHub token grant with a sensitive permission lasts 15m, 30m or 1h`
+  (`SENSITIVE_WINDOW`): the window of a request with a sensitive extra, which the owner also
+  cannot approve for longer. Any other request takes `1d`, `7d` or `30d`.
+- `409` `a request for these repositories with other permissions is pending; cancel it with
+  `warden request cancel <id>` or wait for it` (`OTHER_PERMISSIONS_PENDING`), followed by `: `
+  and the id of the pending request: an agent has one pending request for a set of
+  repositories, and asking again with other extras does not replace it. Asking with the same
+  extras returns the pending one, as before.
+
+An extra outside the owner's allowlist, a sensitive extra for a longer window and this `409`
+are each written to the audit log as `github_token_refused`, with no grant, the fixed text and
+a known permission name or the id above, never the request's own words.
+
+A renewal keeps the extras and, for a sensitive grant, a short window. If the allowlist no
+longer holds an extra, the renewal is made and the approval page says which, and cannot be approved.
 
 The request is refused with a `400` when the broker holds no GitHub App
-(`GitHub tokens are not configured on this broker`), and for a window outside the three.
+(`GitHub tokens are not configured on this broker`), and for a window outside the three (or, with a sensitive extra, outside the short ones).
 There is nothing to install and the grant id is not needed: `POST /v1/github-token` finds
 the agent's active grant for the named repository, read anew for each token. An agent may
 hold several grants at once, but two never cover the same repository: they overlap when they
@@ -1339,11 +1390,11 @@ mints nothing. Renewing a grant carries its repositories over, and the owner see
 
 A token covers one repository of the grant, with the grant's permissions: the owner's default
 when the request was made (`contents`, `pull_requests` and `issues` write and `metadata` read, unless
-the owner set another), which the approval page showed. A grant made before this setting existed holds those four.
-It cannot reach another repository
+the owner set another), which the approval page showed, plus the `extra_permissions` the request named (see below). A grant
+made before this setting existed holds those four. It cannot reach another repository
 the App is installed on, though GitHub still lets it open a new issue on a public repository
 the App is installed on, and to be assumed, open issues and comment on any public repository,
-installed or not. A client chooses the repository, never the permissions. Unlike the other kinds, this grant gives the agent a credential that outlives
+installed or not. A client chooses the repository, and may narrow the permissions, never widen them. Unlike the other kinds, this grant gives the agent a credential that outlives
 the grant: tokens last an hour, and revoking does not recall one. A client should keep the
 token only in memory or in a file only its user can read, mint another when less than 5
 minutes of it remain, and never log it. `warden` is a client of this:

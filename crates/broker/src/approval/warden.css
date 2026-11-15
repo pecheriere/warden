@@ -114,6 +114,15 @@ font-weight:700;font-size:15px;font-family:inherit;cursor:pointer}
 .live-list li{display:flex;flex-wrap:wrap;gap:0 14px;min-width:0;overflow-wrap:anywhere}
 .live-list .nowrap{white-space:nowrap}
 code.perm{white-space:nowrap}
+/* Extras: read dotted, write solid and bold. Sensitive wins: the danger colour, bold and underlined, never colour alone. */
+code.extra-read{text-decoration:underline dotted;text-underline-offset:3px}
+code.extra-write{font-weight:700;text-decoration:underline;text-underline-offset:3px}
+code.sensitive{color:var(--deny);font-weight:700;text-decoration:underline double;text-underline-offset:3px}
+.sensitive-note{margin:0;border:1.5px solid var(--deny);border-radius:10px;padding:8px 10px;font-size:14px}
+.sensitive-note strong{display:inline-flex;align-items:flex-start;gap:6px;color:var(--deny)}
+.sensitive-note strong svg{flex:none;margin-top:4px}
+.sensitive-note ul{margin:4px 0 0;padding-left:1.2em;display:flex;flex-direction:column;gap:4px}
+.cannot code{word-break:normal}
 .live-list code{color:var(--ink);word-break:normal;overflow-wrap:anywhere;min-width:0}
 /* Pending: a card per request, Approve and Deny the same size at every width. */
 .pending .meta{display:flex;flex-wrap:wrap;gap:6px 14px;color:var(--muted);font-size:14px}

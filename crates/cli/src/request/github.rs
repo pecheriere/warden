@@ -4,6 +4,7 @@
 use std::path::Path;
 
 use anyhow::{Context as _, Result, bail};
+use warden_broker_proto::github_permissions::PermissionSet;
 use warden_broker_proto::github_token::{AutomaticCaller, AutomaticRequest};
 use warden_broker_proto::release::RepoName;
 use warden_broker_proto::{
@@ -12,8 +13,9 @@ use warden_broker_proto::{
 };
 
 use super::{Pending, announce, not_granted, request_grant, resolve_context};
-use crate::client::{Client, fetch_info, require_scoped, scoped_or_refuse};
+use crate::client::{Client, fetch_info, require_permissions, require_scoped, scoped_or_refuse};
 use crate::config::Config;
+use crate::github_token;
 use crate::request_context::RequestContext;
 use crate::{EXIT_USAGE, Exit, client, local_time};
 
@@ -22,15 +24,21 @@ const SUBJECT: &str = "for a github token";
 
 pub(crate) async fn request_github(
     repositories: Vec<RepoName>,
-    window: Window,
+    window: Option<Window>,
+    extra_permissions: Option<PermissionSet>,
     goal: Goal,
     context: RequestContext,
 ) -> Result<()> {
-    let access = GithubTokenAccess::new(repositories.clone(), None)
+    let window = window.unwrap_or_else(|| default_window(extra_permissions.as_ref()));
+    let access = GithubTokenAccess::new(repositories.clone(), None, extra_permissions.clone())
         .map_err(|e| Exit::new(EXIT_USAGE, format!("{e}")))?;
     let (session, link) = resolve_context(context)?;
     let (config, client) = client()?;
-    require_scoped(&config.server).await?;
+    if extra_permissions.is_some() {
+        require_permissions(&config.server).await?;
+    } else {
+        require_scoped(&config.server).await?;
+    }
     if let Some(notice) = several_notice(repositories.len()) {
         eprintln!("{notice}");
     }
@@ -38,11 +46,26 @@ pub(crate) async fn request_github(
     let grant = request_grant(&config, &client, &req, SUBJECT, Pending::Same).await?;
     check_github_grant(&grant, &repositories)?;
     announce(&grant);
+    // Tokens minted before the approval were cut to the permissions the grant then
+    // had: they are not served in place of one that may hold more now.
+    if let Err(e) = github_token::discard_repositories(&repositories) {
+        eprintln!("warden: warning: cannot clear the cached GitHub tokens: {e:#}");
+    }
     println!(
         "git and gh get GitHub tokens under it until then. Set them up with `warden setup \
          github` if they are not yet set up."
     );
     Ok(())
+}
+
+/// The window of a request that names no `--for`: 30 days, which a sensitive extra
+/// permission does not allow, so 1 hour then.
+fn default_window(extras: Option<&PermissionSet>) -> Window {
+    if extras.is_some_and(|set| set.sensitive().next().is_some()) {
+        Window::H1
+    } else {
+        Window::GITHUB_TOKEN_DEFAULT
+    }
 }
 
 /// What is said when a request names more than one repository: the owner approves
@@ -120,8 +143,8 @@ fn tool_access(
 ) -> Result<GithubTokenAccess> {
     let dir = dir.and_then(Path::to_str).map(str::to_owned);
     let automatic = |dir| Some(AutomaticRequest { by: caller, dir });
-    GithubTokenAccess::new(vec![repository.clone()], automatic(dir))
-        .or_else(|_| GithubTokenAccess::new(vec![repository.clone()], automatic(None)))
+    GithubTokenAccess::new(vec![repository.clone()], automatic(dir), None)
+        .or_else(|_| GithubTokenAccess::new(vec![repository.clone()], automatic(None), None))
         .context("cannot build the GitHub token request")
 }
 

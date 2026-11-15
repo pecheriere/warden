@@ -491,7 +491,8 @@ fn check_policy(
     window: Window,
     relay: Option<&RelayEndpoint>,
 ) -> Result<(), String> {
-    view.destination.check_window(window)?;
+    view.destination
+        .check_request_window(window, &view.request.access)?;
     match (&view.request.access, &view.destination) {
         (Access::Ssh { user, .. }, Destination::Ssh(target)) => check_ssh(target, user, relay),
         (Access::Api { .. }, Destination::Api(policy)) => {

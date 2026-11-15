@@ -61,6 +61,7 @@ impl TestBroker {
                 GrantScope::Repositories(list) => list.iter().map(|r| r.name.clone()).collect(),
             },
             None,
+            None,
         )
         .expect("valid repositories");
         let request_id = self
@@ -76,6 +77,7 @@ impl TestBroker {
                 digest: policy.destination_digest(),
                 repositories: scope,
                 permissions: warden_broker_proto::github_permissions::GrantedPermissions::legacy(),
+                extra_permissions: None,
             }),
         };
         sqlx::query(
@@ -101,7 +103,7 @@ impl TestBroker {
     /// # Panics
     /// If the row cannot be written.
     pub async fn insert_legacy_github_request(&self, agent: &str) -> Id {
-        let access = GithubTokenAccess::new(Vec::new(), None).expect("valid access");
+        let access = GithubTokenAccess::new(Vec::new(), None, None).expect("valid access");
         self.insert_github_request_row(agent, access, "pending")
             .await
     }

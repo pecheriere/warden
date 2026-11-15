@@ -460,6 +460,11 @@ pub struct InfoResponse {
     /// older than that, which a newer CLI must not send repositories to.
     #[serde(default)]
     pub scoped_github_tokens: bool,
+    /// Whether GitHub token requests may name extra permissions and a mint may
+    /// narrow them. `false` from brokers older than that, which refuse a body that
+    /// names either.
+    #[serde(default)]
+    pub github_token_permissions: bool,
 }
 
 /// Error body returned by the API.

@@ -345,6 +345,35 @@ fn page_says_which_permissions_the_app_lacks() {
 }
 
 #[test]
+fn page_says_which_extras_the_allowlist_no_longer_holds() {
+    let mut view = permissions_view(with_checks(), InstallationCheck::Holds);
+    view.github.as_mut().unwrap().not_allowed = vec![
+        "actions:read".parse::<Permission>().unwrap(),
+        "checks:read".parse::<Permission>().unwrap(),
+    ];
+    let html = page(&view);
+    assert!(
+        html.contains(
+            "This request cannot be approved: this broker does not allow these extra GitHub \
+             permissions: <code>actions:read</code>, <code>checks:read</code>."
+        ),
+        "{html}"
+    );
+    // One permission is "that permission", and its level is named.
+    view.github.as_mut().unwrap().not_allowed = vec!["checks:write".parse().unwrap()];
+    let html = page(&view);
+    assert!(
+        html.contains(
+            "This request cannot be approved: this broker does not allow that extra GitHub \
+             permission: <code>checks:write</code>."
+        ),
+        "{html}"
+    );
+    assert!(!html.contains(r#"id="approve""#), "{html}");
+    assert!(html.contains(r#"id="deny""#), "{html}");
+}
+
+#[test]
 fn page_says_when_installation_unreadable() {
     let html = page(&permissions_view(
         with_checks(),
@@ -370,6 +399,7 @@ fn legacy_request_never_says_unreadable() {
             resolution: crate::requests::Resolution::Resolved(Vec::new()),
             replaces: Vec::new(),
             permissions: StoredPermissions::legacy(),
+            not_allowed: Vec::new(),
             installation: InstallationCheck::Unreadable,
         }),
     );

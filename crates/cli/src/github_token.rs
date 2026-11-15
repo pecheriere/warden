@@ -32,8 +32,8 @@ use crate::{EXIT_ERROR, EXIT_NO_GRANT, Exit, request, unix_now};
 
 mod cache;
 
-pub use cache::discard;
 use cache::{Cache, Entry};
+pub use cache::{discard, discard_repositories};
 
 /// A cached token is served only while it has at least this long left, in seconds.
 pub const MIN_REMAINING_SECS: i64 = 300;

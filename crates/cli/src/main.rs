@@ -283,9 +283,10 @@ async fn run_request(kind: RequestKind) -> Result<()> {
         RequestKind::Github {
             repositories,
             window,
+            extra_permissions,
             goal,
             context,
-        } => request_github(repositories, window, goal, context).await,
+        } => request_github(repositories, window, extra_permissions, goal, context).await,
         RequestKind::Release {
             repository,
             tag,
