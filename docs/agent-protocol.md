@@ -851,8 +851,8 @@ holds decisions and grants. The broker's own log notes that an agent listed offe
 - `github.default_permissions` and `github.extra_permissions` are the owner's default set and
   the permissions an agent may ask for beyond it, in the written form of a grant's and read
   leniently by a client (an unknown name is text). Both are left out when no GitHub App is
-  configured, and when the owner's fields cannot be read, which marks `github` unavailable; `extra_permissions` is also left out when the
-  owner listed none beyond `metadata`. The CLI shows a sensitive extra marked.
+  configured, and when the owner's fields cannot be read, which marks `github` unavailable;
+  `extra_permissions` is also left out when the owner listed none beyond `metadata`. The CLI shows a sensitive extra marked.
 - `github.max_window` is present only when a GitHub App is configured. No repository is
   named: the broker does not list the repositories it covers.
 - A part the broker could not read is named in `unavailable` and the rest stands. Only

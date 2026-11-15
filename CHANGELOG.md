@@ -14,7 +14,10 @@ All notable changes to this project are recorded here. The format follows
   sensitive in red) and offers only short windows for a sensitive one. A grant holding a
   sensitive extra lasts 1 hour at most (the request defaults to `1h`), and a renewal keeps
   the extras. `warden status` and the grants page list them, and a token can be minted with
-  fewer permissions than its grant holds.
+  fewer permissions than its grant holds. `workflows:read` and `write` on
+  `organization_copilot_requests`, `organization_events` and `organization_plan` are now
+  refused in `default_permissions`, `extra_permissions` and requests, because GitHub has no
+  such level.
   ([#282](https://github.com/pecheriere/warden/issues/282))
 
 ### Changed

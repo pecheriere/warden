@@ -206,6 +206,47 @@ async fn a_stored_grant_with_a_sensitive_permission_for_longer_than_1h_does_not_
 }
 
 #[tokio::test]
+async fn a_stored_grant_whose_not_after_column_alone_was_pushed_out_does_not_mint() {
+    let (broker, key, upstream) = configured_on_fake().await;
+    allow(&broker, LEGACY, "workflows:write");
+    approve_with_extras(
+        &broker,
+        &upstream,
+        Window::H1,
+        "workflows:write",
+        &[("workflows", "write")],
+    )
+    .await;
+    upstream.script_github_token(answer(
+        &broker,
+        &[("contents", "write"), ("workflows", "write")],
+    ));
+    let resp = mint_with(&broker, &key, json!({"repository": REPO})).await;
+    assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
+    let refusals = entries(&broker, "github_token_refused").len();
+    // Only the column that decides whether the grant is active, by a week.
+    sqlx::query("UPDATE grants SET not_after = not_after + ?")
+        .bind(7 * 24 * 3600_i64)
+        .execute(&broker.state().pool)
+        .await
+        .unwrap();
+    let calls = upstream.received().len();
+    let resp = mint_with(&broker, &key, json!({"repository": REPO})).await;
+    assert_eq!(resp.status, StatusCode::FORBIDDEN, "{}", resp.body);
+    assert!(resp.body.contains("sensitive permission"), "{}", resp.body);
+    assert_eq!(upstream.received().len(), calls, "GitHub was not asked");
+    let refused = entries(&broker, "github_token_refused");
+    assert_eq!(refused.len(), refusals + 1, "{refused:?}");
+    assert!(
+        refused.last().unwrap()["reason"]
+            .as_str()
+            .unwrap()
+            .contains("sensitive permission"),
+        "{refused:?}"
+    );
+}
+
+#[tokio::test]
 async fn info_says_github_token_permissions() {
     let broker = TestBroker::new().await;
     let resp = broker

@@ -215,14 +215,14 @@ pub(super) async fn end_renewed(
 impl Requests {
     /// `agent`'s active grants of `kind`, longest lasting first: not revoked and not
     /// past their end, as read by every use of a grant and every replacement of one.
-    /// Rows of `id`, `not_after` and `view`.
+    /// Rows of `id`, `not_before`, `not_after`, `window_secs` and `view`.
     pub(super) async fn active_rows(
         &self,
         agent: &AgentName,
         kind: &str,
     ) -> Result<Vec<SqliteRow>, RequestError> {
         Ok(sqlx::query(
-            "SELECT id, not_after, window_secs, view FROM grants \
+            "SELECT id, not_before, not_after, window_secs, view FROM grants \
              WHERE agent = ?1 AND revoked_at IS NULL AND not_after > ?2 \
              AND json_extract(view, '$.access.kind') = ?3 \
              ORDER BY not_after DESC, id",

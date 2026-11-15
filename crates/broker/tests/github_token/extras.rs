@@ -113,7 +113,7 @@ async fn extra_outside_allowlist_refused() {
     let (status, body) = post(&broker, &key, &with_extras(Window::D7, "checks:read")).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert!(
-        body.contains(&format!("{EXTRA_NOT_ALLOWED}checks")),
+        body.contains(&format!("{EXTRA_NOT_ALLOWED}checks:read")),
         "{body}"
     );
     assert!(broker.capture.rung().is_empty(), "nobody is rung");
@@ -123,7 +123,7 @@ async fn extra_outside_allowlist_refused() {
     assert_eq!(refused.len(), 1, "{refused:?}");
     assert_eq!(
         refused[0]["reason"],
-        format!("{EXTRA_NOT_ALLOWED}checks"),
+        format!("{EXTRA_NOT_ALLOWED}checks:read"),
         "{refused:?}"
     );
 }
@@ -135,7 +135,7 @@ async fn extra_not_in_allowlist_refused_before_prompt() {
     let (status, body) = post(&broker, &key, &with_extras(Window::H1, "workflows:write")).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert!(
-        body.contains(&format!("{EXTRA_NOT_ALLOWED}workflows")),
+        body.contains(&format!("{EXTRA_NOT_ALLOWED}workflows:write")),
         "{body}"
     );
     assert!(broker.capture.rung().is_empty(), "nobody is rung");

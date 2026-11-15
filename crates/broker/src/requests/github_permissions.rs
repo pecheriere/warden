@@ -77,7 +77,7 @@ pub(super) fn not_allowed_text(refused: &Permission, policy: &GithubPermissionPo
             "{EXTRA_NOT_ALLOWED}{refused} (only {} is allowed)",
             held.level()
         ),
-        None => format!("{EXTRA_NOT_ALLOWED}{}", refused.name()),
+        None => format!("{EXTRA_NOT_ALLOWED}{refused}"),
     }
 }
 
@@ -451,7 +451,7 @@ mod tests {
         );
         assert_eq!(
             not_allowed_text(&"workflows:write".parse().unwrap(), &owner),
-            format!("{EXTRA_NOT_ALLOWED}workflows")
+            format!("{EXTRA_NOT_ALLOWED}workflows:write")
         );
     }
 

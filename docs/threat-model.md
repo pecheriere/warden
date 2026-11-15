@@ -1093,8 +1093,10 @@ What an attacker gets, and what stops it:
   that is live: one holding a non-sensitive extra keeps minting for up to 30 days, and the
   owner revokes it. A token minted at the end of a grant lives up to an hour more, so
   access to a sensitive extra can last about 2 hours after approval (1 hour of grant and
-  1 hour of the last token). The broker refuses to mint from a grant that holds a sensitive
-  permission for longer than 1 hour, and audits it, in case a stored grant was changed.
+  1 hour of the last token). At each mint the broker reads the stored `window_secs`,
+  `not_before` and `not_after` of the grant, and the same bounds in its stored view, and refuses, with an audit entry, when a
+  grant that holds a sensitive permission spans more than 1 hour by any of them, in case a stored
+  row was changed. It does not check anything else about the row.
   Refused requests for an extra outside the allowlist, a sensitive extra for a long window
   and a second set of extras are in the audit log as `github_token_refused`. The approval is
   refused when the installation does not hold the set, which the broker reads at each view,

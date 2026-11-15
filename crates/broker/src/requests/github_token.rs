@@ -25,8 +25,9 @@ pub struct ActiveGithubToken {
     pub grant: GithubTokenGrant,
     /// The repository asked for, as the grant stores it.
     pub repository: GrantRepository,
-    /// How long the grant lasts, in seconds: the longer of what its row and its
-    /// view say, so that a row changed since approval cannot shorten it.
+    /// How long the grant lasts, in seconds: the longest that its `window_secs`,
+    /// `not_before` and `not_after` columns and its view say, so that a row changed
+    /// since approval in any one of them cannot shorten it.
     pub window_secs: u64,
 }
 
@@ -150,13 +151,25 @@ impl Requests {
         for row in self.active_rows(agent, "github_token").await? {
             let view: String = row.try_get("view")?;
             let view = super::stored_view(&view)?;
-            let column: i64 = row.try_get("window_secs")?;
-            let window_secs = view
-                .not_after
-                .saturating_sub(view.not_before)
-                .max(column)
-                .max(0)
-                .unsigned_abs();
+            // The longest any of the stored bounds says: the row's window, its
+            // `not_before` and `not_after` columns (which decide whether the grant
+            // is active), and the view's, so that a row changed since approval in
+            // any one of them cannot shorten what the recheck at mint measures.
+            let window: i64 = row.try_get("window_secs")?;
+            let not_before: i64 = row.try_get("not_before")?;
+            let not_after: i64 = row.try_get("not_after")?;
+            let window_secs = [
+                window,
+                not_after.saturating_sub(not_before),
+                view.not_after.saturating_sub(view.not_before),
+                not_after.saturating_sub(view.not_before),
+                view.not_after.saturating_sub(not_before),
+            ]
+            .into_iter()
+            .max()
+            .unwrap_or(0)
+            .max(0)
+            .unsigned_abs();
             let GrantAccess::GithubToken(grant) = view.access else {
                 return Err(RequestError::Corrupt(
                     "GitHub token grant changed kind".to_owned(),
