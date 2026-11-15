@@ -216,6 +216,11 @@ async fn a_passkey_stays_when_the_audit_log_cannot_be_opened() {
     std::fs::write(server.path("audit.log"), "not an audit line\n").unwrap();
     let output = server.run(&["passkey", "remove", "passkey-1"]);
     assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("opening audit log"),
+        "{}",
+        stderr(&output)
+    );
     let listed = stdout(&server.succeeds(&["passkey", "list"]));
     assert!(listed.contains("passkey-1"), "{listed}");
 }

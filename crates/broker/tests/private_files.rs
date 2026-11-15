@@ -5,8 +5,8 @@ use std::fs::{self, Permissions};
 use std::os::unix::fs::{PermissionsExt as _, symlink};
 use std::path::Path;
 
-use warden_broker::audit::{self, AuditLog};
-use warden_broker::private_files::{DirectoryState, tighten_data_directory};
+use warden_broker::audit::{self, AuditError, AuditLog};
+use warden_broker::private_files::{DirectoryState, PrivateFileError, tighten_data_directory};
 use warden_broker::store;
 
 fn mode(path: &Path) -> u32 {
@@ -90,7 +90,13 @@ async fn a_symbolic_link_for_the_audit_log_is_refused_and_its_target_untouched()
     fs::set_permissions(&target, Permissions::from_mode(0o644)).unwrap();
     let link = dir.path().join("audit.jsonl");
     symlink(&target, &link).unwrap();
-    assert!(AuditLog::open(&link).await.is_err());
+    let Err(err) = AuditLog::open(&link).await else {
+        panic!("a symbolic link was opened as the audit log");
+    };
+    assert!(
+        matches!(&err, AuditError::Private(PrivateFileError::SymbolicLink { path }) if path == &link),
+        "{err:?}"
+    );
     assert_eq!(mode(&target), 0o644);
 }
 

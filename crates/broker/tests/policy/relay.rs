@@ -286,6 +286,21 @@ async fn relay_target_and_credential_come_from_one_read() {
     assert_eq!(item_fetches, 1);
 }
 
+/// Contract: the fake refuses a relay target with no credential, as the real backend
+/// does (`relay_item_needs_exactly_one_credential`), so tests built on the fake cannot
+/// start a relay the real backend would refuse.
+#[tokio::test]
+async fn fake_backend_refuses_a_relay_target_without_a_credential() {
+    use warden_broker::testkit::FakeBackend;
+    let fake = FakeBackend::new();
+    fake.set_target(FakeBackend::relay_target());
+    let err = fake
+        .relay_target_with_credential(&target("nas"))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PolicyError::Invalid { .. }), "{err:?}");
+}
+
 #[test]
 fn ssh_destination_digest_binds_the_mode() {
     use warden_broker::testkit::FakeBackend;

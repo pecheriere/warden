@@ -69,13 +69,21 @@ async fn per_agent_limit_refuses_excess() {
     // The agent's first call holds its only place until the upstream answers.
     // Meanwhile its second call is refused, and another agent is not held up
     // by the first one's calls.
-    let (held, (excess, theirs)) = tokio::join!(get(&s, "/held"), async {
+    // A held call that ends early was wrongly refused: fail with its status rather
+    // than waiting out `reached`.
+    let mut held = Box::pin(get(&s, "/held"));
+    let others = async {
         reached(&s, "/held", 1).await;
         let excess = get(&s, "/v1/hello").await;
         let theirs = call_as(&s.broker, &other_key, &other_grant, "GET", &url, None).await;
         s.upstream.release_held();
         (excess, theirs)
-    });
+    };
+    let (excess, theirs) = tokio::select! {
+        resp = &mut held => panic!("the held call ended early: {} {}", resp.status, resp.body),
+        done = others => done,
+    };
+    let held = held.await;
     assert_eq!(
         excess.status,
         StatusCode::TOO_MANY_REQUESTS,
@@ -104,12 +112,22 @@ async fn overall_limit_refuses_excess() {
     };
     // Two agents' calls take both places until the upstream answers; a third
     // agent, under its own limit, is refused meanwhile.
-    let (a, b, c) = tokio::join!(call(0, "/held"), call(1, "/held"), async {
+    // A held call that ends early was wrongly refused: fail with its status rather
+    // than waiting out `reached`.
+    let mut a = Box::pin(call(0, "/held"));
+    let mut b = Box::pin(call(1, "/held"));
+    let third = async {
         reached(s, "/held", 2).await;
         let refused = call(2, "/v1/hello").await;
         s.upstream.release_held();
         refused
-    });
+    };
+    let c = tokio::select! {
+        resp = &mut a => panic!("the first held call ended early: {} {}", resp.status, resp.body),
+        resp = &mut b => panic!("the second held call ended early: {} {}", resp.status, resp.body),
+        refused = third => refused,
+    };
+    let (a, b) = (a.await, b.await);
     assert_eq!(c.status, StatusCode::TOO_MANY_REQUESTS, "{}", c.body);
     assert_refusals(s, &[a, b, c], 1);
 }

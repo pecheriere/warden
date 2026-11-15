@@ -244,6 +244,43 @@ async fn an_unreadable_commit_signing_key_fails_the_release_keys_closed() {
 }
 
 #[tokio::test]
+async fn an_unreadable_ssh_ca_fails_the_release_keys_closed() {
+    let server = connect_mock().await;
+    let mut list = summaries("warden:release-signing", &["rs1"]);
+    list.as_array_mut().unwrap().extend(
+        summaries("warden:ssh-ca", &["ca1"])
+            .as_array()
+            .unwrap()
+            .clone(),
+    );
+    mount_items(&server, &list).await;
+    mount_item(
+        &server,
+        "rs1",
+        &signing_item("rs1", "example-owner/one", &ed25519_openssh()),
+    )
+    .await;
+    mount_item(
+        &server,
+        "ca1",
+        &json!({
+            "id": "ca1", "title": "ssh-ca", "vault": {"id": VAULT_ID},
+            "tags": ["warden:ssh-ca"],
+            "fields": [{"id": "private_key", "type": "CONCEALED", "label": "private key", "value": "not a key"}]
+        }),
+    )
+    .await;
+    let err = backend(&server)
+        .release_signing(&repo("example-owner/one"))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, PolicyError::ReleaseKey(r) if r.contains("SSH CA")),
+        "{err:?}"
+    );
+}
+
+#[tokio::test]
 async fn the_probe_passes_with_no_items() {
     let server = connect_mock().await;
     mount_items(&server, &json!([])).await;
