@@ -147,36 +147,70 @@ impl SshAliases {
     }
 }
 
-/// What a config file that routes through warden declares.
-pub(super) struct WardenShape<'a> {
-    /// Every `IdentityAgent` value, unquoted and unexpanded.
-    pub agents: Vec<&'a str>,
-    /// The literal `Host` names, lowercased.
-    pub hosts: Vec<String>,
+/// One `Host` block of a file read by [`warden_hosts`].
+struct HostBlock {
+    /// The block's literal `Host` names, lowercased.
+    names: Vec<String>,
+    /// Whether the block has an `IdentityAgent`.
+    has_agent: bool,
 }
 
-/// The agents and host names of `text`, or `None` when it uses anything
-/// warden's own file never does: `Include`, `Match`, `ProxyCommand`,
-/// `ProxyJump`, or an `IdentityFile` other than `none`.
-pub(super) fn warden_shape(text: &str) -> Option<WardenShape<'_>> {
-    let mut shape = WardenShape {
-        agents: Vec::new(),
-        hosts: Vec::new(),
-    };
+/// The literal `Host` names of `text`, or `None` unless it has the shape
+/// warden's own file has. It is refused when:
+///
+/// - it uses `Include`, `Match`, `ProxyCommand`, `ProxyJump`,
+///   `PKCS11Provider`, `SecurityKeyProvider` or `CertificateFile`, or an
+///   `IdentityFile` other than `none`;
+/// - a `Host` line has no name or a pattern (`*`, `?`, `!`);
+/// - an option comes before the first `Host` line;
+/// - a `Host` block has no `IdentityAgent`, or one for which `is_socket`
+///   is false (one block that goes around warden refuses the whole file,
+///   because `ssh` falls back to the environment's agent there);
+/// - it has no `Host` block.
+pub(super) fn warden_hosts(text: &str, is_socket: &dyn Fn(&str) -> bool) -> Option<Vec<String>> {
+    let mut hosts = Vec::new();
+    let mut current: Option<HostBlock> = None;
     for (keyword, value) in text.lines().filter_map(split_line) {
         match keyword.as_str() {
-            "include" | "match" | "proxycommand" | "proxyjump" => return None,
+            "include"
+            | "match"
+            | "proxycommand"
+            | "proxyjump"
+            | "pkcs11provider"
+            | "securitykeyprovider"
+            | "certificatefile" => return None,
             "identityfile" if !unquote(value).eq_ignore_ascii_case("none") => return None,
-            "identityagent" => shape.agents.push(unquote(value)),
-            "host" => shape.hosts.extend(
-                value
-                    .split_whitespace()
-                    .map(unquote)
-                    .filter(|p| is_literal(p))
-                    .map(str::to_ascii_lowercase),
-            ),
-            _ => {}
+            "host" => {
+                if let Some(done) = current.take() {
+                    if !done.has_agent {
+                        return None;
+                    }
+                    hosts.extend(done.names);
+                }
+                let patterns: Vec<&str> = value.split_whitespace().map(unquote).collect();
+                if patterns.is_empty() || !patterns.iter().all(|p| is_literal(p)) {
+                    return None;
+                }
+                current = Some(HostBlock {
+                    names: patterns.iter().map(|p| p.to_ascii_lowercase()).collect(),
+                    has_agent: false,
+                });
+            }
+            _ => {
+                let block = current.as_mut()?;
+                if keyword == "identityagent" {
+                    if !is_socket(unquote(value)) {
+                        return None;
+                    }
+                    block.has_agent = true;
+                }
+            }
         }
     }
-    Some(shape)
+    let last = current?;
+    if !last.has_agent {
+        return None;
+    }
+    hosts.extend(last.names);
+    Some(hosts)
 }

@@ -107,6 +107,7 @@ fn parse(input: &str, depth: u8, shell_nesting: u8) -> Vec<SimpleCommand> {
         redirect_target: false,
         nested: Vec::new(),
         heredocs: Vec::new(),
+        paren_close: None,
     };
     scanner.run();
     scanner.out
@@ -119,6 +120,10 @@ struct Heredoc {
 
 struct Scanner {
     chars: Vec<char>,
+    /// For each `(` outside quotes, the index of the `)` that closes it
+    /// (`usize::MAX` when none does); built once, on the first `((` at the
+    /// start of a command, so that scanning for `))` stays linear.
+    paren_close: Option<Vec<usize>>,
     pos: usize,
     depth: u8,
     /// 1 inside a `bash -c` string, which is not recursed into again.
@@ -197,9 +202,40 @@ impl Scanner {
 
     /// The index of the final `)` of an `((…))` whose second `(` is next, if
     /// it is closed by `))`.
-    fn arithmetic_end(&self) -> Option<usize> {
-        let end = self.matching_paren(self.pos);
-        (end < self.chars.len() && self.chars.get(end.checked_sub(1)?) == Some(&')')).then_some(end)
+    fn arithmetic_end(&mut self) -> Option<usize> {
+        let first = self.pos.checked_sub(1)?;
+        let end = *self.paren_closes().get(first)?;
+        (end != usize::MAX && self.chars.get(end.checked_sub(1)?) == Some(&')')).then_some(end)
+    }
+
+    /// The closing `)` of every `(`, found in one forward pass. Quotes and
+    /// backslashes hide parentheses the way [`Self::matching_paren`] reads
+    /// them.
+    fn paren_closes(&mut self) -> &[usize] {
+        if self.paren_close.is_none() {
+            let mut close = vec![usize::MAX; self.chars.len()];
+            let mut open = Vec::new();
+            let mut i = 0;
+            while let Some(&c) = self.chars.get(i) {
+                match c {
+                    '\\' => i += 1,
+                    '\'' => i = self.skip_quote(i, '\''),
+                    '"' => i = self.skip_quote(i, '"'),
+                    '(' => open.push(i),
+                    ')' => {
+                        if let Some(at) = open.pop()
+                            && let Some(slot) = close.get_mut(at)
+                        {
+                            *slot = i;
+                        }
+                    }
+                    _ => {}
+                }
+                i += 1;
+            }
+            self.paren_close = Some(close);
+        }
+        self.paren_close.as_deref().unwrap_or_default()
     }
 
     fn word_char(&mut self, c: char) {

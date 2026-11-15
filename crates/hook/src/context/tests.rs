@@ -31,7 +31,6 @@ fn coverage() -> Coverage {
                 origin: None,
             },
         ],
-        github: true,
     }
 }
 
@@ -45,7 +44,6 @@ fn context(files: &[(&str, &str)]) -> Context {
         aliases: SshAliases::default(),
         warden_socket_dir: PathBuf::from("/tmp/warden-501"),
         read_small_file: Box::new(move |p: &Path| files.get(p).cloned()),
-        github_helper: None,
     }
 }
 
@@ -323,6 +321,61 @@ fn warden_ssh_config_refuses_other_shapes() {
     assert!(!ctx.is_warden_ssh_config("/c/pattern", "a"));
     assert!(!ctx.is_warden_ssh_config("/c/pattern", "*"));
     assert!(!ctx.is_warden_ssh_config("/c/ok", "other-host"));
+}
+
+const AGENT: &str = " IdentityAgent /tmp/warden-501/a.sock\n IdentityFile none\n";
+
+#[test]
+fn warden_ssh_config_refuses_a_block_without_warden_agent() {
+    let mixed =
+        format!("Host switch-01\n{AGENT}Host other\n HostName switch-01.example.internal\n");
+    let ctx = context(&[("/c/mixed", &mixed)]);
+    assert!(!ctx.is_warden_ssh_config("/c/mixed", "other"));
+    assert!(!ctx.is_warden_ssh_config("/c/mixed", "switch-01"));
+}
+
+#[test]
+fn warden_ssh_config_refuses_each_keyword_and_shape() {
+    let cases = [
+        (
+            "pkcs11",
+            format!("Host a\n{AGENT} PKCS11Provider /lib/x.so\n"),
+        ),
+        (
+            "securitykey",
+            format!("Host a\n{AGENT} SecurityKeyProvider internal\n"),
+        ),
+        (
+            "certificate",
+            format!("Host a\n{AGENT} CertificateFile ~/.ssh/id-cert.pub\n"),
+        ),
+        ("option-first", format!("User root\nHost a\n{AGENT}")),
+        ("negated", format!("Host a !b\n{AGENT}")),
+        ("question", format!("Host a?\n{AGENT}")),
+        ("star-second", format!("Host a\n{AGENT}Host *\n{AGENT}")),
+        ("empty-host", format!("Host\n{AGENT}")),
+        ("no-host", format!("# only a comment\n")),
+        (
+            "not-warden-agent",
+            "Host a\n IdentityAgent ~/pw/agent.sock\n".to_owned(),
+        ),
+        (
+            "last-block-bare",
+            format!("Host a\n{AGENT}Host b\n HostName x\n"),
+        ),
+    ];
+    for (name, text) in &cases {
+        let ctx = context(&[("/c/f", text)]);
+        assert!(!ctx.is_warden_ssh_config("/c/f", "a"), "{name}");
+    }
+}
+
+#[test]
+fn warden_ssh_config_allows_leading_comments() {
+    let text = format!("# warden\n\nHost a\n{AGENT}Host b\n{AGENT}");
+    let ctx = context(&[("/c/f", &text)]);
+    assert!(ctx.is_warden_ssh_config("/c/f", "a"));
+    assert!(ctx.is_warden_ssh_config("/c/f", "b"));
 }
 
 #[test]

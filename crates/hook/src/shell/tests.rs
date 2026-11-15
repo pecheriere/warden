@@ -361,3 +361,23 @@ fn every_short_string_over_shell_characters_is_handled() {
         let _ = simple_commands(input);
     }
 }
+
+#[test]
+fn arithmetic_commands_are_still_skipped() {
+    let cmds = simple_commands("((i = 1 + 2)); ssh pi");
+    assert_eq!(cmds.len(), 1);
+    assert_eq!(cmds[0].argv, v(&["ssh", "pi"]));
+    assert!(!simple_commands("((x) ssh pi").is_empty());
+}
+
+#[test]
+fn long_runs_of_parentheses_return() {
+    // No timing assertion: the scan is one forward pass, and a quadratic
+    // one would make this test visibly slow rather than fail it.
+    let open = "(".repeat(64 * 1024);
+    let _ = simple_commands(&open);
+    let pairs = "(( ".repeat(21_845);
+    let _ = simple_commands(&pairs);
+    let mixed = "((".repeat(32 * 1024);
+    let _ = simple_commands(&mixed);
+}

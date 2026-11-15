@@ -10,7 +10,7 @@ use warden_broker_proto::offers::Offers;
 
 pub use self::ssh_config::{IncludeReader, SshAliases};
 
-use self::ssh_config::warden_shape;
+use self::ssh_config::warden_hosts;
 
 /// Reads a small file as text: `None` when the file is missing,
 /// unreadable, not text or larger than 64 KiB (the caller enforces the cap).
@@ -25,8 +25,6 @@ pub struct Coverage {
     pub ssh: Vec<SshCover>,
     /// The API secrets warden offers.
     pub api: Vec<ApiCover>,
-    /// Whether warden offers GitHub tokens.
-    pub github: bool,
 }
 
 /// One SSH target warden offers.
@@ -69,7 +67,6 @@ impl From<&Offers> for Coverage {
                     origin: s.origin.clone(),
                 })
                 .collect(),
-            github: offers.github.configured,
         }
     }
 }
@@ -129,9 +126,6 @@ pub struct Context {
     pub warden_socket_dir: PathBuf,
     /// Reads a small file as text; the 64 KiB cap is the reader's job.
     pub read_small_file: Box<FileReader>,
-    /// Whether the checkout's git config names `warden git-credential`;
-    /// `None` outside a checkout.
-    pub github_helper: Option<bool>,
 }
 
 impl Context {
@@ -169,25 +163,21 @@ impl Context {
     }
 
     /// Whether `file` is an SSH config of the shape `warden ssh-config`
-    /// writes, for `host`: it reads; it has no `Include`, `Match`,
-    /// `ProxyCommand` or `ProxyJump`; every `IdentityFile` is `none`; it names
-    /// at least one `IdentityAgent`, all of them warden sockets; and `host`
-    /// (case-insensitive) is one of its literal `Host` names.
+    /// writes, for `host`: it reads; every literal `Host` block has its own
+    /// `IdentityAgent`, a warden socket, and no `IdentityFile` but `none`;
+    /// it has no pattern `Host`, `Include`, `Match`, `ProxyCommand`,
+    /// `ProxyJump`, `PKCS11Provider`, `SecurityKeyProvider`,
+    /// `CertificateFile` or option before the first `Host`; and `host`
+    /// (case-insensitive) is one of its `Host` names. One block that goes
+    /// around warden refuses the whole file.
     #[must_use]
     pub fn is_warden_ssh_config(&self, file: &str, host: &str) -> bool {
         let Some(text) = (self.read_small_file)(Path::new(file)) else {
             return false;
         };
-        let Some(shape) = warden_shape(&text) else {
-            return false;
-        };
         let host = host.to_ascii_lowercase();
-        !shape.agents.is_empty()
-            && shape
-                .agents
-                .iter()
-                .all(|agent| self.is_warden_socket(agent))
-            && shape.hosts.contains(&host)
+        warden_hosts(&text, &|agent| self.is_warden_socket(agent))
+            .is_some_and(|hosts| hosts.contains(&host))
     }
 }
 
