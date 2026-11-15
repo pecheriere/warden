@@ -220,6 +220,125 @@ fn effective_argv_leaves_other_commands_alone() {
     assert_eq!(effective_argv(&cmd(&["sudo", "-n"])), &[] as &[String]);
 }
 
+fn has(input: &str, words: &[&str]) -> bool {
+    argvs(input).contains(&v(words))
+}
+
+#[test]
+fn reserved_words_do_not_hide_the_command() {
+    for input in [
+        "{ ssh pi; }",
+        "for h in a b; do ssh pi; done",
+        "if ssh pi true; then ls; fi",
+        "! ssh pi",
+        "while ssh pi true; do :; done",
+        "until ssh pi; do :; done",
+        "if a; then b; elif ssh pi; then c; else ssh pi; fi",
+        "f() { ssh pi; }",
+        "case x in a) ssh pi;; esac",
+        "select h in a b; do ssh pi; done",
+    ] {
+        assert!(
+            argvs(input)
+                .iter()
+                .any(|a| a.first().is_some_and(|w| w == "ssh")),
+            "{input}: {:?}",
+            argvs(input)
+        );
+    }
+    assert!(has(
+        "for h in a b; do ssh $h uptime; done",
+        &["ssh", "$h", "uptime"]
+    ));
+    assert!(has("if ssh pi true; then ls; fi", &["ssh", "pi", "true"]));
+    assert!(has("f() { ssh pi; }", &["ssh", "pi"]));
+    assert!(has("case x in a) ssh pi;; esac", &["ssh", "pi"]));
+}
+
+#[test]
+fn control_flow_headers_are_not_commands() {
+    assert_eq!(argvs("for h in a b; do ls; done"), vec![v(&["ls"])]);
+    assert_eq!(argvs("f() { ls; }"), vec![v(&["ls"])]);
+    assert_eq!(argvs("function f { ssh pi; }"), vec![v(&["ssh", "pi"])]);
+}
+
+#[test]
+fn quoted_reserved_words_are_words() {
+    assert_eq!(argvs("'!' ssh"), vec![v(&["!", "ssh"])]);
+}
+
+#[test]
+fn eval_recurses_once() {
+    assert!(has("eval \"ssh pi\"", &["ssh", "pi"]));
+    assert!(has("eval ssh pi", &["ssh", "pi"]));
+    assert!(has("sudo eval ssh pi", &["ssh", "pi"]));
+    assert_eq!(argvs("eval \"eval 'ssh pi'\"").len(), 2, "no second level");
+}
+
+#[test]
+fn arithmetic_command_is_skipped() {
+    assert_eq!(
+        argvs("(( y = 1 << 2 ))\nssh pi uptime"),
+        vec![v(&["ssh", "pi", "uptime"])]
+    );
+    assert_eq!(
+        argvs("((cd d); ssh pi)"),
+        vec![v(&["cd", "d"]), v(&["ssh", "pi"])]
+    );
+    let _ = argvs("((");
+    let _ = argvs("(((");
+}
+
+#[test]
+fn shell_options_before_c_are_scanned() {
+    assert!(has("bash -o pipefail -c 'ssh pi'", &["ssh", "pi"]));
+    assert!(has("bash +x -c 'ssh pi'", &["ssh", "pi"]));
+    assert!(has("bash +o errexit -c 'ssh pi'", &["ssh", "pi"]));
+    assert!(has("bash -e -x -c 'ssh pi'", &["ssh", "pi"]));
+    assert!(has("sh -ec 'ssh pi'", &["ssh", "pi"]));
+    assert!(has("bash -lc 'ssh pi'", &["ssh", "pi"]));
+    assert_eq!(argvs("bash script.sh -c 'ssh pi'").len(), 1);
+}
+
+#[test]
+fn wrapper_option_values_are_skipped() {
+    for (input, expected) in [
+        ("sudo --user root ssh pi", true),
+        ("sudo -u root ssh pi", true),
+        ("sudo --group wheel --chdir /x ssh pi", true),
+        ("exec -a name ssh pi", true),
+        ("env -u X ssh pi", true),
+        ("env -C /x ssh pi", true),
+        ("time -f %e ssh pi", true),
+        ("time -o out ssh pi", true),
+        ("sudo -u root", false),
+    ] {
+        let c = simple_commands(input).remove(0);
+        assert_eq!(
+            effective_argv(&c) == v(&["ssh", "pi"]).as_slice(),
+            expected,
+            "{input}"
+        );
+    }
+}
+
+#[test]
+fn env_split_string_recurses() {
+    assert!(has("env -S 'ssh pi'", &["ssh", "pi"]));
+    assert!(has("env --split-string 'ssh pi'", &["ssh", "pi"]));
+    assert!(has("env --split-string='ssh pi'", &["ssh", "pi"]));
+}
+
+#[test]
+fn command_lookup_runs_nothing() {
+    for input in ["command -v op", "command -V op", "sudo command -v op"] {
+        let c = simple_commands(input).remove(0);
+        assert!(effective_argv(&c).is_empty(), "{input}");
+    }
+    let c = simple_commands("command -p ssh pi").remove(0);
+    assert_eq!(effective_argv(&c), v(&["ssh", "pi"]).as_slice());
+}
+
 #[test]
 fn every_short_string_over_shell_characters_is_handled() {
     const ALPHABET: [char; 13] = [

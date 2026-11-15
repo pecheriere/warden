@@ -5,8 +5,15 @@
 //! input it cannot parse (an unterminated quote, say) it returns what it could
 //! split.
 
+mod prefix;
+
 /// The deepest `$(…)` or backtick nesting that is followed.
 const MAX_SUBSTITUTION_DEPTH: u8 = 4;
+
+/// Words that start or end a compound command without being a program.
+const RESERVED_WORDS: [&str; 13] = [
+    "{", "}", "!", "if", "then", "else", "elif", "fi", "while", "until", "do", "done", "esac",
+];
 
 /// One command with its leading `NAME=value` assignments and its words.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,57 +33,12 @@ pub fn simple_commands(input: &str) -> Vec<SimpleCommand> {
 }
 
 /// The words of `command` after the wrappers that only run another program:
-/// `sudo`, `env`, `nohup`, `exec`, `command` and `time`, with their options and
-/// (for `env`) their `NAME=value` words.
+/// `sudo`, `env`, `nohup`, `exec`, `command` and `time`, with their options (and
+/// the values of those that take one) and, for `env`, their `NAME=value` words.
+/// `command -v` and `command -V` only look a name up, so they leave nothing.
 #[must_use]
 pub fn effective_argv(command: &SimpleCommand) -> &[String] {
-    let mut rest = command.argv.as_slice();
-    loop {
-        let [first, tail @ ..] = rest else {
-            return rest;
-        };
-        let name = first.rsplit('/').next().unwrap_or(first);
-        let (value_options, assignments): (&[&str], bool) = match name {
-            "sudo" => (
-                &[
-                    "-u", "-g", "-h", "-p", "-C", "-r", "-t", "-D", "-R", "-T", "-U",
-                ],
-                false,
-            ),
-            "env" => (&["-u", "-C", "-S"], true),
-            "nohup" | "exec" | "command" | "time" => (&[], false),
-            _ => return rest,
-        };
-        rest = skip_wrapper_options(tail, value_options, assignments);
-    }
-}
-
-fn skip_wrapper_options<'a>(
-    mut words: &'a [String],
-    value_options: &[&str],
-    assignments: bool,
-) -> &'a [String] {
-    while let [word, tail @ ..] = words {
-        if word == "--" {
-            return tail;
-        }
-        if word.starts_with('-') && word.len() > 1 {
-            words = if value_options.contains(&word.as_str()) {
-                tail.get(1..).unwrap_or_default()
-            } else {
-                tail
-            };
-        } else if assignments && is_assignment(word) {
-            words = tail;
-        } else {
-            break;
-        }
-    }
-    words
-}
-
-fn is_assignment(word: &str) -> bool {
-    split_assignment(word).is_some()
+    prefix::unwrap(&command.argv).0
 }
 
 fn split_assignment(word: &str) -> Option<(&str, &str)> {
@@ -88,29 +50,44 @@ fn split_assignment(word: &str) -> Option<(&str, &str)> {
     valid.then_some((name, value))
 }
 
-fn is_shell(word: &str) -> bool {
-    matches!(
-        word.rsplit('/').next().unwrap_or(word),
-        "bash" | "sh" | "zsh" | "dash"
-    )
+/// The scripts `command` runs through the shell itself: a `bash -c` string, the
+/// joined arguments of `eval` and an `env -S` string.
+fn nested_scripts(command: &SimpleCommand) -> Vec<String> {
+    let (words, mut scripts) = prefix::unwrap(&command.argv);
+    scripts.retain(|script| !script.is_empty());
+    let mut scripts: Vec<String> = scripts.into_iter().map(str::to_string).collect();
+    if let [program, args @ ..] = words {
+        let name = program.rsplit('/').next().unwrap_or(program);
+        if name == "eval" {
+            let joined = args.join(" ");
+            if !joined.trim().is_empty() {
+                scripts.push(joined);
+            }
+        } else if matches!(name, "bash" | "sh" | "zsh" | "dash")
+            && let Some(script) = shell_c_string(args)
+        {
+            scripts.push(script.to_string());
+        }
+    }
+    scripts
 }
 
-/// The script of a `bash -c '…'` command, if `command` is one.
-fn shell_script(command: &SimpleCommand) -> Option<&str> {
-    let words = effective_argv(command);
-    let [shell, options @ ..] = words else {
-        return None;
-    };
-    if !is_shell(shell) {
-        return None;
-    }
+/// The `-c` string among a shell's options, skipping `-x`, `+x`, `-o name`,
+/// `+o name` and flag clusters such as `-ec`.
+fn shell_c_string(options: &[String]) -> Option<&str> {
     let mut options = options.iter();
     while let Some(arg) = options.next() {
-        if arg == "--" || !arg.starts_with('-') {
+        if arg == "--" || !(arg.starts_with('-') || arg.starts_with('+')) {
             return None;
         }
-        if !arg.starts_with("--") && arg.contains('c') {
+        if matches!(arg.as_str(), "--rcfile" | "--init-file") {
+            options.next();
+        } else if arg.starts_with("--") {
+            // A long option without a value: nothing to do.
+        } else if arg.starts_with('-') && arg.contains('c') {
             return options.next().map(String::as_str);
+        } else if arg.contains('o') {
+            options.next();
         }
     }
     None
@@ -173,7 +150,8 @@ impl Scanner {
                     self.end_command();
                     self.skip_heredoc_bodies();
                 }
-                ';' | '(' | ')' => self.end_command(),
+                '(' => self.open_paren(),
+                ';' | ')' => self.end_command(),
                 '&' => {
                     if self.peek(0) == Some('>') {
                         self.pos += 1;
@@ -198,6 +176,30 @@ impl Scanner {
             }
         }
         self.end_command();
+    }
+
+    /// A `(`: arithmetic `((…))` at the start of a command is skipped, `name()`
+    /// is a function definition and anything else opens a subshell.
+    fn open_paren(&mut self) {
+        self.end_word();
+        if self.words.is_empty()
+            && self.peek(0) == Some('(')
+            && let Some(end) = self.arithmetic_end()
+        {
+            self.pos = end + 1;
+        } else if self.words.len() == 1 && self.peek(0) == Some(')') && !self.redirect_target {
+            self.words.clear();
+            self.pos += 1;
+        } else {
+            self.end_command();
+        }
+    }
+
+    /// The index of the final `)` of an `((…))` whose second `(` is next, if
+    /// it is closed by `))`.
+    fn arithmetic_end(&self) -> Option<usize> {
+        let end = self.matching_paren(self.pos);
+        (end < self.chars.len() && self.chars.get(end.checked_sub(1)?) == Some(&')')).then_some(end)
     }
 
     fn word_char(&mut self, c: char) {
@@ -456,10 +458,15 @@ impl Scanner {
             return;
         }
         let word = std::mem::take(&mut self.word);
+        let quoted = std::mem::take(&mut self.quoted);
         self.in_word = false;
-        self.quoted = false;
         if self.redirect_target {
             self.redirect_target = false;
+        } else if !quoted && self.words.is_empty() && RESERVED_WORDS.contains(&word.as_str()) {
+            // `{`, `!`, `then` and the like start a command without being one.
+        } else if !quoted && word == "{" && self.words.len() == 2 && self.words[0] == "function" {
+            // `function name {`: the definition's header is not a command.
+            self.words.clear();
         } else {
             self.words.push(word);
         }
@@ -478,18 +485,27 @@ impl Scanner {
             env.push((name.to_string(), value.to_string()));
             taken += 1;
         }
-        let argv = words.split_off(taken);
+        let mut argv = words.split_off(taken);
+        if argv
+            .first()
+            .is_some_and(|word| matches!(word.as_str(), "for" | "case" | "select"))
+        {
+            // A loop or `case` header runs no program.
+            argv.clear();
+        }
         let mut found = Vec::new();
         if argv.is_empty() {
             found.append(&mut self.nested);
         } else {
             let command = SimpleCommand { env, argv };
-            let script = shell_script(&command).map(str::to_string);
+            let scripts = if self.shell_nesting == 0 {
+                nested_scripts(&command)
+            } else {
+                Vec::new()
+            };
             found.push(command);
             found.append(&mut self.nested);
-            if let Some(script) = script
-                && self.shell_nesting == 0
-            {
+            for script in scripts {
                 found.extend(parse(&script, self.depth, 1));
             }
         }
