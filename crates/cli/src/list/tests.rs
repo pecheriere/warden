@@ -434,16 +434,10 @@ fn render_shows_the_default_and_the_extras_with_sensitive_ones_marked() {
         extra_permissions: Some(GrantedPermissions::parse("actions:read,workflows:write").unwrap()),
     };
     let text = render(&offers, None);
-    assert!(
-        text.contains("  Default permissions: contents:write,metadata:read\n"),
-        "{text}"
-    );
-    assert!(
-        text.contains("actions:read, workflows:write (sensitive)\n"),
-        "{text}"
-    );
-    assert!(!text.contains("actions:read (sensitive)"), "{text}");
-    assert!(text.contains("15m, 30m or 1h only"), "{text}");
+    assert!(text.contains("  Default permissions: contents:write,metadata:read\n"));
+    assert!(text.contains("actions:read, workflows:write (sensitive)\n"));
+    assert!(!text.contains("actions:read (sensitive)"));
+    assert!(text.contains("15m, 30m or 1h only"));
 }
 
 #[test]
@@ -456,6 +450,6 @@ fn render_omits_the_sensitive_note_when_no_extra_is_sensitive() {
         extra_permissions: Some(GrantedPermissions::parse("actions:read").unwrap()),
     };
     let text = render(&offers, None);
-    assert!(text.contains("actions:read\n"), "{text}");
-    assert!(!text.contains("sensitive"), "{text}");
+    assert!(text.contains("actions:read\n"));
+    assert!(!text.contains("sensitive"));
 }
