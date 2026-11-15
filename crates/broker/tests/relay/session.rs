@@ -5,7 +5,7 @@ use russh::{ChannelMsg, Sig};
 use serde_json::Value;
 use std::process::Stdio;
 use warden_broker::testkit::sshd::current_user;
-use warden_broker::testkit::wait;
+use warden_broker::testkit::wait::{self, HANG};
 
 #[cfg(target_os = "linux")]
 use super::password_target;
@@ -91,7 +91,15 @@ async fn window_change_and_signals_are_forwarded() {
         .await
         .unwrap();
     assert!(reply(&mut channel).await);
-    channel.exec(true, "sleep 2; stty size").await.unwrap();
+    // The size, once the target sees another than the one asked for with the
+    // pty: once the window change has reached it.
+    channel
+        .exec(
+            true,
+            "while [ \"$(stty size)\" = '24 80' ]; do sleep 0.05; done; stty size",
+        )
+        .await
+        .unwrap();
     assert!(reply(&mut channel).await);
     channel.window_change(132, 50, 0, 0).await.unwrap();
     let out = collect(&mut channel).await;
@@ -106,12 +114,20 @@ async fn window_change_and_signals_are_forwarded() {
     channel
         .exec(
             true,
-            "trap 'echo got-term; exit 9' TERM; echo trapped; sleep 20 & wait",
+            // Just past `HANG`, so that a failed test leaves no `sleep`
+            // behind for long.
+            format!(
+                "trap 'echo got-term; kill $!; exit 9' TERM; \
+                 sleep {} >/dev/null 2>&1 & echo trapped; wait",
+                HANG.as_secs() + 1
+            ),
         )
         .await
         .unwrap();
     assert!(reply(&mut channel).await);
-    // Signalled once the trap is set, which the shell says.
+    // Signalled once the trap is set, which the shell says. The trap ends
+    // the `sleep`, which holds none of the session's output either, so
+    // that the session ends with the shell.
     let mut seen = Vec::new();
     while !text(&seen).contains("trapped\n") {
         match wait::within_hang("the trap set", channel.wait()).await {

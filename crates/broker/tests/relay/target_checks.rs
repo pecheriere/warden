@@ -13,12 +13,13 @@ use warden_broker_proto::UnixUser;
 
 use super::{
     Agent, OpenSsh, Setup, TARGET, approved_agent, await_events, connect, events_of, key_target,
-    nas, nas_pinned, openssh_private, random_key, russh_key, sshd_connections, text,
+    key_target_with, nas, nas_pinned, openssh_private, random_key, russh_key, sshd_connections,
+    text, without_refusal_pause,
 };
 
 #[tokio::test(flavor = "multi_thread")]
 async fn relay_refuses_unbound_key_and_inactive_grant() {
-    let s = key_target().await;
+    let s = key_target_with(without_refusal_pause()).await;
     let agent = approved_agent(&s.broker, "bot").await;
     let ssh = OpenSsh::new(&s.broker, s.relay, &agent.key);
     let refused = |out: &Output| {

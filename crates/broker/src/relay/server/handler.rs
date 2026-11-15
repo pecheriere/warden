@@ -259,6 +259,7 @@ impl RelayHandler {
                     stall: shared.limits.stall_timeout,
                     wedge: shared.limits.wedge_timeout,
                     idle: shared.limits.idle_timeout,
+                    left: shared.limits.agent_left_grace,
                 };
                 let outcome = session::relay(
                     ends,

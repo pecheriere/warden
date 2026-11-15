@@ -53,6 +53,9 @@ pub(crate) struct Watch {
     pub wedge: Duration,
     /// No bytes read from either side for this long.
     pub idle: Duration,
+    /// The agent gone and its input held up, nothing of it delivered to
+    /// the target, for this long (see [`agent_left`]).
+    pub left: Duration,
 }
 
 /// How often the session checks for progress.
@@ -65,10 +68,6 @@ const CLOSE_WAIT: Duration = Duration::from_secs(2);
 /// Longest a session ended by force (see [`reason::forced`]) gets to close
 /// gracefully before both connections are cut.
 const FORCED_CLOSE_WAIT: Duration = Duration::from_secs(1);
-
-/// How long a session whose agent left goes on while the agent's input is
-/// held up with nothing delivered to the target (see [`agent_left`]).
-const LEFT_AND_HELD: Duration = Duration::from_secs(2);
 
 /// Cuts a connection off: shuts its socket down under the SSH library,
 /// whose reads then end, whatever state its event loop is in.
@@ -265,7 +264,7 @@ pub(crate) async fn relay(
                 ended = upstream(&mut from_agent, &to_target, Arc::clone(&up_progress), &mut up) => (ended, false),
                 ended = downstream(&mut from_target, early, &to_agent, &agent_handle, agent_id, Arc::clone(&down_progress), &mut down) => (ended, false),
                 ended = watchdog(&up_progress, &down_progress, limits, moved) => (ended, false),
-                () = agent_left(agent_gone, &up_progress) => (reason::CLIENT_CLOSED, true),
+                () = agent_left(agent_gone, &up_progress, limits.left) => (reason::CLIENT_CLOSED, true),
             }
         };
         // Pinned here, not moved into `first_end`, which would hold it twice.
@@ -367,8 +366,8 @@ pub(super) async fn first_end(
 }
 
 /// Resolves once the agent's connection is closed and the agent's input
-/// has been held up, nothing of it delivered to the target, for
-/// [`LEFT_AND_HELD`].
+/// has been held up, nothing of it delivered to the target, for `grace`
+/// ([`Watch::left`]).
 ///
 /// While the relay reads the agent's channel, the SSH library sees the
 /// agent leave itself, after what the agent sent before leaving, which is
@@ -379,7 +378,7 @@ pub(super) async fn first_end(
 /// to see what it would have done.
 /// Only it and the session's counters are looked at: nothing here waits
 /// on either connection.
-async fn agent_left(mut gone: AgentGone, up: &Progress) {
+async fn agent_left(mut gone: AgentGone, up: &Progress, grace: Duration) {
     gone.wait().await;
     let mut delivered = up.delivered.load(Ordering::Acquire);
     let mut held_since = tokio::time::Instant::now();
@@ -390,7 +389,7 @@ async fn agent_left(mut gone: AgentGone, up: &Progress) {
         if count != delivered || !up.waiting.load(Ordering::Acquire) {
             delivered = count;
             held_since = now;
-        } else if now.duration_since(held_since) >= LEFT_AND_HELD {
+        } else if now.duration_since(held_since) >= grace {
             return;
         }
     }

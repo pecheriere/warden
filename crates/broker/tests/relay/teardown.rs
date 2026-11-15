@@ -2,6 +2,7 @@
 
 use std::time::{Duration, Instant};
 
+use russh::ChannelMsg;
 use serde_json::Value;
 use warden_broker::relay::RelayLimits;
 use warden_broker::requests::AuditOutcome;
@@ -18,9 +19,16 @@ use super::{
 
 /// How long the relay may go without reading the state of grants before it
 /// fails closed, in the tests of that: shorter than the 10 s default, and
-/// well past a grant query's 1.5 s bound and a few checks, so that a loaded
-/// machine does not end a session on a slow query alone.
-const FAIL_CLOSED_AFTER: Duration = Duration::from_secs(8);
+/// past a check (1 s) and two grant query bounds (1.5 s each), so that a
+/// loaded machine does not end a session before the outage on one slow
+/// query: it takes two in a row, each stalled for over a second.
+const FAIL_CLOSED_AFTER: Duration = Duration::from_secs(6);
+
+/// The window of the test that proves expiry needs no query: a tick runs
+/// the expiry before it marks the grant state lost, so expiry shows only if
+/// the clock is advanced before the window can elapse. The default 8 s
+/// keeps that margin wide, as it was before the windows were shortened.
+const EXPIRY_FIRST_WINDOW: Duration = Duration::from_secs(8);
 
 /// Connections to `sshd` (the relay's onward ones) not yet ended, by its
 /// log: each is named by its client port.
@@ -303,24 +311,34 @@ async fn db_revoke_from_another_process_closes_session() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn idle_session_times_out() {
+    const IDLE: Duration = Duration::from_secs(2);
     let s = key_target_with(RelayLimits {
-        idle_timeout: Duration::from_secs(2),
+        idle_timeout: IDLE,
         ..RelayLimits::default()
     })
     .await;
     let agent = approved_agent(&s.broker, "bot").await;
-    // Output every half second for 4 s: never idle for 2 s, so it runs to
-    // its end although it lasts longer than the idle timeout.
+    // Lines sent to `cat`, each once the one before came back, for half as
+    // long again as the idle timeout: bytes move all along, never idle, so
+    // it runs to its end although it lasts longer than the idle timeout.
     let busy = login(&s.broker, s.relay, TARGET, &agent.key).await;
     let mut channel = busy.handle.channel_open_session().await.unwrap();
-    channel
-        .exec(
-            true,
-            "for i in 1 2 3 4 5 6 7 8; do echo $i; sleep 0.5; done",
-        )
-        .await
-        .unwrap();
+    channel.exec(true, "cat").await.unwrap();
     assert!(reply(&mut channel).await);
+    let busy_since = Instant::now();
+    let (mut sent, mut echoed) = (0, 0);
+    while busy_since.elapsed() < IDLE + IDLE / 2 {
+        channel.data(&b"busy\n"[..]).await.unwrap();
+        sent += 5;
+        while echoed < sent {
+            match wait::within_hang("the line echoed", channel.wait()).await {
+                Some(ChannelMsg::Data { data }) => echoed += data.len(),
+                Some(_) => {}
+                None => panic!("the busy session ended after {:?}", busy_since.elapsed()),
+            }
+        }
+    }
+    channel.eof().await.unwrap();
     let out = collect(&mut channel).await;
     assert_eq!(out.exit_status, Some(0), "{out:?}");
     let ended = await_events(&s.broker, "relay_session_ended", 1).await;
@@ -333,7 +351,7 @@ async fn idle_session_times_out() {
     let (c, mut channel) = hold_session(&s, &agent.key).await;
     assert_both_sides_closed(&s, &c, 0).await;
     assert!(
-        quiet.elapsed() >= Duration::from_secs(2),
+        quiet.elapsed() >= IDLE,
         "ended before the idle timeout: {:?}",
         quiet.elapsed()
     );
@@ -437,7 +455,7 @@ async fn db_unreadable_fails_closed() {
 #[tokio::test(flavor = "multi_thread")]
 async fn hung_grant_query_still_fails_closed_and_expires() {
     let s = key_target_with(RelayLimits {
-        fail_closed_after: FAIL_CLOSED_AFTER,
+        fail_closed_after: EXPIRY_FIRST_WINDOW,
         ..RelayLimits::default()
     })
     .await;
@@ -465,7 +483,7 @@ async fn hung_grant_query_still_fails_closed_and_expires() {
     // not before the window less a tick after the queries started hanging.
     assert_both_sides_closed(&s, &kept, 0).await;
     assert!(
-        hung.elapsed() >= FAIL_CLOSED_AFTER.saturating_sub(Duration::from_millis(1100)),
+        hung.elapsed() >= EXPIRY_FIRST_WINDOW.saturating_sub(Duration::from_millis(1100)),
         "failed closed too early: {:?}",
         hung.elapsed()
     );

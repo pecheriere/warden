@@ -13,7 +13,7 @@ use warden_broker::testkit::wait::{self, HANG};
 use super::{
     OpenSsh, TARGET, approved_agent, assert_each_start_ended, await_events, collect, connect,
     events_of, hold_session, key_target, key_target_daily, key_target_with, login, random_key,
-    reply, russh_key, text, too_many,
+    reply, russh_key, text, too_many, without_refusal_pause,
 };
 
 #[tokio::test(flavor = "multi_thread")]
@@ -295,7 +295,7 @@ async fn refused_sessions_beyond_the_allowance_are_counted() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn refused_logins_from_one_address_are_counted_beyond_five_a_minute() {
-    let s = key_target().await;
+    let s = key_target_with(without_refusal_pause()).await;
     for _ in 0..7 {
         let mut c = connect(&s.broker, s.relay).await;
         let auth = c
@@ -311,7 +311,7 @@ async fn refused_logins_from_one_address_are_counted_beyond_five_a_minute() {
     }
     // Stopping the relay returns once every connection has ended and is
     // recorded or held.
-    s.broker.stop_relay().await;
+    wait::within_hang("the relay stopping", s.broker.stop_relay()).await;
     assert_eq!(events_of(&s.broker, "relay_login_refused").len(), 5);
     assert_eq!(
         events_of(&s.broker, "relay_logins_refused_held"),
