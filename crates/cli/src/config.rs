@@ -465,12 +465,20 @@ mod tests {
 
         let mut relative = signed_sample();
         relative.ssh_key.as_mut().unwrap().agent_socket = Some("agent.sock".into());
-        assert!(load_from(&write("rel.toml", &relative)).is_err());
+        let err = format!(
+            "{:#}",
+            load_from(&write("rel.toml", &relative)).unwrap_err()
+        );
+        assert!(err.contains("socket path must be absolute"), "{err}");
 
         let mut published = signed_sample();
         published.ssh_key.as_mut().unwrap().public_key =
             warden_broker_proto::signing::PUBLISHED_TEST_KEYS[0].to_owned();
-        assert!(load_from(&write("pub.toml", &published)).is_err());
+        let err = format!(
+            "{:#}",
+            load_from(&write("pub.toml", &published)).unwrap_err()
+        );
+        assert!(err.contains("signing key is refused"), "{err}");
 
         let path = dir.path().join("unknown.toml");
         std::fs::write(
@@ -482,7 +490,8 @@ mod tests {
             ),
         )
         .unwrap();
-        assert!(load_from(&path).is_err());
+        let err = format!("{:#}", load_from(&path).unwrap_err());
+        assert!(err.contains("unknown field `private_key`"), "{err}");
     }
 
     #[test]
@@ -551,6 +560,7 @@ mod tests {
             "server = \"http://warden.example/\"\nagent = \"a\"\n",
         )
         .unwrap();
-        assert!(load_from(&path).is_err());
+        let err = format!("{:#}", load_from(&path).unwrap_err());
+        assert!(err.contains("must use https"), "{err}");
     }
 }

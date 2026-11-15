@@ -130,7 +130,7 @@ async fn deadline_ends_retries() {
     let always_down = || std::future::ready(Err(CallError::Unavailable("down".to_owned())));
     let started = Instant::now();
     let got = wait_for_decision(always_down, started + Duration::from_millis(50), HANG).await;
-    assert!(got.is_err());
+    assert_eq!(got, Err("no decision within 11 minutes".to_owned()));
     // The pause before a retry never runs past the deadline: a full pause would
     // last until HANG.
     assert!(started.elapsed() < HANG);

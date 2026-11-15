@@ -314,6 +314,7 @@ pub mod testing {
     use std::time::{Duration, Instant};
 
     use ssh_key::PrivateKey;
+    use warden_broker::testkit::wait::HANG;
 
     /// A throwaway `ssh-agent` in a private directory, killed on drop.
     pub struct TestAgent {
@@ -348,7 +349,7 @@ pub mod testing {
                 .stderr(Stdio::null())
                 .spawn()
                 .expect("ssh-agent (OpenSSH) is needed for this test");
-            let deadline = Instant::now() + Duration::from_secs(10);
+            let deadline = Instant::now() + HANG;
             while std::os::unix::net::UnixStream::connect(&socket).is_err() {
                 assert!(Instant::now() < deadline, "ssh-agent did not start");
                 std::thread::sleep(Duration::from_millis(20));

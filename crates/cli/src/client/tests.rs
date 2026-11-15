@@ -240,7 +240,10 @@ async fn broker_messages_are_sanitized() {
 #[test]
 fn cleartext_remote_server_is_refused() {
     let url = url::Url::parse("http://warden.example/").unwrap();
-    assert!(Client::new(&url, bearer("")).is_err());
+    let Err(refused) = Client::new(&url, bearer("")) else {
+        panic!("a cleartext remote server was accepted");
+    };
+    assert!(refused.to_string().contains("must use https"), "{refused}");
 }
 
 /// One request as it arrived on the wire.
