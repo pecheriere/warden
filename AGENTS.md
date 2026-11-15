@@ -111,21 +111,23 @@ uvx zizmor@1.31.1 .   # when a workflow or the Dependabot config changes
 
 A pull request should be green within 10 minutes of its push. Every job has
 `timeout-minutes`, set from the measured 95th percentile of its duration plus
-about 30%; those of the jobs a pull request waits for are:
+about 30% (`check` and the fuzz jobs start higher, until runs with nextest and
+the new caches are measured); those of the jobs a pull request waits for are:
 
 | Workflow | Job | Budget (minutes) | Measured p95 before #289 |
 |---|---|---:|---:|
-| ci | `check` (required) | 9 | 8.7 (expected about 4.5 with nextest and the OpenSSL cache) |
+| ci | `check` (required) | 12, to lower to 6 once measured | 8.7 (expected about 4.5 with nextest and the OpenSSL cache) |
 | ci | `image (*)` (required) | 9 | 5.6 |
 | ci | `cli (*)` (required), `demo (*)`, `server (*)` | 11 | 2.6, 8.1, 6.1 |
 | ci | `coverage` | 9 | 6.2 |
 | ci | `deny`, `crate-age` (required) | 5 | 1.5, 0.2 |
 | ci | `critical-path` | 5 | new |
 | dco, zizmor, dependency-review | each job (required) | 5 | 0.3 or less |
-| fuzz | `fuzz (<target>)`, on pull requests that change fuzzing | 8 | new: 31.6 as one job |
+| fuzz | `fuzz (<target>)`, on pull requests that change fuzzing | 12 (a cold cache builds the broker with ASan) | new: 31.6 as one job |
 | fuzz | `lint`, `targets` | 10, 5 | new |
 
-CI's `critical-path` job fails a pull request when the required checks of
+CI's `critical-path` job (not a required check: it shows red but does not
+block a merge) fails when the required checks of
 `ci.yml` take more than 10 minutes from the start of the run, runner queue
 included, and its summary splits each job's time into queue and run. A
 timeout or a `critical-path` failure caused by a slow job is the change's to

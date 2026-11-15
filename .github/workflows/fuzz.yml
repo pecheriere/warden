@@ -82,7 +82,7 @@ jobs:
     needs: targets
     name: fuzz (${{ matrix.target }})
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 12
     permissions:
       contents: read
     strategy:
