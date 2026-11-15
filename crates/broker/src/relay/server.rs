@@ -110,6 +110,9 @@ const GRANT_QUERY_TIMEOUT: Duration = Duration::from_millis(1500);
 /// The default of [`RelayLimits::target_read_timeout`].
 const TARGET_READ_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// The default of [`RelayLimits::auth_rejection_time`].
+const AUTH_REJECTION_TIME: Duration = Duration::from_secs(1);
+
 /// A session refused because its grant could not be looked up in time.
 const GRANT_LOOKUP_FAILED: Refusal =
     Refusal::new("grant lookup failed", session::reason::GRANT_STATE_NOTICE);
@@ -170,6 +173,12 @@ pub struct RelayLimits {
     /// Longest read of a relay target's item (policy and credential) when
     /// a session starts; past it, the session is refused (10 s).
     pub target_read_timeout: Duration,
+    /// How long a session whose agent left goes on while the agent's input
+    /// is held up with nothing of it delivered to the target (2 s).
+    pub agent_left_grace: Duration,
+    /// Pause before answering each refused login attempt but a first
+    /// `none` probe, which slows down guessing keys (1 s).
+    pub auth_rejection_time: Duration,
 }
 
 impl Default for RelayLimits {
@@ -188,6 +197,8 @@ impl Default for RelayLimits {
             start_timeout: Duration::from_secs(30),
             fail_closed_after: FAIL_CLOSED_AFTER,
             target_read_timeout: TARGET_READ_TIMEOUT,
+            agent_left_grace: Duration::from_secs(2),
+            auth_rejection_time: AUTH_REJECTION_TIME,
         }
     }
 }
@@ -246,7 +257,7 @@ impl RelayServer {
             // No implementation or version in the banner.
             server_id: SshId::Standard("SSH-2.0-warden".into()),
             methods: MethodSet::from(&[MethodKind::PublicKey][..]),
-            auth_rejection_time: Duration::from_secs(1),
+            auth_rejection_time: limits.auth_rejection_time,
             auth_rejection_time_initial: Some(Duration::ZERO),
             keys: vec![host_key.russh_private_key()?],
             max_auth_attempts: limits.max_auth_attempts,

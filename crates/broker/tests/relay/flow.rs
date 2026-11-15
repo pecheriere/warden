@@ -64,7 +64,13 @@ async fn large_transfers_both_ways() {
 #[tokio::test(flavor = "multi_thread")]
 async fn slow_agent_gets_the_end_of_its_output() {
     const SIZE: usize = 1024 * 1024;
-    let s = key_target().await;
+    // Half the default wedge timeout, for a shorter pause past it below.
+    const WEDGE: Duration = Duration::from_secs(1);
+    let s = key_target_with(RelayLimits {
+        wedge_timeout: WEDGE,
+        ..RelayLimits::default()
+    })
+    .await;
     let agent = approved_agent(&s.broker, "bot").await;
     let ssh = OpenSsh::new(&s.broker, s.relay, &agent.key);
     // Less than the client's window: the relay hands all of it over, with
@@ -84,7 +90,7 @@ async fn slow_agent_gets_the_end_of_its_output() {
     // wait on a condition: there is nothing for it to wait for. A relay that
     // hung up once the session was over would do so at once, well within it.
     // Twice the wedge timeout, so the pause is clearly past it.
-    tokio::time::sleep(RelayLimits::default().wedge_timeout.saturating_mul(2)).await;
+    tokio::time::sleep(WEDGE.saturating_mul(2)).await;
 
     // It still gets every byte and the exit status, not a hang-up.
     let out = wait::within_hang("ssh finished", child.wait_with_output())
@@ -266,17 +272,23 @@ async fn agent_disconnect_with_stalled_target_ends_quickly() {
 }
 
 /// A session whose input has been held for longer than the agent-left
-/// grace (2 s), ended by the relay with `end`: the reason on record is the
-/// one the relay gave, not the agent leaving because the relay cut it.
+/// grace, ended by the relay with `end`: the reason on record is the one the
+/// relay gave, not the agent leaving because the relay cut it.
 async fn held_session_ended_by_relay(end: impl AsyncFnOnce(&Setup, &Agent), reason: &str) {
-    let s = key_target().await;
+    // A quarter of the default, for a shorter pause past it below.
+    const GRACE: Duration = Duration::from_millis(500);
+    let s = key_target_with(RelayLimits {
+        agent_left_grace: GRACE,
+        ..RelayLimits::default()
+    })
+    .await;
     let agent = approved_agent(&s.broker, "bot").await;
     let ssh = OpenSsh::new(&s.broker, s.relay, &agent.key);
     let (_child, _stdout, fed) = feed_until_held(&ssh, &["sleep", "600"]).await;
     assert!(fed.mib() < 32, "{} MiB accepted", fed.mib());
     // Held for longer than the grace is the case tested, so this is a pause
     // and not a wait on a condition.
-    tokio::time::sleep(Duration::from_millis(2500)).await;
+    tokio::time::sleep(GRACE.saturating_mul(2)).await;
     assert!(
         events_of(&s.broker, "relay_session_ended").is_empty(),
         "{:?}",
@@ -285,7 +297,7 @@ async fn held_session_ended_by_relay(end: impl AsyncFnOnce(&Setup, &Agent), reas
     end(&s, &agent).await;
     let ended = await_events(&s.broker, "relay_session_ended", 1).await;
     assert_eq!(ended[0]["reason"], reason, "{:?}", audit_events(&s.broker));
-    s.broker.stop_relay().await;
+    wait::within_hang("the relay stopping", s.broker.stop_relay()).await;
     assert_eq!(events_of(&s.broker, "relay_session_ended").len(), 1);
     assert_each_start_ended(&s.broker).await;
 }
@@ -338,8 +350,10 @@ async fn stop_relay_completes_with_wedged_session() {
 #[tokio::test(flavor = "multi_thread")]
 async fn agent_not_reading_output_ends_session() {
     // The wedge watchdog is kept out of the way: this is the stall rule.
+    // The output is held before the input, which `cat` stops reading only
+    // once its output is held, so it stalls first whatever the timeout.
     let s = key_target_with(RelayLimits {
-        stall_timeout: Duration::from_secs(3),
+        stall_timeout: Duration::from_secs(1),
         wedge_timeout: Duration::from_secs(600),
         ..RelayLimits::default()
     })

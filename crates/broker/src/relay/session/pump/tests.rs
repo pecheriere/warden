@@ -46,7 +46,7 @@ async fn agent_left_ends_once_input_is_held_without_delivery() {
     let up = Progress::default();
     up.waiting.store(true, Ordering::Release);
     up.queued.store(10, Ordering::Release);
-    let left = agent_left(super::AgentGone::new(rx), &up);
+    let left = agent_left(super::AgentGone::new(rx), &up, Duration::from_secs(2));
     tokio::pin!(left);
     // Held up, but the agent is still there: nothing ends.
     tokio::select! {
@@ -80,6 +80,7 @@ fn limits(stall_secs: u64) -> Watch {
         stall: Duration::from_secs(stall_secs),
         wedge: Duration::from_secs(2),
         idle: Duration::from_mins(15),
+        left: Duration::from_secs(2),
     }
 }
 

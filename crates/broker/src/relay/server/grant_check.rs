@@ -167,6 +167,8 @@ mod tests {
         let limits = RelayLimits::default();
         assert_eq!(limits.fail_closed_after, Duration::from_secs(10));
         assert_eq!(limits.target_read_timeout, Duration::from_secs(10));
+        assert_eq!(limits.agent_left_grace, Duration::from_secs(2));
+        assert_eq!(limits.auth_rejection_time, Duration::from_secs(1));
     }
 
     #[test]
