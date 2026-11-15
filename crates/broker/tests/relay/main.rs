@@ -111,7 +111,17 @@ async fn key_target_daily(sessions: u32, limits: RelayLimits) -> Setup {
     .await
 }
 
+/// How long a session the relay ends by force gets to close gracefully in
+/// these tests (1 s in production). A held command never answers the
+/// relay's close, so every forced end waits this long before the
+/// connections are cut; no test here depends on the wait itself.
+const FORCED_CLOSE_WAIT: Duration = Duration::from_millis(100);
+
 async fn key_target_on(broker: TestBroker, limits: RelayLimits) -> Setup {
+    let limits = RelayLimits {
+        forced_close_wait: FORCED_CLOSE_WAIT,
+        ..limits
+    };
     let onward = random_key();
     let sshd = Sshd::start(&SshdLogin::Key(onward.public_key().clone()));
     broker

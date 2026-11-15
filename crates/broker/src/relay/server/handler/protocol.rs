@@ -10,8 +10,8 @@ use crate::relay::session::{MAX_ENV_VARS, Program, PtyRequest, env_allowed};
 
 use super::super::conn::ours;
 use super::super::{
-    GRANT_QUERY_TIMEOUT, INVALID_USER, MAX_TERM_LEN, NO_AGENT, NO_FORWARDING, NO_LONGER_VALID,
-    NO_SUBSYSTEMS, NO_X11, ONE_SESSION,
+    INVALID_USER, MAX_TERM_LEN, NO_AGENT, NO_FORWARDING, NO_LONGER_VALID, NO_SUBSYSTEMS, NO_X11,
+    ONE_SESSION,
 };
 use super::{Login, RelayHandler};
 
@@ -48,14 +48,14 @@ impl server::Handler for RelayHandler {
         let grant = match &key {
             Some(key) => {
                 let lookup = self.shared.requests.active_relay_grant(&target, key);
-                match tokio::time::timeout(GRANT_QUERY_TIMEOUT, lookup).await {
+                match tokio::time::timeout(self.shared.limits.grant_query_timeout, lookup).await {
                     Ok(Ok(grant)) => grant,
                     Ok(Err(e)) => {
                         tracing::error!(error = %e, "relay: login check failed");
                         None
                     }
                     Err(_) => {
-                        tracing::error!(timeout = ?GRANT_QUERY_TIMEOUT, "relay: login check timed out");
+                        tracing::error!(timeout = ?self.shared.limits.grant_query_timeout, "relay: login check timed out");
                         None
                     }
                 }

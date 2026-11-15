@@ -84,6 +84,7 @@ fn limits(stall_secs: u64) -> Watch {
         wedge: Duration::from_secs(2),
         idle: Duration::from_mins(15),
         left: Duration::from_secs(2),
+        forced_close: Duration::from_secs(1),
     }
 }
 

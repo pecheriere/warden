@@ -17,18 +17,45 @@ use super::{
     reply_keeping_stderr, take_every_connection, text,
 };
 
+/// How often the relay checks the state of grants in the tests of outages,
+/// instead of every second: the last successful check came about this long
+/// before an outage began, plus any delay of the tick (see `FAIL_CLOSED_AFTER`).
+const CHECK_EVERY: Duration = Duration::from_millis(100);
+
 /// How long the relay may go without reading the state of grants before it
-/// fails closed, in the tests of that: shorter than the 10 s default, and
-/// past a check (1 s) and two grant query bounds (1.5 s each), so that a
-/// loaded machine does not end a session before the outage on one slow
-/// query: it takes two in a row, each stalled for over a second.
-const FAIL_CLOSED_AFTER: Duration = Duration::from_secs(6);
+/// fails closed, in the test where every query fails at once (an unreadable
+/// database): shorter than the 10 s default, and ten checks long.
+///
+/// The relay's timer runs from the last query that succeeded, which came up to
+/// one check interval (plus any delay of a tick or of the query on a loaded
+/// machine) before the test notices the outage. The test therefore requires
+/// only half the window (`FAIL_CLOSED_AFTER / 2`) to have passed: a relay that
+/// fails closed on the first failed query ends the session within a tick or
+/// two (about 100 ms), far below that, while a delay of 500 ms or more would
+/// be needed to fail the bound by chance.
+const FAIL_CLOSED_AFTER: Duration = Duration::from_secs(1);
+
+/// The longest a query may take in the test of an unreadable database, instead
+/// of 1.5 s: a quarter of the window, so that a slow query before the outage
+/// (an fsync on a loaded machine) cannot fail the relay closed on its own,
+/// while the database is still readable.
+const DB_QUERY_TIMEOUT: Duration = Duration::from_millis(250);
 
 /// The window of the test that proves expiry needs no query: a tick runs
 /// the expiry before it marks the grant state lost, so expiry shows only if
-/// the clock is advanced before the window can elapse. The default 8 s
-/// keeps that margin wide, as it was before the windows were shortened.
-const EXPIRY_FIRST_WINDOW: Duration = Duration::from_secs(8);
+/// the clock is advanced before the window can elapse. With checks every
+/// 100 ms, the first tick after the advance comes within 100 ms, a fifteenth
+/// of the window, and even a delay of a second leaves the expiry first.
+const EXPIRY_FIRST_WINDOW: Duration = Duration::from_millis(1500);
+
+/// The longest a grant query may take in the test of a hung one, instead of
+/// 1.5 s: past it the query counts as failed and the next tick asks again.
+/// Well above a query that is not held up, which takes milliseconds.
+const HUNG_QUERY_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// The wait of a revocation for its audit entries in the test of held appends,
+/// instead of the 2 s of production.
+const SHORT_WRITE_WAIT: Duration = Duration::from_millis(50);
 
 /// Connections to `sshd` (the relay's onward ones) not yet ended, by its
 /// log: each is named by its client port.
@@ -182,6 +209,11 @@ async fn revoked_while_a_session_waits_to_record_its_start_opens_nothing() {
 #[tokio::test(flavor = "multi_thread")]
 async fn revoke_closes_live_session_while_audit_appends_are_held() {
     let s = key_target().await;
+    s.broker
+        .state()
+        .requests
+        .set_audit_write_wait(SHORT_WRITE_WAIT)
+        .await;
     let agent = approved_agent(&s.broker, "bot").await;
     let (c, mut channel) = hold_session(&s, &agent.key).await;
     let audit = s.broker.state().audit.clone();
@@ -225,7 +257,11 @@ async fn agent_revoke_closes_sessions_when_the_audit_log_cannot_be_written() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn db_revoke_with_no_audit_log_closes_session_from_another_process() {
-    let s = key_target().await;
+    let s = key_target_with(RelayLimits {
+        grant_check_every: CHECK_EVERY,
+        ..RelayLimits::default()
+    })
+    .await;
     let agent = approved_agent(&s.broker, "bot").await;
     let (c, mut channel) = hold_session(&s, &agent.key).await;
     break_audit_log(&s.broker);
@@ -248,7 +284,11 @@ async fn db_revoke_with_no_audit_log_closes_session_from_another_process() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn expiry_closes_live_session() {
-    let s = key_target().await;
+    let s = key_target_with(RelayLimits {
+        grant_check_every: CHECK_EVERY,
+        ..RelayLimits::default()
+    })
+    .await;
     let agent = approved_agent(&s.broker, "bot").await;
     let (c, _channel) = hold_session(&s, &agent.key).await;
     // Window 15 min: one second past it.
@@ -292,7 +332,11 @@ async fn agent_revoke_closes_sessions() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn db_revoke_from_another_process_closes_session() {
-    let s = key_target().await;
+    let s = key_target_with(RelayLimits {
+        grant_check_every: CHECK_EVERY,
+        ..RelayLimits::default()
+    })
+    .await;
     let agent = approved_agent(&s.broker, "bot").await;
     let (c, _channel) = hold_session(&s, &agent.key).await;
     // What `warden-server agent revoke` does from its own process: the
@@ -311,7 +355,7 @@ async fn db_revoke_from_another_process_closes_session() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn idle_session_times_out() {
-    const IDLE: Duration = Duration::from_secs(2);
+    const IDLE: Duration = Duration::from_millis(750);
     let s = key_target_with(RelayLimits {
         idle_timeout: IDLE,
         ..RelayLimits::default()
@@ -405,6 +449,8 @@ async fn unstarted_authenticated_connection_is_closed() {
 async fn db_unreadable_fails_closed() {
     let s = key_target_with(RelayLimits {
         fail_closed_after: FAIL_CLOSED_AFTER,
+        grant_check_every: CHECK_EVERY,
+        grant_query_timeout: DB_QUERY_TIMEOUT,
         ..RelayLimits::default()
     })
     .await;
@@ -420,9 +466,10 @@ async fn db_unreadable_fails_closed() {
     // The session ends, both sides closed ...
     assert_both_sides_closed(&s, &running, 0).await;
     // ... not before the state has been unreadable for the window: the last
-    // successful check was at most a tick (1 s) before `lost`.
+    // successful check came before `lost`, so only half the window is
+    // required (see `FAIL_CLOSED_AFTER`).
     assert!(
-        lost.elapsed() >= FAIL_CLOSED_AFTER.saturating_sub(Duration::from_secs(2)),
+        lost.elapsed() >= FAIL_CLOSED_AFTER / 2,
         "ended after {:?} of failures",
         lost.elapsed()
     );
@@ -456,6 +503,8 @@ async fn db_unreadable_fails_closed() {
 async fn hung_grant_query_still_fails_closed_and_expires() {
     let s = key_target_with(RelayLimits {
         fail_closed_after: EXPIRY_FIRST_WINDOW,
+        grant_check_every: CHECK_EVERY,
+        grant_query_timeout: HUNG_QUERY_TIMEOUT,
         ..RelayLimits::default()
     })
     .await;
@@ -468,7 +517,8 @@ async fn hung_grant_query_still_fails_closed_and_expires() {
 
     // Every connection of the pool taken: from now on a grant query waits
     // for one (sqlx's 30 s acquire timeout), as on a hung disk. The last
-    // successful check was at most one tick (1 s) before this.
+    // successful check came before this, so only half the window is required
+    // below (the reasoning at `FAIL_CLOSED_AFTER` holds for `EXPIRY_FIRST_WINDOW`).
     let hung = Instant::now();
     let held = take_every_connection(&s.broker).await;
 
@@ -480,10 +530,10 @@ async fn hung_grant_query_still_fails_closed_and_expires() {
     assert_eq!(ended[0]["reason"], "expired");
 
     // `other`'s session ends once no query has succeeded for the window:
-    // not before the window less a tick after the queries started hanging.
+    // not before half the window after the queries started hanging.
     assert_both_sides_closed(&s, &kept, 0).await;
     assert!(
-        hung.elapsed() >= EXPIRY_FIRST_WINDOW.saturating_sub(Duration::from_millis(1100)),
+        hung.elapsed() >= EXPIRY_FIRST_WINDOW / 2,
         "failed closed too early: {:?}",
         hung.elapsed()
     );

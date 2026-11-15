@@ -22,6 +22,10 @@ const SECRET: &str = "pr0xy-Cred/+=en&tial~42";
 
 const WAIT: Duration = HANG;
 
+/// The wait of a change for the audit log's lock in the tests of a stalled
+/// log, instead of the 2 s of production.
+const SHORT_WRITE_WAIT: Duration = Duration::from_millis(50);
+
 struct Setup {
     broker: TestBroker,
     upstream: HttpsUpstream,
@@ -386,6 +390,11 @@ async fn a_grant_state_that_stays_unreadable_stops_the_call() {
 #[tokio::test]
 async fn a_stalled_log_cannot_delay_telling_the_calls() {
     let s = setup().await;
+    s.broker
+        .state()
+        .requests
+        .set_audit_write_wait(SHORT_WRITE_WAIT)
+        .await;
     let requests = &s.broker.state().requests;
     let hold = |agent: &str, grant: &Id| {
         let agent = AgentName::try_from(agent.to_owned()).unwrap();
@@ -426,6 +435,11 @@ async fn a_stalled_log_cannot_delay_telling_the_calls() {
 #[tokio::test]
 async fn a_stalled_log_does_not_keep_a_call_going_or_lose_its_end() {
     let s = setup().await;
+    s.broker
+        .state()
+        .requests
+        .set_audit_write_wait(SHORT_WRITE_WAIT)
+        .await;
     let (resp, holder) = tokio::join!(within("the call ending", get(&s, "/hang")), async {
         reached(&s, 1).await;
         let holder = std::fs::File::open(s.broker.audit_path()).unwrap();

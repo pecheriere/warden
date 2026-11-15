@@ -260,6 +260,7 @@ impl RelayHandler {
                     wedge: shared.limits.wedge_timeout,
                     idle: shared.limits.idle_timeout,
                     left: shared.limits.agent_left_grace,
+                    forced_close: shared.limits.forced_close_wait,
                 };
                 let outcome = session::relay(
                     ends,
