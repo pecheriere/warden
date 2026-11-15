@@ -34,12 +34,12 @@ impl TestBroker {
         self.serve(self.serve_routers(), None).await
     }
 
-    /// Like [`TestBroker::spawn_behind_serve`], on the ports of `urls`: for
-    /// example those of this broker before [`TestBroker::restart`], so that
-    /// clients see the same broker come back.
+    /// Like [`TestBroker::spawn_behind_serve`], on the ports of `urls`, which
+    /// this broker served on before [`TestBroker::restart`] and has held
+    /// since: clients see the same broker come back.
     ///
     /// # Panics
-    /// If a listener cannot be bound, for instance because the port is in use.
+    /// If this broker does not hold those ports, or already serves on them.
     pub async fn spawn_behind_serve_at(&self, urls: &BaseUrls) -> BaseUrls {
         let port = |url: &Url| url.port().expect("loopback URL has a port");
         self.serve(
@@ -60,20 +60,21 @@ impl TestBroker {
         ]
     }
 
-    /// Serve `routers` on loopback, on `ports` or ephemeral ones. Stopping a
-    /// server (on drop or restart) also drops its open connections, in-flight
-    /// requests included, as a process exit would.
+    /// Serve `routers` on loopback, on the held `ports` or new ephemeral ones.
+    /// Stopping a server (on drop or restart) also drops its open
+    /// connections, in-flight requests included, as a process exit would.
     async fn serve(&self, routers: [Router; 2], ports: Option<[u16; 2]>) -> BaseUrls {
-        let ports = ports.unwrap_or([0, 0]);
+        let ports = ports.map_or([None, None], |ports| ports.map(Some));
         let mut bound = Vec::new();
         let listeners = [
             ("agent API", ServeLimits::API),
             ("approval UI", ServeLimits::APPROVAL),
         ];
         for ((router, port), (name, limits)) in routers.into_iter().zip(ports).zip(listeners) {
-            let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port))
-                .await
-                .expect("bind loopback listener");
+            let listener = match port {
+                Some(port) => self.ports.resume(port).await,
+                None => self.ports.bind(),
+            };
             let addr = listener.local_addr().expect("listener address");
             // Served as in production; aborting the task closes its connections.
             let task = tokio::spawn(crate::serve::serve(
@@ -86,7 +87,7 @@ impl TestBroker {
             self.servers
                 .lock()
                 .expect("servers lock poisoned")
-                .push(task.abort_handle());
+                .push(task);
             bound.push(Url::parse(&format!("http://{addr}/")).expect("loopback URL"));
         }
         let approval = bound.pop().expect("approval listener");

@@ -406,8 +406,8 @@ async fn poll_survives_server_restart_mid_wait() {
     let token = CapturingNotifier::token(&broker.capture.next().await);
 
     // The broker process goes away while the CLI is long-polling: its
-    // listeners and the in-flight poll are dropped, and the port refuses
-    // connections until the CLI has found it gone and said it will retry. Only
+    // listeners and the in-flight poll are dropped, and the port fails every
+    // connection (a reset) until the CLI has found it gone and said it will retry. Only
     // then does the broker come back on it.
     let broker = broker.restart().await;
     let stderr = BufReader::new(child.child().stderr.take().unwrap());
