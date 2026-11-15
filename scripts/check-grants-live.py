@@ -1,6 +1,6 @@
-#!/usr/bin/env python3
-"""Check the live refresh of the grants and pending pages (warden.js) in headless
-Chrome.
+#!/usr/bin/env -S uv run --no-project --with playwright==1.64.0 python3 -I
+"""Check the live refresh of the grants and pending pages (warden.js) in
+Playwright's Chromium headless shell.
 
 Usage: scripts/check-grants-live.py <out-dir>
   Renders the page fixtures into <out-dir>/warden-live-check/ (the only
@@ -34,8 +34,11 @@ Usage: scripts/check-grants-live.py <out-dir>
   - the overlaid message takes the tap on it and clears, and a plain one fades;
   - an unchanged note about updating is not written again.
 
-Chrome runs on virtual time, so 30 s of polling take about a second.
-Needs: cargo, Google Chrome (override with CHROME=...).
+The browser runs on virtual time (CDP Emulation.setVirtualTimePolicy), so 30 s
+of polling take about a second. It is launched once and every scenario gets a
+fresh page. Needs: cargo, uv, and the headless shell (installed with:
+uv run --with playwright playwright install chromium-headless-shell). Never an
+installed Chrome.
 """
 
 import itertools
@@ -44,16 +47,18 @@ import re
 import shutil
 import subprocess
 import sys
-import tempfile
 import threading
+import time
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from playwright.sync_api import Error, TimeoutError as PlaywrightTimeout, sync_playwright
+
 ROOT = Path(__file__).resolve().parent.parent
-CHROME = os.environ.get(
-    "CHROME", "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-)
+INSTALL_HINT = "uv run --with playwright playwright install chromium-headless-shell"
+# Real-time limit for one page; a page that keeps reloading never uses up its budget.
+LOAD_TIMEOUT_MS = 60_000
 PAGE = "/grants-live.html"
 # Grant ids of the "grants-live" fixture (crates/broker/src/approval/pages.rs).
 RELAY, API, CERT = (f"{n:032x}" for n in (5, 4, 2))
@@ -325,32 +330,34 @@ class Handler(SimpleHTTPRequestHandler):
         pass
 
 
-def load(url, budget_ms):
-    """The page's DOM after `budget_ms` of virtual time; empty if Chrome
-    does not finish (a page that keeps reloading never does)."""
-    with tempfile.TemporaryDirectory() as profile:
+def load_dom(browser, url, budget_ms):
+    """The page's DOM after `budget_ms` of virtual time; empty if the browser
+    does not get through the budget (a page that keeps reloading never does)."""
+    context = browser.new_context()
+    try:
+        page = context.new_page()
+        cdp = context.new_cdp_session(page)
+        expired = threading.Event()
+        cdp.on("Emulation.virtualTimeBudgetExpired", lambda _: expired.set())
         try:
-            result = subprocess.run(
-                [
-                    CHROME,
-                    "--headless=new",
-                    "--disable-gpu",
-                    f"--user-data-dir={profile}",
-                    f"--virtual-time-budget={budget_ms}",
-                    "--dump-dom",
-                    url,
-                ],
-                capture_output=True,
-                text=True,
-                timeout=60,
-                check=True,
-            )
-        except subprocess.TimeoutExpired:
+            # The page loads in real time; the budget then covers its polling.
+            page.goto(url, wait_until="load", timeout=LOAD_TIMEOUT_MS)
+            cdp.send("Emulation.setVirtualTimePolicy", {
+                "policy": "pauseIfNetworkFetchesPending",
+                "budget": budget_ms,
+            })
+            deadline = time.monotonic() + LOAD_TIMEOUT_MS / 1000
+            while not expired.is_set():
+                if time.monotonic() > deadline:
+                    return ""
+                page.wait_for_timeout(10)
+            return page.content()
+        except PlaywrightTimeout:
             return ""
-        except subprocess.CalledProcessError as e:
-            detail = e.stderr.strip().splitlines()[-1:] or [f"exit status {e.returncode}"]
-            raise CheckError(f"Chrome failed on {url}: {detail[0]}") from e
-    return result.stdout
+        except Error as e:
+            raise CheckError(f"browser failed on {url}: {e.message.splitlines()[0]}") from e
+    finally:
+        context.close()
 
 
 def cards(dom):
@@ -384,10 +391,6 @@ def run():
     if base in (Path("/"), Path(os.path.realpath(Path.home()))):
         print("error: <out-dir> must not be / or the home directory", file=sys.stderr)
         return 2
-    if not os.access(CHROME, os.X_OK):
-        print(f"error: Chrome not found at {CHROME} (set CHROME)", file=sys.stderr)
-        return 1
-
     out = base / "warden-live-check"
     shutil.rmtree(out, ignore_errors=True)
     out.mkdir(parents=True)
@@ -431,154 +434,168 @@ def run():
         if not ok:
             failures.append(f"{name}: {detail}")
 
-    try:
-        for status in (401, 403):
-            mock.set(status, b'{"error":"forbidden"}')
-            load(url, 30_000)
-            polls = mock.count("/grants/live")
-            check(f"a {status} stops polling", polls == 1, f"{polls} requests")
-
-        mock.set(200, live_body(RELAY, CERT))
-        dom = load(url, 12_000)
-        check("an ended grant loses its card", cards(dom) == [RELAY, CERT], cards(dom))
-        polls = mock.count("/grants/live")
-        check("polling goes on after a removal", polls >= 2, f"{polls} requests")
-
-        mock.set(200, live_body(CERT))
-        dom = load(f"{origin}{FOCUS_PAGE}", 12_000)
-        focused = re.search(r"focused:(\w+)", dom)
-        focused = focused.group(1) if focused else "nothing reported"
-        check("focus skips the cards removed with its own", focused == CERT, focused)
-
-        mock.set(200, live_body(RELAY, API, CERT, NEW))
-        load(url, 30_000)
-        loads = mock.count(PAGE)
-        check("a new grant reloads the page once", loads == 2, f"{loads} page loads")
-
-        mock.set(200, live_body(RELAY, API, CERT))
-        load(url, 12_000)
-        loads = mock.count(PAGE)
-        check("matching grants do not reload", loads == 1, f"{loads} page loads")
-
-        mock.set(200, live_body(RELAY, API, CERT, idle_secs=3660))
-        dom = load(url, 12_000)
-        check("a session's idle time follows the answer", "Idle 1 h 1 min" in dom, "not shown")
-        check("a certificate grant keeps its issue time", "Certificate issued" in dom, "gone")
-        check("a certificate grant still says logins are not visible",
-              "not visible to warden" in dom, "gone")
-
-        minutes = itertools.count(1)
-        mock.set(200, lambda: live_body(RELAY, API, CERT, idle_secs=60 * next(minutes)))
-        dom = load(f"{origin}{IDLE_PAGE}", 22_000)
-        report = re.search(r"kept:(\w+) before:([^;]*) after:([^;]*);", dom)
-        check("an idle time updates without rebuilding the card",
-              bool(report) and report.group(1) == "true"
-              and report.group(2) != report.group(3) and "Idle" in report.group(3),
-              report.group(0) if report else "nothing reported")
-
-        pending_url = f"{origin}{PENDING_PAGE}"
-        for status in (401, 403):
-            mock.set(status, b'{"error":"forbidden"}')
-            load(pending_url, 30_000)
-            polls = mock.count("/pending/live")
-            dom = load(pending_url, 12_000)
-            check(f"pending: a {status} stops polling", polls == 1, f"{polls} requests")
-            check(f"pending: a {status} says the list stopped updating",
-                  "stopped updating" in dom, "no note")
-
-        mock.set(500, b'{"error":"internal error"}')
-        dom = load(pending_url, 12_000)
-        check("pending: a failing poll says the list is not updating",
-              "not updating" in dom, "no note")
-
-        mock.set(200, pending_body(*PENDING_IDS[:3]), with_new)
-        dom = load(pending_url, 12_000)
-        shown = pending_cards(dom)
-        check("pending: an ended request stays in place", shown == PENDING_IDS, shown)
-        check("pending: and is marked as ended", ended_cards(dom) == PENDING_IDS[3:],
-              ended_cards(dom))
-        polls = mock.count("/pending/live")
-        check("pending: polling goes on after a removal", polls >= 2, f"{polls} requests")
-        check("pending: a removal fetches no page", mock.count("/pending") == 0,
-              f"{mock.count('/pending')} fetches")
-
-        mock.set(200, pending_body(*PENDING_IDS[1:], NEW_REQUEST), with_new)
-        dom = load(f"{origin}{TAP_PAGE}", 12_000)
-        moved = re.search(r"moved:(-?[\d.]+)", dom)
-        moved = moved.group(1) if moved else "nothing reported"
-        check("pending: an ended and a new card move nothing", moved == "0", moved)
-
-        mock.set(200, pending_body(*PENDING_IDS, NEW_REQUEST), with_new)
-        dom = load(pending_url, 12_000)
-        shown = pending_cards(dom)
-        check("pending: a new request goes at the end",
-              shown == PENDING_IDS + [NEW_REQUEST], shown)
-        loads = mock.count(PENDING_PAGE)
-        check("pending: a new request does not reload", loads == 1, f"{loads} page loads")
-        fetched = mock.count("/pending")
-        check("pending: it is fetched once", fetched == 1, f"{fetched} fetches")
-
-        mock.set(200, pending_body(), empty)
-        dom = load(pending_url, 22_000)
-        check("pending: the last card going leaves the empty state",
-              'data-pending="empty"' in dom and not pending_cards(dom), pending_cards(dom))
-        polls = mock.count("/pending/live")
-        check("pending: the empty state polls on", polls >= 2, f"{polls} requests")
-
-        mock.set(200, pending_body(NEW_REQUEST), with_new)
-        dom = load(f"{origin}{PENDING_EMPTY_PAGE}", 12_000)
-        check("pending: a request appears from the empty state", NEW_REQUEST in pending_cards(dom),
-              pending_cards(dom))
-
-        mock.set(200, pending_body(*PENDING_IDS, remaining=240), listed.encode())
-        dom = load(pending_url, 7_000)
-        check("pending: the time left follows the answer", "in 4 min" in dom, "no \"in 4 min\"")
-        posts = sum(1 for path in mock.paths if path.startswith("POST"))
-        check("pending: polling posts nothing", posts == 0, f"{posts} posts")
-
-        mock.set(200, pending_body(), empty)
-        dom = load(f"{origin}{DENY_PAGE}", 10_000)
-        said = re.search(r"state:(\w+) said:([^<]*)", dom)
-        said = said.groups() if said else ("nothing reported", "")
-        check("pending: what a denial said stays on the empty state",
-              said[0] == "empty" and DENIED_SAYS in said[1], said)
-
-        mock.set(200, pending_body(NEW_REQUEST), with_new, page_status=500)
-        dom = load(f"{origin}{RECOVER_PAGE}", 8_000)
-        got = re.search(r"failed:\[([^\]]*)\] cards:([0-9a-f,]*) note:\[([^\]]*)\]", dom)
-        got = got.groups() if got else ("nothing reported", "", "")
-        check("pending: a failed refresh says the list is not updating",
-              "not updating" in got[0], got)
-        check("pending: a new request appears after cards went while hidden",
-              NEW_REQUEST in got[1].split(","), got)
-        check("pending: the note clears after that", got[2] == "", got)
-
-        mock.set(200, pending_body(*PENDING_IDS), listed.encode())
-        dom = load(f"{origin}{OVERLAY_PAGE}", 6_000)
-        check("pending: the overlaid message takes a tap, clears and rests the buttons",
-              "taken:true cleared:true rested:true" in dom,
-              re.findall(r"taken:\w+ cleared:\w+ rested:\w+", dom))
-
-        mock.set(200, pending_body(*PENDING_IDS), listed.encode(), denied_says="Denied.")
-        dom = load(f"{origin}{FADE_PAGE}", 14_000)
-        check("pending: a plain denial shows, then fades",
-              "early:[Denied.] late:[]" in dom, re.findall(r"early:.*late:\[[^\]]*\]", dom))
-        mock.set(200, pending_body(*PENDING_IDS), listed.encode())
-        dom = load(f"{origin}{FADE_PAGE}", 14_000)
-        check("pending: a warning does not fade", f"late:[{DENIED_SAYS}" in dom,
-              re.findall(r"early:.*late:\[[^\]]*\]", dom))
-
-        mock.set(500, b'{"error":"internal error"}')
-        dom = load(f"{origin}{NOTE_PAGE}", 24_000)
-        changes = re.search(r"changes:(\d+)", dom)
-        changes = changes.group(1) if changes else "nothing reported"
-        check("pending: an unchanged note is not written again", changes == "1", changes)
-    finally:
-        server.shutdown()
+    with sync_playwright() as p:
+        # No channel and no executable path: only Playwright's own headless
+        # shell, never an installed Chrome.
+        try:
+            browser = p.chromium.launch()
+        except Error as e:
+            raise CheckError(f"Chromium headless shell failed to start: "
+                             f"{e.message.splitlines()[0]}\nhint: {INSTALL_HINT}") from e
+        try:
+            run_checks(browser, mock, origin, url, out, listed, with_new, empty, check)
+        finally:
+            browser.close()
+            server.shutdown()
 
     for failure in failures:
         print(f"error: {failure}", file=sys.stderr)
     return 1 if failures else 0
+
+
+def run_checks(browser, mock, origin, url, out, listed, with_new, empty, check):
+    load = partial(load_dom, browser)
+    for status in (401, 403):
+        mock.set(status, b'{"error":"forbidden"}')
+        load(url, 30_000)
+        polls = mock.count("/grants/live")
+        check(f"a {status} stops polling", polls == 1, f"{polls} requests")
+
+    mock.set(200, live_body(RELAY, CERT))
+    dom = load(url, 12_000)
+    check("an ended grant loses its card", cards(dom) == [RELAY, CERT], cards(dom))
+    polls = mock.count("/grants/live")
+    check("polling goes on after a removal", polls >= 2, f"{polls} requests")
+
+    mock.set(200, live_body(CERT))
+    dom = load(f"{origin}{FOCUS_PAGE}", 12_000)
+    focused = re.search(r"focused:(\w+)", dom)
+    focused = focused.group(1) if focused else "nothing reported"
+    check("focus skips the cards removed with its own", focused == CERT, focused)
+
+    mock.set(200, live_body(RELAY, API, CERT, NEW))
+    load(url, 30_000)
+    loads = mock.count(PAGE)
+    check("a new grant reloads the page once", loads == 2, f"{loads} page loads")
+
+    mock.set(200, live_body(RELAY, API, CERT))
+    load(url, 12_000)
+    loads = mock.count(PAGE)
+    check("matching grants do not reload", loads == 1, f"{loads} page loads")
+
+    mock.set(200, live_body(RELAY, API, CERT, idle_secs=3660))
+    dom = load(url, 12_000)
+    check("a session's idle time follows the answer", "Idle 1 h 1 min" in dom, "not shown")
+    check("a certificate grant keeps its issue time", "Certificate issued" in dom, "gone")
+    check("a certificate grant still says logins are not visible",
+          "not visible to warden" in dom, "gone")
+
+    minutes = itertools.count(1)
+    mock.set(200, lambda: live_body(RELAY, API, CERT, idle_secs=60 * next(minutes)))
+    dom = load(f"{origin}{IDLE_PAGE}", 22_000)
+    report = re.search(r"kept:(\w+) before:([^;]*) after:([^;]*);", dom)
+    check("an idle time updates without rebuilding the card",
+          bool(report) and report.group(1) == "true"
+          and report.group(2) != report.group(3) and "Idle" in report.group(3),
+          report.group(0) if report else "nothing reported")
+
+    pending_url = f"{origin}{PENDING_PAGE}"
+    for status in (401, 403):
+        mock.set(status, b'{"error":"forbidden"}')
+        load(pending_url, 30_000)
+        polls = mock.count("/pending/live")
+        dom = load(pending_url, 12_000)
+        check(f"pending: a {status} stops polling", polls == 1, f"{polls} requests")
+        check(f"pending: a {status} says the list stopped updating",
+              "stopped updating" in dom, "no note")
+
+    mock.set(500, b'{"error":"internal error"}')
+    dom = load(pending_url, 12_000)
+    check("pending: a failing poll says the list is not updating",
+          "not updating" in dom, "no note")
+
+    mock.set(200, pending_body(*PENDING_IDS[:3]), with_new)
+    dom = load(pending_url, 12_000)
+    shown = pending_cards(dom)
+    check("pending: an ended request stays in place", shown == PENDING_IDS, shown)
+    check("pending: and is marked as ended", ended_cards(dom) == PENDING_IDS[3:],
+          ended_cards(dom))
+    polls = mock.count("/pending/live")
+    check("pending: polling goes on after a removal", polls >= 2, f"{polls} requests")
+    check("pending: a removal fetches no page", mock.count("/pending") == 0,
+          f"{mock.count('/pending')} fetches")
+
+    mock.set(200, pending_body(*PENDING_IDS[1:], NEW_REQUEST), with_new)
+    dom = load(f"{origin}{TAP_PAGE}", 12_000)
+    moved = re.search(r"moved:(-?[\d.]+)", dom)
+    moved = moved.group(1) if moved else "nothing reported"
+    check("pending: an ended and a new card move nothing", moved == "0", moved)
+
+    mock.set(200, pending_body(*PENDING_IDS, NEW_REQUEST), with_new)
+    dom = load(pending_url, 12_000)
+    shown = pending_cards(dom)
+    check("pending: a new request goes at the end",
+          shown == PENDING_IDS + [NEW_REQUEST], shown)
+    loads = mock.count(PENDING_PAGE)
+    check("pending: a new request does not reload", loads == 1, f"{loads} page loads")
+    fetched = mock.count("/pending")
+    check("pending: it is fetched once", fetched == 1, f"{fetched} fetches")
+
+    mock.set(200, pending_body(), empty)
+    dom = load(pending_url, 22_000)
+    check("pending: the last card going leaves the empty state",
+          'data-pending="empty"' in dom and not pending_cards(dom), pending_cards(dom))
+    polls = mock.count("/pending/live")
+    check("pending: the empty state polls on", polls >= 2, f"{polls} requests")
+
+    mock.set(200, pending_body(NEW_REQUEST), with_new)
+    dom = load(f"{origin}{PENDING_EMPTY_PAGE}", 12_000)
+    check("pending: a request appears from the empty state", NEW_REQUEST in pending_cards(dom),
+          pending_cards(dom))
+
+    mock.set(200, pending_body(*PENDING_IDS, remaining=240), listed.encode())
+    dom = load(pending_url, 7_000)
+    check("pending: the time left follows the answer", "in 4 min" in dom, "no \"in 4 min\"")
+    posts = sum(1 for path in mock.paths if path.startswith("POST"))
+    check("pending: polling posts nothing", posts == 0, f"{posts} posts")
+
+    mock.set(200, pending_body(), empty)
+    dom = load(f"{origin}{DENY_PAGE}", 10_000)
+    said = re.search(r"state:(\w+) said:([^<]*)", dom)
+    said = said.groups() if said else ("nothing reported", "")
+    check("pending: what a denial said stays on the empty state",
+          said[0] == "empty" and DENIED_SAYS in said[1], said)
+
+    mock.set(200, pending_body(NEW_REQUEST), with_new, page_status=500)
+    dom = load(f"{origin}{RECOVER_PAGE}", 8_000)
+    got = re.search(r"failed:\[([^\]]*)\] cards:([0-9a-f,]*) note:\[([^\]]*)\]", dom)
+    got = got.groups() if got else ("nothing reported", "", "")
+    check("pending: a failed refresh says the list is not updating",
+          "not updating" in got[0], got)
+    check("pending: a new request appears after cards went while hidden",
+          NEW_REQUEST in got[1].split(","), got)
+    check("pending: the note clears after that", got[2] == "", got)
+
+    mock.set(200, pending_body(*PENDING_IDS), listed.encode())
+    dom = load(f"{origin}{OVERLAY_PAGE}", 6_000)
+    check("pending: the overlaid message takes a tap, clears and rests the buttons",
+          "taken:true cleared:true rested:true" in dom,
+          re.findall(r"taken:\w+ cleared:\w+ rested:\w+", dom))
+
+    mock.set(200, pending_body(*PENDING_IDS), listed.encode(), denied_says="Denied.")
+    dom = load(f"{origin}{FADE_PAGE}", 14_000)
+    check("pending: a plain denial shows, then fades",
+          "early:[Denied.] late:[]" in dom, re.findall(r"early:.*late:\[[^\]]*\]", dom))
+    mock.set(200, pending_body(*PENDING_IDS), listed.encode())
+    dom = load(f"{origin}{FADE_PAGE}", 14_000)
+    check("pending: a warning does not fade", f"late:[{DENIED_SAYS}" in dom,
+          re.findall(r"early:.*late:\[[^\]]*\]", dom))
+
+    mock.set(500, b'{"error":"internal error"}')
+    dom = load(f"{origin}{NOTE_PAGE}", 24_000)
+    changes = re.search(r"changes:(\d+)", dom)
+    changes = changes.group(1) if changes else "nothing reported"
+    check("pending: an unchanged note is not written again", changes == "1", changes)
 
 
 if __name__ == "__main__":

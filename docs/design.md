@@ -728,15 +728,15 @@ with fixture data and fails on inline styles, external origins, images or any
 script and stylesheet other than `/static/warden.js` and `/static/warden.css`.
 `scripts/screenshot-pages.sh <out-dir>` runs it with `WARDEN_RENDER_PAGES_DIR`
 set, serves the pages on `127.0.0.1` and captures each at 320x568, 390x844,
-466x678, 678x466, 626x890, 890x626 and 1280x800, light and dark, with headless
-Chrome (needs ImageMagick). Screenshots are captured at viewport height (what
+466x678, 678x466, 626x890, 890x626 and 1280x800, light and dark, with
+Playwright's Chromium headless shell (via uv). Screenshots are captured at viewport height (what
 is on screen without scrolling) and land in `<out-dir>/warden-pages/shots`
 (the script deletes and recreates only that subdirectory); keep `<out-dir>`
 outside the repository, as screenshots are never committed.
 
 `scripts/check-grants-live.py <out-dir>` checks the live refresh of the
 grants and pending pages the same way: it serves their fixtures with mocked
-answers and asserts, in headless Chrome on virtual time, that a 401 or 403
+answers and asserts, in Playwright's Chromium headless shell on virtual time, that a 401 or 403
 stops polling, that a grant missing from the answer loses its card, that a
 request missing from it is marked in place, that a grant with no card reloads
 the page exactly once, that a new request appears without a reload, also from
