@@ -6,6 +6,7 @@ use axum::http::StatusCode;
 use serde_json::{Value, json};
 use warden_broker::policy::GithubPermissionPolicy;
 use warden_broker::requests::RequestError;
+use warden_broker::testkit::upstream::HttpsUpstream;
 use warden_broker::testkit::{CapturingNotifier, TestBroker};
 use warden_broker_proto::github_token::{
     EXTRA_NOT_ALLOWED, OTHER_PERMISSIONS_PENDING, SENSITIVE_WINDOW,
@@ -15,13 +16,13 @@ use warden_broker_proto::{CreateRequest, Window};
 use super::permissions::{WITH_CHECKS, set};
 use super::{active_for, approve, configured_on_fake, entries, installation, resolved};
 
-const REPO: &str = "example-owner/example-repo";
+pub(super) const REPO: &str = "example-owner/example-repo";
 
 /// The legacy set, which is the default of a broker whose owner set none.
-const LEGACY: &str = "contents:write,issues:write,metadata:read,pull_requests:write";
+pub(super) const LEGACY: &str = "contents:write,issues:write,metadata:read,pull_requests:write";
 
 /// Make `default` the owner's default and `allowed` what agents may add to it.
-fn allow(broker: &TestBroker, default: &str, allowed: &str) {
+pub(super) fn allow(broker: &TestBroker, default: &str, allowed: &str) {
     broker
         .backend
         .set_github_permissions(Some(GithubPermissionPolicy {
@@ -30,7 +31,7 @@ fn allow(broker: &TestBroker, default: &str, allowed: &str) {
         }));
 }
 
-fn with_extras(window: Window, extras: &str) -> CreateRequest {
+pub(super) fn with_extras(window: Window, extras: &str) -> CreateRequest {
     TestBroker::github_token_request_with_extras("push the fix", window, &[REPO], extras)
 }
 
@@ -51,6 +52,44 @@ async fn post_automatic(broker: &TestBroker, key: &str) -> (StatusCode, String) 
     body["access"]["automatic"] = json!({"by": "git_credential"});
     let resp = broker.api_post_json(key, "/v1/requests", &body).await;
     (resp.status, resp.body)
+}
+
+/// What the App's installation holds when it holds the legacy set and `more`.
+pub(super) fn installation_with(
+    more: &[(&str, &str)],
+) -> warden_broker::testkit::upstream::Scripted {
+    let mut held = vec![
+        ("contents", "write"),
+        ("issues", "write"),
+        ("metadata", "read"),
+        ("pull_requests", "write"),
+    ];
+    held.extend_from_slice(more);
+    installation(&held)
+}
+
+/// Ask for `REPO` as `bot` with `extras` for `window`, approve it, and return the
+/// grant. The installation holds the legacy set and `more`, which the caller names
+/// for the extras it asks.
+pub(super) async fn approve_with_extras(
+    broker: &TestBroker,
+    upstream: &HttpsUpstream,
+    window: Window,
+    extras: &str,
+    more: &[(&str, &str)],
+) -> String {
+    let (_, token) = broker
+        .create_request("bot", with_extras(window, extras))
+        .await;
+    upstream.answer_github_installation(Some(installation_with(more)));
+    upstream.script_github_token(resolved(broker, &[(1001, REPO)]));
+    let approved = broker.approve(&token, window).await;
+    assert_eq!(approved.status, StatusCode::OK, "{}", approved.body);
+    active_for(broker, "bot", REPO)
+        .await
+        .expect("a grant for the repository")
+        .grant_id
+        .to_string()
 }
 
 fn created_id(body: &str) -> String {

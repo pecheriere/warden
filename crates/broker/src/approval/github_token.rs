@@ -2,6 +2,7 @@
 //! names, and the grant for the repositories GitHub resolved when the owner opened
 //! the page.
 
+use warden_broker_proto::github_token::EXTRA_NOT_ALLOWED;
 use warden_broker_proto::{Access, GrantAccess, GrantView, Id, Window};
 
 use super::grant::{GrantFailure, validity};
@@ -14,7 +15,8 @@ const CANNOT_APPROVE: &str =
 
 /// Whether `view` can be approved: the request names repositories, GitHub
 /// resolved every one of them, what was stored makes a valid scope, which `grant`
-/// would otherwise fail to build after the owner's passkey, and the App's
+/// would otherwise fail to build after the owner's passkey, the owner's allowlist,
+/// read for this view, still holds every extra the request names, and the App's
 /// installation, read for this view, holds every permission of the request.
 pub(super) fn check(view: &PendingView) -> Result<(), String> {
     let Access::GithubToken(access) = &view.request.access else {
@@ -27,6 +29,14 @@ pub(super) fn check(view: &PendingView) -> Result<(), String> {
         resolution @ Resolution::Resolved(_)
             if !access.is_legacy() && resolution.scope().is_some() => {}
         _ => return Err(CANNOT_APPROVE.to_owned()),
+    }
+    if !github.not_allowed.is_empty() {
+        let names: Vec<String> = github
+            .not_allowed
+            .iter()
+            .map(|p| p.name().to_owned())
+            .collect();
+        return Err(format!("{EXTRA_NOT_ALLOWED}{}", names.join(", ")));
     }
     github.installation.refusal().map_or(Ok(()), Err)
 }

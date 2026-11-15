@@ -14,6 +14,7 @@ fn pending(permissions: StoredPermissions, replaces: Vec<ReplacedGrant>) -> Gith
         }]),
         replaces,
         permissions,
+        not_allowed: Vec::new(),
         installation: InstallationCheck::Holds,
     }
 }

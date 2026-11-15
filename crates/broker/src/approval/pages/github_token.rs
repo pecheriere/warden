@@ -5,7 +5,9 @@
 
 use maud::{Markup, html};
 use warden_broker_proto::github_permissions::{GrantedPermissions, Permission, PermissionSet};
-use warden_broker_proto::github_token::{AutomaticCaller, GithubTokenAccess, GrantScope};
+use warden_broker_proto::github_token::{
+    AutomaticCaller, EXTRA_NOT_ALLOWED, GithubTokenAccess, GrantScope,
+};
 use warden_broker_proto::{Access, AgentName};
 
 use super::{icon, warning_icon};
@@ -36,6 +38,17 @@ pub(super) fn not_approvable(view: &PendingView) -> Option<Markup> {
                     code { bdi { (repo.as_str()) } }
                 }
                 ", or one of them does not exist."
+            }
+        });
+    }
+    // Before the installation: an extra the owner no longer allows is the owner's
+    // own configuration, and holds whatever the App has.
+    if !github.not_allowed.is_empty() {
+        return Some(html! {
+            p.cannot #cannot-approve role="alert" {
+                "This request cannot be approved: " (EXTRA_NOT_ALLOWED)
+                (github.not_allowed.iter().map(Permission::name).collect::<Vec<_>>().join(", "))
+                "."
             }
         });
     }

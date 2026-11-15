@@ -64,6 +64,7 @@ pub(super) fn resolved(list: Vec<ScopedRepository>) -> GithubPending {
         resolution: Resolution::Resolved(list),
         replaces: Vec::new(),
         permissions: StoredPermissions::legacy(),
+        not_allowed: Vec::new(),
         installation: InstallationCheck::Holds,
     }
 }
@@ -142,6 +143,7 @@ pub(super) fn unreachable_view() -> crate::requests::PendingView {
             resolution: Resolution::NotAccessible,
             replaces: Vec::new(),
             permissions: StoredPermissions::legacy(),
+            not_allowed: Vec::new(),
             installation: InstallationCheck::Holds,
         }),
     )
@@ -179,6 +181,7 @@ pub(super) fn replaces_view_with(n: usize) -> crate::requests::PendingView {
             .take(n)
             .collect(),
             permissions: StoredPermissions::legacy(),
+            not_allowed: Vec::new(),
             installation: InstallationCheck::Holds,
         }),
     )

@@ -17,6 +17,7 @@ use warden_broker_proto::{
 };
 
 use super::create::Attached;
+use super::github_permissions::grant_extras;
 use super::github_scope::{Resolution, resolution_of};
 use super::transition::detached;
 use super::{Destination, RequestError, Requests, Scope, approval_token, begin, parse};
@@ -96,6 +97,15 @@ impl OneAtATime {
         match self {
             Self::CommitSigning => "commit signing",
             Self::GithubToken => "GitHub token",
+        }
+    }
+
+    /// The windows a grant of this kind may also have, when it holds a sensitive
+    /// extra permission.
+    const fn short_windows(self) -> &'static [Window] {
+        match self {
+            Self::CommitSigning => &[],
+            Self::GithubToken => &Window::GITHUB_TOKEN_SENSITIVE,
         }
     }
 
@@ -279,6 +289,7 @@ impl Requests {
         let window = kind
             .windows()
             .iter()
+            .chain(kind.short_windows())
             .copied()
             .find(|w| u64::try_from(secs).is_ok_and(|s| s == w.secs()))
             .ok_or_else(|| RequestError::Corrupt(format!("unknown {} window", kind.name())))?;
@@ -290,22 +301,29 @@ impl Requests {
             }
             OneAtATime::GithubToken => Destination::GithubToken(self.github_token_policy().await?),
         };
-        let window = window.min(policy.max_window());
-        policy
-            .check_window(window)
-            .map_err(RequestError::Rejected)?;
         let renewing = renewing_scope(&row, kind)?;
         let access = match &renewing {
-            Some(scope) => Access::GithubToken(
-                GithubTokenAccess::new(
-                    scope.list().iter().map(|r| r.name.clone()).collect(),
-                    None,
-                    None,
+            Some(scope) => {
+                // The agent's extras ride along, so that the renewal keeps them.
+                let extras = grant_extras(&row)?;
+                Access::GithubToken(
+                    GithubTokenAccess::new(
+                        scope.list().iter().map(|r| r.name.clone()).collect(),
+                        None,
+                        extras,
+                    )
+                    .map_err(|_| RequestError::Corrupt("a grant's repositories".to_owned()))?,
                 )
-                .map_err(|_| RequestError::Corrupt("a grant's repositories".to_owned()))?,
-            ),
+            }
             None => Access::CommitSigning {},
         };
+        // A grant with a sensitive extra keeps its short window, and one without
+        // never gets one: a renewal cannot make a long grant holding a sensitive
+        // permission.
+        let window = window.min(policy.max_window());
+        policy
+            .check_request_window(window, &access)
+            .map_err(RequestError::Rejected)?;
         let req = CreateRequest {
             goal: renewal_goal(kind, renewing.as_ref())?,
             access,

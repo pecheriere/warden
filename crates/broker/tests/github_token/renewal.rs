@@ -6,8 +6,12 @@ use warden_broker::requests::{Resolution, ScopedRepository};
 use warden_broker::testkit::TestBroker;
 use warden_broker::testkit::upstream::{HttpsUpstream, Scripted};
 use warden_broker_proto::Window;
-use warden_broker_proto::github_token::{INSTALLATION_LACKS, NOT_CONFIGURED};
+use warden_broker_proto::github_permissions::PermissionSet;
+use warden_broker_proto::github_token::{
+    EXTRA_NOT_ALLOWED, INSTALLATION_LACKS, NOT_CONFIGURED, SENSITIVE_WINDOW,
+};
 
+use super::extras::{LEGACY, REPO, allow, approve_with_extras};
 use super::permissions::{WITH_CHECKS, set, set_default};
 use super::{
     active_for, approve, configured_on_fake, entries, github_calls, installation, resolved,
@@ -380,8 +384,6 @@ async fn renewing_pins_the_ids_of_a_request_already_waiting() {
     );
 }
 
-const REPO: &str = "example-owner/example-repo";
-
 /// The permissions of the grant `bot` holds for `REPO`.
 async fn held_by_bot(
     broker: &TestBroker,
@@ -493,4 +495,165 @@ async fn grants_page_shows_a_renewed_grants_own_set() {
     assert_eq!(approved.status, StatusCode::OK, "{}", approved.body);
     let grants = broker.get("/grants").await;
     assert!(grants.body.contains("checks: read"), "{}", grants.body);
+}
+
+/// The extras of the grant `bot` holds for `REPO`.
+async fn extras_of_bot(broker: &TestBroker) -> Option<PermissionSet> {
+    active_for(broker, "bot", REPO)
+        .await
+        .expect("a grant for the repository")
+        .grant
+        .extra_permissions
+        .map(|extras| extras.known().expect("a set this broker knows"))
+}
+
+#[tokio::test]
+async fn renewal_keeps_extras() {
+    let (broker, _key, upstream) = configured_on_fake().await;
+    allow(&broker, LEGACY, "checks:read");
+    let old = approve_with_extras(
+        &broker,
+        &upstream,
+        Window::D7,
+        "checks:read",
+        &[("checks", "read")],
+    )
+    .await;
+    let token = renew(&broker, &upstream, &old).await;
+    let page = broker.get(&format!("/approve/{token}")).await;
+    assert!(page.body.contains("checks: read"), "{}", page.body);
+    assert!(page.body.contains("id=\"approve\""), "{}", page.body);
+    let approved = broker.approve(&token, Window::D7).await;
+    assert_eq!(approved.status, StatusCode::OK, "{}", approved.body);
+    assert_eq!(extras_of_bot(&broker).await, Some(set("checks:read")));
+    assert_eq!(held_by_bot(&broker).await, set(WITH_CHECKS));
+}
+
+#[tokio::test]
+async fn renewal_with_disallowed_extra_is_unapprovable_and_says_which() {
+    let (broker, _key, upstream) = configured_on_fake().await;
+    allow(&broker, LEGACY, "checks:read");
+    let old = approve_with_extras(
+        &broker,
+        &upstream,
+        Window::D7,
+        "checks:read",
+        &[("checks", "read")],
+    )
+    .await;
+    // The owner narrows the allowlist after approving.
+    allow(&broker, LEGACY, "metadata:read");
+    let token = renew(&broker, &upstream, &old).await;
+    let page = broker.get(&format!("/approve/{token}")).await;
+    assert!(page.body.contains("cannot be approved"), "{}", page.body);
+    assert!(
+        page.body.contains(&format!("{EXTRA_NOT_ALLOWED}checks")),
+        "{}",
+        page.body
+    );
+    assert!(!page.body.contains("id=\"approve\""), "{}", page.body);
+    broker.enroll_soft_passkey().await;
+    let refused = broker.begin_approval(&token, Window::D7).await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.body);
+    assert!(refused.body.contains(EXTRA_NOT_ALLOWED), "{}", refused.body);
+    // The old grant keeps minting, with what it holds.
+    assert_eq!(minting_with(&broker).await.as_deref(), Some(old.as_str()));
+}
+
+#[tokio::test]
+async fn renewal_of_sensitive_grant_keeps_a_short_window() {
+    let (broker, _key, upstream) = configured_on_fake().await;
+    allow(&broker, LEGACY, "workflows:write");
+    let old = approve_with_extras(
+        &broker,
+        &upstream,
+        Window::H1,
+        "workflows:write",
+        &[("workflows", "write")],
+    )
+    .await;
+    let token = renew(&broker, &upstream, &old).await;
+    // Whatever the owner chooses, the renewal is never a long grant holding it.
+    for window in [Window::D1, Window::D30] {
+        let begin = broker.begin_approval(&token, window).await;
+        assert_eq!(begin.status, StatusCode::BAD_REQUEST, "{}", begin.body);
+        assert!(begin.body.contains(SENSITIVE_WINDOW), "{}", begin.body);
+    }
+    let approved = broker.approve(&token, Window::H1).await;
+    assert_eq!(approved.status, StatusCode::OK, "{}", approved.body);
+    assert_eq!(extras_of_bot(&broker).await, Some(set("workflows:write")));
+    assert_ne!(minting_with(&broker).await.as_deref(), Some(old.as_str()));
+}
+
+#[tokio::test]
+async fn renewal_refuses_a_grant_whose_stored_extra_no_longer_parses() {
+    let (broker, _key, upstream) = configured_on_fake().await;
+    allow(&broker, LEGACY, "checks:read");
+    let old = approve_with_extras(
+        &broker,
+        &upstream,
+        Window::D7,
+        "checks:read",
+        &[("checks", "read")],
+    )
+    .await;
+    sqlx::query(
+        "UPDATE grants SET view = json_set(view, '$.access.extra_permissions', \
+         'future_thing:read,metadata:read') WHERE id = ?",
+    )
+    .bind(&old)
+    .execute(&broker.state().pool)
+    .await
+    .unwrap();
+    let pending = broker
+        .state()
+        .requests
+        .pending_requests()
+        .await
+        .unwrap()
+        .len();
+    let renewed = broker
+        .post_json(&format!("/grants/{old}/renew"), &json!({}))
+        .await;
+    assert_eq!(
+        renewed.status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "{}",
+        renewed.body
+    );
+    assert!(!renewed.body.contains("future_thing"), "{}", renewed.body);
+    // Nothing was opened, and the old grant is untouched.
+    assert_eq!(
+        broker
+            .state()
+            .requests
+            .pending_requests()
+            .await
+            .unwrap()
+            .len(),
+        pending
+    );
+    assert_eq!(minting_with(&broker).await.as_deref(), Some(old.as_str()));
+}
+
+/// A request already waiting keeps the set it was created with, whatever the owner
+/// does to the default afterwards, when renewing finds it.
+#[tokio::test]
+async fn a_renewal_finding_a_pending_request_keeps_that_requests_set_across_a_change_of_default() {
+    let (broker, _key, upstream) = configured_on_fake().await;
+    let old = approve(&broker, &upstream, "bot", Window::D30).await;
+    broker
+        .create_request(
+            "bot",
+            TestBroker::github_token_request("again", Window::D7, &[REPO]),
+        )
+        .await;
+    set_default(&broker, WITH_CHECKS);
+    let token = renew(&broker, &upstream, &old).await;
+    let approved = broker.approve(&token, Window::D7).await;
+    assert_eq!(approved.status, StatusCode::OK, "{}", approved.body);
+    assert_eq!(
+        held_by_bot(&broker).await,
+        warden_broker_proto::github_permissions::PermissionSet::legacy()
+    );
 }
