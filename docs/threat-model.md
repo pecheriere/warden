@@ -1072,12 +1072,15 @@ What an attacker gets, and what stops it:
   moves no existing grant and no pending request. The broker sends the grant's set to GitHub
   whatever the App is allowed, and the token and the audit entry carry what GitHub granted.
   What moves: an owner can now configure a default wider than the four (for example `checks`
-  or `actions`), and every agent's token then holds it from the next request on. A ceiling no
-  configuration lifts keeps `administration`, `workflows`, `secrets`, `environments`,
-  `dependabot_secrets`, `repository_hooks` and every `organization_*` out: so GitHub still
-  refuses a push that changes a workflow file, a token cannot read or write repository
-  secrets, and it cannot create a webhook that would keep sending events after the grant ends. A field over
-  the ceiling makes the App unusable and is refused as a field, not clipped. The approval is
+  or `actions`), and every agent's token then holds it from the next request on. The sensitive
+  permissions (`administration`, `workflows`, `secrets`, `environments`, `dependabot_secrets`,
+  `repository_hooks` and every `organization_*` one) are out of the default: a `default_permissions` that
+  names one makes the App unusable and is refused as a field, not clipped, so no automatic or 30-day
+  grant holds one, and GitHub still refuses a push that changes a workflow file, a token cannot read or
+  write repository secrets, and it cannot create a webhook that would keep sending events after the grant
+  ends. The risk moves to the owner's `extra_permissions`: a name listed there is a permission an agent
+  may ask for once agents can send extras, which is not yet, and then only for a grant the owner approves
+  on the phone, lasting at most 1 hour. The approval is
   refused when the installation does not hold the set, which the broker reads at each view,
   begin and finish of the page; a read it cannot make refuses too.
 - **Within a grant, the agent gets tokens with no prompt**, up to 60 an hour (UTC), per

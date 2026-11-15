@@ -1,6 +1,6 @@
 //! GitHub repository permissions as warden handles them: a permission is
-//! `name:level`, a set holds each name once, and a fixed ceiling names what no
-//! configuration may grant.
+//! `name:level`, a set holds each name once, and a fixed list names the
+//! sensitive ones, which only the owner's allowlist of extras may hold.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -9,7 +9,7 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 
 /// The repository permissions GitHub accepts when creating an installation
-/// access token, minus the [`CEILING`]. Read from
+/// access token, minus the [`SENSITIVE`] ones. Read from
 /// <https://docs.github.com/en/rest/apps/apps#create-an-installation-access-token-for-an-app>
 /// on 2026-11-14. Names are as the REST API spells them.
 const KNOWN: &[&str] = &[
@@ -37,27 +37,47 @@ const KNOWN: &[&str] = &[
     "vulnerability_alerts",
 ];
 
-/// The permissions no configuration lifts, besides every `organization_*` one
-/// (see [`under_ceiling`]). `dependabot_secrets` is a repository secret under
-/// another name. `repository_hooks` lets a token create a webhook, which keeps
-/// sending the repository's events to whoever set it up after the token has
-/// expired and the grant is revoked: access that outlives the grant.
-pub const CEILING: &[&str] = &[
+/// The sensitive permissions: GitHub documents them for installation tokens,
+/// and each reaches past the repository's code or outlives the grant. They are
+/// allowed only as extras the owner lists in `extra_permissions`, never in the
+/// default. `dependabot_secrets` is a repository secret under another name.
+/// `repository_hooks` lets a token create a webhook, which keeps sending the
+/// repository's events to whoever set it up after the token has expired and the
+/// grant is revoked: access that outlives the grant. The `organization_*` ones
+/// are the organization permissions GitHub documents on the page the other
+/// permissions are read from, on 2026-11-15; one GitHub does not document there stays unknown.
+pub const SENSITIVE: &[&str] = &[
     "administration",
-    "workflows",
-    "secrets",
-    "environments",
     "dependabot_secrets",
+    "environments",
+    "organization_administration",
+    "organization_announcement_banners",
+    "organization_copilot_agent_settings",
+    "organization_copilot_requests",
+    "organization_copilot_seat_management",
+    "organization_custom_org_roles",
+    "organization_custom_properties",
+    "organization_custom_roles",
+    "organization_events",
+    "organization_external_properties_for_repos",
+    "organization_hooks",
+    "organization_packages",
+    "organization_personal_access_token_requests",
+    "organization_personal_access_tokens",
+    "organization_plan",
+    "organization_projects",
+    "organization_secrets",
+    "organization_self_hosted_runners",
+    "organization_user_blocking",
     "repository_hooks",
+    "secrets",
+    "workflows",
 ];
 
-/// The prefix of the organization permissions, all under the ceiling.
-const ORGANIZATION_PREFIX: &str = "organization_";
-
-/// Whether `name` is under the ceiling: one of [`CEILING`] or `organization_*`.
+/// Whether `name` is one of the [`SENSITIVE`] permissions.
 #[must_use]
-pub fn under_ceiling(name: &str) -> bool {
-    CEILING.contains(&name) || name.starts_with(ORGANIZATION_PREFIX)
+pub fn is_sensitive(name: &str) -> bool {
+    SENSITIVE.contains(&name)
 }
 
 /// How much a permission allows. `write` covers `read`.
@@ -92,8 +112,8 @@ impl fmt::Display for Level {
 pub enum PermissionError {
     /// Not a permission GitHub documents for installation tokens.
     Unknown,
-    /// Under the ceiling: no configuration may grant it.
-    Ceiling,
+    /// A sensitive permission in the default set, where none is allowed.
+    SensitiveInDefault,
     /// The `admin` level, which warden never grants, on a known permission.
     Admin(&'static str),
     /// Not `name:level` entries, or an empty or repeated one, or
@@ -105,10 +125,10 @@ impl fmt::Display for PermissionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Unknown => f.write_str("a permission name is not one GitHub documents"),
-            Self::Ceiling => f.write_str(
-                "a permission is above the ceiling (administration, workflows, secrets, \
-                 environments, dependabot_secrets, repository_hooks, organization_*) that warden \
-                 never grants",
+            Self::SensitiveInDefault => f.write_str(
+                "a sensitive permission (administration, workflows, secrets, environments, \
+                 dependabot_secrets, repository_hooks, organization_*) is only allowed in the \
+                 extras, never in the default",
             ),
             Self::Admin(name) => write!(f, "the admin level of {name} is never granted"),
             Self::Malformed => f.write_str(
@@ -140,6 +160,12 @@ impl Permission {
     pub fn level(&self) -> Level {
         self.level
     }
+
+    /// Whether the permission is one of the [`SENSITIVE`] ones.
+    #[must_use]
+    pub fn is_sensitive(&self) -> bool {
+        is_sensitive(self.name)
+    }
 }
 
 impl FromStr for Permission {
@@ -147,11 +173,9 @@ impl FromStr for Permission {
 
     fn from_str(text: &str) -> Result<Self, Self::Err> {
         let (name, level) = text.split_once(':').ok_or(PermissionError::Malformed)?;
-        if under_ceiling(name) {
-            return Err(PermissionError::Ceiling);
-        }
         let name = KNOWN
             .iter()
+            .chain(SENSITIVE)
             .find(|known| **known == name)
             .ok_or(PermissionError::Unknown)?;
         let level = match level {
@@ -267,6 +291,11 @@ impl PermissionSet {
         Self(map)
     }
 
+    /// The sensitive entries, in name order.
+    pub fn sensitive(&self) -> impl Iterator<Item = Permission> + '_ {
+        self.iter().filter(Permission::is_sensitive)
+    }
+
     /// Whether `metadata:read` is all it holds.
     #[must_use]
     pub fn is_only_metadata(&self) -> bool {
@@ -372,7 +401,7 @@ impl GrantedPermissions {
         &self.0
     }
 
-    /// The set, read strictly: every name known and none under the ceiling.
+    /// The set, read strictly: every name known, sensitive ones included.
     ///
     /// # Errors
     ///

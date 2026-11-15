@@ -1,4 +1,6 @@
-use super::{GrantedPermissions, Level, Permission, PermissionError, PermissionSet, under_ceiling};
+use super::{
+    GrantedPermissions, Level, Permission, PermissionError, PermissionSet, SENSITIVE, is_sensitive,
+};
 
 fn set(text: &str) -> PermissionSet {
     PermissionSet::parse(text).unwrap()
@@ -40,27 +42,55 @@ fn refuses_typos() {
 }
 
 #[test]
-fn refuses_ceiling() {
-    for text in [
-        "workflows:write",
-        "administration:read",
-        "secrets:read",
-        "environments:read",
-        "organization_projects:read",
-        "dependabot_secrets:read",
-        "repository_hooks:write",
-        "repository_hooks:read",
+fn sensitive_names_parse() {
+    for name in [
+        "administration",
+        "workflows",
+        "secrets",
+        "environments",
+        "dependabot_secrets",
+        "repository_hooks",
+        "organization_projects",
+        "organization_plan",
     ] {
-        assert_eq!(
-            PermissionSet::parse(text).unwrap_err(),
-            PermissionError::Ceiling,
-            "{text}"
+        for level in ["read", "write"] {
+            let permission: Permission = format!("{name}:{level}").parse().unwrap();
+            assert!(permission.is_sensitive(), "{name}");
+            assert_eq!(permission.name(), name);
+        }
+    }
+    let parsed = set("workflows:write,contents:read,organization_hooks:read");
+    let sensitive: Vec<_> = parsed.sensitive().map(|p| p.to_string()).collect();
+    assert_eq!(sensitive, ["organization_hooks:read", "workflows:write"]);
+    assert_eq!(set("checks:read").sensitive().count(), 0);
+}
+
+#[test]
+fn every_sensitive_name_parses_and_is_flagged() {
+    for name in SENSITIVE {
+        assert!(is_sensitive(name));
+        assert!(
+            format!("{name}:read").parse::<Permission>().is_ok(),
+            "{name}"
         );
     }
-    assert!(under_ceiling("organization_anything"));
-    assert!(!under_ceiling("checks"));
+    assert!(!is_sensitive("checks"));
+    assert!(!is_sensitive("organization_anything"));
+}
+
+#[test]
+fn undocumented_organization_name_is_unknown() {
     let err = PermissionSet::parse("organization_secret_thing:read").unwrap_err();
+    assert_eq!(err, PermissionError::Unknown);
     assert!(!err.to_string().contains("secret_thing"));
+}
+
+#[test]
+fn admin_level_still_refused_on_sensitive() {
+    assert_eq!(
+        PermissionSet::parse("workflows:admin").unwrap_err(),
+        PermissionError::Admin("workflows")
+    );
 }
 
 #[test]
@@ -152,12 +182,19 @@ fn granted_permissions_keep_unknown_names_but_act_on_none() {
     let set = GrantedPermissions::parse("zeta_9:read,contents:write").unwrap();
     assert_eq!(set.as_str(), "contents:write,metadata:read,zeta_9:read");
     assert_eq!(set.known(), Err(PermissionError::Unknown));
-    let ceiling = GrantedPermissions::parse("workflows:write").unwrap();
-    assert_eq!(ceiling.known(), Err(PermissionError::Ceiling));
     let json = serde_json::to_string(&set).unwrap();
     assert_eq!(
         serde_json::from_str::<GrantedPermissions>(&json).unwrap(),
         set
+    );
+}
+
+#[test]
+fn granted_permissions_accepts_sensitive() {
+    let held = GrantedPermissions::parse("workflows:write").unwrap();
+    assert_eq!(
+        held.known().unwrap().to_string(),
+        "metadata:read,workflows:write"
     );
 }
 

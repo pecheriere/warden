@@ -661,8 +661,8 @@ fn stored_view(text: &str) -> Result<GrantView, RequestError> {
     Ok(view)
 }
 
-/// The permissions of a stored GitHub token grant, read strictly: every name known
-/// and none under the ceiling.
+/// The permissions of a stored GitHub token grant, read strictly: every name known,
+/// sensitive ones included.
 ///
 /// # Errors
 ///
