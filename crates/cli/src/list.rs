@@ -6,6 +6,7 @@ use std::path::Path;
 use anyhow::Result;
 use serde_json::json;
 use warden_broker_proto::doctor::sanitize;
+use warden_broker_proto::github_permissions::{GrantedPermissions, is_sensitive};
 use warden_broker_proto::offers::{
     ApiSecretOffer, GithubTokenStatus, OfferPart, Offers, ReleaseStatus, RepositoryOffer,
     SshModeName, SshTargetOffer,
@@ -148,6 +149,24 @@ pub fn render(offers: &Offers, repo: Option<&Repository>) -> String {
             Some(window) => writeln!(out, "GitHub tokens: available, up to {}", window.label()),
             None => writeln!(out, "GitHub tokens: available"),
         };
+        if let Some(default) = &offers.github.default_permissions {
+            let _ = writeln!(out, "  Default permissions: {}", sanitize(default.as_str()));
+        }
+        if let Some(extras) = offers
+            .github
+            .extra_permissions
+            .as_ref()
+            .and_then(GrantedPermissions::without_metadata)
+        {
+            let _ = writeln!(
+                out,
+                "  Extra permissions you may ask for (`warden request github --extra-permissions`): {}",
+                extras_text(&extras)
+            );
+            if extras.split(',').any(is_sensitive_entry) {
+                out.push_str("  A sensitive extra permission is granted for 15m, 30m or 1h only\n");
+            }
+        }
     }
     if unreadable(OfferPart::CommitSigning) {
         out.push_str("Commit signing: could not be read\n");
@@ -187,6 +206,28 @@ pub fn render(offers: &Offers, repo: Option<&Repository>) -> String {
         out.push('\n');
     }
     out
+}
+
+/// Whether `entry`, a `name:level` of a set, names a sensitive permission.
+fn is_sensitive_entry(entry: &str) -> bool {
+    is_sensitive(entry.split(':').next().unwrap_or(entry))
+}
+
+/// The extra permissions `extras` (`name:level` joined with `,`) as a line, each
+/// sensitive one marked.
+fn extras_text(extras: &str) -> String {
+    extras
+        .split(',')
+        .map(|entry| {
+            let entry = sanitize(entry);
+            if is_sensitive_entry(&entry) {
+                format!("{entry} (sensitive)")
+            } else {
+                entry
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 const fn mode_text(mode: SshModeName) -> &'static str {

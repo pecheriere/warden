@@ -8,6 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::github_permissions::GrantedPermissions;
 use crate::release::RepoName;
 use crate::{SecretName, TargetName, UnixUser, Window};
 
@@ -96,6 +97,16 @@ pub struct GithubOffer {
     pub configured: bool,
     /// The longest token window, when configured.
     pub max_window: Option<Window>,
+    /// The permissions a grant holds unless the request names more, when configured
+    /// and readable. Read leniently, so that a name a newer broker knows does not
+    /// fail an older CLI.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_permissions: Option<GrantedPermissions>,
+    /// The permissions an agent may ask for beyond the default, when the owner
+    /// listed any and they are readable. Sensitive ones are marked by
+    /// [`is_sensitive`](crate::github_permissions::is_sensitive).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra_permissions: Option<GrantedPermissions>,
 }
 
 /// Whether a capability exists on this broker.

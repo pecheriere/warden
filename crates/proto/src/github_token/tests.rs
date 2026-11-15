@@ -298,6 +298,47 @@ fn info_without_flag_is_false() {
 }
 
 #[test]
+fn info_without_the_permissions_flag_is_false() {
+    let info: InfoResponse = serde_json::from_value(json!({
+        "protocols": [],
+        "audience": "0123456789abcdef0123456789abcdef",
+        "scoped_github_tokens": true,
+    }))
+    .unwrap();
+    assert!(!info.github_token_permissions);
+}
+
+#[test]
+fn a_mint_request_carries_permissions_only_when_it_narrows() {
+    let plain = GithubTokenRequest {
+        repository: "example-owner/a".parse().unwrap(),
+        permissions: None,
+    };
+    assert_eq!(
+        serde_json::to_value(&plain).unwrap(),
+        json!({"repository": "example-owner/a"})
+    );
+    let narrowed: GithubTokenRequest = serde_json::from_value(
+        json!({"repository": "example-owner/a", "permissions": "contents:read"}),
+    )
+    .unwrap();
+    assert_eq!(
+        narrowed.permissions.unwrap().to_string(),
+        "contents:read,metadata:read"
+    );
+    // The strict set: a name this version does not know, or admin, is refused.
+    for bad in ["new_thing:read", "contents:admin", ""] {
+        assert!(
+            serde_json::from_value::<GithubTokenRequest>(
+                json!({"repository": "example-owner/a", "permissions": bad})
+            )
+            .is_err(),
+            "{bad:?}"
+        );
+    }
+}
+
+#[test]
 fn grant_without_permissions_parses_as_legacy() {
     let grant: GithubTokenGrant = serde_json::from_value(
         json!({"app_id": "12345", "installation_id": 678, "digest": "ab12"}),

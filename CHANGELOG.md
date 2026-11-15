@@ -6,6 +6,15 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- An agent can ask for extra GitHub permissions within the owner's `extra_permissions`
+  allowlist, with `warden request github --extra-permissions`: `warden list` shows the default
+  set and the extras allowed, and the approval page marks each extra (read, write, or
+  sensitive in red). A grant holding a sensitive extra lasts 1 hour at most (the request
+  defaults to `1h`), and a token can be minted with fewer permissions than its grant holds.
+  ([#282](https://github.com/pecheriere/warden/issues/282))
+
 ### Changed
 
 - The fixed ceiling on GitHub token permissions is replaced by sensitive permissions

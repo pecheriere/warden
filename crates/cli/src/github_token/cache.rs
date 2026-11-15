@@ -266,6 +266,15 @@ impl Cache {
         self.entries.len() != before
     }
 
+    /// Forget the entries of `repositories`, ignoring case. Returns whether there
+    /// were any.
+    pub fn discard_repositories(&mut self, repositories: &[RepoName]) -> bool {
+        let before = self.entries.len();
+        self.entries
+            .retain(|e| !repositories.iter().any(|r| e.repository.matches(r)));
+        self.entries.len() != before
+    }
+
     /// Replace the cache at `path` with this one: written to a new 0600 file beside
     /// it, which is renamed over whatever was there (a rename replaces a symlink,
     /// never what it points to).
@@ -319,11 +328,28 @@ pub(super) fn cache_path() -> Result<PathBuf> {
 /// # Errors
 /// If the state directory is unusable or the file cannot be rewritten or removed.
 pub fn discard(grant: &Id) -> Result<bool> {
+    rewrite_without(|cache| cache.discard(grant))
+}
+
+/// Delete the cached tokens of `repositories`, whatever grant they were minted
+/// under: a request that has just been approved may give them other permissions,
+/// and a token minted before it must not be served in its place. Returns whether
+/// there were any.
+///
+/// # Errors
+/// If the state directory is unusable or the file cannot be rewritten or removed.
+pub fn discard_repositories(repositories: &[RepoName]) -> Result<bool> {
+    rewrite_without(|cache| cache.discard_repositories(repositories))
+}
+
+/// Load the cache, forget entries with `forget`, and write back what is left, or
+/// remove the file when nothing is. Returns whether `forget` dropped any.
+fn rewrite_without(forget: impl FnOnce(&mut Cache) -> bool) -> Result<bool> {
     let path = cache_path()?;
     let Some(mut cache) = Cache::load(&path) else {
         return Ok(false);
     };
-    if !cache.discard(grant) {
+    if !forget(&mut cache) {
         return Ok(false);
     }
     if cache.entries.is_empty() {

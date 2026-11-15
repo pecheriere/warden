@@ -11,9 +11,10 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use secrecy::ExposeSecret as _;
+use warden_broker_proto::github_permissions::PermissionSet;
 use warden_broker_proto::github_token::{
     AMBIGUOUS_GRANT, APP_CHANGED, GithubTokenRequest, GithubTokenResponse, HOURLY_LIMIT,
-    NO_ACTIVE_GRANT, OLD_CLIENT, REPOSITORY_UNREACHABLE,
+    NO_ACTIVE_GRANT, OLD_CLIENT, PERMISSIONS_NOT_IN_GRANT, REPOSITORY_UNREACHABLE,
 };
 use warden_broker_proto::{AgentName, Id};
 
@@ -110,7 +111,8 @@ async fn attempt(
     };
     *seen = Some(grant_id.clone());
     // Read strictly: a set this version cannot act on refuses, and costs nothing.
-    let permissions = crate::requests::github_permissions_of(&grant)?;
+    let granted = crate::requests::github_permissions_of(&grant)?;
+    let permissions = narrowed(request.permissions, granted)?;
 
     let key = state
         .backend
@@ -189,6 +191,25 @@ async fn attempt(
         repository_id: repository.id,
         permissions: Some(minted.granted.into()),
     })
+}
+
+/// The permissions to mint with: the grant's own, or the narrower set the agent asks
+/// for. One the grant does not hold is refused before GitHub or the key is touched,
+/// naming the first known permission it lacks.
+fn narrowed(
+    wanted: Option<PermissionSet>,
+    granted: PermissionSet,
+) -> Result<PermissionSet, Failure> {
+    let Some(wanted) = wanted else {
+        return Ok(granted);
+    };
+    match wanted.missing_from(&granted).first() {
+        Some(missing) => Err(refused(
+            StatusCode::FORBIDDEN,
+            format!("{PERMISSIONS_NOT_IN_GRANT}{missing}"),
+        )),
+        None => Ok(wanted),
+    }
 }
 
 /// The failure for grant `grant_id`, which is no longer active: a 409 that says

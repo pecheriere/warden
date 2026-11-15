@@ -68,6 +68,10 @@ pub const EXTRA_NOT_ALLOWED: &str = "this broker does not allow that extra GitHu
 pub const OTHER_PERMISSIONS_PENDING: &str = "a request for these repositories with other \
     permissions is pending; cancel it with `warden request cancel <id>` or wait for it";
 
+/// What the broker says when a mint asks for permissions the agent's grant does not
+/// hold. The first such known permission name follows, as `name:level`.
+pub const PERMISSIONS_NOT_IN_GRANT: &str = "the grant does not hold this GitHub permission: ";
+
 /// Why a GitHub token request whose extra permissions include a sensitive one is
 /// refused for any other window.
 pub const SENSITIVE_WINDOW: &str =
@@ -457,6 +461,11 @@ pub struct GithubTokenGrant {
 pub struct GithubTokenRequest {
     /// The repository.
     pub repository: RepoName,
+    /// The permissions the token should have, which the grant's must cover. Absent
+    /// means all of the grant's. Sent by a CLI that narrows; a broker that predates
+    /// this field refuses a body that holds it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permissions: Option<PermissionSet>,
 }
 
 /// A token the broker minted and recorded.

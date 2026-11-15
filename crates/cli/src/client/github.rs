@@ -28,6 +28,7 @@ impl Client {
         let url = self.url("v1/github-token")?;
         let body = json_body(&GithubTokenRequest {
             repository: repository.clone(),
+            permissions: None,
         })?;
         let resp = self.call(Method::POST, url, Some(body)).await?;
         if resp.status() != StatusCode::OK {
@@ -46,6 +47,10 @@ impl Client {
     }
 }
 
+/// What the agent is told when the broker predates extra GitHub permissions.
+const OLD_BROKER_PERMISSIONS: &str = "the broker does not support extra GitHub permissions: \
+                                      upgrade the broker before asking for them";
+
 /// Whether the broker whose `/v1/info` answer is `info` scopes GitHub grants to
 /// repositories. A broker that cannot be asked is treated as one that does not.
 ///
@@ -56,6 +61,30 @@ pub(crate) fn scoped_or_refuse(info: Result<InfoResponse, CallError>) -> anyhow:
         Ok(info) if info.scoped_github_tokens => Ok(()),
         Ok(_) | Err(_) => Err(Exit::new(EXIT_ERROR, OLD_BROKER).into()),
     }
+}
+
+/// Whether the broker whose `/v1/info` answer is `info` takes extra GitHub
+/// permissions (and so also scopes grants to repositories). A broker that cannot
+/// be asked is treated as one that does not.
+///
+/// # Errors
+/// [`Exit`] with [`EXIT_ERROR`] when it does not say so.
+fn permissions_or_refuse(info: Result<InfoResponse, CallError>) -> anyhow::Result<()> {
+    match info {
+        Ok(info) if info.scoped_github_tokens && info.github_token_permissions => Ok(()),
+        Ok(_) | Err(_) => Err(Exit::new(EXIT_ERROR, OLD_BROKER_PERMISSIONS).into()),
+    }
+}
+
+/// Refuse unless the broker at `server` takes extra GitHub permissions. Called
+/// before a request that names some is created, so that an older broker, which would
+/// refuse the field or ignore it, is never sent one.
+///
+/// # Errors
+/// [`Exit`] with [`EXIT_ERROR`] when the broker does not say it does, or cannot be
+/// asked.
+pub(crate) async fn require_permissions(server: &Url) -> anyhow::Result<()> {
+    permissions_or_refuse(fetch_info(server).await)
 }
 
 /// Refuse unless the broker at `server` scopes GitHub grants to repositories.

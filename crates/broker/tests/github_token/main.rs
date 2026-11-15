@@ -13,6 +13,7 @@ use warden_broker_proto::Window;
 mod extras;
 mod legacy;
 mod mint;
+mod narrowing;
 mod overlap;
 mod pages;
 mod permissions;

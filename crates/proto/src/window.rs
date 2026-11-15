@@ -129,6 +129,22 @@ impl Window {
         }
     }
 
+    /// Parse the window of a request for a GitHub token grant that may name extra
+    /// permissions: `15m`, `30m` or `1h` (for a sensitive one) or `1d`, `7d` or
+    /// `30d`. Which of them the request may have is the broker's to say.
+    ///
+    /// # Errors
+    /// If `s` is anything else.
+    pub fn github_token_request(s: &str) -> Result<Self, ParseError> {
+        match s {
+            "15m" => Ok(Self::M15),
+            "30m" => Ok(Self::M30),
+            "1h" => Ok(Self::H1),
+            _ => Self::github_token(s)
+                .map_err(|_| ParseError::new("window", "must be one of 15m, 30m, 1h, 1d, 7d, 30d")),
+        }
+    }
+
     /// The window as written on the wire and on the command line, such as `15m`.
     #[must_use]
     pub const fn label(self) -> &'static str {

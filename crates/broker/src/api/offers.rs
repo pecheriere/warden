@@ -12,6 +12,7 @@
 
 use axum::Json;
 use axum::extract::State;
+use warden_broker_proto::github_permissions::GrantedPermissions;
 use warden_broker_proto::offers::{
     ApiSecretOffer, Availability, Destination, GithubOffer, OfferPart, Offers, SshModeName,
     SshTargetOffer,
@@ -20,7 +21,7 @@ use warden_broker_proto::offers::{
 use super::Failure;
 use crate::AppState;
 use crate::identity::AuthedAgent;
-use crate::policy::{ApiSecretPolicy, PolicyError, SshMode, SshTarget};
+use crate::policy::{ApiSecretPolicy, GithubPermissionPolicy, PolicyError, SshMode, SshTarget};
 use crate::requests::RequestError;
 
 pub(super) async fn list(
@@ -30,10 +31,11 @@ pub(super) async fn list(
     let backend = &state.backend;
     // The sources are independent: read them at once, so the answer takes as long
     // as the slowest one rather than their sum.
-    let (targets, secrets, github, signing, release_signing, release_app) = tokio::join!(
+    let (targets, secrets, github, github_permissions, signing, release_signing, release_app) = tokio::join!(
         backend.list_ssh_targets(),
         backend.list_api_secrets(),
         backend.has_github_app(),
+        backend.github_permissions(),
         backend.has_commit_signing_key(),
         backend.has_release_signing(),
         backend.has_release_app(),
@@ -42,6 +44,7 @@ pub(super) async fn list(
     let ssh_targets = read.of(OfferPart::SshTargets, targets.map(|t| ssh_offers(&t)));
     let api_secrets = read.of(OfferPart::ApiSecrets, secrets.map(|s| api_offers(&s)));
     let github = read.of(OfferPart::Github, github);
+    let github_permissions = github_permission_offer(&mut read, github_permissions);
     let signing = read.of(OfferPart::CommitSigning, signing);
     // Releases need both a signing key and a release App; either read failing
     // leaves the answer unknown.
@@ -81,6 +84,10 @@ pub(super) async fn list(
         github: GithubOffer {
             configured,
             max_window: configured.then(|| state.requests.github_token_max()),
+            default_permissions: github_permissions
+                .as_ref()
+                .map(|(default, _)| default.clone()),
+            extra_permissions: github_permissions.and_then(|(_, extras)| extras),
         },
         commit_signing: Availability {
             available: signing.unwrap_or(false),
@@ -109,6 +116,29 @@ impl Reads {
                 self.details.push(e.to_string());
                 None
             }
+        }
+    }
+}
+
+/// The default permissions and the allowed extras GitHub grants offer, or `None`
+/// when no App is configured or a field cannot be read: then GitHub is listed as
+/// unavailable, as any other part that cannot be read, once.
+fn github_permission_offer(
+    read: &mut Reads,
+    outcome: Result<GithubPermissionPolicy, PolicyError>,
+) -> Option<(GrantedPermissions, Option<GrantedPermissions>)> {
+    match outcome {
+        Ok(policy) => Some((
+            policy.default.into(),
+            (!policy.allowed_extras.is_only_metadata()).then(|| policy.allowed_extras.into()),
+        )),
+        Err(PolicyError::NoGithubApp) => None,
+        Err(e) => {
+            if !read.unavailable.contains(&OfferPart::Github) {
+                read.unavailable.push(OfferPart::Github);
+            }
+            read.details.push(e.to_string());
+            None
         }
     }
 }
