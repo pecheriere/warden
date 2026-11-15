@@ -33,6 +33,7 @@ jobs:
       # writes the entry, so a pull request cannot plant one. This comes before
       # the Rust cache, so that the environment it sets is there when the Rust
       # cache computes its key.
+      # Keep this block and its twin in the test job in step.
       - name: Restore the pinned OpenSSL
         id: openssl-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -56,14 +57,16 @@ jobs:
       # or plant one that main would read; they restore main's. On an exact hit the
       # action saves nothing, so a stale entry would stay until Cargo.lock changes:
       # `key` adds what the build depends on and the action does not see (it hashes
-      # only the dependencies of each Cargo.toml, not its profiles), and
-      # `env-vars` adds the pinned OpenSSL's variables to its environment hash.
-      # The prefixes are narrow on purpose: WARDEN_TEST_LOGIN_PASSWORD is random.
+      # each workspace member's parsed manifest, never the root virtual manifest,
+      # where `[profile.*]` and `[workspace.dependencies]` live), and `env-vars`
+      # adds the pinned OpenSSL's variables to the action's default prefixes in its
+      # environment hash. The prefixes are narrow on purpose:
+      # WARDEN_TEST_LOGIN_PASSWORD is random.
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           key: ${{ hashFiles('Cargo.toml', 'rust-toolchain.toml', 'scripts/openssl-pin.env', 'scripts/build-openssl.sh') }}
-          env-vars: CARGO CC CFLAGS CXX CMAKE RUST OPENSSL WARDEN_OPENSSL
+          env-vars: OPENSSL WARDEN_OPENSSL
       - run: cargo fmt --check
       - name: Refuse a stale fuzz/Cargo.lock
         run: cargo metadata --locked --manifest-path fuzz/Cargo.toml --format-version 1 > /dev/null
@@ -100,6 +103,7 @@ jobs:
       # writes the entry, so a pull request cannot plant one. This comes before
       # the Rust cache, so that the environment it sets is there when the Rust
       # cache computes its key.
+      # Keep this block and its twin in the lint job in step.
       - name: Restore the pinned OpenSSL
         id: openssl-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -123,14 +127,16 @@ jobs:
       # or plant one that main would read; they restore main's. On an exact hit the
       # action saves nothing, so a stale entry would stay until Cargo.lock changes:
       # `key` adds what the build depends on and the action does not see (it hashes
-      # only the dependencies of each Cargo.toml, not its profiles), and
-      # `env-vars` adds the pinned OpenSSL's variables to its environment hash.
-      # The prefixes are narrow on purpose: WARDEN_TEST_LOGIN_PASSWORD is random.
+      # each workspace member's parsed manifest, never the root virtual manifest,
+      # where `[profile.*]` and `[workspace.dependencies]` live), and `env-vars`
+      # adds the pinned OpenSSL's variables to the action's default prefixes in its
+      # environment hash. The prefixes are narrow on purpose:
+      # WARDEN_TEST_LOGIN_PASSWORD is random.
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           key: ${{ hashFiles('Cargo.toml', 'rust-toolchain.toml', 'scripts/openssl-pin.env', 'scripts/build-openssl.sh') }}
-          env-vars: CARGO CC CFLAGS CXX CMAKE RUST OPENSSL WARDEN_OPENSSL
+          env-vars: OPENSSL WARDEN_OPENSSL
       # A prebuilt binary, checked against the hash in the action's manifest at this
       # commit, and nothing else: no fallback to building or another source.
       - uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2

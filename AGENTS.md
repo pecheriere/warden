@@ -125,7 +125,7 @@ fixed caches are measured); those of the jobs a pull request waits for are:
 | ci | `critical-path` | 5 | new |
 | dco, zizmor, dependency-review | each job (required) | 5 | 0.3 or less |
 | fuzz | `fuzz (<target>)`, on pull requests that change fuzzing | 12 (a cold cache builds the broker with ASan) | new: 31.6 as one job |
-| fuzz | `lint`, `targets` | 10, 5 | new |
+| fuzz | `fuzz-lint`, `targets` | 10, 5 | new |
 
 CI's `critical-path` job (not a required check: it shows red but does not
 block a merge) fails when the required checks of

@@ -52,6 +52,7 @@ jobs:
           echo "targets=$targets" >> "$GITHUB_OUTPUT"
 
   lint:
+    name: fuzz-lint
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
