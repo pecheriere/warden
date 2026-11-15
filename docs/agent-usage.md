@@ -1157,10 +1157,13 @@ the new tag, and the update moves an installed plugin there, so running `warden
 setup claude` again after upgrading warden upgrades the plugin. `--dry-run`
 prints the commands without running them. If `claude` is not on the `PATH`, it
 prints the `/plugin marketplace add` and `/plugin install` commands to type in a
-Claude Code session instead, and exits 0. It changes no file itself and needs no
+Claude Code session instead, and exits 0; those commands repoint the marketplace but do
+not update a plugin already installed, which then needs `claude plugin update warden@warden
+--scope user` once `claude` is available. It changes no file itself and needs no
 grant; Claude Code records the marketplace and the plugin in its own user
 settings. [The plugin's README](../plugins/warden/README.md) says what it holds
-and what happens when `warden` is missing or too old.
+and what happens when `warden` is missing or too old (a `warden` older than 0.9.0 blocks
+every Bash call, so upgrade it).
 
 The session-start hook calls the broker, as `warden prime --brief` does: use a
 key that signs without a prompt, or a key that prompts would prompt at every

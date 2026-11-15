@@ -16,7 +16,8 @@ What each case does is set in the `[hook]` table of warden's configuration.
 ## Not a security boundary
 
 The hook catches honest mistakes. The agent runs as the same user, can edit the
-configuration and can obfuscate a command. See "Agent hooks" in
+configuration and can obfuscate a command. The hook sees only the Bash tool, not
+the other tools. See "Agent hooks" in
 [docs/agent-usage.md](../../docs/agent-usage.md#agent-hooks).
 
 ## Install
@@ -48,7 +49,9 @@ after upgrading `warden`, run `warden setup claude` again.
 `scripts/check-plugin-version.sh`). The plugin first works from the release that
 contains it.
 
-If `warden` is missing, or too old to know `hook`, the hook command fails with a
-status other than 0 and 2. Claude Code treats that as a non-blocking error: it
-shows a hook error and the session or tool call goes on. Upgrade `warden` to fix
-it.
+If `warden` is missing (status 127), or is 0.9.0 to 0.15.0, which does not know
+`hook` and exits 64, Claude Code treats that as a non-blocking error: it shows a
+hook error and the session or tool call goes on. A `warden` older than 0.9.0
+exits 2 on an unknown subcommand, which Claude Code reads as a block, so every
+Bash call is refused. Upgrade it, and make sure the `warden` on Claude Code's
+`PATH` is the one that ran `warden setup claude`.

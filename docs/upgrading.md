@@ -175,4 +175,7 @@ Upgrade the server before the agents' CLIs when a release says so.
 
 On a machine with the Claude Code plugin, run `warden setup claude` again after the
 upgrade. It points the marketplace at the new version's tag and updates the plugin, so the
-plugin stays at the CLI's version.
+plugin stays at the CLI's version. If `claude` is not on the `PATH`, the command only prints
+the `/plugin` commands to type in a session, which repoint the marketplace but do not update
+an installed plugin: run `claude plugin update warden@warden --scope user` once `claude` is
+available.

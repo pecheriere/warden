@@ -1403,9 +1403,10 @@ What it must not do, and how it is kept from it:
 - **Leak a command.** Commands carry tokens. Its messages name only the host, origin or
   tool a case is about, never the rest of the command, and it logs nothing.
 - **Slow every command or fail the session.** It makes no network call, reads only the
-  offers cache, and exits 0 whatever happens. A missing or too old `warden` makes the hook
-  command fail, which Claude Code shows as a hook error without stopping the session or the
-  tool call.
+  offers cache, and exits 0 whatever happens. A missing `warden`, or one from 0.9.0 to 0.15.0 that
+  does not know `hook`, makes the hook command fail, which Claude Code shows as a hook error
+  without stopping the session or the tool call. A `warden` older than 0.9.0 exits 2, which
+  Claude Code reads as a block, so it refuses every Bash call until it is upgraded.
 - **Teach a way around a denial.** Every answer points to `warden request` with an honest
   goal, or to the owner.
 
