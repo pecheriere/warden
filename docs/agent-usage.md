@@ -340,10 +340,13 @@ that is not `owner/name` on `github.com`. See [Exit codes](#exit-codes).
 
 These rules keep the owner's approval meaningful and the audit trail true.
 
-- **One grant per task.** Request access for the task in front of you, right
-  before you need it, and revoke the grant when the task is done. Do not
-  request access "in case it is needed", and do not reuse a grant that was
-  approved for another task (see [Known limits](#known-limits)).
+- **Reuse before asking.** Run `warden status` first. If a live grant covers
+  the work, with a goal that covers it too, use it: asking the owner again for
+  what is already granted teaches them to approve without reading. Otherwise
+  request access for the task in front of you, right before you need it, and
+  never "in case it is needed".
+- **Revoke what can do harm, let the rest run out.** See
+  [Ending a grant](#ending-a-grant).
 - **An honest, precise goal.** The owner decides on the goal alone. Say what
   you will do and why, and name the change, issue or error. "maintenance" or
   "debugging" is not a goal. The goal is one line of at most 500 characters;
@@ -1041,11 +1044,26 @@ call after it ends asks the owner again, and approving a new grant ends the old 
 
 ## Ending a grant
 
-When the work is done, revoke the grant. Do not let it run out on its own:
+Revoke a grant right after use, also when the task failed, when it can do harm:
+
+- SSH as root, or as a user the agent ran `sudo` with;
+- an API grant with a method other than `GET`;
+- a release grant, once the release is published or given up;
+- a GitHub grant with a sensitive extra permission, such as `workflows` or `secrets`;
+- any grant used by mistake, or that may have been used by someone else.
 
 ```sh
 warden revoke <grant-id>
 ```
+
+Let the other grants run out on their own: SSH as a user without sudo, read-only
+API grants, commit signing and GitHub grants with the default permissions. Their
+window bounds them, and revoking one only makes the owner approve the same thing
+again for the next task, which wears down the attention each approval needs.
+
+Grants belong to the agent, not to a session: every session of the agent uses the
+same ones (see [Known limits](#known-limits)), and a revoke ends the grant for all
+of them. A session revokes only a grant its own request printed.
 
 This revokes the grant on the broker, stops its local `ssh-agent` and
 removes the local record of an `api` grant. Relay sessions on the grant end
@@ -1112,8 +1130,9 @@ never try to get around warden by any other route.
   target or secret, so two sessions of one agent (or one session across
   tasks) can use each other's grants, under a goal the owner approved for
   something else. Until this is fixed ([issue #49][i49]), revoke each grant
-  as soon as its task ends, and run agents that must not share grants as
-  different OS users with different agent keys.
+  that can do harm as soon as its task ends (see [Ending a grant](#ending-a-grant)),
+  and run agents that must not share grants as different OS users with
+  different agent keys.
 - **Revoking a proxied call in flight cannot undo it.** The call stops, but the API
   may already have acted on it.
 - **Revoking commit signing does not undo a signature.** It stops new ones.

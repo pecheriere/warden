@@ -569,9 +569,11 @@ These were recorded during implementation and are accepted for this release.
   the calling agent. Two sessions of one agent, or one session across
   tasks, can therefore use a grant whose goal the owner approved for
   something else. The audit log still names the grant and the agent. The
-  mitigations today: one request per task, revoking each grant when its task
-  ends, and separate agents (separate OS users and keys) for work that must
-  not share grants.
+  mitigations today: revoking each grant that can do harm (SSH with root or
+  sudo, API grants that change something, release grants, sensitive GitHub
+  permissions) when its task ends, letting the window bound the rest, and
+  separate agents (separate OS users and keys) for work that must not share
+  grants.
 - **An agent can list its own pending requests, and learns nothing else from it.**
   `GET /v1/requests` is signed like every agent route and filters on the
   authenticated agent, so another agent's request is absent, as it is `404` by ID. It
