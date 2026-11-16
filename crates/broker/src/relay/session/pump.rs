@@ -352,16 +352,31 @@ pub(crate) async fn relay(
 /// agent's side closing, see [`agent_left`]) comes after the cause was told,
 /// so it is never taken for why the session ended. An agent that leaves by
 /// itself before anything is told still ends the session as it did.
+///
+/// Polling first is not enough on its own: a watch wakes its waiters a group
+/// at a time, so the connection task can be woken by the stop, hang up, and
+/// the session see the agent's side close while the stop's wake-up has yet
+/// to reach this task, whose wait then still reads as pending. So once the
+/// session has ended by itself, the told causes are read again as they stand.
 pub(super) async fn first_end(
     live: &mut Registration,
     stop: &mut watch::Receiver<bool>,
     own: impl Future<Output = (&'static str, bool)>,
 ) -> (&'static str, bool) {
-    tokio::select! {
+    let own = tokio::select! {
         biased;
-        () = crate::relay::server::stopping(stop) => (reason::SHUTDOWN, false),
-        ended = live.ended() => (ended, false),
+        () = crate::relay::server::stopping(stop) => return (reason::SHUTDOWN, false),
+        ended = live.ended() => return (ended, false),
         own = own => own,
+    };
+    // A dropped sender is a stop too, as in `stopping`. Whether the agent
+    // left still holds: its held-up connection is then cut at once.
+    if *stop.borrow() || stop.has_changed().is_err() {
+        (reason::SHUTDOWN, own.1)
+    } else if let Some(told) = live.told() {
+        (told, false)
+    } else {
+        own
     }
 }
 

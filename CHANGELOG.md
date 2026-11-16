@@ -6,6 +6,13 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- A relayed session ended by the broker stopping could be recorded in `relay_session_ended`
+  with the reason `client closed` instead of `relay shutting down`, when the relay hung up on
+  the agent before the stop reached the session. A revocation, expiry or failing closed told
+  before the session ended is likewise always the reason on record.
+
 ## [0.16.0] - 2026-11-16
 
 ### Upgrading

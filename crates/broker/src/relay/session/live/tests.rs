@@ -68,6 +68,62 @@ async fn told_end_wins_over_the_session_ending_by_itself() {
     );
 }
 
+/// A session end that is seen only on its second poll, after `tell` ran in
+/// that same poll: the told cause is in place, but its wake-up has not
+/// reached `first_end`, which already found it not told on the first poll.
+fn ends_after(tell: impl FnOnce() + Unpin) -> impl Future<Output = (&'static str, bool)> {
+    let mut tell = Some(tell);
+    let mut polled = false;
+    std::future::poll_fn(move |cx| {
+        if !polled {
+            polled = true;
+            cx.waker().wake_by_ref();
+            return std::task::Poll::Pending;
+        }
+        if let Some(tell) = tell.take() {
+            tell();
+        }
+        std::task::Poll::Ready((reason::CLIENT_CLOSED, true))
+    })
+}
+
+#[tokio::test]
+async fn a_cause_told_before_the_session_ends_by_itself_wins_whatever_the_wake_order() {
+    // The relay's stop wakes its waiters one group at a time: the connection
+    // task can hang up on the agent, and the session see the agent's side
+    // close, before the stop's own wake-up reaches the session.
+    let sessions = LiveSessions::new();
+    let mut live = sessions.register(&grant("a", 100), 0);
+    let (stopping, mut stop) = tokio::sync::watch::channel(false);
+    let own = ends_after(move || {
+        stopping.send_replace(true);
+    });
+    assert_eq!(
+        first_end(&mut live, &mut stop, own).await,
+        (reason::SHUTDOWN, true),
+        "a stop, and the agent's side gone"
+    );
+
+    // The stop's sender going away is a stop too.
+    let mut live = sessions.register(&grant("a", 100), 0);
+    let (stopping, mut stop) = tokio::sync::watch::channel(false);
+    let own = ends_after(move || drop(stopping));
+    assert_eq!(
+        first_end(&mut live, &mut stop, own).await,
+        (reason::SHUTDOWN, true)
+    );
+
+    // Likewise a revocation, expiry or failing closed.
+    let (_running, mut stop) = tokio::sync::watch::channel(false);
+    let g = grant("b", 100);
+    let mut live = sessions.register(&g, 0);
+    let own = ends_after(|| sessions.fail_closed());
+    assert_eq!(
+        first_end(&mut live, &mut stop, own).await,
+        (reason::GRANT_STATE_UNAVAILABLE, false)
+    );
+}
+
 #[tokio::test]
 async fn live_sessions_end_by_grant_agent_or_expiry() {
     let sessions = LiveSessions::new();
