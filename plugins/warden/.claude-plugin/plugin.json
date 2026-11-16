@@ -1,0 +1,11 @@
+{
+  "name": "warden",
+  "version": "0.15.0",
+  "description": "Claude Code hooks for warden: start each session with what warden offers, and warn before a command goes around it.",
+  "homepage": "https://github.com/pecheriere/warden",
+  "repository": "https://github.com/pecheriere/warden",
+  "license": "MIT OR Apache-2.0",
+  "author": {
+    "name": "warden maintainers"
+  }
+}

@@ -32,6 +32,16 @@ All notable changes to this project are recorded here. The format follows
   `block`, `ask`, `warn` or `off`. An invalid table gives the defaults, never weaker
   protection, and `warden doctor` reports it.
   ([#199](https://github.com/pecheriere/warden/issues/199))
+- A Claude Code plugin, `warden`, in this repository's marketplace: it runs `warden hook
+  session-start` at every session start and `warden hook check` before every Bash tool call,
+  and holds no instructions or patterns of its own. It catches honest mistakes and is not a
+  security boundary.
+  ([#199](https://github.com/pecheriere/warden/issues/199))
+- `warden setup claude` installs that plugin at user scope with `claude plugin`, pinned to
+  the release tag of the CLI's own version; run again after an upgrade, it moves the plugin
+  to the new tag. `--dry-run` prints the commands, and without `claude` on the `PATH` it
+  prints the `/plugin` commands to type instead. It changes no file itself.
+  ([#199](https://github.com/pecheriere/warden/issues/199))
 
 ### Changed
 

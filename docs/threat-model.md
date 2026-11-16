@@ -52,6 +52,11 @@ warden does **not** protect against:
   targets and API secrets the owner has not hidden, with their addresses by default, and ask
   whether warden covers a repository it names. See
   [What an agent can learn about what warden covers](#what-an-agent-can-learn-about-what-warden-covers).
+- **An agent reaching for credentials its OS user can already read.** The agent hook
+  that `warden hook check` answers, and the Claude Code plugin that installs it, catch
+  honest mistakes, such as reaching for the owner's SSH key. They are not a security
+  boundary, and an agent that means to can go around them. See
+  [The agent hook](#the-agent-hook).
 - **Instant revocation everywhere.** An issued certificate stays valid on
   its target until it expires, and an open login to a certificate target continues
   even after that (issue
@@ -1369,6 +1374,49 @@ What it costs:
   answer can tell an agent that some agent asked about that repository in the last 5
   minutes. The impact is low: the answer is the same for every agent, and the timing says
   neither which agent asked nor why.
+
+## The agent hook
+
+`warden hook check` looks at a shell command an agent is about to run and answers, by the
+`[hook]` settings, when it goes around warden: a use of SSH or an API that warden covers,
+the owner's SSH key, a secret store, or a token warden holds
+([Agent hooks](agent-usage.md#agent-hooks)). `warden hook session-start` starts each session
+with what warden offers. The Claude Code plugin, which `warden setup claude` installs, wires
+both to Claude Code's hooks.
+
+**It catches honest mistakes, and it is not a security boundary.** An agent that means to
+go around it can:
+
+- **Change what it checks.** The hook runs as the agent's own OS user, which can edit the
+  CLI's `config.toml` and set every case to `off`, rewrite or delete the offers cache, or
+  uninstall the plugin.
+- **Hide the command.** The check reads the command's text. A command built at run time,
+  encoded, or run through a script file the agent wrote, passes unseen.
+- **Use another tool.** The hook sees only the Bash tool. Reading a file such as
+  `~/.netrc`, fetching a page or calling an MCP server goes past it.
+
+warden's boundary stays where it was: the agent never holds the secret or the key, and
+every grant needs the owner's passkey. The hook adds nothing to it and takes nothing away.
+
+What it must not do, and how it is kept from it:
+
+- **Leak a command.** Commands carry tokens. Its messages name only the host, origin or
+  tool a case is about, never the rest of the command, and it logs nothing.
+- **Slow every command or fail the session.** It makes no network call, reads only the
+  offers cache, and exits 0 whatever happens. A missing `warden`, or one from 0.9.0 to 0.15.0 that
+  does not know `hook`, makes the hook command fail, which Claude Code shows as a hook error
+  without stopping the session or the tool call. A `warden` older than 0.9.0 exits 2, which
+  Claude Code reads as a block, so it refuses every Bash call until it is upgraded.
+- **Teach a way around a denial.** Every answer points to `warden request` with an honest
+  goal, or to the owner.
+
+**The plugin comes from this repository on GitHub.** `warden setup claude` pins the
+marketplace to the release tag of the installed CLI's version, so the hooks are those of
+that release, and release tags cannot be replaced. Claude Code does not check the tag's
+signature, so a compromised repository or GitHub account could change what the hooks run
+for a release made after it, as it could change the CLI itself
+([risk 12](security-assessment.md#ranked-risks)). The plugin's hooks run only `warden`
+commands.
 
 ## The local secret backend
 

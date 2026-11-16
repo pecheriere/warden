@@ -83,6 +83,8 @@ jobs:
         run: scripts/check-no-reqwest-decompression.sh
       - name: Refuse the demo in anything that ships
         run: scripts/check-demo-not-shipped.sh
+      - name: Refuse a plugin version that is not the workspace's
+        run: scripts/check-plugin-version.sh
       - name: Test the release signing script
         run: scripts/test-sign-release.sh
       - name: Refuse an OpenSSL out of support
