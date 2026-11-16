@@ -1064,9 +1064,9 @@ warden revoke <grant-id>
 
 Let the other grants run out on their own: SSH as a user that cannot run `sudo`,
 read-only API grants, commit signing and GitHub grants with no sensitive
-permission. Their
-window bounds them, and revoking one only makes the owner approve the same thing
-again for the next task, which wears down the attention each approval needs.
+permission. Their window bounds them, and revoking one only makes the owner
+approve the same thing again for the next task, which wears down the attention
+each approval needs.
 
 Grants belong to the agent, not to a session: every session of the agent uses the
 same ones (see [Known limits](#known-limits)), and a revoke ends the grant for all

@@ -783,7 +783,7 @@ These were recorded during implementation and are accepted for this release.
   requests. A prompt-injected agent can issue any call the grant permits
   until it expires or is revoked, including state-changing calls if the owner
   approved `POST`, `PUT` or `DELETE`. Choose methods and window accordingly,
-  and revoke when done.
+  and revoke when done if the grant allows more than `GET` or `HEAD`.
 - **The agent cannot widen a request.** The 1Password item is the ceiling. A
   request without `--methods` is read-only; requested methods or a path
   prefix outside the item's (including `CONNECT`, `TRACE`, `/apiary` for
