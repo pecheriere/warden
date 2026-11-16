@@ -409,7 +409,7 @@ user decides), `warn` (let it run, with a note to the model) or `off`.
 | `secret-store` | `ask` | A command reads a secret store, such as `op`. |
 | `token-read` | `ask` | A command reads a token that warden holds. |
 | `uncovered-host` | `warn` | A command reaches a host that warden does not cover. |
-| `owner-github` | `warn` | A command reaches GitHub with the owner's own login instead of a token from warden: `gh` with no `GH_TOKEN` or `GITHUB_TOKEN` on the command, unless the first `gh` on `PATH` is the wrapper `warden setup github` writes; or `git push` to an `https://github.com` remote whose first credential helper is not warden's. Raised only when the offers say the broker has GitHub tokens. |
+| `owner-github` | `warn` | A command reaches GitHub with the owner's own login instead of a token from warden: `gh` with no `GH_TOKEN` or `GITHUB_TOKEN` on the command, unless the first `gh` on the hook's `PATH` is the wrapper `warden setup github` writes (a `gh` run by path, such as `/usr/local/bin/gh`, is not exempt); or `git push` to an `https://github.com` remote whose first credential helper is not warden's. Raised only when the offers say the broker has GitHub tokens. Each simple command is judged alone, so `export GH_TOKEN=$(…); gh pr list` still fires: put the assignment on the same command, `GH_TOKEN=$(…) gh …`. |
 
 ```toml
 [hook]

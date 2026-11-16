@@ -195,6 +195,28 @@ fn what_the_cli_found_decides() {
 }
 
 #[test]
+fn the_wrapper_exempts_only_a_gh_found_on_the_path() {
+    let wrapped = Setup {
+        wrapped: true,
+        ..DEFAULT
+    };
+    for (i, (command, fires)) in [
+        ("gh pr list", false),
+        ("command gh pr list", false),
+        ("env gh pr list", false),
+        ("/usr/local/bin/gh pr list", true),
+        ("./gh pr list", true),
+        ("env /usr/local/bin/gh pr list", true),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let expected: &[Signal] = if *fires { &[Signal::OwnerGithub] } else { &[] };
+        assert_eq!(signals(command, &wrapped), expected, "case {i}: {command}");
+    }
+}
+
+#[test]
 fn the_message_names_the_warden_route_and_never_the_command() {
     let gh = check(
         "GH_REPO=example-owner/example-repo gh pr create --title hunter2",

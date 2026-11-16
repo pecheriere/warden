@@ -118,6 +118,11 @@ impl GitConfig {
     /// every `credential.<pattern>.helper` whose pattern matches `url`, in
     /// order, an empty value dropping those before it; `command_line` holds
     /// the `-c name=value` settings of the git command, which come last.
+    ///
+    /// A helper counts as warden's when its program's basename is `warden`.
+    /// That is deliberately weaker than the same-program check of `warden
+    /// doctor`: this decides only a `warn`-level hint, and the agent could
+    /// edit the configuration away anyway (see the threat model).
     #[must_use]
     pub fn warden_helper_for(&self, url: &str, command_line: &[&str]) -> bool {
         let Some(target) = Url::parse(url).ok().filter(|u| u.host_str().is_some()) else {

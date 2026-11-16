@@ -2,6 +2,11 @@
 //! login instead of a token from warden, when the broker offers GitHub tokens.
 //!
 //! A subject is the tool, `gh` or `git`, never a repository or a URL.
+//!
+//! Not modelled, so a command using one of these may be judged wrongly:
+//! `GIT_DIR=`, `GIT_CONFIG_GLOBAL=`, `GIT_CONFIG_COUNT` and `GIT_CONFIG_KEY_n`
+//! on the command; `gh --hostname` and `GH_HOST` (GitHub Enterprise); and a
+//! push URL with an embedded password.
 
 use url::Url;
 
@@ -33,8 +38,11 @@ fn owner_github(tool: &str) -> Match {
 
 /// `gh` with no token on the command (`token`: a non-empty `GH_TOKEN` or
 /// `GITHUB_TOKEN`) and not through the wrapper of `warden setup github`.
-pub(super) fn gh(args: &[String], token: bool, ctx: &Context) -> Option<Match> {
-    if !tokens_offered(ctx) || token || ctx.gh_wrapped {
+/// `bare` is whether the program word has no `/`: only then does the shell
+/// find `gh` through `PATH`, and so the wrapper. A `gh` run by path, such as
+/// `/usr/local/bin/gh`, bypasses the wrapper.
+pub(super) fn gh(args: &[String], token: bool, bare: bool, ctx: &Context) -> Option<Match> {
+    if !tokens_offered(ctx) || token || (bare && ctx.gh_wrapped) {
         return None;
     }
     let mut words = args.iter().map(String::as_str);

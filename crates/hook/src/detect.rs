@@ -117,7 +117,9 @@ fn matches_of(command: &SimpleCommand, ctx: &Context) -> Vec<Match> {
             let token = ["GH_TOKEN", "GITHUB_TOKEN"]
                 .iter()
                 .any(|name| env_value(command, words, name).is_some_and(|v| !v.is_empty()));
-            github::gh(rest, token, ctx).into_iter().collect()
+            github::gh(rest, token, !first.contains('/'), ctx)
+                .into_iter()
+                .collect()
         }
         "curl" | "wget" | "http" | "https" | "xh" | "xhs" => http::detect(program, rest, ctx),
         _ => Vec::new(),
