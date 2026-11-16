@@ -6,6 +6,23 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-11-16
+
+### Upgrading
+
+- No new migration.
+- Upgrade the broker before the CLI if agents will use the new options: `warden request github
+  --extra-permissions` and `warden github token --permissions` send fields a 0.15.0 broker
+  refuses. Everything else works with the broker and the CLI in either order.
+- The CLI's GitHub token cache from an earlier version is discarded: the next call mints a
+  new token.
+- To use the Claude Code plugin, run `warden setup claude` after upgrading the CLI. If a
+  session-start hook of your own already runs `warden prime --brief`, remove it, or the brief
+  shows twice.
+- The server still links OpenSSL 3.5.9. Five Low advisories of 2026-11-10 (AES-GCM-SIV, CMS
+  and QUIC, which warden does not reach) are fixed in 3.5.10, scheduled for 2026-12-01; the
+  pin moves when it is out.
+
 ### Added
 
 - An agent can ask for extra GitHub permissions within the owner's `extra_permissions`

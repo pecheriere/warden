@@ -1,6 +1,6 @@
 # Security assessment
 
-**Date: 2026-11-15. Covers release 0.14.0, reviewed at `main` commit `a34bc79`; updated below for the permissions of GitHub tokens. The
+**Date: 2026-11-16. Checked for release 0.16.0 at `main` commit `d33ef46`: each change since 0.14.0 that moves a risk has its update below (GitHub token permissions, sensitive permissions, requested extras, the agent hook and plugin, the revoking instructions); the CLI's token cache keyed by permission set and the dependency updates move none. The last full review covered release 0.14.0, at `main` commit `a34bc79`. The
 release adds `warden list` and `warden prime`, and the audit log's limits (both below).
 The review for 0.13.0 (2026-11-12, at `a401590`) covered repository-scoped GitHub grants
 (risks 1 and 2, F24) and the manifest signed through the broker (risk 12, below). The
