@@ -33,10 +33,10 @@ use crate::agent;
 const CACHE_FILE: &str = "github-token.json";
 
 /// The largest cache file read or written, in bytes.
-const MAX_CACHE_BYTES: usize = 16 * 1024;
+pub(super) const MAX_CACHE_BYTES: usize = 16 * 1024;
 
 /// The most entries the cache keeps.
-const MAX_ENTRIES: usize = 32;
+pub(super) const MAX_ENTRIES: usize = 32;
 
 /// The longest token accepted, in bytes.
 const MAX_TOKEN_BYTES: usize = 1024;
@@ -119,7 +119,7 @@ impl Entry {
 
     /// The bytes it takes in the file, at most. The token is counted as JSON encodes
     /// it: `"` and `\` take two bytes, a control character up to six.
-    fn size_bound(&self) -> usize {
+    pub(super) fn size_bound(&self) -> usize {
         let token: usize = self
             .token
             .bytes()
@@ -301,7 +301,7 @@ impl Cache {
     }
 
     /// The bytes the file takes, at most.
-    fn size_bound(&self) -> usize {
+    pub(super) fn size_bound(&self) -> usize {
         FILE_OVERHEAD
             + self.identity.agent.len()
             + self.identity.server.len()

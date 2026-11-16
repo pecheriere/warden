@@ -589,8 +589,11 @@ warden github token --repo example-owner/example-repo --permissions checks:read
 The set is `name:level` pairs joined with commas (`metadata:read` is always added), and a
 bad one exits 64. The broker refuses a pair the grant does not hold (`403`, "the grant does
 not hold this GitHub permission: <name>"; see the
-[protocol](agent-protocol.md#post-v1github-token)), and the CLI refuses a broker that does not
-announce `github_token_permissions`. The CLI caches a narrowed token apart from the whole-set
+[protocol](agent-protocol.md#post-v1github-token)), and when a token must be minted (no
+cached one, or `--fresh`) the CLI refuses a broker that does not announce
+`github_token_permissions`. With no active grant, `--permissions` first files the usual request
+for the default set; a set that names an extra the grant does not hold is then refused, so
+ask with `warden request github --extra-permissions` first. The CLI caches a narrowed token apart from the whole-set
 one, and `--fresh` mints a new token instead of serving the cached one. git and the `gh`
 wrapper always ask for the grant's whole set.
 
