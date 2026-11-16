@@ -568,10 +568,16 @@ These were recorded during implementation and are accepted for this release.
   (the one that stays valid longest), and the broker accepts any grant of
   the calling agent. Two sessions of one agent, or one session across
   tasks, can therefore use a grant whose goal the owner approved for
-  something else. The audit log still names the grant and the agent. The
-  mitigations today: revoking each grant that can do harm (SSH with root or
-  sudo, API grants that change something, release grants, sensitive GitHub
-  permissions) when its task ends, letting the window bound the rest, and
+  something else. The audit log still names the grant and the agent. The agent
+  instructions make part of this intended: a session reuses another session's
+  grant when it cannot do harm (SSH as a user that cannot run `sudo`, read-only
+  API, commit signing, GitHub with no sensitive permission) and is for the same
+  target and user or repository, so that the owner is not asked for the same
+  thing again; scope and window bound it. The mitigations today: using a grant
+  only for work its goal covers, never using another session's grant that can do
+  harm, revoking each grant that can do harm (SSH as root or a user that can run
+  `sudo`, API grants that change something, unfinished release grants, sensitive
+  GitHub permissions) when its task ends, letting the window bound the rest, and
   separate agents (separate OS users and keys) for work that must not share
   grants.
 - **An agent can list its own pending requests, and learns nothing else from it.**

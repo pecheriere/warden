@@ -340,11 +340,16 @@ that is not `owner/name` on `github.com`. See [Exit codes](#exit-codes).
 
 These rules keep the owner's approval meaningful and the audit trail true.
 
-- **Reuse before asking.** Run `warden status` first. If a live grant covers
-  the work, with a goal that covers it too, use it: asking the owner again for
-  what is already granted teaches them to approve without reading. Otherwise
-  request access for the task in front of you, right before you need it, and
-  never "in case it is needed".
+- **Reuse before asking.** Run `warden status` first: asking the owner again
+  for what is already granted teaches them to approve without reading. A session
+  uses a grant its own request printed when that grant's goal covers the work. It
+  uses another session's grant only when that grant cannot do harm (see
+  [Ending a grant](#ending-a-grant)) and is for the same target and user, or the
+  same repository: `warden status` shows neither goals nor an API grant's methods
+  and path, so the session cannot check more than that. It never uses another
+  session's grant that can do harm, and asks for its own. Otherwise it requests
+  access for the task in front of it, right before it needs it, and never "in
+  case it is needed".
 - **Revoke what can do harm, let the rest run out.** See
   [Ending a grant](#ending-a-grant).
 - **An honest, precise goal.** The owner decides on the goal alone. Say what
@@ -1046,24 +1051,28 @@ call after it ends asks the owner again, and approving a new grant ends the old 
 
 Revoke a grant right after use, also when the task failed, when it can do harm:
 
-- SSH as root, or as a user the agent ran `sudo` with;
-- an API grant with a method other than `GET`;
-- a release grant, once the release is published or given up;
-- a GitHub grant with a sensitive extra permission, such as `workflows` or `secrets`;
-- any grant used by mistake, or that may have been used by someone else.
+- SSH as root, or as a user that can run `sudo`;
+- an API grant with any method other than `GET` or `HEAD`;
+- a release grant given up before its last step (it ends by itself after the
+  last one);
+- a GitHub grant with a [sensitive permission](github-app.md#sensitive-permissions),
+  such as `workflows` or `secrets`.
 
 ```sh
 warden revoke <grant-id>
 ```
 
-Let the other grants run out on their own: SSH as a user without sudo, read-only
-API grants, commit signing and GitHub grants with the default permissions. Their
+Let the other grants run out on their own: SSH as a user that cannot run `sudo`,
+read-only API grants, commit signing and GitHub grants with no sensitive
+permission. Their
 window bounds them, and revoking one only makes the owner approve the same thing
 again for the next task, which wears down the attention each approval needs.
 
 Grants belong to the agent, not to a session: every session of the agent uses the
 same ones (see [Known limits](#known-limits)), and a revoke ends the grant for all
-of them. A session revokes only a grant its own request printed.
+of them. A session revokes only a grant its own request printed, with one
+exception: any grant used by mistake, or that someone else may have misused, is
+revoked at once, whoever asked for it, and the owner is told.
 
 This revokes the grant on the broker, stops its local `ssh-agent` and
 removes the local record of an `api` grant. Relay sessions on the grant end

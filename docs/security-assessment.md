@@ -47,11 +47,15 @@ catches mistakes and is not a boundary, and the plugin comes from this repositor
 Its `owner-github` signal, added the same day, reads git's configuration files and the first
 `gh` on the hook's `PATH`, as regular files of 64 KiB at most, without running either: risk 16 stands.
 Updated the same day for the agent instructions on revoking: an agent now reuses a live grant
-that covers its work, revokes right after use only the grants that can do harm (SSH with root or
-sudo, API grants that change something, release grants, sensitive GitHub permissions) and lets
-the window bound the others. Asking the owner for the same everyday grant several times a session
-wore down the attention each approval needs. This moves risk 2: an everyday grant now stays live
-until its window ends, between tasks too.**
+instead of asking again, its own when the goal covers the work and another session's only when it
+cannot do harm and has the same target, user or repository; it revokes right after use only the
+grants that can do harm (SSH as root or a user that can run `sudo`, API grants that change
+something, unfinished release grants, sensitive GitHub permissions) and lets the window bound the
+others. Asking the owner for the same everyday grant several times a session wore down the
+attention each approval needs, so risk 1 (approving by reflex) is meant to go down. Risk 2 moves
+the other way: everyday grants now stay live until their window ends, between tasks and across
+sessions on purpose. That is up to 30 days by default for commit signing (90 at most) and for a
+GitHub token grant, the long-lived cases its damage column names.**
 
 **This is the project's own assessment. It is not an independent review, audit
 or penetration test.** warden has not had one. The people and tools that wrote

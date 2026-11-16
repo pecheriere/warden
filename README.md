@@ -293,7 +293,6 @@ it; follow it for a real setup.
    warden request ssh web-01 --user build-agent --for 15m \
      --goal "restart the web container after the config change in PR #42"
    warden ssh web-01 -- docker restart web
-   warden revoke <grant-id>
    ```
 
 [svc]: https://tailscale.com/kb/1552/tailscale-services
