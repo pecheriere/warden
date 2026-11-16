@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use super::{build_context, real_dir, respond};
+use super::{Machine, build_context, real_dir, respond};
 use crate::hook::claude::Event;
 
 fn event(cwd: Option<&str>) -> Event {
@@ -40,7 +40,7 @@ fn context_reads_files_relative_to_the_event_cwd() {
     let ctx = build_context(
         &event(work.path().to_str()),
         None,
-        None,
+        &Machine::default(),
         PathBuf::from("/tmp/warden-501"),
     );
     assert_eq!(
@@ -67,7 +67,10 @@ fn context_reads_aliases_through_includes() {
     let ctx = build_context(
         &event(None),
         None,
-        Some(home.path()),
+        &Machine {
+            home: Some(home.path().to_path_buf()),
+            ..Machine::default()
+        },
         PathBuf::from("/tmp/warden-501"),
     );
     assert_eq!(ctx.aliases.host_for("lab"), Some("a.example.internal"));
@@ -76,7 +79,12 @@ fn context_reads_aliases_through_includes() {
 
 #[test]
 fn context_without_home_has_no_aliases() {
-    let ctx = build_context(&event(None), None, None, PathBuf::from("/tmp/warden-501"));
+    let ctx = build_context(
+        &event(None),
+        None,
+        &Machine::default(),
+        PathBuf::from("/tmp/warden-501"),
+    );
     assert_eq!(ctx.aliases.host_for("lab"), None);
 }
 
@@ -86,7 +94,12 @@ fn context_accepts_sockets_under_the_real_dir() {
     let real = std::fs::canonicalize(root.path()).unwrap();
     std::fs::create_dir(real.join("tmp")).unwrap();
     std::os::unix::fs::symlink(real.join("tmp"), real.join("var")).unwrap();
-    let ctx = build_context(&event(None), None, None, real.join("var/warden-501"));
+    let ctx = build_context(
+        &event(None),
+        None,
+        &Machine::default(),
+        real.join("var/warden-501"),
+    );
     let via_link = format!("{}/var/warden-501/a.sock", real.display());
     let resolved = format!("{}/tmp/warden-501/a.sock", real.display());
     assert!(ctx.is_warden_socket(&via_link));
@@ -97,4 +110,34 @@ fn context_accepts_sockets_under_the_real_dir() {
 fn respond_is_silent_for_input_that_is_not_an_event() {
     assert_eq!(respond(b"", SystemTime::now()), None);
     assert_eq!(respond(b"{", SystemTime::now()), None);
+}
+
+#[test]
+fn context_reads_the_checkout_of_the_event_cwd() {
+    let work = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(work.path().join(".git")).unwrap();
+    std::fs::write(
+        work.path().join(".git/config"),
+        "[remote \"origin\"]\n\turl = https://github.com/example-owner/example-repo.git\n",
+    )
+    .unwrap();
+    let ctx = build_context(
+        &event(work.path().to_str()),
+        None,
+        &Machine::default(),
+        PathBuf::from("/tmp/warden-501"),
+    );
+    let git = ctx.git.expect("the checkout's configuration");
+    assert_eq!(
+        git.push_urls(None),
+        vec!["https://github.com/example-owner/example-repo.git".to_owned()]
+    );
+    assert!(!ctx.gh_wrapped);
+    let outside = build_context(
+        &event(None),
+        None,
+        &Machine::default(),
+        PathBuf::from("/tmp/warden-501"),
+    );
+    assert!(outside.git.is_none());
 }

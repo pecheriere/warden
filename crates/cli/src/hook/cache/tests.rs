@@ -100,3 +100,14 @@ fn unparsable_missing_oversized_or_not_a_file_gives_none() {
     std::fs::create_dir(&as_dir).unwrap();
     assert_eq!(read_from(&as_dir, now), None);
 }
+
+#[test]
+fn coverage_carries_whether_github_tokens_are_configured() {
+    use warden_agent_hook::context::Coverage;
+
+    assert!(!Coverage::from(&expected()).github);
+    let mut body = offers_body();
+    body["github"] = json!({"configured": true, "max_window": "30d"});
+    let offers: Offers = serde_json::from_value(body).unwrap();
+    assert!(Coverage::from(&offers).github);
+}

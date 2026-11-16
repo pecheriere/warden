@@ -1379,7 +1379,7 @@ What it costs:
 
 `warden hook check` looks at a shell command an agent is about to run and answers, by the
 `[hook]` settings, when it goes around warden: a use of SSH or an API that warden covers,
-the owner's SSH key, a secret store, or a token warden holds
+the owner's SSH key, a secret store, a token warden holds, or the owner's GitHub login
 ([Agent hooks](agent-usage.md#agent-hooks)). `warden hook session-start` starts each session
 with what warden offers. The Claude Code plugin, which `warden setup claude` installs, wires
 both to Claude Code's hooks.
@@ -1388,8 +1388,8 @@ both to Claude Code's hooks.
 go around it can:
 
 - **Change what it checks.** The hook runs as the agent's own OS user, which can edit the
-  CLI's `config.toml` and set every case to `off`, rewrite or delete the offers cache, or
-  uninstall the plugin.
+  CLI's `config.toml` and set every case to `off`, rewrite or delete the offers cache,
+  point a checkout's git configuration at another helper, or uninstall the plugin.
 - **Hide the command.** The check reads the command's text. A command built at run time,
   encoded, or run through a script file the agent wrote, passes unseen.
 - **Use another tool.** The hook sees only the Bash tool. Reading a file such as

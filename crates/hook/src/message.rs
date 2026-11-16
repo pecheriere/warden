@@ -57,6 +57,31 @@ fn owner_credentials(signal: Signal, subject: &str) -> String {
     )
 }
 
+/// The lines that point one checkout's git at warden for github.com, as
+/// `docs/agent-usage.md` gives them.
+const LOCAL_HELPER: &str = "  git config --local credential.https://github.com.helper \"\"\n  \
+     git config --local --add credential.https://github.com.helper \"!$(command -v warden) \
+     git-credential\"\n  git config --local credential.https://github.com.useHttpPath true";
+
+fn owner_github(tool: &str) -> String {
+    if tool == "git" {
+        format!(
+            "owner-github: this `git push` to github.com would use the owner's own GitHub \
+             credential: git here does not ask warden for it. Run `warden status`, then point \
+             this checkout at warden, once, and push again:\n{LOCAL_HELPER}\nWith no grant \
+             active, the push asks the owner itself; to word the request, run `warden request \
+             github <owner/name> --goal \"<what and why>\"` first."
+        )
+    } else {
+        "owner-github: `gh` runs here with the owner's own GitHub login. Run `warden status`, \
+         then give it a token from warden: `GH_TOKEN=$(warden github token --repo <owner/name>) \
+         gh \u{2026}`. With no grant active, `warden github token` asks the owner itself; to \
+         word the request, run `warden request github <owner/name> --goal \"<what and why>\"` \
+         first."
+            .to_owned()
+    }
+}
+
 fn uncovered_host(host: &str) -> String {
     format!(
         "uncovered-host: {host}: warden does not list this host here. If the task needs it, ask \
@@ -79,7 +104,8 @@ pub fn render(matches: &[Match], coverage: Option<&Coverage>) -> String {
             Signal::CoveredSsh => covered_ssh(&found.subject, coverage),
             Signal::CoveredApi => covered_api(&found.subject, coverage),
             Signal::UncoveredHost => uncovered_host(&found.subject),
-            Signal::OwnerSshKey | Signal::SecretStore | Signal::TokenRead | Signal::OwnerGithub => {
+            Signal::OwnerGithub => owner_github(&found.subject),
+            Signal::OwnerSshKey | Signal::SecretStore | Signal::TokenRead => {
                 owner_credentials(found.signal, &found.subject)
             }
         };

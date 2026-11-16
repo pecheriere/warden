@@ -31,6 +31,7 @@ fn coverage() -> Coverage {
                 origin: None,
             },
         ],
+        github: false,
     }
 }
 
@@ -45,6 +46,8 @@ fn context(files: &[(&str, &str)]) -> Context {
         warden_socket_dir: PathBuf::from("/tmp/warden-501"),
         warden_socket_dir_real: None,
         read_small_file: Box::new(move |p: &Path| files.get(p).cloned()),
+        git: None,
+        gh_wrapped: false,
     }
 }
 

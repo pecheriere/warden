@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use anyhow::{Context as _, Result, anyhow, bail, ensure};
+pub use warden_agent_hook::context::helper_program;
 
 use crate::agent;
 
@@ -44,50 +45,6 @@ fn helper_value(exe: &str) -> String {
     format!("!{} git-credential", shell_quote(exe))
 }
 
-/// The program a helper value runs as `<program> git-credential`, in the forms git
-/// runs it in: through the shell (`!` then the program single-quoted, as
-/// [`helper_value`] writes it, or plain), or as an absolute path without `!`.
-/// `None` for any other value, including a program with characters the shell would
-/// read otherwise.
-pub fn helper_program(value: &str) -> Option<String> {
-    let (shell, rest) = match value.strip_prefix('!') {
-        Some(rest) => (true, rest),
-        None => (false, value),
-    };
-    let program = rest.strip_suffix(" git-credential")?;
-    if shell && program.starts_with('\'') {
-        return unquote(program);
-    }
-    let plain = !program.is_empty()
-        && program
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || "/._-+,:@%".contains(c));
-    // Without `!`, git runs only an absolute path itself; anything else names a
-    // `git credential-<name>` command.
-    (plain && (shell || program.starts_with('/'))).then(|| program.to_owned())
-}
-
-/// `quoted` read as the shell reads single-quoted parts joined by `\'`.
-fn unquote(quoted: &str) -> Option<String> {
-    let mut program = String::new();
-    let mut rest = quoted;
-    loop {
-        // A quoted part, then either the end or an escaped quote and another part.
-        let inner = rest.strip_prefix('\'')?;
-        let end = inner.find('\'')?;
-        program.push_str(&inner[..end]);
-        rest = &inner[end + 1..];
-        if rest.is_empty() {
-            return Some(program);
-        }
-        rest = rest.strip_prefix("\\'")?;
-        program.push('\'');
-        if rest.is_empty() {
-            return Some(program);
-        }
-    }
-}
-
 /// This program, as the helper and the wrapper name it.
 fn this_exe() -> Result<(String, Option<String>)> {
     let exe = crate::exe_path::stable_exe()?;
@@ -110,7 +67,7 @@ fn wrapper_script(exe: &str, real_gh: &str) -> String {
 }
 
 /// Whether `contents` are a wrapper this command wrote.
-fn is_ours(contents: &[u8]) -> bool {
+pub(crate) fn is_ours(contents: &[u8]) -> bool {
     contents
         .split(|b| *b == b'\n')
         .any(|line| line == MARKER.as_bytes())
@@ -145,7 +102,7 @@ fn existing(path: &Path) -> Result<Existing> {
 }
 
 /// Whether `path` is an executable regular file, following symlinks.
-fn is_executable(path: &Path) -> bool {
+pub(crate) fn is_executable(path: &Path) -> bool {
     fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
 }
 

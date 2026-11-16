@@ -1,6 +1,7 @@
 //! What the hook knows about the machine: the destinations warden covers, the
 //! owner's SSH aliases and which paths belong to warden itself.
 
+mod git_config;
 mod ssh_config;
 
 use std::path::{Component, Path, PathBuf};
@@ -8,6 +9,7 @@ use std::path::{Component, Path, PathBuf};
 use url::Url;
 use warden_broker_proto::offers::Offers;
 
+pub use self::git_config::{GitConfig, helper_program};
 pub use self::ssh_config::{IncludeReader, SshAliases};
 
 use self::ssh_config::warden_hosts;
@@ -25,6 +27,8 @@ pub struct Coverage {
     pub ssh: Vec<SshCover>,
     /// The API secrets warden offers.
     pub api: Vec<ApiCover>,
+    /// Whether the broker hands out GitHub tokens.
+    pub github: bool,
 }
 
 /// One SSH target warden offers.
@@ -67,6 +71,7 @@ impl From<&Offers> for Coverage {
                     origin: s.origin.clone(),
                 })
                 .collect(),
+            github: offers.github.configured,
         }
     }
 }
@@ -130,6 +135,13 @@ pub struct Context {
     pub warden_socket_dir_real: Option<PathBuf>,
     /// Reads a small file as text; the 64 KiB cap is the reader's job.
     pub read_small_file: Box<FileReader>,
+    /// Git's configuration for the checkout the command runs in: the global
+    /// files, then the checkout's. `None` outside a checkout, or when a file
+    /// could not be read or parsed.
+    pub git: Option<GitConfig>,
+    /// Whether the `gh` the command would run is the wrapper `warden setup
+    /// github` writes, which gives `gh` a token from warden.
+    pub gh_wrapped: bool,
 }
 
 impl Context {
