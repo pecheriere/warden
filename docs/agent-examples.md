@@ -132,11 +132,9 @@ warden http home-api GET https://home.example.com/api/states/climate.living_room
 ```
 
 If the upstream's response echoes the secret, warden replaces it with
-`[REDACTED]`. When the agent has its answer, it revokes the grant:
-
-```sh
-warden revoke <grant-id>
-```
+`[REDACTED]`. The grant is read-only, so the agent lets it run out at the end
+of its window rather than revoking it: another question about the same API in the
+meantime needs no new approval.
 
 ### What the agent runs: changing something
 

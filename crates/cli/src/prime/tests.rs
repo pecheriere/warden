@@ -26,6 +26,7 @@ const SSH: &str = "warden request ssh <target>";
 const API: &str = "warden request api <secret>";
 /// Words only the brief section holds.
 const BRIEF: &str = "Run `warden prime` before your first request";
+const REUSE: &str = "Run `warden status` before each request";
 
 fn empty() -> Offers {
     Offers {
@@ -223,6 +224,7 @@ async fn brief_is_short() {
     assert!(!text.contains("Commit signing"), "{text}");
     assert!(!text.contains("example.internal"), "{text}");
     assert!(text.contains("never look for another way in"), "{text}");
+    assert!(text.contains(REUSE), "{text}");
     assert!(!text.contains(SSH), "{text}");
 }
 

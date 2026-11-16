@@ -53,7 +53,16 @@ What you may ask for here (run `warden list` to see it):
 
 ### Asking for access
 
-Ask right before a task needs it, once per task, for only what that task needs.
+First run `warden status`, and do not ask again for what is already granted.
+Use a live grant that:
+
+- your own request printed, if its goal covers the work; or
+- another session of this agent asked for, only if it is one you would let run
+  out (see "When you are finished" below) and it is for the same
+  target and user, or the same repository. Never use another session's grant that
+  can do harm: ask for your own.
+
+Otherwise ask right before the task needs it, for only what it needs.
 
 <!-- warden:section ssh -->
 SSH, as the least privileged user that can do the work:
@@ -117,7 +126,7 @@ the issue, change or error. One line, at most 500 characters, nothing secret.
 - Bad: `maintenance`, `debugging`, `need access to the server`
 
 The goal must be true. Do not write one that makes the request look smaller
-than it is, and do not use a grant for anything else.
+than it is, and do not use a grant for work its goal does not cover.
 
 ### Naming your session
 
@@ -236,12 +245,28 @@ yourself with another credential.
 
 ### When you are finished
 
-Revoke the grant as soon as the task is done, also when it failed. Do not let
-it run out:
+Revoke right after use, also when the task failed, a grant that can do harm:
+
+- SSH as root, or as a user that can run `sudo`
+- an API grant with any method other than `GET` or `HEAD`
+- a release grant you give up on before its last step (it ends by itself after
+  the last one)
+- a GitHub grant with a sensitive permission, such as `workflows` or `secrets`
 
 ```sh
 warden revoke <grant-id>
 ```
+
+Let the others run out on their own: SSH as a user that cannot run `sudo`,
+read-only API grants, commit signing, and GitHub grants with no sensitive
+permission. Revoking one of those only makes the person approve the same thing
+again for the next task.
+
+Revoke only a grant your own request printed. Grants belong to the agent, not to
+your session: every session of this agent uses the same ones, and a revoke ends
+the grant for all of them. The one exception: revoke at once any grant you used
+by mistake or think someone else misused, whoever asked for it, and tell the
+person.
 
 ### When it does not work
 
@@ -284,6 +309,7 @@ their phone. It covers:
 
 Never use other credentials, and never look for another way in.
 Run `warden prime` before your first request: it prints how to ask.
+Run `warden status` before each request, and use a live grant that covers the work.
 <!-- warden:end -->
 ````
 

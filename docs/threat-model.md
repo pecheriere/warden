@@ -568,10 +568,18 @@ These were recorded during implementation and are accepted for this release.
   (the one that stays valid longest), and the broker accepts any grant of
   the calling agent. Two sessions of one agent, or one session across
   tasks, can therefore use a grant whose goal the owner approved for
-  something else. The audit log still names the grant and the agent. The
-  mitigations today: one request per task, revoking each grant when its task
-  ends, and separate agents (separate OS users and keys) for work that must
-  not share grants.
+  something else. The audit log still names the grant and the agent. The agent
+  instructions make part of this intended: a session reuses another session's
+  grant when it cannot do harm (SSH as a user that cannot run `sudo`, read-only
+  API, commit signing, GitHub with no sensitive permission) and is for the same
+  target and user or repository, so that the owner is not asked for the same
+  thing again; scope and window bound it. The mitigations today: using a grant
+  only for work its goal covers, never using another session's grant that can do
+  harm, revoking each grant that can do harm (SSH as root or a user that can run
+  `sudo`, API grants that change something, unfinished release grants, sensitive
+  GitHub permissions) when its task ends, letting the window bound the rest, and
+  separate agents (separate OS users and keys) for work that must not share
+  grants.
 - **An agent can list its own pending requests, and learns nothing else from it.**
   `GET /v1/requests` is signed like every agent route and filters on the
   authenticated agent, so another agent's request is absent, as it is `404` by ID. It
@@ -775,7 +783,7 @@ These were recorded during implementation and are accepted for this release.
   requests. A prompt-injected agent can issue any call the grant permits
   until it expires or is revoked, including state-changing calls if the owner
   approved `POST`, `PUT` or `DELETE`. Choose methods and window accordingly,
-  and revoke when done.
+  and revoke when done if the grant allows more than `GET` or `HEAD`.
 - **The agent cannot widen a request.** The 1Password item is the ceiling. A
   request without `--methods` is read-only; requested methods or a path
   prefix outside the item's (including `CONNECT`, `TRACE`, `/apiary` for

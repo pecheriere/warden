@@ -57,6 +57,15 @@ All notable changes to this project are recorded here. The format follows
 
 ### Changed
 
+- The agent instructions (`warden prime`, `docs/agent-instructions.md`) and
+  `docs/agent-usage.md` no longer tell an agent to revoke every grant when its task ends.
+  It runs `warden status` first and reuses a live grant instead of asking again: its own when
+  the goal covers the work, another session's only when it cannot do harm. It revokes right
+  after use only SSH as root or a user that can run `sudo`, API grants with a method other than
+  `GET` or `HEAD`, release grants given up before their last step and grants with sensitive
+  GitHub permissions, and lets the others run out. It revokes only a grant its own request
+  printed, since a revoke ends the grant for every session of the agent, except one it thinks
+  was misused.
 - The fixed ceiling on GitHub token permissions is replaced by sensitive permissions
   (`administration`, `workflows`, `secrets`, `environments`, `dependabot_secrets`,
   `repository_hooks` and the documented `organization_*` ones). They are refused in
