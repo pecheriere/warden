@@ -56,6 +56,14 @@ doctor` fails its `github.token` check, git sends warden no repository, and an o
 wrapper does not pass `-R` to warden. A `gh` run outside a checkout needs `-R
 owner/name`.
 
+## Extra GitHub permissions (0.16.0)
+
+`warden request github --extra-permissions` and `warden github token --permissions` send
+fields that a 0.15.0 or older broker refuses, so upgrade the broker first if agents will use
+them. Requests and tokens without them work with either version. The owner allows extras with
+`extra_permissions` on the `warden:github-app` item, and the GitHub App must hold each
+permission itself: see [Permissions](github-app.md#permissions).
+
 ## GitHub token permissions
 
 GitHub token grants now hold a set of permissions that the owner configures
