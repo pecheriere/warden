@@ -45,7 +45,7 @@ Updated the same day for the agent hook and the Claude Code plugin ([#199](https
 installs a plugin, pinned to the CLI's release tag, that runs it. This adds risk 16: the hook
 catches mistakes and is not a boundary, and the plugin comes from this repository (risk 12).
 Its `owner-github` signal, added the same day, reads git's configuration files and the first
-`gh` on `PATH`, as regular files of 64 KiB at most, without running either: risk 16 stands.**
+`gh` on the hook's `PATH`, as regular files of 64 KiB at most, without running either: risk 16 stands.**
 
 **This is the project's own assessment. It is not an independent review, audit
 or penetration test.** warden has not had one. The people and tools that wrote
