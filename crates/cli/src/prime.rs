@@ -11,6 +11,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use serde_json::Value;
 use tokio::time::{Instant, timeout_at};
 use warden_broker_proto::offers::{OfferPart, Offers, RepositoryOffer};
 use warden_broker_proto::release::RepoName;
@@ -56,7 +57,9 @@ fn setup_from(path: anyhow::Result<PathBuf>) -> Setup {
 
 /// What the broker said, or the line saying why it said nothing usable.
 enum Answer {
-    Offered(Offers, Option<RepositoryOffer>),
+    /// What the broker offers, for the checkout's repository if asked, and the
+    /// body it was read from.
+    Offered(Offers, Option<RepositoryOffer>, Value),
     Missing(String),
 }
 
@@ -64,18 +67,35 @@ enum Answer {
 /// command always exits 0.
 pub async fn run(brief: bool) {
     let dir = std::env::current_dir().ok();
-    let setup = setup_from(config::config_path());
-    let text = output(setup, dir.as_deref(), brief, OFFERS_TIMEOUT).await;
+    let text = if brief {
+        brief_and_offers(OFFERS_TIMEOUT).await.0
+    } else {
+        let setup = setup_from(config::config_path());
+        output(setup, dir.as_deref(), false, OFFERS_TIMEOUT).await.0
+    };
     // A closed stdout leaves no one to tell, and prime exits 0 whatever happens.
     let _ = std::io::stdout().lock().write_all(text.as_bytes());
 }
 
+/// The text `prime --brief` prints, and the offers body when the broker
+/// answered, from one call: `run` prints this very text, so the two cannot
+/// differ. The broker gets `limit` in all.
+pub async fn brief_and_offers(limit: Duration) -> (String, Option<Value>) {
+    output(setup_from(config::config_path()), None, true, limit).await
+}
+
 /// The text for `setup`, run in `dir`: the brief section with `brief`,
 /// otherwise the full text with the answer about `dir`'s GitHub repository.
-/// The broker gets `limit` in all.
-async fn output(setup: Setup, dir: Option<&Path>, brief: bool, limit: Duration) -> String {
+/// The broker gets `limit` in all. With the text comes the offers body, when
+/// the broker answered.
+async fn output(
+    setup: Setup,
+    dir: Option<&Path>,
+    brief: bool,
+    limit: Duration,
+) -> (String, Option<Value>) {
     let answer = match setup {
-        Setup::NotSetUp => return format!("{NOT_SET_UP}\n"),
+        Setup::NotSetUp => return (format!("{NOT_SET_UP}\n"), None),
         Setup::Unusable => Answer::Missing(UNUSABLE.to_owned()),
         Setup::Ready(client) => {
             let repo = if brief {
@@ -90,20 +110,26 @@ async fn output(setup: Setup, dir: Option<&Path>, brief: bool, limit: Duration) 
         Ok(template) => template,
         // The tests parse the built-in document, so only a broken build gets here.
         Err(e) => {
-            return format!(
-                "warden: the instructions built into this CLI cannot be read ({e}). Never use \
-                 other credentials, and never look for another way in.\n"
+            return (
+                format!(
+                    "warden: the instructions built into this CLI cannot be read ({e}). Never \
+                     use other credentials, and never look for another way in.\n"
+                ),
+                None,
             );
         }
     };
     match answer {
-        Answer::Offered(offers, _) if brief => template.brief(&brief_offers(&offers)),
-        Answer::Offered(offers, repository) => {
-            let repository = repository.map(list::Repository::Offer);
-            template.full(&kept(&offers), &list::render(&offers, repository.as_ref()))
+        Answer::Offered(offers, _, body) if brief => {
+            (template.brief(&brief_offers(&offers)), Some(body))
         }
-        Answer::Missing(reason) if brief => template.brief(&reason),
-        Answer::Missing(reason) => template.full(&Section::ALL.into(), &reason),
+        Answer::Offered(offers, repository, body) => {
+            let repository = repository.map(list::Repository::Offer);
+            let text = template.full(&kept(&offers), &list::render(&offers, repository.as_ref()));
+            (text, Some(body))
+        }
+        Answer::Missing(reason) if brief => (template.brief(&reason), None),
+        Answer::Missing(reason) => (template.full(&Section::ALL.into(), &reason), None),
     }
 }
 
@@ -134,7 +160,7 @@ async fn ask(client: &Client, repo: Option<&RepoName>, limit: Duration) -> Answe
             .and_then(|body| read_offer(&body).ok()),
         None => None,
     };
-    Answer::Offered(offers, repository)
+    Answer::Offered(offers, repository, body)
 }
 
 /// The sections for what the broker offers, or might: a part it could not

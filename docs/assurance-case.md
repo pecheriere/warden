@@ -84,13 +84,18 @@ trusted, but it is weaker than a signature over the request itself.
 | **B9** Agent to certificate target | A certificate limited to one principal | warden is not on this path | The target's `sshd` decides, using the [principal mapping](threat-model.md#deployment-assumptions); warden sees no logins and cannot end one | [`ssh_ca.rs`](../crates/broker/src/ssh_ca.rs), [`cli/src/ssh.rs`](../crates/cli/src/ssh.rs) |
 | **B10** Broker to GitHub | The App's JWT out; an installation token back | GitHub's answer | Fixed host, verified TLS, redirects off, answers of at most 64 KiB, and nothing GitHub said passed on to the agent; a token is asked for one repository id and the grant's permissions, and a refusal for it becomes a fixed text; the JWT lives 9 minutes and the key signs only through `aws-lc-rs` | [`github_app.rs`](../crates/broker/src/github_app.rs), [`api/github_token.rs`](../crates/broker/src/api/github_token.rs) |
 
-Two more lines matter:
+Three more lines matter:
 
 - **The tailnet policy decides who reaches which port.** warden cannot see it.
   In particular, the rule that an agent machine cannot reach the approval UI is
   a policy rule, not something warden enforces.
 - **Inside the broker's process there is no boundary.** A flaw there can reach
   the Connect token, and through it everything in the vault.
+- **The agent hook is not a boundary.** `warden hook check`, which the Claude Code
+  plugin runs before each Bash tool call, catches honest mistakes. It runs as the
+  agent's own user, which can edit its configuration and cache, it reads only the
+  command's text, which can be obfuscated, and it sees no tool but Bash. No control
+  above relies on it ([threat model](threat-model.md#the-agent-hook)).
 
 ## 3. Secure design principles
 

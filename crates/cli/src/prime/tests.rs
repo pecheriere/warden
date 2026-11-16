@@ -130,7 +130,7 @@ fn github_checkout() -> tempfile::TempDir {
 }
 
 async fn prime(setup: Setup, dir: Option<&Path>, brief: bool) -> String {
-    output(setup, dir, brief, OFFERS_TIMEOUT).await
+    output(setup, dir, brief, OFFERS_TIMEOUT).await.0
 }
 
 #[tokio::test]
@@ -261,7 +261,9 @@ async fn broker_hangs_returns_within_timeout() {
         }
     });
     // A short limit keeps the test quick; the command finishing at all is the check.
-    let text = output(ready(&url), None, false, Duration::from_millis(100)).await;
+    let text = output(ready(&url), None, false, Duration::from_millis(100))
+        .await
+        .0;
     assert_all_rules(&text);
     assert!(text.contains(&format!("\n{TIMED_OUT}\n")), "{text}");
     assert!(TIMED_OUT.contains("within 3 s") && TIMED_OUT.contains("warden doctor"));

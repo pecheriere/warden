@@ -78,8 +78,8 @@ jobs:
     # A called workflow's jobs get no more than this, and GitHub refuses to start
     # one whose jobs ask for more, even jobs that will be skipped. ci.yml's
     # critical-path (pull requests only) asks for actions: read and its
-    # report-red-main (pushes to main only) for issues: write: neither runs for a
-    # tag, and every other job there keeps contents: read.
+    # report-red-main (pushes to main and the daily run only) for issues: write:
+    # neither runs for a tag, and every other job there keeps contents: read.
     permissions:
       actions: read # for ci.yml's critical-path, which a tag skips
       contents: read

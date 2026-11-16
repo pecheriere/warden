@@ -421,3 +421,85 @@ fn ssh_parses_the_block() {
         );
     }
 }
+
+/// The detection library accepts what `block` really renders: `ssh -F` of a
+/// warden config is not flagged when its `IdentityAgent` is in the socket
+/// directory, named lexically or through links.
+#[test]
+fn hook_accepts_the_rendered_block() {
+    use warden_agent_hook::context::{Context, Coverage, SshAliases, SshCover};
+    use warden_agent_hook::detect::check;
+    use warden_agent_hook::settings::Settings;
+
+    let f = Fixture::new(Route::Direct, NOW + 60);
+    let rendered = f.config().config;
+    let root = f.root.path();
+    let real_root = fs::canonicalize(root).unwrap();
+    let link = root.join("link");
+    std::os::unix::fs::symlink(&real_root, &link).unwrap();
+    let real_form = rendered.replace(root.to_str().unwrap(), real_root.to_str().unwrap());
+    let sockets = root.join("my tmp");
+    let cases = [
+        (rendered, sockets.clone(), None),
+        (
+            real_form,
+            link.join("my tmp"),
+            Some(real_root.join("my tmp")),
+        ),
+    ];
+    for (i, (text, dir, real)) in cases.into_iter().enumerate() {
+        let config = root.join(format!("rendered-{i}.conf"));
+        fs::write(&config, text).unwrap();
+        let context = Context {
+            coverage: Some(Coverage {
+                ssh: vec![SshCover {
+                    name: "pi".to_owned(),
+                    host: Some("192.0.2.10".to_owned()),
+                    users: Vec::new(),
+                }],
+                api: Vec::new(),
+            }),
+            aliases: SshAliases::default(),
+            warden_socket_dir: dir,
+            warden_socket_dir_real: real,
+            read_small_file: Box::new(crate::hook::files::read_small),
+        };
+        let command = format!("ssh -F '{}' pi", config.display());
+        let verdict = check(&command, &context, &Settings::default());
+        assert!(
+            verdict.matches.is_empty(),
+            "case {i}: {:?}",
+            verdict.matches
+        );
+    }
+}
+
+/// The test above is not vacuous: the same rendered block, with the socket
+/// directory somewhere else, is flagged.
+#[test]
+fn hook_flags_the_rendered_block_outside_the_socket_dir() {
+    use warden_agent_hook::context::{Context, Coverage, SshAliases, SshCover};
+    use warden_agent_hook::detect::check;
+    use warden_agent_hook::settings::Settings;
+
+    let f = Fixture::new(Route::Direct, NOW + 60);
+    let config = f.root.path().join("rendered.conf");
+    fs::write(&config, f.config().config).unwrap();
+    let context = Context {
+        coverage: Some(Coverage {
+            ssh: vec![SshCover {
+                name: "pi".to_owned(),
+                host: Some("192.0.2.10".to_owned()),
+                users: Vec::new(),
+            }],
+            api: Vec::new(),
+        }),
+        aliases: SshAliases::default(),
+        warden_socket_dir: PathBuf::from("/nonexistent/warden-0"),
+        warden_socket_dir_real: None,
+        read_small_file: Box::new(crate::hook::files::read_small),
+    };
+    let command = format!("ssh -F '{}' pi", config.display());
+    let verdict = check(&command, &context, &Settings::default());
+    assert_eq!(verdict.matches.len(), 1);
+}

@@ -1,5 +1,7 @@
 # warden
 
+[![CI on main](https://github.com/pecheriere/warden/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/pecheriere/warden/actions/workflows/ci.yml?query=branch%3Amain)
+
 warden is a self-hosted **approval broker** for AI agents and scripts.
 
 An agent asks for temporary access to a server or an API and says why. You
@@ -280,7 +282,10 @@ it; follow it for a real setup.
    instructions: `warden prime` prints them, with what the broker offers it, and
    `warden list` shows what it may ask for. [Agent instructions](docs/agent-instructions.md)
    says how to hand them over, with a session-start hook or one line in its
-   `AGENTS.md`.
+   `AGENTS.md`. For Claude Code, `warden setup claude` installs the warden plugin,
+   which runs that hook and checks each shell command for a way around warden
+   ([The Claude Code plugin](docs/agent-usage.md#the-claude-code-plugin)). The
+   check catches honest mistakes; it is not a security boundary.
 
 8. **Request and use access:**
 
@@ -430,6 +435,7 @@ Report a vulnerability privately as described in [SECURITY.md](SECURITY.md).
 |-----------|-------|------------|
 | `warden-server` | `warden-broker` | The broker: agent API, approval UI, SSH CA, SSH relay, HTTP proxy, notifications, audit log, SQLite state. Runs as a container. |
 | `warden` | `warden-broker-cli` | The agent's CLI: requests access, waits for the decision, keeps the per-grant key in an `ssh-agent`, wraps `ssh` and makes API calls (`warden http`). |
+| | `warden-agent-hook` | The pure detection library behind `warden hook check`: decides whether a shell command goes around warden. No I/O. |
 | | `warden-broker-proto` | The wire types and the request-signing protocol shared by both. |
 
 ## Development

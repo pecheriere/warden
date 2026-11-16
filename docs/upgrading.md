@@ -104,6 +104,15 @@ a `409` when it asks for the same repositories with other extras; it cancels the
 repository and permission set (`github-token.json`, version 3): a version 1 or 2 file is
 ignored and replaced, and the next token is minted anew.
 
+## The Claude Code plugin
+
+Nothing changes for a Claude Code session until `warden setup claude` is run on its
+machine, from this release's CLI or later: it installs the warden plugin, pinned to the
+tag of that CLI's version, which runs `warden hook session-start` and `warden hook check`
+([The Claude Code plugin](agent-usage.md#the-claude-code-plugin)). A `SessionStart` hook you
+wrote yourself to run `warden prime --brief` can go once the plugin is installed, since the
+plugin prints the same brief. The broker needs no change.
+
 ## Private files
 
 From 0.9.0, warden keeps its files private to its user, and corrects
@@ -166,3 +175,10 @@ path really is safe, keep the URL and list the variable in
 
 Install the new version as in [Agent usage](agent-usage.md#one-time-setup).
 Upgrade the server before the agents' CLIs when a release says so.
+
+On a machine with the Claude Code plugin, run `warden setup claude` again after the
+upgrade. It points the marketplace at the new version's tag and updates the plugin, so the
+plugin stays at the CLI's version. If `claude` is not on the `PATH`, the command only prints
+the `/plugin` commands to type in a session, which repoint the marketplace but do not update
+an installed plugin: run `claude plugin update warden@warden --scope user` once `claude` is
+available.

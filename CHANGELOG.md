@@ -24,6 +24,29 @@ All notable changes to this project are recorded here. The format follows
   token cache now keeps one token per repository and permission set, so a narrowed token is
   never served for a plain request; a cache from an earlier version is discarded and the
   next token is minted anew. ([#283](https://github.com/pecheriere/warden/issues/283))
+- `warden hook check` reads a Claude Code `PreToolUse` event and flags the shell commands
+  that go around warden (SSH or an API that warden covers, the owner's SSH key, a secret
+  store, a token warden holds). It makes no network call and exits 0 whatever happens.
+  ([#199](https://github.com/pecheriere/warden/issues/199))
+- `warden hook session-start` prints `warden prime --brief` followed by the owner's rules
+  file, `agent-rules.md` next to `config.toml` (first 8 KiB, whole output under 9,500
+  characters), and saves the broker's offers for `warden hook check`; it exits 0 whatever
+  happens.
+  ([#199](https://github.com/pecheriere/warden/issues/199))
+- A `[hook]` table in the CLI's `config.toml` sets what each way around warden does:
+  `block`, `ask`, `warn` or `off`. An invalid table gives the defaults, never weaker
+  protection, and `warden doctor` reports it.
+  ([#199](https://github.com/pecheriere/warden/issues/199))
+- A Claude Code plugin, `warden`, in this repository's marketplace: it runs `warden hook
+  session-start` at every session start and `warden hook check` before every Bash tool call,
+  and holds no instructions or patterns of its own. It catches honest mistakes and is not a
+  security boundary.
+  ([#199](https://github.com/pecheriere/warden/issues/199))
+- `warden setup claude` installs that plugin at user scope with `claude plugin`, pinned to
+  the release tag of the CLI's own version; run again after an upgrade, it moves the plugin
+  to the new tag. `--dry-run` prints the commands, and without `claude` on the `PATH` it
+  prints the `/plugin` commands to type instead. It changes no file itself.
+  ([#199](https://github.com/pecheriere/warden/issues/199))
 
 ### Changed
 

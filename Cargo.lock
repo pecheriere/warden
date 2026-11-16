@@ -4523,6 +4523,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "warden-agent-hook"
+version = "0.15.0"
+dependencies = [
+ "toml",
+ "url",
+ "warden-broker-proto",
+]
+
+[[package]]
 name = "warden-broker"
 version = "0.15.0"
 dependencies = [
@@ -4602,6 +4611,7 @@ dependencies = [
  "tokio",
  "toml",
  "url",
+ "warden-agent-hook",
  "warden-broker",
  "warden-broker-proto",
  "warden-demo",

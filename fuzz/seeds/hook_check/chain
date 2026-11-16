@@ -1,0 +1,1 @@
+x=$(op read op://v/i/f) && ssh -i /secret/path/key host

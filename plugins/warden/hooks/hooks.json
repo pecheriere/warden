@@ -1,0 +1,28 @@
+{
+  "description": "Runs warden's agent hooks. All logic lives in the warden CLI.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "warden hook session-start",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "warden hook check",
+            "timeout": 2
+          }
+        ]
+      }
+    ]
+  }
+}

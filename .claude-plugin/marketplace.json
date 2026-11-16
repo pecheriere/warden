@@ -1,0 +1,17 @@
+{
+  "name": "warden",
+  "description": "The warden plugin for Claude Code.",
+  "owner": {
+    "name": "warden maintainers"
+  },
+  "plugins": [
+    {
+      "name": "warden",
+      "source": "./plugins/warden",
+      "description": "Claude Code hooks for warden: start each session with what warden offers, and warn before a command goes around it.",
+      "author": {
+        "name": "warden maintainers"
+      }
+    }
+  ]
+}

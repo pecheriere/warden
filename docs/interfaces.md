@@ -33,6 +33,7 @@ specified. Interfaces with a reference of their own are linked, not repeated.
 | OpenSSH tools on the agent's machine | The CLI runs `ssh` and `ssh-agent`, and talks to `ssh-agent` sockets | Keys, and data to sign | [One-time setup](agent-usage.md#one-time-setup) |
 | `git` on the agent's machine | `warden setup github` runs `git config` to set the credential helper, and `warden doctor` reads it. Git runs `warden git-credential` for `https://github.com`. | Settings, and git's credential lines | [GitHub tokens](agent-usage.md#github-tokens) |
 | `git` and `ssh-keygen` on the agent's machine | `warden setup git` runs `git config`. Git runs `warden` as its signing program, which sends every `-Y` operation except signing on to `ssh-keygen` as it is. | Settings, and what git asked to verify | [Signing commits](agent-usage.md#signing-commits) |
+| Claude Code on the agent's machine | `warden setup claude` runs `claude plugin` to add this repository's marketplace, pinned to the CLI's release tag, and to install and update the `warden` plugin. The plugin's hooks run `warden hook session-start` and `warden hook check`, which read Claude Code's hook event as JSON on standard input and answer on standard output. | Plugin commands; hook events and answers | [The Claude Code plugin](agent-usage.md#the-claude-code-plugin) |
 
 ## What warden writes
 

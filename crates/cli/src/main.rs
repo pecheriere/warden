@@ -12,6 +12,7 @@ mod git_signing;
 mod github_repo;
 mod github_token;
 mod guidance;
+mod hook;
 mod http;
 mod install;
 mod list;
@@ -21,6 +22,7 @@ mod recover;
 mod release;
 mod request;
 mod request_context;
+mod setup_claude;
 mod setup_git;
 mod setup_github;
 mod sign;
@@ -35,7 +37,7 @@ use anyhow::{Result, ensure};
 use clap::Parser;
 use warden_broker_proto::doctor::EXIT_NOTHING_FAILED;
 
-use crate::cli::{Cli, Cmd, GithubCmd, ReleaseCmd, RequestKind, SetupWhat};
+use crate::cli::{Cli, Cmd, GithubCmd, HookCmd, ReleaseCmd, RequestKind, SetupWhat};
 use crate::client::Client;
 use crate::commands::{HttpCall, revoke, run_http, run_setup_git, run_ssh, status};
 use crate::config::Config;
@@ -139,11 +141,12 @@ fn parse_failure_exit(e: &clap::Error) -> ExitCode {
 }
 
 /// Whether the housekeeping runs before `cmd`. Doctor, list and prime change
-/// nothing, so not even the housekeeping runs before them.
+/// nothing, so not even the housekeeping runs before them, and a hook runs on
+/// every shell command, so it has to stay fast.
 const fn runs_housekeeping(cmd: &Cmd) -> bool {
     !matches!(
         cmd,
-        Cmd::Doctor { .. } | Cmd::List { .. } | Cmd::Prime { .. }
+        Cmd::Doctor { .. } | Cmd::List { .. } | Cmd::Prime { .. } | Cmd::Hook { .. }
     )
 }
 
@@ -195,6 +198,9 @@ async fn run(cmd: Cmd) -> Result<()> {
         Cmd::Setup {
             what: SetupWhat::Github,
         } => setup_github::run(),
+        Cmd::Setup {
+            what: SetupWhat::Claude { dry_run },
+        } => setup_claude::run(dry_run),
         Cmd::Github {
             what:
                 GithubCmd::Token {
@@ -255,8 +261,21 @@ async fn run(cmd: Cmd) -> Result<()> {
             prime::run(brief).await;
             Ok(())
         }
+        Cmd::Hook { what } => {
+            run_hook(what).await;
+            Ok(())
+        }
         Cmd::Status => status().await,
         Cmd::Revoke { grant } => revoke(&grant).await,
+    }
+}
+
+/// Both hook commands exit 0 whatever happens: a broken hook must not stop the
+/// agent.
+async fn run_hook(what: HookCmd) {
+    match what {
+        HookCmd::Check => hook::check::run(),
+        HookCmd::SessionStart => hook::session_start::run().await,
     }
 }
 

@@ -40,8 +40,11 @@ is not one: see [Sign-off](#sign-off-dco).
 | `crates/broker` | `warden-broker`: the server (`api`, `approval` UI, `policy` from 1Password, `ssh_ca`, `relay`, `proxy`, `notify`, `audit`, `store`) |
 | `crates/broker/migrations` | SQLite migrations, applied at startup; never edit a released one, add a new file |
 | `crates/broker/src/testkit` | test helpers (throwaway `sshd`, fixtures), behind the `testkit` feature |
+| `crates/hook` | `warden-agent-hook`: the pure detection library behind `warden hook check` (no I/O); fuzzed by the `hook_check` target in `fuzz/` |
 | `crates/cli` | `warden-broker-cli`, the `warden` command agents run |
 | `crates/demo` | `warden-demo`: the throwaway local demo, never in the image, released only as its own archive (`docs/demo.md`) |
+| `.claude-plugin/` | the Claude Code marketplace file that lists the plugin |
+| `plugins/warden` | the Claude Code plugin: two hooks that run `warden hook`, no logic of its own; its version equals the workspace's |
 | `docs/` | user and design documentation |
 | `site/` | the landing page on GitHub Pages: static HTML and CSS, no scripts, no external resources. It names no version and leaves setup commands to the README, so a release does not touch it |
 | `deploy/systemd` | the systemd unit that `docs/deployment-systemd.md` installs |
@@ -59,6 +62,7 @@ python3 -I .github/scripts/dco.py pull-request --base origin/main --head HEAD
 cargo fmt --check
 scripts/check-no-reqwest-decompression.sh
 scripts/check-demo-not-shipped.sh
+scripts/check-plugin-version.sh
 scripts/test-sign-release.sh
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo nextest run --workspace --all-features --locked
@@ -247,7 +251,9 @@ issue: an advisory with no fixed release yet fails no check.
 
 1. A release pull request bumps `version` in `Cargo.toml` (the workspace
    package and the internal crates' dependency entries) and in the internal
-   crates' entries in `fuzz/Cargo.toml`, updates `Cargo.lock` and
+   crates' entries in `fuzz/Cargo.toml` and in
+   `plugins/warden/.claude-plugin/plugin.json` (`scripts/check-plugin-version.sh`
+   refuses a mismatch), updates `Cargo.lock` and
    `fuzz/Cargo.lock`, moves `## [Unreleased]` to a dated `## [x.y.z]`
    section in `CHANGELOG.md` (noting any new migration), and updates every
    mention of the previous version in the README and `docs/` (install
