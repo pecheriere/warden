@@ -369,9 +369,10 @@ pub(super) async fn first_end(
         ended = live.ended() => return (ended, false),
         own = own => own,
     };
-    // A dropped sender is a stop too, as in `stopping`.
+    // A dropped sender is a stop too, as in `stopping`. Whether the agent
+    // left still holds: its held-up connection is then cut at once.
     if *stop.borrow() || stop.has_changed().is_err() {
-        (reason::SHUTDOWN, false)
+        (reason::SHUTDOWN, own.1)
     } else if let Some(told) = live.told() {
         (told, false)
     } else {

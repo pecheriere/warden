@@ -100,7 +100,17 @@ async fn a_cause_told_before_the_session_ends_by_itself_wins_whatever_the_wake_o
     });
     assert_eq!(
         first_end(&mut live, &mut stop, own).await,
-        (reason::SHUTDOWN, false)
+        (reason::SHUTDOWN, true),
+        "a stop, and the agent's side gone"
+    );
+
+    // The stop's sender going away is a stop too.
+    let mut live = sessions.register(&grant("a", 100), 0);
+    let (stopping, mut stop) = tokio::sync::watch::channel(false);
+    let own = ends_after(move || drop(stopping));
+    assert_eq!(
+        first_end(&mut live, &mut stop, own).await,
+        (reason::SHUTDOWN, true)
     );
 
     // Likewise a revocation, expiry or failing closed.
