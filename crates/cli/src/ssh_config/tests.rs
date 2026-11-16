@@ -458,11 +458,14 @@ fn hook_accepts_the_rendered_block() {
                     users: Vec::new(),
                 }],
                 api: Vec::new(),
+                github: false,
             }),
             aliases: SshAliases::default(),
             warden_socket_dir: dir,
             warden_socket_dir_real: real,
             read_small_file: Box::new(crate::hook::files::read_small),
+            git: None,
+            gh_wrapped: false,
         };
         let command = format!("ssh -F '{}' pi", config.display());
         let verdict = check(&command, &context, &Settings::default());
@@ -493,11 +496,14 @@ fn hook_flags_the_rendered_block_outside_the_socket_dir() {
                 users: Vec::new(),
             }],
             api: Vec::new(),
+            github: false,
         }),
         aliases: SshAliases::default(),
         warden_socket_dir: PathBuf::from("/nonexistent/warden-0"),
         warden_socket_dir_real: None,
         read_small_file: Box::new(crate::hook::files::read_small),
+        git: None,
+        gh_wrapped: false,
     };
     let command = format!("ssh -F '{}' pi", config.display());
     let verdict = check(&command, &context, &Settings::default());

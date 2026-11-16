@@ -6,6 +6,7 @@ pub mod cache;
 pub mod check;
 pub mod claude;
 pub mod files;
+pub mod git;
 pub mod include;
 pub mod session_start;
 pub mod settings;

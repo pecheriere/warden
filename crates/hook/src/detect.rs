@@ -5,6 +5,7 @@
 //! tool, never more of the command) and renders the message from them alone.
 
 mod args;
+mod github;
 mod http;
 mod secrets;
 mod ssh;
@@ -35,6 +36,9 @@ pub const SECRET_STORE_SUBJECTS: &[&str] = &["op", "security", "pass", "gopass",
 /// (`gh hosts.yml` has a space), or `gh` for `gh auth token`.
 pub const TOKEN_READ_SUBJECTS: &[&str] = &[".netrc", "gh hosts.yml", ".env", "gh"];
 
+/// Every subject an `owner-github` match can have: the tool.
+pub const OWNER_GITHUB_SUBJECTS: &[&str] = &["gh", "git"];
+
 /// One signal that fired, with what it is about.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Match {
@@ -43,7 +47,8 @@ pub struct Match {
     /// The host, origin or tool the signal names: for `covered-ssh` the
     /// target's name from the offers; for `covered-api` and `uncovered-host`
     /// the host as written; for `owner-ssh-key`, `secret-store` and
-    /// `token-read` the tool, or the kind of credential file. Never a path,
+    /// `token-read` the tool, or the kind of credential file; for
+    /// `owner-github` the tool, `gh` or `git`. Never a path,
     /// a URL, a header or any other part of the command.
     pub subject: String,
 }
@@ -104,7 +109,15 @@ fn matches_of(command: &SimpleCommand, ctx: &Context) -> Vec<Match> {
         }
         "git" => {
             let ssh_command = env_value(command, words, "GIT_SSH_COMMAND");
-            ssh::git(rest, socket, ssh_command.as_deref(), ctx)
+            let mut found = ssh::git(rest, socket, ssh_command.as_deref(), ctx);
+            found.extend(github::git_push(rest, ctx));
+            found
+        }
+        "gh" => {
+            let token = ["GH_TOKEN", "GITHUB_TOKEN"]
+                .iter()
+                .any(|name| env_value(command, words, name).is_some_and(|v| !v.is_empty()));
+            github::gh(rest, token, ctx).into_iter().collect()
         }
         "curl" | "wget" | "http" | "https" | "xh" | "xhs" => http::detect(program, rest, ctx),
         _ => Vec::new(),

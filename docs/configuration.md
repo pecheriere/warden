@@ -409,7 +409,7 @@ user decides), `warn` (let it run, with a note to the model) or `off`.
 | `secret-store` | `ask` | A command reads a secret store, such as `op`. |
 | `token-read` | `ask` | A command reads a token that warden holds. |
 | `uncovered-host` | `warn` | A command reaches a host that warden does not cover. |
-| `owner-github` | `warn` | Accepted, but nothing raises it yet: a later release adds the check for a command that uses the owner's own GitHub login. |
+| `owner-github` | `warn` | A command reaches GitHub with the owner's own login instead of a token from warden: `gh` with no `GH_TOKEN` or `GITHUB_TOKEN` on the command, unless the first `gh` on `PATH` is the wrapper `warden setup github` writes; or `git push` to an `https://github.com` remote whose first credential helper is not warden's. Raised only when the offers say the broker has GitHub tokens. |
 
 ```toml
 [hook]
@@ -427,9 +427,21 @@ The hook catches honest mistakes. It is not a security boundary: the agent runs
 as the same user, so it can edit this file or obfuscate a command. Warden's
 boundary stays that the agent never holds the secret or the key.
 
-`covered-ssh`, `covered-api` and `uncovered-host` need the offers cache that
-`warden hook session-start` writes. With no cache, an unreadable one or one
-older than 24 hours, they are not raised; the other signals do not depend on it.
+`covered-ssh`, `covered-api`, `uncovered-host` and `owner-github` need the offers
+cache that `warden hook session-start` writes. With no cache, an unreadable one or
+one older than 24 hours, they are not raised; the other signals do not depend on it.
+
+For `git push`, the hook reads git's configuration without running git: the
+global files (`$XDG_CONFIG_HOME/git/config` or `~/.config/git/config`, then
+`~/.gitconfig`) and the configuration of the checkout the command runs in (a
+worktree's is found through its `.git` file). It resolves the remote's push URL
+(`pushurl`, `url`, `pushInsteadOf` and `insteadOf`; with no remote named,
+`remote.pushDefault`, else `origin`) and the credential helpers git would ask for
+it, in order, an empty value dropping those before it, the command's own `-c`
+settings last. It does not follow `include` or `includeIf`, or read the system
+file, `config.worktree` or a branch's own remote. Outside a checkout, with a file
+it cannot read or parse, or for a `git -C`, `--git-dir` or `--work-tree` push, it
+raises nothing. An SSH remote is a matter for `owner-ssh-key`, not this signal.
 
 The owner's rules for this machine go in `agent-rules.md` next to `config.toml`
 (`~/.config/warden/agent-rules.md`, or `$XDG_CONFIG_HOME/warden/agent-rules.md`).

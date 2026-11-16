@@ -370,18 +370,25 @@ pub(super) fn rsync(
 }
 
 /// What `git`'s own options and subcommand say.
-struct GitCall<'a> {
+pub(super) struct GitCall<'a> {
     /// The values of `-c core.sshCommand=…`.
     ssh_commands: Vec<&'a str>,
+    /// Every `-c name=value` setting, in order.
+    pub(super) settings: Vec<&'a str>,
+    /// Whether `-C`, `--git-dir` or `--work-tree` points git at another
+    /// repository than the working directory's.
+    pub(super) elsewhere: bool,
     /// The first word that is not a global option.
-    subcommand: Option<&'a str>,
+    pub(super) subcommand: Option<&'a str>,
     /// The words after the subcommand.
-    rest: &'a [String],
+    pub(super) rest: &'a [String],
 }
 
-fn git_call(args: &[String]) -> GitCall<'_> {
+pub(super) fn git_call(args: &[String]) -> GitCall<'_> {
     let mut call = GitCall {
         ssh_commands: Vec::new(),
+        settings: Vec::new(),
+        elsewhere: false,
         subcommand: None,
         rest: &[],
     };
@@ -393,6 +400,7 @@ fn git_call(args: &[String]) -> GitCall<'_> {
             word.strip_prefix("-c").filter(|_| !word.starts_with("--"))
         };
         if let Some(setting) = config {
+            call.settings.push(setting);
             if let Some((key, value)) = setting.split_once('=')
                 && key.eq_ignore_ascii_case("core.sshCommand")
             {
@@ -402,7 +410,10 @@ fn git_call(args: &[String]) -> GitCall<'_> {
             word.as_str(),
             "-C" | "--git-dir" | "--work-tree" | "--namespace" | "--super-prefix" | "--config-env"
         ) {
+            call.elsewhere |= matches!(word.as_str(), "-C" | "--git-dir" | "--work-tree");
             words.next();
+        } else if word.starts_with("--git-dir=") || word.starts_with("--work-tree=") {
+            call.elsewhere = true;
         } else if !word.starts_with('-') {
             call.subcommand = Some(word);
             call.rest = args.get(at + 1..).unwrap_or_default();

@@ -21,14 +21,15 @@
 use std::path::{Path, PathBuf};
 
 use libfuzzer_sys::fuzz_target;
-use warden_agent_hook::context::{ApiCover, Context, Coverage, SshAliases, SshCover};
+use warden_agent_hook::context::{ApiCover, Context, Coverage, GitConfig, SshAliases, SshCover};
 use warden_agent_hook::detect::{
-    OWNER_SSH_KEY_SUBJECTS, SECRET_STORE_SUBJECTS, TOKEN_READ_SUBJECTS, check,
+    OWNER_GITHUB_SUBJECTS, OWNER_SSH_KEY_SUBJECTS, SECRET_STORE_SUBJECTS, TOKEN_READ_SUBJECTS,
+    check,
 };
 use warden_agent_hook::settings::{Settings, Signal};
 
-/// What warden offers: one SSH target with a host, one listed by name only, and
-/// one API secret.
+/// What warden offers: one SSH target with a host, one listed by name only,
+/// one API secret, and GitHub tokens.
 fn coverage() -> Coverage {
     Coverage {
         ssh: vec![
@@ -47,6 +48,7 @@ fn coverage() -> Coverage {
             name: "home-api".to_owned(),
             origin: Some("https://home-api.example.internal".to_owned()),
         }],
+        github: true,
     }
 }
 
@@ -61,6 +63,13 @@ fn context() -> Context {
         warden_socket_dir: PathBuf::from("/tmp/warden-501"),
         warden_socket_dir_real: None,
         read_small_file: Box::new(|_: &Path| None),
+        // A checkout whose `origin` is on github.com, with the owner's helper,
+        // so that `owner-github` can fire.
+        git: GitConfig::parse(&[
+            "[credential]\n\thelper = osxkeychain\n",
+            "[remote \"origin\"]\n\turl = https://github.com/example-owner/example-repo.git\n",
+        ]),
+        gh_wrapped: false,
     }
 }
 
@@ -73,8 +82,7 @@ fn is_host_shaped(subject: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '[' | ']' | ':'))
 }
 
-/// Whether `subject` is right for `signal`; `false` also for a signal no
-/// check produces.
+/// Whether `subject` is right for `signal`.
 fn subject_is_valid(signal: Signal, subject: &str, ctx: &Context) -> bool {
     match signal {
         Signal::CoveredSsh => ctx
@@ -89,7 +97,7 @@ fn subject_is_valid(signal: Signal, subject: &str, ctx: &Context) -> bool {
         Signal::SecretStore => SECRET_STORE_SUBJECTS.contains(&subject),
         Signal::TokenRead => TOKEN_READ_SUBJECTS.contains(&subject),
         Signal::UncoveredHost => is_host_shaped(subject),
-        Signal::OwnerGithub => false,
+        Signal::OwnerGithub => OWNER_GITHUB_SUBJECTS.contains(&subject),
     }
 }
 

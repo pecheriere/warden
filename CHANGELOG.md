@@ -28,6 +28,13 @@ All notable changes to this project are recorded here. The format follows
   that go around warden (SSH or an API that warden covers, the owner's SSH key, a secret
   store, a token warden holds). It makes no network call and exits 0 whatever happens.
   ([#199](https://github.com/pecheriere/warden/issues/199))
+- `warden hook check` raises `owner-github` (default `warn`) when the broker offers GitHub
+  tokens and a command uses the owner's own GitHub login: `gh` with no `GH_TOKEN` or
+  `GITHUB_TOKEN` on the command and no `warden setup github` wrapper first on `PATH`, or
+  `git push` to an `https://github.com` remote whose first credential helper is not warden's.
+  It reads git's configuration files without running git, and its message gives the
+  `warden github token` form for `gh` and the three `git config --local` lines for a checkout.
+  ([#199](https://github.com/pecheriere/warden/issues/199))
 - `warden hook session-start` prints `warden prime --brief` followed by the owner's rules
   file, `agent-rules.md` next to `config.toml` (first 8 KiB, whole output under 9,500
   characters), and saves the broker's offers for `warden hook check`; it exits 0 whatever

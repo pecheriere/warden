@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+mod github;
 mod hardening;
 
 use super::{Match, check};
@@ -46,6 +47,7 @@ fn coverage() -> Coverage {
             name: "home-api".to_owned(),
             origin: Some("https://home-api.example.internal".to_owned()),
         }],
+        github: false,
     }
 }
 
@@ -62,6 +64,8 @@ fn context(covered: bool) -> Context {
         warden_socket_dir: PathBuf::from("/tmp/warden-501"),
         warden_socket_dir_real: None,
         read_small_file: Box::new(move |p: &Path| files.get(p).cloned()),
+        git: None,
+        gh_wrapped: false,
     }
 }
 
