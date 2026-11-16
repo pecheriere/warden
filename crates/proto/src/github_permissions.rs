@@ -74,6 +74,13 @@ pub const SENSITIVE: &[&str] = &[
     "workflows",
 ];
 
+/// Every permission name the list knows, sensitive ones included, each once.
+/// Callers that need to cover every name, such as a test of the longest set,
+/// read it from here instead of copying the list.
+pub fn known_names() -> impl Iterator<Item = &'static str> {
+    KNOWN.iter().chain(SENSITIVE).copied()
+}
+
 /// Whether `name` is one of the [`SENSITIVE`] permissions.
 #[must_use]
 pub fn is_sensitive(name: &str) -> bool {

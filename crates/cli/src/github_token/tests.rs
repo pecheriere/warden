@@ -9,7 +9,7 @@ use warden_broker_proto::Id;
 use warden_broker_proto::github_token::GithubTokenResponse;
 use warden_broker_proto::release::RepoName;
 
-use super::cache::{Cache, Entry, well_formed};
+use super::cache::{AskedSet, Cache, Entry, well_formed};
 use super::{Caller, Identity, MIN_REMAINING_SECS, explain, goal_for, repository_for, serve_from};
 use crate::client::CallError;
 use crate::{EXIT_ERROR, EXIT_NO_GRANT, Exit};
@@ -54,7 +54,7 @@ fn response(token: &str, expires_at: i64, repository: &str, id: u64) -> GithubTo
 }
 
 fn entry(token: &str, expires_at: i64, repository: &str, id: u64) -> Entry {
-    Entry::new(response(token, expires_at, repository, id))
+    Entry::new(response(token, expires_at, repository, id), &AskedSet::Full)
 }
 
 /// A cache of `entries`, for [`identity`], written to `path`.
@@ -90,10 +90,18 @@ async fn serve_as(
     id: u64,
 ) -> (String, bool) {
     let minted = Cell::new(false);
-    let token = serve_from(path, NOW, identity, &repo(repository), || {
-        minted.set(true);
-        ready(Ok(response(FRESH, NOW + 3600, answered, id)))
-    })
+    let token = serve_from(
+        path,
+        NOW,
+        identity,
+        &repo(repository),
+        &AskedSet::Full,
+        false,
+        || {
+            minted.set(true);
+            ready(Ok(response(FRESH, NOW + 3600, answered, id)))
+        },
+    )
     .await
     .unwrap();
     (token.to_string(), minted.get())
@@ -298,7 +306,7 @@ async fn cache_refuses_wrong_mode_or_garbage() {
     }
     let entry_json = |token: &str, extra: &str| {
         format!(
-            r#"{{"repository":"{REPO}","repository_id":1001,"grant_id":"{}","token":"{token}","expires_at":{}{extra}}}"#,
+            r#"{{"repository":"{REPO}","repository_id":1001,"grant_id":"{}","token":"{token}","expires_at":{},"asked":"full"{extra}}}"#,
             Id::random(),
             NOW + 3600
         )
@@ -308,11 +316,11 @@ async fn cache_refuses_wrong_mode_or_garbage() {
             r#"{{"version":{version},"agent":"build-agent","server":"https://warden.example.ts.net/","entries":[{entries}]{extra}}}"#
         )
     };
-    let bad_token = file(&entry_json(r"ghs_a\nb", ""), "", 2);
-    let unknown_entry_field = file(&entry_json("ghs_a", r#","x":1"#), "", 2);
-    let unknown_field = file(&entry_json("ghs_a", ""), r#","x":1"#, 2);
-    let wrong_version = file(&entry_json("ghs_a", ""), "", 3);
-    let too_many = file(&vec![entry_json("ghs_a", ""); 33].join(","), "", 2);
+    let bad_token = file(&entry_json(r"ghs_a\nb", ""), "", 3);
+    let unknown_entry_field = file(&entry_json("ghs_a", r#","x":1"#), "", 3);
+    let unknown_field = file(&entry_json("ghs_a", ""), r#","x":1"#, 3);
+    let wrong_version = file(&entry_json("ghs_a", ""), "", 2);
+    let too_many = file(&vec![entry_json("ghs_a", ""); 33].join(","), "", 3);
     let huge = format!(r#"{{"token":"{}"}}"#, "a".repeat(20_000));
     for garbage in [
         "",
@@ -343,7 +351,7 @@ async fn cache_refuses_wrong_mode_or_garbage() {
     }
     // The shape is exactly one the tests above could be mistaken about.
     let d = dir();
-    fs::write(&d.cache, file(&entry_json("ghs_a", ""), "", 2)).unwrap();
+    fs::write(&d.cache, file(&entry_json("ghs_a", ""), "", 3)).unwrap();
     fs::set_permissions(&d.cache, fs::Permissions::from_mode(0o600)).unwrap();
     assert!(Cache::load(&d.cache).is_some());
 }
@@ -411,14 +419,22 @@ async fn cache_file_created_0600() {
 #[tokio::test]
 async fn a_token_that_is_not_well_formed_is_refused_and_not_cached() {
     let d = dir();
-    let refused = serve_from(&d.cache, NOW, &identity(), &repo(REPO), || {
-        ready(Ok(response(
-            "ghs_a\npassword=other",
-            NOW + 3600,
-            REPO,
-            1001,
-        )))
-    })
+    let refused = serve_from(
+        &d.cache,
+        NOW,
+        &identity(),
+        &repo(REPO),
+        &AskedSet::Full,
+        false,
+        || {
+            ready(Ok(response(
+                "ghs_a\npassword=other",
+                NOW + 3600,
+                REPO,
+                1001,
+            )))
+        },
+    )
     .await
     .unwrap_err();
     assert!(!refused.to_string().contains("ghs_a"), "{refused}");
@@ -432,9 +448,15 @@ async fn a_token_that_is_not_well_formed_is_refused_and_not_cached() {
 #[tokio::test]
 async fn mint_answer_for_other_repository_is_refused() {
     let d = dir();
-    let refused = serve_from(&d.cache, NOW, &identity(), &repo(REPO), || {
-        ready(Ok(response(FRESH, NOW + 3600, OTHER_REPO, 1002)))
-    })
+    let refused = serve_from(
+        &d.cache,
+        NOW,
+        &identity(),
+        &repo(REPO),
+        &AskedSet::Full,
+        false,
+        || ready(Ok(response(FRESH, NOW + 3600, OTHER_REPO, 1002))),
+    )
     .await
     .unwrap_err();
     assert_eq!(
@@ -459,11 +481,19 @@ async fn mint_answer_for_other_repository_is_refused() {
 #[tokio::test]
 async fn a_failed_mint_keeps_its_call_error() {
     let d = dir();
-    let e = serve_from(&d.cache, NOW, &identity(), &repo(REPO), || {
-        ready(Err::<GithubTokenResponse, _>(
-            CallError::Refused("broker refused (403)".to_owned()).into(),
-        ))
-    })
+    let e = serve_from(
+        &d.cache,
+        NOW,
+        &identity(),
+        &repo(REPO),
+        &AskedSet::Full,
+        false,
+        || {
+            ready(Err::<GithubTokenResponse, _>(
+                CallError::Refused("broker refused (403)".to_owned()).into(),
+            ))
+        },
+    )
     .await
     .unwrap_err();
     assert!(e.downcast_ref::<CallError>().is_some());
@@ -545,3 +575,5 @@ fn a_bad_repo_flag_in_gh_mode_refuses_with_the_fixed_message() {
         assert_eq!(exit.message, crate::github_repo::UNDETERMINED_GH);
     }
 }
+
+mod cache;

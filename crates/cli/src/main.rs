@@ -201,17 +201,7 @@ async fn run(cmd: Cmd) -> Result<()> {
         Cmd::Setup {
             what: SetupWhat::Claude { dry_run },
         } => setup_claude::run(dry_run),
-        Cmd::Github {
-            what:
-                GithubCmd::Token {
-                    repo,
-                    gh_args,
-                    args,
-                },
-        } => {
-            let repository = github_token::repository_for(repo, gh_args, &args)?;
-            github_token::print_token(&repository).await
-        }
+        Cmd::Github { what } => run_github(what).await,
         Cmd::Http {
             secret,
             method,
@@ -266,6 +256,20 @@ async fn run(cmd: Cmd) -> Result<()> {
         Cmd::Status => status().await,
         Cmd::Revoke { grant } => revoke(&grant).await,
     }
+}
+
+/// `warden github token`: prints a token for the repository the flags or `gh`'s
+/// arguments name.
+async fn run_github(what: GithubCmd) -> Result<()> {
+    let GithubCmd::Token {
+        repo,
+        permissions,
+        fresh,
+        gh_args,
+        args,
+    } = what;
+    let repository = github_token::repository_for(repo, gh_args, &args)?;
+    github_token::print_token(&repository, permissions, fresh).await
 }
 
 /// Both hook commands exit 0 whatever happens: a broken hook must not stop the

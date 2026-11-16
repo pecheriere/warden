@@ -199,6 +199,16 @@ pub(crate) enum GithubCmd {
         /// The repository the token is for, `owner/name`.
         #[arg(long, conflicts_with = "gh_args")]
         repo: Option<RepoName>,
+        /// Give the token only these permissions, as `name:level` joined with
+        /// commas, such as `checks:read`: they must be within the grant's set, and
+        /// the token is cached apart from the whole-set one. Without it, the token
+        /// has everything the grant holds.
+        #[arg(long, value_parser = parse_permissions)]
+        permissions: Option<PermissionSet>,
+        /// Mint a new token instead of serving the cached one, and cache it in its
+        /// place.
+        #[arg(long)]
+        fresh: bool,
         /// What follows `--` are `gh`'s own arguments: the repository is read from
         /// their `-R`/`--repo`, as the `gh` wrapper passes them.
         #[arg(long)]
@@ -358,7 +368,7 @@ pub(crate) enum RequestKind {
     },
 }
 
-/// Read the value of `--extra-permissions`.
+/// Read the value of `--extra-permissions` or `--permissions`.
 fn parse_permissions(text: &str) -> Result<PermissionSet, String> {
     PermissionSet::parse(text).map_err(|e| e.to_string())
 }
@@ -387,6 +397,8 @@ mod tests {
             what:
                 GithubCmd::Token {
                     repo,
+                    permissions,
+                    fresh,
                     gh_args,
                     args,
                 },
@@ -395,6 +407,8 @@ mod tests {
             panic!("not the token command");
         };
         assert_eq!(repo, None);
+        assert_eq!(permissions, None);
+        assert!(!fresh);
         assert!(gh_args);
         assert_eq!(args, ["pr", "view", "-R", "o/r"]);
 
@@ -407,6 +421,31 @@ mod tests {
         };
         assert_eq!(repo.unwrap().as_str(), "o/r");
         assert!(!gh_args);
+
+        let cli = Cli::try_parse_from([
+            "warden",
+            "github",
+            "token",
+            "--repo",
+            "o/r",
+            "--permissions",
+            "checks:read",
+            "--fresh",
+        ])
+        .unwrap();
+        let Cmd::Github {
+            what: GithubCmd::Token {
+                permissions, fresh, ..
+            },
+        } = cli.command
+        else {
+            panic!("not the token command");
+        };
+        assert_eq!(
+            permissions.unwrap().to_string(),
+            "checks:read,metadata:read"
+        );
+        assert!(fresh);
     }
 
     #[test]
@@ -415,6 +454,8 @@ mod tests {
             &["warden", "github", "token", "--repo", "bad"][..],
             &["warden", "github", "token", "--", "pr", "view"],
             &["warden", "github", "token", "--repo", "o/r", "--gh-args"],
+            &["warden", "github", "token", "--permissions", "bogus:read"],
+            &["warden", "github", "token", "--permissions", "checks:admin"],
         ] {
             assert!(Cli::try_parse_from(args).is_err(), "{args:?}");
         }

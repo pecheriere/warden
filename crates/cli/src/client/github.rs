@@ -9,6 +9,7 @@ use warden_broker_proto::release::RepoName;
 use zeroize::Zeroizing;
 
 use super::{CallError, Client, failure, fetch_info, json_body};
+use crate::github_token::AskedSet;
 use crate::{EXIT_ERROR, Exit};
 
 /// What the agent is told when the broker predates repository-scoped GitHub grants.
@@ -17,18 +18,23 @@ const OLD_BROKER: &str = "the broker does not support repository-scoped GitHub g
 
 impl Client {
     /// Have the broker mint a GitHub token for `repository` under this agent's
-    /// active grant. The body is parsed here, so that no error can quote the token.
+    /// active grant, with the grant's whole set for [`AskedSet::Full`] and exactly
+    /// the named permissions otherwise. The body is parsed here, so that no error can quote the token.
     ///
     /// # Errors
     /// If the server is unreachable or refuses.
     pub async fn github_token(
         &self,
         repository: &RepoName,
+        asked: &AskedSet,
     ) -> Result<GithubTokenResponse, CallError> {
         let url = self.url("v1/github-token")?;
         let body = json_body(&GithubTokenRequest {
             repository: repository.clone(),
-            permissions: None,
+            permissions: match asked {
+                AskedSet::Full => None,
+                AskedSet::Exactly(set) => Some(set.clone()),
+            },
         })?;
         let resp = self.call(Method::POST, url, Some(body)).await?;
         if resp.status() != StatusCode::OK {

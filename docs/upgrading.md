@@ -100,6 +100,9 @@ name `extra_permissions` and a mint may name `permissions`. **Upgrade the broker
 CLI**: a new CLI refuses `--extra-permissions` against a broker that does not report it. Grants
 and requests that exist are unchanged. An agent with a request waiting for a repository now gets
 a `409` when it asks for the same repositories with other extras; it cancels the first or waits.
+`warden github token --permissions` needs the flag too. The CLI's token cache is now per
+repository and permission set (`github-token.json`, version 3): a version 1 or 2 file is
+ignored and replaced, and the next token is minted anew.
 
 ## The Claude Code plugin
 

@@ -21,6 +21,7 @@ use warden_broker::testkit::{CapturingNotifier, TestBroker, github_app_key};
 use warden_broker_proto::Window;
 
 mod extras;
+mod narrowing;
 mod offline;
 mod old_broker;
 
@@ -334,7 +335,8 @@ async fn e2e_request_github_then_git_credential() {
     // Revoking the grant here drops its cached token.
     let minted = fs::read_to_string(s.machine.cache()).unwrap();
     let grant: serde_json::Value = serde_json::from_str(&minted).unwrap();
-    assert_eq!(grant["version"], 2);
+    assert_eq!(grant["version"], 3);
+    assert_eq!(grant["entries"][0]["asked"], "full");
     assert_eq!(grant["entries"][0]["repository"], REPO);
     assert_eq!(grant["entries"][0]["repository_id"], REPO_ID);
     let grant = grant["entries"][0]["grant_id"].as_str().unwrap().to_owned();

@@ -18,6 +18,7 @@ use std::path::Path;
 use anyhow::{Context as _, Result, anyhow};
 use serde::{Deserialize, Serialize};
 use warden_broker_proto::Goal;
+use warden_broker_proto::github_permissions::PermissionSet;
 use warden_broker_proto::github_token::{
     AMBIGUOUS_GRANT, APP_CHANGED, AutomaticCaller, GithubTokenResponse, HOURLY_LIMIT,
     NO_ACTIVE_GRANT, NOT_CONFIGURED, OLD_CLIENT, REPOSITORY_UNREACHABLE,
@@ -25,15 +26,15 @@ use warden_broker_proto::github_token::{
 use warden_broker_proto::release::RepoName;
 use zeroize::Zeroizing;
 
-use crate::client::{CallError, Client, require_scoped};
+use crate::client::{CallError, Client, require_permissions, require_scoped};
 use crate::config::Config;
 use crate::github_repo;
 use crate::{EXIT_ERROR, EXIT_NO_GRANT, Exit, request, unix_now};
 
 mod cache;
 
+pub use cache::{AskedSet, discard, discard_repositories};
 use cache::{Cache, Entry};
-pub use cache::{discard, discard_repositories};
 
 /// A cached token is served only while it has at least this long left, in seconds.
 pub const MIN_REMAINING_SECS: i64 = 300;
@@ -99,9 +100,10 @@ impl Identity {
     }
 }
 
-/// The token for `repository` cached at `path` if it was minted for `identity` and
-/// is good for at least [`MIN_REMAINING_SECS`] at `now`, or else one from `mint`,
-/// which then joins the cache. A cache that cannot be written is reported on stderr
+/// The token for `repository` asked for `asked`, cached at `path` if it was minted
+/// for `identity` and is good for at least [`MIN_REMAINING_SECS`] at `now`, or else
+/// one from `mint`, which then joins the cache under `asked` and replaces any there.
+/// With `fresh`, the cache is not looked at, so `mint` always runs. A cache that cannot be written is reported on stderr
 /// and does not stop the token. The answer of `mint` must be for `repository`.
 ///
 /// # Errors
@@ -112,6 +114,8 @@ async fn serve_from<F, Fut>(
     now: i64,
     identity: &Identity,
     repository: &RepoName,
+    asked: &AskedSet,
+    fresh: bool,
     mint: F,
 ) -> Result<Zeroizing<String>>
 where
@@ -119,10 +123,14 @@ where
     Fut: Future<Output = Result<GithubTokenResponse>>,
 {
     let loaded = Cache::load(path).filter(|cache| cache.identity == *identity);
-    if let Some(entry) = loaded.as_ref().and_then(|c| c.lookup(repository, now)) {
+    if !fresh
+        && let Some(entry) = loaded
+            .as_ref()
+            .and_then(|c| c.lookup(repository, asked, now))
+    {
         return Ok(entry.token.clone());
     }
-    let entry = Entry::new(mint().await?);
+    let entry = Entry::new(mint().await?, asked);
     if !entry.repository.matches(repository) {
         return Err(anyhow!("the broker sent a token for another repository"));
     }
@@ -141,9 +149,10 @@ where
     Ok(token)
 }
 
-/// The cached token for `repository`, or a new one from the broker of `config` when
-/// the cache holds no good one for it. A new one is minted only from a broker that
-/// scopes GitHub grants to repositories.
+/// The cached token for `repository` asked for `asked`, or a new one from the
+/// broker of `config` when the cache holds no good one for it, or `fresh` is set. A
+/// new one is minted only from a broker that scopes GitHub grants to repositories,
+/// and, for named permissions, takes them.
 ///
 /// # Errors
 /// If the state directory is unusable, the broker does not scope GitHub grants, or
@@ -152,13 +161,18 @@ pub async fn cached_or_mint(
     config: &Config,
     client: &Client,
     repository: &RepoName,
+    asked: &AskedSet,
+    fresh: bool,
     now: i64,
 ) -> Result<Zeroizing<String>> {
     let path = cache::cache_path()?;
     let identity = Identity::of(config);
-    serve_from(&path, now, &identity, repository, || async {
-        require_scoped(&config.server).await?;
-        Ok(client.github_token(repository).await?)
+    serve_from(&path, now, &identity, repository, asked, fresh, || async {
+        match asked {
+            AskedSet::Full => require_scoped(&config.server).await?,
+            AskedSet::Exactly(_) => require_permissions(&config.server).await?,
+        }
+        Ok(client.github_token(repository, asked).await?)
     })
     .await
 }
@@ -169,15 +183,21 @@ fn is_no_grant(e: &anyhow::Error) -> bool {
         .is_some_and(|e| matches!(e, CallError::Refused(m) if m.contains(NO_ACTIVE_GRANT)))
 }
 
-/// A token for `caller`, for `repository`. Without an active grant, a request is filed for it and the
+/// A token for `caller`, for `repository`, asked for `asked`, never from the cache
+/// when `fresh`. Without an active grant, a request is filed for it and the
 /// owner's decision awaited first, as `warden request` waits.
 ///
 /// # Errors
 /// [`Exit`] with [`EXIT_NO_GRANT`] when the owner does not approve or no grant is
 /// usable, and otherwise as [`explain`] says.
-pub async fn obtain(caller: Caller, repository: &RepoName) -> Result<Zeroizing<String>> {
+pub async fn obtain(
+    caller: Caller,
+    repository: &RepoName,
+    asked: &AskedSet,
+    fresh: bool,
+) -> Result<Zeroizing<String>> {
     let (config, client) = crate::client()?;
-    match cached_or_mint(&config, &client, repository, unix_now()).await {
+    match cached_or_mint(&config, &client, repository, asked, fresh, unix_now()).await {
         Ok(token) => Ok(token),
         Err(e) if is_no_grant(&e) => {
             let dir = std::env::current_dir().ok();
@@ -195,7 +215,7 @@ pub async fn obtain(caller: Caller, repository: &RepoName) -> Result<Zeroizing<S
                 dir.as_deref(),
             )
             .await?;
-            cached_or_mint(&config, &client, repository, unix_now())
+            cached_or_mint(&config, &client, repository, asked, fresh, unix_now())
                 .await
                 .map_err(explain)
         }
@@ -309,11 +329,18 @@ pub fn repository_for(
 }
 
 /// `warden github token`: print a token for `repository`, and nothing else, on stdout.
+/// With `permissions`, the token has exactly those; with `fresh`, it is minted anew
+/// and replaces the cached one.
 ///
 /// # Errors
 /// As [`obtain`], or if stdout cannot be written.
-pub async fn print_token(repository: &RepoName) -> Result<()> {
-    let token = obtain(Caller::GhWrapper, repository).await?;
+pub async fn print_token(
+    repository: &RepoName,
+    permissions: Option<PermissionSet>,
+    fresh: bool,
+) -> Result<()> {
+    let asked = permissions.map_or(AskedSet::Full, AskedSet::Exactly);
+    let token = obtain(Caller::GhWrapper, repository, &asked, fresh).await?;
     let mut out = std::io::stdout().lock();
     out.write_all(token.as_bytes())
         .and_then(|()| out.write_all(b"\n"))

@@ -197,6 +197,10 @@ most, and its last token lives up to an hour more (the request defaults to `1h`,
 `--for` is refused): make the goal say exactly why you need that permission. Do not ask for one
 to get around a refusal. Ask once, with every extra the task needs: a request with other extras
 is refused while one waits.
+When a task needs less than the grant, such as a read-only check, mint a narrower token with
+`warden github token --repo <owner/name> --permissions checks:read`, and add `--fresh` when a
+token must be minted again (for example after the owner changed the App's permissions, or a
+token was revoked).
 
 A grant covers the repositories the person approves, and a token covers one of them. Name the
 repository your task is about, and more than one only when the task needs them. A token for
