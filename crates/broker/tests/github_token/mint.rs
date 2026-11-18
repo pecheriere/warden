@@ -657,10 +657,27 @@ fn answer_with(broker: &TestBroker, permissions: &[(&str, &str)]) -> Scripted {
 }
 
 #[tokio::test]
-async fn mint_uses_the_grant_set_not_the_current_default() {
+async fn plain_mint_follows_the_current_default_named_mint_the_grant() {
     let (broker, upstream, key) = granted_with_checks().await;
-    // The owner narrows the default after the approval.
+    // The owner narrows the default after the approval: a mint that names nothing
+    // gets the default as it is now, limited to what the grant holds.
     set_default(&broker, "contents:write,metadata:read");
+    upstream.script_github_token(answer_with(
+        &broker,
+        &[("contents", "write"), ("metadata", "read")],
+    ));
+    let resp = mint(&broker, &key).await;
+    assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
+    let calls = mint_calls(&upstream);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(
+        asked_permissions(&calls[0]).join(","),
+        "contents:write,metadata:read",
+        "the narrowed default, not the grant's set"
+    );
+    assert_eq!(resp.json()["permissions"], "contents:write,metadata:read");
+
+    // A mint that names the grant's whole set still gets it.
     upstream.script_github_token(answer_with(
         &broker,
         &[
@@ -671,15 +688,16 @@ async fn mint_uses_the_grant_set_not_the_current_default() {
             ("pull_requests", "write"),
         ],
     ));
-    let resp = mint(&broker, &key).await;
+    let resp = broker
+        .api_post_json(
+            &key,
+            "/v1/github-token",
+            &json!({"repository": REPO_A, "permissions": WITH_CHECKS}),
+        )
+        .await;
     assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
     let calls = mint_calls(&upstream);
-    assert_eq!(calls.len(), 1);
-    assert_eq!(
-        asked_permissions(&calls[0]).join(","),
-        WITH_CHECKS,
-        "the grant's set, not the narrowed default"
-    );
+    assert_eq!(asked_permissions(&calls[1]).join(","), WITH_CHECKS);
     assert_eq!(resp.json()["permissions"], WITH_CHECKS);
 }
 

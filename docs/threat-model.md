@@ -1070,20 +1070,23 @@ What an attacker gets, and what stops it:
   and the goal is the agent's claim. A persuasive goal for a repository the owner did not
   mean is the same risk as any approval ([risk 1](security-assessment.md#ranked-risks)).
   Approving a grant also ends the agent's other grants that share a repository by id or by
-  name (ignoring case), listed on the page, and the approval is refused if that set changed
+  name (ignoring case) and hold exactly the same extra permissions, listed on the page, and the approval is refused if that set changed
   between the page and the passkey. If GitHub cannot be reached when the page is first
   opened, the page shows an error and nothing is stored; the first stored answer wins.
 - **The CLI's choice of repository is not a boundary.** The CLI works out the repository from
   git's URL or `gh`'s arguments, but an agent that holds a key can call
   `POST /v1/github-token` itself with any repository. What bounds it is the grant: the broker
   mints only for a repository an active grant of that agent covers, by name ignoring case,
-  and refuses with a 403 otherwise, or a 409 when two grants cover it.
+  and refuses with a 403 otherwise, or a 409 when two grants with the same extra
+  permissions cover it.
 - **The permissions are the owner's configuration, never the agent's**: the item's
   `default_permissions`, which is `contents`, `pull_requests` and `issues` write and `metadata`
   read when unset. The set is stored with the request when it is made, shown on the approval
   page, bound into the passkey's digest and held by the grant, so a later change to the item
-  moves no existing grant and no pending request. The broker sends the grant's set to GitHub
-  whatever the App is allowed, and the token and the audit entry carry what GitHub granted.
+  never widens an existing grant or a pending request. The broker asks GitHub for at most
+  the grant's set, whatever the App is allowed: the set the mint names, or the current
+  default limited to the grant, so a narrowed default narrows existing grants' plain tokens
+  (see below). The token and the audit entry carry what GitHub granted.
   What moves: an owner can now configure a default wider than the four (for example `checks`
   or `actions`), and every agent's token then holds it from the next request on. The sensitive
   permissions (`administration`, `workflows`, `secrets`, `environments`, `dependabot_secrets`,
@@ -1100,7 +1103,19 @@ What an attacker gets, and what stops it:
   keeps the extras and the short window. A mint may ask for fewer permissions than the grant
   holds and is refused (403) for one it does not hold, so an agent can only narrow a
   token. What an agent can hold is therefore the default set, plus extras the owner
-  listed and approved for that grant. An agent with a prompt-injected goal can ask for
+  listed and approved for that grant. **An extra permission reaches a token only when the
+  request names it**: a mint that names nothing gets the owner's current default set,
+  limited to what the grant holds, so an extra granted to one session does not reach the
+  tokens of every other session of the agent by accident. Naming is not a boundary between
+  those sessions: all of them share one agent, so any of them can name an extra while a
+  grant holds it. When several grants cover the repository, the broker mints from the least
+  privileged one that holds what the request names (no sensitive permission first, then the
+  fewest permissions, then the soonest end), which decides only which grant the audit log
+  names and which revoke stops it. The check after GitHub answers repeats that choice for the
+  same request and withholds the token unless it finds the same grant still active, so
+  revoking a sensitive grant during a mint that named its permission gives that mint
+  nothing. A covering grant whose stored permissions cannot be read refuses the mint rather
+  than being passed over for another. An agent with a prompt-injected goal can ask for
   a listed sensitive extra, so the owner's allowlist and the goal on the phone are the
   controls: list only what an agent may need. Narrowing the allowlist does not end a grant
   that is live: one holding a non-sensitive extra keeps minting for up to 30 days, and the
@@ -1193,8 +1208,8 @@ What holds:
   limiter commit signing uses, so refused calls cannot fill the log. A body over the route's
   16 KiB limit is refused before the caller is known, and is not recorded, as on every route.
 - **An agent cannot approve it, and nothing renews by itself.** A grant takes the passkey,
-  and so does renewing it. An agent may hold several grants, but two never cover the same
-  repository: approving one ends the agent's overlapping ones. As for commit signing, warden notifies the owner a few days before a grant
+  and so does renewing it. An agent may hold several grants, but two with the same extra permissions never cover the same
+  repository: approving one ends the agent's overlapping ones with the same extras. As for commit signing, warden notifies the owner a few days before a grant
   ends, naming only the agent, and **Renew** on Active grants opens a request that still needs
   the passkey; the grant works until that approval. If the owner lets it end, the agent's
   next call asks the owner again, so the request comes while the agent is working, and the

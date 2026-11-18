@@ -55,7 +55,16 @@ others. Asking the owner for the same everyday grant several times a session wor
 attention each approval needs, so risk 1 (approving by reflex) is meant to go down. Risk 2 moves
 the other way: everyday grants now stay live until their window ends, between tasks and across
 sessions on purpose. That is up to 30 days by default for commit signing (90 at most) and for a
-GitHub token grant, the long-lived cases its damage column names.**
+GitHub token grant, the long-lived cases its damage column names.
+Updated on 2026-11-17 for one GitHub grant per permission set (warden-dqs): an agent can hold,
+on one repository, grants with different extras, and approving one no longer ends the others.
+A token now carries an extra permission only when the request names it; a plain mint gets the
+owner's current default, limited to what the grant holds, from the least privileged grant
+covering the repository. Risk 2 goes down: until now, while an extra was granted, every session
+of the agent got it in every token without asking. It also goes up a little: a superseded grant
+stays live until it is revoked or ends, where approving used to end it; a sensitive grant still
+lasts 1 hour at most. Naming is not a boundary between sessions, which share one agent
+([GitHub tokens](threat-model.md#github-tokens)).**
 
 **This is the project's own assessment. It is not an independent review, audit
 or penetration test.** warden has not had one. The people and tools that wrote

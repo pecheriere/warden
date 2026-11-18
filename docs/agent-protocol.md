@@ -536,7 +536,7 @@ that it is the expected key, as `-Y verify` with an allowed-signers file does
 | `POST /v1/grants/{id}/http` | Make an HTTPS call with an `api` grant. |
 | `GET /v1/commit-signing/key` | The public half of the broker's commit signing key. |
 | `POST /v1/commit-signing/sign` | Have a commit signed, under the agent's active commit signing grant. |
-| `POST /v1/github-token` | Mint a GitHub App installation token, for one repository, under the agent's active GitHub token grant that covers it. |
+| `POST /v1/github-token` | Mint a GitHub App installation token, for one repository, under the least privileged of the agent's active GitHub token grants that cover it and hold what the request names. |
 
 ### `GET /healthz`
 
@@ -972,11 +972,12 @@ Have a commit signed under the agent's active commit signing grant; see
 
 ### `POST /v1/github-token`
 
-Mint a GitHub App installation token for one repository, under the agent's active GitHub
-token grant that covers it, read anew for each call; the grant id is not sent. Signed. The
-body names the repository, as `owner/name`, and optionally `permissions`, and nothing else: any
-other field is refused. A token has the grant's permissions, or fewer when the agent narrows
-them; it never has more.
+Mint a GitHub App installation token for one repository, under one of the agent's active
+GitHub token grants that cover it, read anew for each call; the grant id is not sent. Signed.
+The body names the repository, as `owner/name`, and optionally `permissions`, and nothing else:
+any other field is refused. A token has the permissions the body names, or, when it names none,
+the owner's default set; it never has more than the grant holds. **An extra permission reaches
+a token only when the body names it.**
 
 ```json
 {"repository":"example-owner/example-repo"}
@@ -988,10 +989,32 @@ commas, each a known name, `read` or `write`). The token then holds that set and
 grant must cover each pair, `write` covering `read`. Sent only when the broker's
 `/v1/info` says `github_token_permissions` is `true`: an older broker refuses the body.
 
+Which grant a token comes from, when several cover the repository (one per set of extras):
+
+- With `permissions`, the least privileged grant holding them all: one without a sensitive
+  permission first, then the one with the fewest permissions, then the one ending soonest,
+  then the smallest grant id. The token is narrowed to `permissions`, so the choice decides
+  only which grant `grant_id` and the audit log name, and which revoke stops it. When no grant
+  holds them all, the same order picks among every covering grant, and the `403` below names
+  the first permission it lacks.
+- Without `permissions`, the least privileged covering grant in the same order, and the token
+  gets the owner's current `default_permissions`, limited to what that grant holds (per name,
+  the lower level). A default narrowed since the approval narrows the token; a widened one
+  never widens it past the grant. If the default cannot be read, the mint fails like any
+  storage failure.
+- Two covering grants with the same extras are the `409` ambiguous answer below: approving
+  never leaves two.
+- A covering grant whose stored permissions this version cannot read fails the mint with a
+  `500`, rather than being passed over for another.
+- After GitHub answers, the broker makes the same choice again for the same body: it must find
+  the same grant, still active, or the token is withheld (the `409` revoked-during-the-call
+  answer below). A mint that named `workflows:write` gets nothing if the grant holding it is
+  revoked meanwhile, even while another grant covers the repository.
+
 - `200`: `{"token":"ghs_…","expires_at":1793095212,"grant_id":"5e1c…","repository":"example-owner/example-repo","repository_id":1001,"permissions":"contents:write,issues:write,metadata:read,pull_requests:write"}`.
   `expires_at` is when GitHub ends the token, in Unix seconds, an hour after it was minted.
-  The token is scoped to that repository's id and has the permissions of the grant, or the
-  narrower `permissions` the body asked for, and nothing else. `permissions` is what GitHub says the token holds: `name:level` pairs sorted by
+  The token is scoped to that repository's id and has the `permissions` the body asked for,
+  or the owner's default limited to the grant's, and nothing else. `permissions` is what GitHub says the token holds: `name:level` pairs sorted by
   name, joined with commas, and fewer than the grant's where GitHub gave fewer. If the owner
   removed a permission from the App after the grant was approved, GitHub may instead refuse
   the token, which is the `409` repository-unreachable answer below. A name the client does
@@ -1012,8 +1035,10 @@ grant must cover each pair, `write` covering `read`. Sent only when the broker's
   (`NO_ACTIVE_GRANT`): no grant covering the repository was ever approved, or it ended or
   was revoked. Names are matched ignoring case.
 - `409` `{"error":"more than one GitHub grant covers this repository; ask the owner to
-  revoke one"}` (`AMBIGUOUS_GRANT`): two grants cover the name or its id. Do not retry; the
-  owner revokes one.
+  revoke one of those with the same extra permissions"}` (`AMBIGUOUS_GRANT`; match its start,
+  up to "revoke one"): two grants with the same extra permissions cover the name or its id.
+  Grants with different extras on one repository are normal and never give this. Do not
+  retry; the owner revokes one of the two.
 - `409` `{"error":"GitHub would not issue a token for this repository: the App may no longer
   reach it, or it was deleted or replaced"}` (`REPOSITORY_UNREACHABLE`): GitHub refused to
   scope a token to the repository's id, or to the grant's permissions (the owner may have
@@ -1024,6 +1049,11 @@ grant must cover each pair, `write` covering `read`. Sent only when the broker's
 - `409` `{"error":"grant revoked during the call"}` or `{"error":"grant expired during the
   call"}`: the grant ended while the token was being minted, or was replaced by a new
   one. The token is not given out; ask again under the new grant.
+- `409` `{"error":"another GitHub grant applies to this repository since the call began; ask
+  again"}` (`OTHER_GRANT_APPLIES`): while the token was being minted, another of the agent's
+  grants became the one to mint from for this request, such as a less privileged one the owner
+  approved meanwhile. The first grant is still live. The token is not given out; asking again
+  mints under the grant that applies now.
 - `429` `{"error":"this agent has reached its limit of GitHub tokens for this hour; it starts
   again at the top of the hour"}`: the agent has had 60 tokens since the top of the hour
   (UTC), across all its grants. GitHub is not asked. A token lasts an hour, so keep it and ask again only when it is
@@ -1363,38 +1393,40 @@ unless noted, and fixed apart from the name:
 - `a GitHub token grant with a sensitive permission lasts 15m, 30m or 1h`
   (`SENSITIVE_WINDOW`): the window of a request with a sensitive extra, which the owner also
   cannot approve for longer. Any other request takes `1d`, `7d` or `30d`.
-- `409` `a request for these repositories with other permissions is pending; cancel it with
-  `warden request cancel <id>` or wait for it` (`OTHER_PERMISSIONS_PENDING`), followed by `: `
-  and the id of the pending request: an agent has one pending request for a set of
-  repositories, and asking again with other extras does not replace it. Asking with the same
-  extras returns the pending one, as before.
 
-An extra outside the owner's allowlist, a sensitive extra for a longer window and this `409`
-are each written to the audit log as `github_token_refused`, with no grant, the fixed text and
-a known permission name or the id above, never the request's own words.
+An agent has one pending request per repositories and set of extras (the owner's default
+is not part of it): asking with other extras creates another request, and asking again with the
+same extras returns the pending one, as before.
+
+An extra outside the owner's allowlist and a sensitive extra for a longer window are each
+written to the audit log as `github_token_refused`, with no grant, the fixed text and a known
+permission name, never the request's own words.
 
 A renewal keeps the extras and, for a sensitive grant, a short window. If the allowlist no
 longer holds an extra, the renewal is made and the approval page says which, and cannot be approved.
 
 The request is refused with a `400` when the broker holds no GitHub App
 (`GitHub tokens are not configured on this broker`), and for a window outside the three (or, with a sensitive extra, outside the short ones).
-There is nothing to install and the grant id is not needed: `POST /v1/github-token` finds
-the agent's active grant for the named repository, read anew for each token. An agent may
-hold several grants at once, but two never cover the same repository: they overlap when they
-share a repository id or a repository name (ignoring case), and approving a grant ends the
-agent's overlapping ones, which the owner is told on the approval page before approving
+There is nothing to install and the grant id is not needed: `POST /v1/github-token` picks
+among the agent's active grants for the named repository, read anew for each token, as
+[above](#post-v1github-token) says. An agent may
+hold several grants at once, but two with the same extra permissions never cover the same
+repository: they overlap when they share a repository id or a repository name (ignoring
+case), and approving a grant ends the agent's overlapping ones with exactly the same
+extras, which the owner is told on the approval page before approving
 (the approval is refused with a `409` if that set changed meanwhile). Minting is refused with a
 `409` once the broker's App or installation is no longer the one with this `digest`. A
 grant approved before grants were scoped has no `repositories`: it ends at upgrade and
 mints nothing. Renewing a grant carries its repositories over, and the owner sees a rename.
 
-A token covers one repository of the grant, with the grant's permissions: the owner's default
+A token covers one repository of the grant, with at most the grant's permissions: the owner's default
 when the request was made (`contents`, `pull_requests` and `issues` write and `metadata` read, unless
 the owner set another), which the approval page showed, plus the `extra_permissions` the request named (see below). A grant
 made before this setting existed holds those four. It cannot reach another repository
 the App is installed on, though GitHub still lets it open a new issue on a public repository
 the App is installed on, and to be assumed, open issues and comment on any public repository,
-installed or not. A client chooses the repository, and may narrow the permissions, never widen them. Unlike the other kinds, this grant gives the agent a credential that outlives
+installed or not. A client chooses the repository, and gets an extra permission only by naming it
+in `permissions`; it can never widen the grant's. Unlike the other kinds, this grant gives the agent a credential that outlives
 the grant: tokens last an hour, and revoking does not recall one. A client should keep the
 token only in memory or in a file only its user can read, mint another when less than 5
 minutes of it remain, and never log it. `warden` is a client of this:

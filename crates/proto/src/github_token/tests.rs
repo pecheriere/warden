@@ -1,8 +1,8 @@
 use serde_json::json;
 
 use super::{
-    AutomaticCaller, AutomaticRequest, GithubTokenAccess, GithubTokenGrant, GithubTokenRequest,
-    GrantRepository, GrantScope, MAX_REPOSITORIES,
+    AMBIGUOUS_GRANT, AutomaticCaller, AutomaticRequest, GithubTokenAccess, GithubTokenGrant,
+    GithubTokenRequest, GrantRepository, GrantScope, MAX_REPOSITORIES,
 };
 use crate::github_permissions::{GrantedPermissions, PermissionError, PermissionSet};
 use crate::release::RepoName;
@@ -599,4 +599,12 @@ fn sensitive_windows_are_the_short_ones_only() {
         assert!(!window.is_github_token_sensitive());
     }
     assert!(!Window::H4.is_github_token_sensitive());
+}
+
+#[test]
+fn ambiguous_grant_keeps_the_text_older_clis_look_for() {
+    // Older CLIs recognise the refusal with `contains` on this text.
+    assert!(AMBIGUOUS_GRANT.starts_with(
+        "more than one GitHub grant covers this repository; ask the owner to revoke one"
+    ));
 }

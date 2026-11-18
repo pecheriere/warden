@@ -18,7 +18,7 @@ const OLD_BROKER: &str = "the broker does not support repository-scoped GitHub g
 
 impl Client {
     /// Have the broker mint a GitHub token for `repository` under this agent's
-    /// active grant, with the grant's whole set for [`AskedSet::Full`] and exactly
+    /// active grant, with the default set for [`AskedSet::Default`] and exactly
     /// the named permissions otherwise. The body is parsed here, so that no error can quote the token.
     ///
     /// # Errors
@@ -32,7 +32,7 @@ impl Client {
         let body = json_body(&GithubTokenRequest {
             repository: repository.clone(),
             permissions: match asked {
-                AskedSet::Full => None,
+                AskedSet::Default => None,
                 AskedSet::Exactly(set) => Some(set.clone()),
             },
         })?;

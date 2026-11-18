@@ -77,6 +77,11 @@ WCAG AA contrast in both modes.
   without border or icon, saying how many repositories a GitHub token request
   covers. It informs and is never a warning: the one orange badge stays the push
   warning.
+- **Also live** (`.also-live`): a panel on `--soft`, without icon, listing the agent's
+  other grants on a GitHub token request's repositories, which approving leaves as they
+  are: repositories, permissions (extras and sensitive ones marked as below) and the end's
+  date and time, all in `--soft-ink`. It informs and is never a warning, and nothing in it
+  acts on those grants.
 - **Extra GitHub permissions** (`code.perm`): the permissions a token request or
   grant holds beyond the owner's default are marked in the permission list, never
   by colour alone. A read extra (`.extra-read`) has a dotted underline, a write

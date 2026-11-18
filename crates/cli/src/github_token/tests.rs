@@ -54,7 +54,10 @@ fn response(token: &str, expires_at: i64, repository: &str, id: u64) -> GithubTo
 }
 
 fn entry(token: &str, expires_at: i64, repository: &str, id: u64) -> Entry {
-    Entry::new(response(token, expires_at, repository, id), &AskedSet::Full)
+    Entry::new(
+        response(token, expires_at, repository, id),
+        &AskedSet::Default,
+    )
 }
 
 /// A cache of `entries`, for [`identity`], written to `path`.
@@ -95,7 +98,7 @@ async fn serve_as(
         NOW,
         identity,
         &repo(repository),
-        &AskedSet::Full,
+        &AskedSet::Default,
         false,
         || {
             minted.set(true);
@@ -306,7 +309,7 @@ async fn cache_refuses_wrong_mode_or_garbage() {
     }
     let entry_json = |token: &str, extra: &str| {
         format!(
-            r#"{{"repository":"{REPO}","repository_id":1001,"grant_id":"{}","token":"{token}","expires_at":{},"asked":"full"{extra}}}"#,
+            r#"{{"repository":"{REPO}","repository_id":1001,"grant_id":"{}","token":"{token}","expires_at":{},"asked":"default"{extra}}}"#,
             Id::random(),
             NOW + 3600
         )
@@ -316,11 +319,11 @@ async fn cache_refuses_wrong_mode_or_garbage() {
             r#"{{"version":{version},"agent":"build-agent","server":"https://warden.example.ts.net/","entries":[{entries}]{extra}}}"#
         )
     };
-    let bad_token = file(&entry_json(r"ghs_a\nb", ""), "", 3);
-    let unknown_entry_field = file(&entry_json("ghs_a", r#","x":1"#), "", 3);
-    let unknown_field = file(&entry_json("ghs_a", ""), r#","x":1"#, 3);
+    let bad_token = file(&entry_json(r"ghs_a\nb", ""), "", 4);
+    let unknown_entry_field = file(&entry_json("ghs_a", r#","x":1"#), "", 4);
+    let unknown_field = file(&entry_json("ghs_a", ""), r#","x":1"#, 4);
     let wrong_version = file(&entry_json("ghs_a", ""), "", 2);
-    let too_many = file(&vec![entry_json("ghs_a", ""); 33].join(","), "", 3);
+    let too_many = file(&vec![entry_json("ghs_a", ""); 33].join(","), "", 4);
     let huge = format!(r#"{{"token":"{}"}}"#, "a".repeat(20_000));
     for garbage in [
         "",
@@ -351,7 +354,7 @@ async fn cache_refuses_wrong_mode_or_garbage() {
     }
     // The shape is exactly one the tests above could be mistaken about.
     let d = dir();
-    fs::write(&d.cache, file(&entry_json("ghs_a", ""), "", 3)).unwrap();
+    fs::write(&d.cache, file(&entry_json("ghs_a", ""), "", 4)).unwrap();
     fs::set_permissions(&d.cache, fs::Permissions::from_mode(0o600)).unwrap();
     assert!(Cache::load(&d.cache).is_some());
 }
@@ -424,7 +427,7 @@ async fn a_token_that_is_not_well_formed_is_refused_and_not_cached() {
         NOW,
         &identity(),
         &repo(REPO),
-        &AskedSet::Full,
+        &AskedSet::Default,
         false,
         || {
             ready(Ok(response(
@@ -453,7 +456,7 @@ async fn mint_answer_for_other_repository_is_refused() {
         NOW,
         &identity(),
         &repo(REPO),
-        &AskedSet::Full,
+        &AskedSet::Default,
         false,
         || ready(Ok(response(FRESH, NOW + 3600, OTHER_REPO, 1002))),
     )
@@ -486,7 +489,7 @@ async fn a_failed_mint_keeps_its_call_error() {
         NOW,
         &identity(),
         &repo(REPO),
-        &AskedSet::Full,
+        &AskedSet::Default,
         false,
         || {
             ready(Err::<GithubTokenResponse, _>(

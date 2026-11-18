@@ -10,8 +10,8 @@ use warden_broker_proto::github_token::PERMISSIONS_NOT_IN_GRANT;
 
 use super::old_broker::OldBroker;
 use super::{
-    Machine, REPO, REPO_ID, Setup, TOKEN, get_grant, offline, script_token, setup, text,
-    upstream_calls,
+    GITHUB_INPUT, Machine, REPO, REPO_ID, Setup, TOKEN, get_grant, offline, run_with_input,
+    script_token, setup, text, upstream_calls,
 };
 
 const NARROW: &str = "ghs_e2eNarrow0123456789";
@@ -65,7 +65,7 @@ async fn permissions_flag_narrows() {
     assert_eq!(text(&again.stdout), format!("{NARROW}\n"));
     assert_eq!(mints(&s).len(), before + 1, "no second mint");
 
-    // A plain token is the whole grant's: it does not get the narrowed one.
+    // A plain token has the default set: it does not get the narrowed one.
     script_token(&s, WIDE, (REPO_ID, REPO));
     let plain = token(&s, &[]);
     assert_eq!(plain.status.code(), Some(0), "{}", text(&plain.stderr));
@@ -74,7 +74,69 @@ async fn permissions_flag_narrows() {
     assert_eq!(seen.len(), before + 2);
     assert_eq!(seen[before + 1]["permissions"]["issues"], "write");
     let cached = fs::read_to_string(s.machine.cache()).unwrap();
-    assert!(cached.contains(KEY) && cached.contains(r#""asked":"full""#));
+    assert!(cached.contains(KEY) && cached.contains(r#""asked":"default""#));
+}
+
+/// `warden git-credential get` with `WARDEN_GITHUB_PERMISSIONS` set on it, as git
+/// runs it for `WARDEN_GITHUB_PERMISSIONS=... git push`.
+fn credential_naming(s: &Setup, permissions: &str) -> Output {
+    let mut cmd = s.machine.warden();
+    cmd.args(["git-credential", "get"])
+        .env("WARDEN_GITHUB_PERMISSIONS", permissions);
+    run_with_input(cmd, GITHUB_INPUT)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn git_credential_names_the_permissions_of_the_variable() {
+    let s = setup().await;
+    get_grant(&s).await;
+    let before = mints(&s).len();
+    s.upstream.script_github_token(token_answer(
+        NARROW,
+        s.broker.clock.now() + 3600,
+        &[(REPO_ID, REPO)],
+        &[("contents", "read"), ("metadata", "read")],
+        "selected",
+    ));
+    let out = credential_naming(&s, "contents:read");
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    assert!(
+        text(&out.stdout).contains(&format!("password={NARROW}\n")),
+        "{}",
+        text(&out.stdout)
+    );
+    let seen = mints(&s);
+    assert_eq!(seen.len(), before + 1);
+    assert_eq!(
+        seen[before]["permissions"],
+        serde_json::json!({"contents": "read", "metadata": "read"}),
+        "the broker was asked for the named set"
+    );
+    let cached = fs::read_to_string(s.machine.cache()).unwrap();
+    assert!(cached.contains(KEY), "cached under the named set");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn git_credential_with_an_invalid_variable_gives_git_nothing() {
+    let s = setup().await;
+    get_grant(&s).await;
+    let before = s.upstream.received().len();
+    for bad in ["", "contents:admin", "contents:read,"] {
+        let out = credential_naming(&s, bad);
+        assert_eq!(
+            out.status.code(),
+            Some(64),
+            "{bad:?}: {}",
+            text(&out.stderr)
+        );
+        assert_eq!(text(&out.stdout), "", "{bad:?}: nothing for git on stdout");
+        assert!(
+            text(&out.stderr).contains("WARDEN_GITHUB_PERMISSIONS"),
+            "{bad:?}: {}",
+            text(&out.stderr)
+        );
+    }
+    assert_eq!(s.upstream.received().len(), before, "nothing was minted");
 }
 
 #[test]

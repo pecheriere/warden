@@ -205,19 +205,32 @@ in the goal. A sensitive extra, such as `workflows` or `secrets`, is granted for
 most, and its last token lives up to an hour more (the request defaults to `1h`, and a longer
 `--for` is refused): make the goal say exactly why you need that permission. Do not ask for one
 to get around a refusal. Ask once, with every extra the task needs: a request with other extras
-is refused while one waits.
+waits beside the first one as a separate request, and each needs its own approval.
 When a task needs less than the grant, such as a read-only check, mint a narrower token with
 `warden github token --repo <owner/name> --permissions checks:read`, and add `--fresh` when a
 token must be minted again (for example after the owner changed the App's permissions, or a
 token was revoked).
+
+A plain `git push` or `gh` call gets the default set, never an extra permission. Name the extra
+on the command that needs it. For git, the variable takes the same syntax as `--permissions`
+and narrows the same way, so a push that changes a workflow names `contents:write` as well:
+
+```sh
+WARDEN_GITHUB_PERMISSIONS=contents:write,workflows:write git push
+GH_TOKEN=$(warden github token --repo owner/name --permissions actions:write) gh run rerun …
+```
+
+A value that is empty or invalid makes the helper print an error and no token, so git fails
+without a terminal (`GIT_TERMINAL_PROMPT=0`) instead of pushing with another one. Each set of
+extras has its own grant, and the others stay live. Revoke a superseded or sensitive grant after use.
 
 A grant covers the repositories the person approves, and a token covers one of them. Name the
 repository your task is about, and more than one only when the task needs them. A token for
 one repository cannot push, open pull requests, comment or edit issues on another, but it can
 still open a new issue on a public repository the App is installed on, and assume it can open issues and comment on any public repository, installed or not. Revoking does not
 recall a token already minted, so keep to the repository your task is about, and post nowhere
-else. If a call says more than one grant covers the repository, stop and tell the person: they
-revoke one.
+else. If a call says more than one grant covers the repository (two with the same extras),
+stop and tell the person: they revoke one.
 <!-- warden:end -->
 
 <!-- warden:section release -->

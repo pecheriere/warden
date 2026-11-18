@@ -17,7 +17,7 @@ use warden_broker_proto::{
 };
 
 use super::create::Attached;
-use super::github_permissions::grant_extras;
+use super::github_permissions::{extras_slot, grant_extras};
 use super::github_scope::{Resolution, resolution_of};
 use super::transition::detached;
 use super::{Destination, RequestError, Requests, Scope, approval_token, begin, parse};
@@ -343,14 +343,16 @@ impl Requests {
         renewing: Option<GrantScope>,
     ) -> Result<(Id, Url), RequestError> {
         let dedupe_key = match &req.access {
-            Access::GithubToken(github) => format!("{agent}|{}|{}", kind.kind(), github.slot()),
+            Access::GithubToken(github) => format!(
+                "{agent}|{}|{}|{}",
+                kind.kind(),
+                github.slot(),
+                extras_slot(github.extra_permissions.as_ref())
+            ),
             _ => format!("{agent}|{}", kind.kind()),
         };
         self.expire_due(Scope::Dedupe(dedupe_key.clone())).await?;
-        if let Some(existing) = self
-            .pending_in_request_slot(&dedupe_key, &req.access)
-            .await?
-        {
+        if let Some(existing) = self.pending_in_slot(&dedupe_key).await? {
             // The request already there may hold no resolution yet (the agent's own, not
             // yet opened, or a renewal whose row was not written): without one the page
             // resolves by name, and a repository recreated under it would be taken for

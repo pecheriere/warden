@@ -33,6 +33,7 @@ pub struct FakeBackend {
     github_app: Mutex<Option<GithubAppKey>>,
     github_app_outage: Mutex<Option<String>>,
     github_permissions: Mutex<Option<GithubPermissionPolicy>>,
+    github_permissions_outage: Mutex<Option<String>>,
     github_app_reads: std::sync::atomic::AtomicUsize,
     release_keys: Mutex<Vec<ReleaseSigningKey>>,
     release_app: Mutex<Option<ReleaseAppKey>>,
@@ -78,6 +79,7 @@ impl FakeBackend {
             github_app: Mutex::new(None),
             github_app_outage: Mutex::new(None),
             github_permissions: Mutex::new(None),
+            github_permissions_outage: Mutex::new(None),
             github_app_reads: std::sync::atomic::AtomicUsize::new(0),
             release_keys: Mutex::new(Vec::new()),
             release_app: Mutex::new(None),
@@ -327,6 +329,19 @@ impl FakeBackend {
         *self.github_app_outage.lock().expect("outage lock poisoned") = detail.map(str::to_owned);
     }
 
+    /// Make only the read of the App's permission policy (the owner's default and
+    /// allowlist) fail with [`PolicyError::Unavailable`] carrying `detail`, while the
+    /// App's key still reads (`None` restores it).
+    ///
+    /// # Panics
+    /// If the lock is poisoned.
+    pub fn set_github_permissions_outage(&self, detail: Option<&str>) {
+        *self
+            .github_permissions_outage
+            .lock()
+            .expect("outage lock poisoned") = detail.map(str::to_owned);
+    }
+
     /// Replace the GitHub App (`None`: none is configured, which is the default).
     ///
     /// # Panics
@@ -573,6 +588,7 @@ impl SecretBackend for FakeBackend {
 
     async fn github_permissions(&self) -> Result<GithubPermissionPolicy, PolicyError> {
         Self::outage(&self.github_app_outage)?;
+        Self::outage(&self.github_permissions_outage)?;
         let app = self
             .github_app
             .lock()

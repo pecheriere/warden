@@ -30,10 +30,20 @@ pub const REPOSITORY_UNREACHABLE: &str = "GitHub would not issue a token for thi
                                           the App may no longer reach it, or it was deleted \
                                           or replaced";
 
-/// What the broker says when two active grants cover the repository, so that it
-/// cannot tell which one to mint under.
-pub const AMBIGUOUS_GRANT: &str =
-    "more than one GitHub grant covers this repository; ask the owner to revoke one";
+/// What the broker says when two active grants approved with the same extra
+/// permissions cover the repository, which approving never leaves, so that it cannot
+/// tell which one to mint under. Grants with different extras covering one
+/// repository are normal and never give this. Older CLIs look for the text up to
+/// "revoke one" with `contains`, so it must keep beginning that way.
+pub const AMBIGUOUS_GRANT: &str = "more than one GitHub grant covers this repository; ask the \
+                                   owner to revoke one of those with the same extra permissions";
+
+/// What the broker says when, while the token was being minted, another of the
+/// agent's grants became the one to mint with for the request, such as a less
+/// privileged one approved meanwhile. The first grant is still live; the token is not
+/// given out, and asking again mints under the grant that applies now.
+pub const OTHER_GRANT_APPLIES: &str =
+    "another GitHub grant applies to this repository since the call began; ask again";
 
 /// What the broker says when the App or installation is no longer the one the
 /// owner approved. The CLI recognises it to say a new grant is needed.
@@ -66,12 +76,6 @@ pub const EXTRA_NOT_ALLOWED: &str = "this broker does not allow that extra GitHu
 /// approval itself names, each as `name:level`, when the owner's allowlist changed
 /// after the request was made.
 pub const EXTRAS_NOT_ALLOWED: &str = "this broker does not allow these extra GitHub permissions: ";
-
-/// What the broker says when the agent has a request waiting for the same
-/// repositories that asks for other extra permissions. The id of that request
-/// follows: it is the broker's, not text the agent wrote.
-pub const OTHER_PERMISSIONS_PENDING: &str = "a request for these repositories with other \
-    permissions is pending; cancel it with `warden request cancel <id>` or wait for it";
 
 /// What the broker says when a mint asks for permissions the agent's grant does not
 /// hold. The first such known permission name follows, as `name:level`.
@@ -466,9 +470,11 @@ pub struct GithubTokenGrant {
 pub struct GithubTokenRequest {
     /// The repository.
     pub repository: RepoName,
-    /// The permissions the token should have, which the grant's must cover. Absent
-    /// means all of the grant's. Sent by a CLI that narrows; a broker that predates
-    /// this field refuses a body that holds it.
+    /// The permissions the token should have, which the grant's must cover; the
+    /// broker mints from the least privileged grant holding them all. Absent means
+    /// the owner's default set, limited to what the grant holds: an extra permission
+    /// reaches a token only when it is named here. A broker that predates this field
+    /// refuses a body that holds it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permissions: Option<PermissionSet>,
 }

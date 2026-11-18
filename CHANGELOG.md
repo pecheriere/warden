@@ -6,6 +6,40 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- The approval page of a GitHub token request lists the agent's other live grants on its
+  repositories, under Also live, with their extras and sensitive permissions marked.
+- `warden git-credential` reads `WARDEN_GITHUB_PERMISSIONS`, in the syntax of `warden github token
+  --permissions`, so that `WARDEN_GITHUB_PERMISSIONS=contents:write,workflows:write git push` asks
+  for exactly those permissions. A plain `git push` gets the default set. An empty or invalid value
+  makes the helper print an error and no token, and exit 64. The token cache file is version 4
+  (an older one is ignored and replaced), and a new token drops only the cached one for the same
+  repository and permission set, so tokens of other grants stay.
+
+### Changed
+
+- Approving a GitHub token grant ends only the agent's overlapping grants with exactly the
+  same extra permissions; a grant with other extras stays, and revoking one leaves the
+  others working. A request for other extras no longer waits behind another: an
+  agent has one pending request per repositories and set of extras, and the `409` "a request
+  for these repositories with other permissions is pending" is gone. The owner's default is
+  not compared, so a renewal still ends the grant it renews after the default changes.
+- **Breaking:** a GitHub token carries an extra permission only when the request names it
+  (`warden github token --permissions`, or `WARDEN_GITHUB_PERMISSIONS` for git). A mint that
+  names none gets the owner's current default set, limited to what the grant holds, where it
+  used to get the grant's whole set. An agent that relied on its grant's extras by default,
+  such as a plain `git push` of a workflow change, now names them: see
+  [Upgrading](docs/upgrading.md#extra-github-permissions-only-when-named-breaking). When
+  several grants cover the repository, the broker mints from the least privileged one holding
+  what is named (no sensitive permission first, then the fewest permissions, then the soonest
+  end), and the check after GitHub answers must find that same grant still active, or the
+  token is withheld. A covering grant whose permissions cannot be read refuses the mint.
+  When another grant, still live, has become the one to mint from by then, the refusal is the
+  `409` "another GitHub grant applies to this repository since the call began; ask again",
+  not "grant revoked during the call". The `409` for two grants with the same extras now says
+  to revoke one of those, after its earlier text.
+
 ### Fixed
 
 - A relayed session ended by the broker stopping could be recorded in `relay_session_ended`

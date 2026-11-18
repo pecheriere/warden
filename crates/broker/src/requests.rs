@@ -20,7 +20,6 @@ use sqlx::sqlite::SqliteRow;
 use sqlx::{Row as _, SqlitePool};
 use url::Url;
 use warden_broker_proto::github_permissions::PermissionSet;
-use warden_broker_proto::github_token::OTHER_PERMISSIONS_PENDING;
 use warden_broker_proto::{
     Access, AgentName, CreateRequest, Fingerprint, GithubTokenGrant, GrantAccess, GrantView, Id,
     TargetName, UnixUser, Window,
@@ -51,6 +50,7 @@ mod commit_signing;
 mod daily_use;
 mod github_overlap;
 mod github_permissions;
+mod github_pick;
 mod github_scope;
 mod github_token;
 mod limits;
@@ -178,10 +178,6 @@ pub enum RequestError {
     /// another agent, or of this agent for another target.
     #[error("this public key is already bound to another request or grant")]
     KeyInUse,
-    /// The agent has a request waiting for the same repositories that asks for other
-    /// extra permissions, whose id follows. Nothing was stored.
-    #[error("{}: {}", OTHER_PERMISSIONS_PENDING, .0)]
-    OtherPermissionsPending(Id),
     /// The agent is over one of its [`RequestLimits`]; nothing was stored and
     /// the owner was not asked about this request.
     #[error(transparent)]
@@ -694,6 +690,23 @@ pub(crate) fn github_permissions_of(
         .permissions
         .known()
         .map_err(|e| RequestError::Corrupt(format!("GitHub token grant permissions: {e}")))
+}
+
+/// The extra permissions a stored GitHub token grant was approved with, read
+/// strictly: `None` when it had none.
+///
+/// # Errors
+///
+/// [`RequestError::Corrupt`] when this version cannot act on the set.
+pub(crate) fn github_extras_of(
+    grant: &GithubTokenGrant,
+) -> Result<Option<PermissionSet>, RequestError> {
+    grant
+        .extra_permissions
+        .as_ref()
+        .map(warden_broker_proto::github_permissions::GrantedPermissions::known)
+        .transpose()
+        .map_err(|_| RequestError::Corrupt("a grant's extra permissions".to_owned()))
 }
 
 /// Refuse a `window` longer than `max`, the limit of `subject` (`target pi`,

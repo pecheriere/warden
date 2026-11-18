@@ -1,17 +1,20 @@
 //! The GitHub token grant's own rules: its windows, the policy the App makes and
-//! finding an agent's active grant.
+//! finding the agent's grant to mint with (the pick itself is in `github_pick`).
 //!
-//! An agent holds at most one grant per repository: approving a new grant ends the
-//! ones it overlaps (see `renewal`), so that revoking a grant really does stop that
-//! agent's minting.
+//! An agent holds at most one grant per repository and set of extra permissions:
+//! approving a new grant ends the ones it overlaps with the same extras (see
+//! `github_overlap`), so that revoking a grant really does stop that agent's minting
+//! under those extras.
 
 use sqlx::Row as _;
+use warden_broker_proto::github_permissions::PermissionSet;
 use warden_broker_proto::github_token::{GrantRepository, SENSITIVE_WINDOW};
 use warden_broker_proto::release::RepoName;
 use warden_broker_proto::{
     AgentName, GithubTokenAccess, GithubTokenGrant, GrantAccess, Id, Window,
 };
 
+use super::github_pick::{Candidate, Pick, pick};
 use super::{RequestError, Requests, parse};
 use crate::audit::{AuditEvent, bounded_text};
 use crate::policy::GithubTokenPolicy;
@@ -29,6 +32,9 @@ pub struct ActiveGithubToken {
     /// `not_before` and `not_after` columns and its view say, so that a row changed
     /// since approval in any one of them cannot shorten it.
     pub window_secs: u64,
+    /// What the grant's tokens may have, read strictly. What a token gets is
+    /// [`Requests::github_mint_set`].
+    pub permissions: PermissionSet,
 }
 
 /// What an agent's active grants say about one repository.
@@ -36,9 +42,9 @@ pub struct ActiveGithubToken {
 pub enum GithubLookup {
     /// No active grant covers it.
     None,
-    /// Exactly one does.
+    /// The one to mint with.
     One(ActiveGithubToken),
-    /// More than one does, so none can be chosen; holds the first one's id.
+    /// Two with the same extras do, so none can be chosen; holds the first one's id.
     Ambiguous(Id),
 }
 
@@ -133,19 +139,25 @@ impl Requests {
     }
 
     /// The GitHub token grant `agent` may mint with now for `repository`, matched
-    /// by name in any case. Read for every mint, so that a revocation or the end
-    /// of the window stops the next one. A grant stored before scoping covers
-    /// nothing. More than one active grant on the repository (by id, or by name
-    /// under different ids) is [`GithubLookup::Ambiguous`]: approving replaces an
-    /// overlapping grant, so storage holds that only if something went wrong, and
-    /// the mint refuses rather than pick one.
+    /// by name in any case, for a request that names `wanted` (see `github_pick` for
+    /// the rule). It reads storage only: what the token gets is
+    /// [`Requests::github_mint_set`]. Read for every mint, so that a revocation
+    /// or the end of the window stops the next one. A grant stored before scoping
+    /// covers nothing. A grant that holds the repository's id under another name is
+    /// a candidate too. Two candidates approved with the same extras are
+    /// [`GithubLookup::Ambiguous`]: approving replaces a grant with the same extras,
+    /// so storage holds that only if something went wrong, and the mint refuses
+    /// rather than pick one.
     ///
     /// # Errors
-    /// Storage failures or an unreadable stored grant: the caller refuses.
+    /// Storage failures or an unreadable stored grant (a covering grant whose
+    /// permissions or extras cannot be read refuses, rather than being passed over
+    /// for another): the caller refuses.
     pub async fn active_github_token_for(
         &self,
         agent: &AgentName,
         repository: &RepoName,
+        wanted: Option<&PermissionSet>,
     ) -> Result<GithubLookup, RequestError> {
         let mut grants = Vec::new();
         for row in self.active_rows(agent, "github_token").await? {
@@ -175,31 +187,44 @@ impl Requests {
                     "GitHub token grant changed kind".to_owned(),
                 ));
             };
-            grants.push((parse::<Id>(&row, "id")?, grant, window_secs));
+            grants.push((parse::<Id>(&row, "id")?, grant, window_secs, not_after));
         }
-        let mut covering = grants.iter().filter_map(|(grant_id, grant, window_secs)| {
-            grant
-                .repositories
-                .covering(repository)
-                .map(|found| (grant_id, grant, *window_secs, found))
-        });
-        let Some((grant_id, grant, window_secs, found)) = covering.next() else {
-            return Ok(GithubLookup::None);
-        };
-        let found_id = found.id;
-        let found = found.clone();
-        let sharing = grants
+        let ids: Vec<u64> = grants
             .iter()
-            .filter(|(_, other, _)| other.repositories.list().iter().any(|r| r.id == found_id))
-            .count();
-        if covering.next().is_some() || sharing > 1 {
-            return Ok(GithubLookup::Ambiguous(grant_id.clone()));
+            .filter_map(|(_, grant, _, _)| grant.repositories.covering(repository))
+            .map(|found| found.id)
+            .collect();
+        let mut candidates = Vec::new();
+        for (grant_id, grant, window_secs, not_after) in grants {
+            let found = grant.repositories.covering(repository).or_else(|| {
+                grant
+                    .repositories
+                    .list()
+                    .iter()
+                    .find(|held| ids.contains(&held.id))
+            });
+            let Some(found) = found.cloned() else {
+                continue;
+            };
+            candidates.push(Candidate::new(
+                grant_id,
+                grant,
+                found,
+                window_secs,
+                not_after,
+            )?);
         }
+        let picked = match pick(&candidates, wanted) {
+            Pick::None => return Ok(GithubLookup::None),
+            Pick::Ambiguous(first) => return Ok(GithubLookup::Ambiguous(first)),
+            Pick::One(picked) => picked,
+        };
         Ok(GithubLookup::One(ActiveGithubToken {
-            grant_id: grant_id.clone(),
-            grant: grant.clone(),
-            repository: found,
-            window_secs,
+            grant_id: picked.grant_id.clone(),
+            grant: picked.grant.clone(),
+            repository: picked.repository.clone(),
+            window_secs: picked.window_secs,
+            permissions: picked.permissions.clone(),
         }))
     }
 

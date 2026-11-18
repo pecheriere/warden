@@ -574,10 +574,12 @@ listed: `warden list` shows them, and the broker refuses another with `this brok
 allow that extra GitHub permission: <name>`. A set is `name:level` pairs joined with commas,
 each `read` or `write`; a bad one is a usage error (exit 64). The permissions are held by the
 grant, so it is for that task: renewing it keeps them. A request for the same repositories
-with other extras while one waits is refused (`409`, "a request for these repositories with
-other permissions is pending"): cancel it with `warden request cancel <id>` or wait. The
-automatic request of `git` and `gh` never has extras. After the owner approves, the CLI drops
-the cached tokens of those repositories, so the next token holds the new set.
+with other extras waits beside the others: an agent has one pending request per repositories
+and set of extras, and asking again with the same extras returns the pending one. The
+automatic request of `git` and `gh` never has extras. After the owner approves, `warden
+request github` drops the cached tokens of those repositories, so the next token comes from
+the grants as they are now; a plain token still holds the default set, and the extras reach a
+token only when named (see below).
 
 **A sensitive extra** (`administration`, `workflows`, `secrets`, `environments`,
 `dependabot_secrets`, `repository_hooks` or an `organization_*` permission) lets whoever holds the token change
@@ -589,8 +591,10 @@ goal say exactly why this permission is needed, for what change, and nothing wid
 the repositories (`+checks:read`), and the owner sees them in red on the approval page.
 Without extras `--for` is `1d`, `7d` or `30d`, and `30d` when left out.
 
-A token can be narrower than its grant. `warden github token --repo owner/name` mints the grant's
-whole set, and `--permissions` gives the token only some of it, such as a read-only check:
+A token can be narrower than its grant. `warden github token --repo owner/name` mints the owner's
+default set, limited to what the grant holds, and `--permissions` gives the token exactly the set
+it names: an extra the grant holds, or only some of the default, such as a read-only check. With
+several grants on the repository, the broker mints from the least privileged one holding that set:
 
 ```sh
 warden github token --repo example-owner/example-repo --permissions checks:read
@@ -603,9 +607,24 @@ not hold this GitHub permission: <name>"; see the
 cached one, or `--fresh`) the CLI refuses a broker that does not announce
 `github_token_permissions`. With no active grant, `--permissions` first files the usual request
 for the default set; a set that names an extra the grant does not hold is then refused, so
-ask with `warden request github --extra-permissions` first. The CLI caches a narrowed token apart from the whole-set
-one, and `--fresh` mints a new token instead of serving the cached one. git and the `gh`
-wrapper always ask for the grant's whole set.
+ask with `warden request github --extra-permissions` first. The CLI caches a narrowed token apart from the
+default-set one, and `--fresh` mints a new token instead of serving the cached one.
+
+A plain `git push` or `gh` call gets the default set, never an extra permission: name the extra on
+the command that needs it. For git, the credential helper reads `WARDEN_GITHUB_PERMISSIONS`, in the
+same syntax as `--permissions`. It narrows the same way, so a push that changes a workflow names
+`contents:write` as well:
+
+```sh
+WARDEN_GITHUB_PERMISSIONS=contents:write,workflows:write git push
+GH_TOKEN=$(warden github token --repo owner/name --permissions actions:write) gh run rerun …
+```
+
+A value that is empty, only whitespace or invalid makes the helper print the error on stderr and
+nothing on stdout, and exit 64, so git gets no token from warden instead of pushing with another
+one (with `GIT_TERMINAL_PROMPT=0` or no terminal, as for an agent, git then fails). The CLI caches
+a token per repository and permission set asked for, so minting one set does not discard the
+others; an approval through `warden request github` drops all of that repository's. Revoke a superseded or sensitive grant after use.
 
 ### Releases
 
@@ -1008,7 +1027,7 @@ comment or edit issues on another repository the App is installed on, but it can
 a new issue on a public repository the App is installed on, and you should assume it can open
 issues and comment on any public repository, installed or not. warden keeps one token per
 repository and permission set in `github-token.json` in its state directory, mode 0600 (an
-older file is ignored and replaced, and a new grant for a repository drops its older tokens), and gets a new one when less than 5 minutes of it remain. Use it only through `git` and `gh`: do not print it, write it into a
+older file is ignored and replaced), and gets a new one when less than 5 minutes of it remain. Use it only through `git` and `gh`: do not print it, write it into a
 file, put it in a URL or hand it to another program.
 
 **With no active grant for the repository**, the first call asks the owner itself, for that

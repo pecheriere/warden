@@ -78,6 +78,7 @@ impl Cli {
             )
             .env_remove("GIT_DIR")
             .env_remove("GIT_WORK_TREE")
+            .env_remove("WARDEN_GITHUB_PERMISSIONS")
             .current_dir(self.root.path())
             .stdin(Stdio::null());
         cmd

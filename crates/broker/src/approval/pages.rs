@@ -20,6 +20,7 @@ mod commit_signing;
 mod end_states;
 mod enroll;
 mod format;
+mod github_also_live;
 mod github_token;
 mod grants;
 mod history;

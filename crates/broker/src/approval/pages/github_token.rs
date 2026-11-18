@@ -12,6 +12,7 @@ use warden_broker_proto::github_token::{
 };
 use warden_broker_proto::{Access, AgentName};
 
+use super::github_also_live::also_live;
 use super::{icon, warning_icon};
 use crate::policy::GithubTokenPolicy;
 use crate::requests::{GithubPending, InstallationCheck, PendingView, ReplacedGrant, Resolution};
@@ -154,7 +155,7 @@ fn was(set: &PermissionSet, replaces: &[ReplacedGrant]) -> Markup {
 }
 
 /// The permissions of `set`, comma separated.
-fn permission_list(set: &PermissionSet, extras: &[Permission]) -> Markup {
+pub(super) fn permission_list(set: &PermissionSet, extras: &[Permission]) -> Markup {
     html! {
         @for (i, item) in set.iter().enumerate() {
             @if i > 0 { ", " }
@@ -330,6 +331,7 @@ pub(super) fn access(
         }
         @if let (true, Some(pending)) = (reachable, pending) {
             (replaced(agent, &pending.replaces))
+            (also_live(agent, &pending.also_live))
         }
         @if !repos.is_empty() {
             span.detail { "Mints tokens for " (app(&policy.app_id, policy.installation_id)) }

@@ -22,8 +22,9 @@ set it up.
   [the three levels](#the-three-levels-per-repository). Issues on public repositories reach further: see below.
 - **The permissions you configure**: by default `contents` write, `pull_requests` write,
   `issues` write and `metadata` read. You can set a different default (see
-  [Permissions](#permissions)). warden asks GitHub for the grant's set and nothing else,
-  whatever the App itself may do. Keep `workflows` and `administration` out of it: see [Sensitive permissions](#sensitive-permissions).
+  [Permissions](#permissions)). warden asks GitHub for at most the grant's set, and nothing
+  else, whatever the App itself may do: the permissions the request names, or your default
+  limited to the grant. Keep `workflows` and `administration` out of it: see [Sensitive permissions](#sensitive-permissions).
 - **One hour.** The token lasts as long as GitHub lets it, and the CLI gets a new one when
   less than 5 minutes of the old one remain.
 - **A grant of `1d`, `7d` or `30d`**, 30 days by default, up to
@@ -31,9 +32,12 @@ set it up.
   decides whether warden mints more tokens, not how long a token lasts. Like commit signing,
   it is long because the agent is expected to use it on its own: a prompt for every hour would
   be a reflex tap.
-- **Several grants at a time per agent**, one for each set of repositories. Approving a grant
-  ends the agent's other grants that share a repository with it, by GitHub's id or by name
-  (ignoring case); the approval page lists them before you approve. A grant that names no
+- **Several grants at a time per agent**, one for each set of repositories and extra permissions.
+  Approving a grant ends the agent's other grants that share a repository with it, by
+  GitHub's id or by name (ignoring case), and were approved with exactly the same extra permissions (the owner's default is not compared); the approval
+  page lists them before you approve. A grant with other extras stays, and so does a
+  request waiting for them, so a short grant with a sensitive permission never ends the
+  agent's everyday one, and revoking it leaves that one working. A grant that names no
   repository (made before grants were scoped) ends at upgrade and is replaced by asking
   again.
 - **Issues on public repositories, too.** Measured on real GitHub: a token scoped to
@@ -113,17 +117,21 @@ and so is a level GitHub does not document for a name: `workflows` has only `wri
 `read`. Such an entry in `extra_permissions` makes GitHub tokens unusable, and
 `warden-server doctor` names the field.
 
-An agent holding a grant with extras can mint a token with fewer permissions than the grant
-holds: the mint endpoint takes a `permissions` field, and `warden github token
---permissions <set>` sends it. git and the `gh` wrapper always ask for the grant's whole
-set. Nothing can mint more than the grant.
+A token carries an extra permission only when the request names it: the mint endpoint takes
+a `permissions` field, which `warden github token --permissions <set>` and, for git,
+`WARDEN_GITHUB_PERMISSIONS` send. A mint that names nothing, such as a plain `git push` or `gh`
+call, gets your current default set, limited to what the grant holds, so narrowing the default
+narrows the plain tokens of grants already approved. When an agent holds several grants on a
+repository, the broker mints from the least privileged one holding what is named. Nothing can
+mint more than the grant.
 
 **The App must hold what you set.** The approval page reads the installation's permissions
 each time it is shown, begun or finished, and refuses a request whose set the installation
 does not hold, naming what is missing. Give the App those permissions on GitHub first
 (step 4 below) and accept the change on the installation. A grant keeps the set it was
-approved with: changing the default affects the next request and the next renewal, not
-grants that exist. If you remove a permission from the App after a grant was approved with
+approved with, so its tokens never hold more than that set. Narrowing the default narrows
+the plain tokens of grants that exist at once; widening it never widens them, and reaches a
+grant only at the next request or renewal. If you remove a permission from the App after a grant was approved with
 it, GitHub may refuse to mint the grant's tokens: the agent then gets `409` with the
 repository-unreachable error, and you should check the App's permissions on GitHub against
 the grant's set, which the grants page lists. Where GitHub instead grants a token less than

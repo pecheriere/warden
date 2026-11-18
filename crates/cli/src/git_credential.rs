@@ -13,22 +13,28 @@
 //! `/info/lfs` paths git-lfs sends, it prints nothing. Other keys, such as
 //! `username` and `capability[]`, are ignored: the user name is fixed.
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::io::{BufRead as _, Write as _};
 use std::process::ExitCode;
 
+use warden_broker_proto::github_permissions::PermissionSet;
 use warden_broker_proto::release::RepoName;
 use zeroize::Zeroizing;
 
 use crate::github_repo;
 use crate::github_token::{self, AskedSet, Caller};
-use crate::{EXIT_ERROR, Exit};
+use crate::{EXIT_ERROR, EXIT_USAGE, Exit};
 
 /// The most input read from git, in bytes. Git sends a few short lines.
 const MAX_INPUT_BYTES: u64 = 64 * 1024;
 
 /// The only host this helper answers for.
 const HOST: &str = "github.com";
+
+/// The variable that names the permissions of the token git gets, in the syntax of
+/// `warden github token --permissions`. Git passes a helper nothing per command, so
+/// this is the only way to name them for one `git push`.
+const PERMISSIONS_VAR: &str = "WARDEN_GITHUB_PERMISSIONS";
 
 /// The user name GitHub expects with an installation token.
 const USERNAME: &str = "x-access-token";
@@ -125,6 +131,33 @@ where
     obtain(repository).await.map(Answer::Token)
 }
 
+/// The permissions to ask for, from the value of [`PERMISSIONS_VAR`]: the default set
+/// when it is unset, exactly the named ones otherwise.
+///
+/// # Errors
+/// What is wrong with a value that is not UTF-8, is empty or only whitespace, or is
+/// not a valid permission set. An invalid value never falls back to the default set:
+/// the caller prints nothing for git, so that git gets no token from warden instead
+/// of pushing with one that has other permissions than the ones named (with
+/// `GIT_TERMINAL_PROMPT=0`, or no terminal, git then fails).
+fn asked_from_env(value: Option<&OsStr>) -> Result<AskedSet, String> {
+    let Some(value) = value else {
+        return Ok(AskedSet::Default);
+    };
+    let text = value.to_str().ok_or("not valid UTF-8")?;
+    if text.trim().is_empty() {
+        return Err("empty: name permissions such as contents:write, or unset it".to_owned());
+    }
+    PermissionSet::parse(text)
+        .map(AskedSet::Exactly)
+        .map_err(|e| e.to_string())
+}
+
+/// [`asked_from_env`], as the usage failure the helper ends with.
+fn permissions_asked(value: Option<&OsStr>) -> Result<AskedSet, Exit> {
+    asked_from_env(value).map_err(|e| Exit::new(EXIT_USAGE, format!("{PERMISSIONS_VAR}: {e}")))
+}
+
 /// The lines git reads for `token`.
 fn credentials(token: &str) -> Zeroizing<String> {
     let mut out = Zeroizing::new(String::with_capacity(
@@ -149,14 +182,18 @@ pub async fn run(args: &[OsString]) -> ExitCode {
     let Some(asked) = asked else {
         return ExitCode::SUCCESS;
     };
-    let obtain = |repository: RepoName| async move {
-        github_token::obtain(
-            Caller::CredentialHelper,
-            &repository,
-            &AskedSet::Full,
-            false,
-        )
-        .await
+    let permissions = match permissions_asked(std::env::var_os(PERMISSIONS_VAR).as_deref()) {
+        Ok(permissions) => permissions,
+        Err(e) => {
+            eprintln!("warden: {e}");
+            return ExitCode::from(e.code);
+        }
+    };
+    let obtain = |repository: RepoName| {
+        let permissions = &permissions;
+        async move {
+            github_token::obtain(Caller::CredentialHelper, &repository, permissions, false).await
+        }
     };
     let token = match answer(&asked, obtain).await {
         Ok(Answer::Token(token)) => token,
@@ -193,7 +230,14 @@ pub async fn run(args: &[OsString]) -> ExitCode {
 mod tests {
     use std::ffi::OsString;
 
-    use super::{Answer, Asked, answer, credentials, is_program_call, read_asked, wants_token};
+    use warden_broker_proto::github_permissions::PermissionSet;
+
+    use super::{
+        Answer, Asked, answer, asked_from_env, credentials, is_program_call, permissions_asked,
+        read_asked, wants_token,
+    };
+    use crate::EXIT_USAGE;
+    use crate::github_token::AskedSet;
 
     fn args(list: &[&str]) -> Vec<OsString> {
         list.iter().map(OsString::from).collect()
@@ -372,5 +416,53 @@ mod tests {
             asked("protocol=https\nhost=github.com\npath=a/b\npath=a/b\n\n"),
             None
         );
+    }
+
+    fn asked_env(value: &str) -> Result<AskedSet, String> {
+        asked_from_env(Some(std::ffi::OsStr::new(value)))
+    }
+
+    #[test]
+    fn asked_from_env_cases() {
+        assert_eq!(asked_from_env(None), Ok(AskedSet::Default));
+        assert_eq!(
+            asked_env("contents:write,workflows:write"),
+            Ok(AskedSet::Exactly(
+                PermissionSet::parse("contents:write,workflows:write").unwrap()
+            ))
+        );
+        assert_eq!(
+            asked_env(" contents:write , workflows:write "),
+            asked_env("contents:write,workflows:write")
+        );
+        for bad in [
+            "",
+            "  ",
+            "\t\n",
+            "bogus:read",
+            "checks:admin",
+            "contents:write,",
+        ] {
+            assert!(asked_env(bad).is_err(), "{bad:?}");
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt as _;
+            assert!(asked_from_env(Some(std::ffi::OsStr::from_bytes(b"contents:\xff"))).is_err());
+        }
+    }
+
+    #[test]
+    fn invalid_variable_is_a_usage_failure() {
+        for bad in ["", "  ", "bogus:read", "checks:admin"] {
+            let e = permissions_asked(Some(std::ffi::OsStr::new(bad))).unwrap_err();
+            assert_eq!(e.code, EXIT_USAGE, "{bad:?}");
+            assert!(
+                e.message.starts_with("WARDEN_GITHUB_PERMISSIONS: "),
+                "{}",
+                e.message
+            );
+        }
+        assert!(permissions_asked(None).is_ok());
     }
 }

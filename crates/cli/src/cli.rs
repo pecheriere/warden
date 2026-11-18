@@ -201,8 +201,9 @@ pub(crate) enum GithubCmd {
         repo: Option<RepoName>,
         /// Give the token only these permissions, as `name:level` joined with
         /// commas, such as `checks:read`: they must be within the grant's set, and
-        /// the token is cached apart from the whole-set one. Without it, the token
-        /// has everything the grant holds.
+        /// the token is cached apart from the default-set one. Without it, the token
+        /// has the owner's default set, limited to what the grant holds: an extra
+        /// permission must be named.
         #[arg(long, value_parser = parse_permissions)]
         permissions: Option<PermissionSet>,
         /// Mint a new token instead of serving the cached one, and cache it in its

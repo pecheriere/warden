@@ -8,7 +8,7 @@ use warden_broker::testkit::github_app::INSTALLATION_ID;
 use warden_broker::testkit::github_app::token_answer;
 use warden_broker::testkit::upstream::{HttpsUpstream, Received, installation_json};
 use warden_broker::testkit::{TestBroker, github_app_key};
-use warden_broker_proto::Window;
+use warden_broker_proto::{Id, Window};
 
 mod extras;
 mod legacy;
@@ -17,6 +17,7 @@ mod narrowing;
 mod overlap;
 mod pages;
 mod permissions;
+mod pick;
 mod renewal;
 mod scope;
 mod windows;
@@ -138,14 +139,15 @@ async fn approve_repositories(
         "{}",
         approved.body
     );
+    approved_grant(broker, agent, &created.id).await
+}
+
+/// The grant that approving `agent`'s request `request` made.
+async fn approved_grant(broker: &TestBroker, agent: &str, request: &Id) -> String {
     let status = broker
         .state()
         .requests
-        .status(
-            &agent.parse().unwrap(),
-            &created.id,
-            std::time::Duration::ZERO,
-        )
+        .status(&agent.parse().unwrap(), request, std::time::Duration::ZERO)
         .await
         .unwrap();
     let warden_broker_proto::RequestStatus::Approved(view) = status else {
@@ -154,7 +156,8 @@ async fn approve_repositories(
     view.grant_id.to_string()
 }
 
-/// The grant `agent` would mint with now for `repository`, if any.
+/// The grant `agent` would mint with now for `repository`, if any, for a request
+/// that names no permissions.
 ///
 /// # Panics
 /// If two grants cover it.
@@ -169,6 +172,7 @@ async fn active_for(
         .active_github_token_for(
             &agent.parse().unwrap(),
             &repository.to_owned().try_into().unwrap(),
+            None,
         )
         .await
         .unwrap();

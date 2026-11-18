@@ -303,7 +303,8 @@ enum Pending {
     /// what was asked.
     Same,
     /// Any: for an access whose slot is all of its parameters (a GitHub request's
-    /// repositories), so that every request in the slot asks for alike.
+    /// repositories and extra permissions), so that every request in the slot asks
+    /// for alike.
     AnyOfKind,
 }
 
