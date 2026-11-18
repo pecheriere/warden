@@ -40,15 +40,15 @@ async fn serve_asked(path: &Path, asked: &AskedSet, fresh: bool) -> (String, boo
 fn cache_keys_by_repository_and_set() {
     let grant = Id::random();
     let mut cache = Cache::empty(identity());
-    cache.put(asked_entry("ghs_full", &grant, &AskedSet::Full));
+    cache.put(asked_entry("ghs_default", &grant, &AskedSet::Default));
     assert!(
         cache.lookup(&repo(REPO), &checks_read(), NOW).is_none(),
         "a whole-set token does not answer a narrowed ask"
     );
     cache.put(asked_entry("ghs_narrow", &grant, &checks_read()));
     assert_eq!(cache.entries.len(), 2, "both coexist");
-    let full = cache.lookup(&repo(REPO), &AskedSet::Full, NOW).unwrap();
-    assert_eq!(full.token.as_str(), "ghs_full");
+    let default = cache.lookup(&repo(REPO), &AskedSet::Default, NOW).unwrap();
+    assert_eq!(default.token.as_str(), "ghs_default");
     let narrow = cache.lookup(&repo(REPO), &checks_read(), NOW).unwrap();
     assert_eq!(narrow.token.as_str(), "ghs_narrow");
     let other = AskedSet::Exactly(PermissionSet::parse("actions:read").unwrap());
@@ -63,11 +63,11 @@ async fn fresh_skips_and_replaces() {
     let d = dir();
     write_one(&d.cache, CACHED, NOW + 3600);
     assert_eq!(
-        serve_asked(&d.cache, &AskedSet::Full, false).await,
+        serve_asked(&d.cache, &AskedSet::Default, false).await,
         (CACHED.to_owned(), false)
     );
     assert_eq!(
-        serve_asked(&d.cache, &AskedSet::Full, true).await,
+        serve_asked(&d.cache, &AskedSet::Default, true).await,
         (FRESH.to_owned(), true)
     );
     assert_eq!(stored_token(&d.cache, REPO).as_deref(), Some(FRESH));
@@ -75,16 +75,36 @@ async fn fresh_skips_and_replaces() {
 }
 
 #[test]
-fn new_grant_id_drops_the_repository_entries() {
-    let (old, new) = (Id::random(), Id::random());
+fn put_keeps_entries_of_other_grants() {
+    let (g1, g2) = (Id::random(), Id::random());
+    let extra = AskedSet::Exactly(PermissionSet::parse("contents:write,workflows:write").unwrap());
     let mut cache = Cache::empty(identity());
-    cache.put(asked_entry("ghs_full", &old, &AskedSet::Full));
-    cache.put(asked_entry("ghs_narrow", &old, &checks_read()));
+    cache.put(asked_entry("ghs_old", &g1, &AskedSet::Default));
+    cache.put(asked_entry("ghs_extra", &g2, &extra));
     cache.put(entry("ghs_other", NOW + 3600, OTHER_REPO, 1002));
-    cache.put(asked_entry("ghs_new", &new, &AskedSet::Full));
+    cache.put(asked_entry("ghs_new", &g1, &AskedSet::Default));
     let mut tokens: Vec<_> = cache.entries.iter().map(|e| e.token.to_string()).collect();
     tokens.sort();
-    assert_eq!(tokens, ["ghs_new", "ghs_other"]);
+    assert_eq!(tokens, ["ghs_extra", "ghs_new", "ghs_other"]);
+}
+
+#[tokio::test]
+async fn version_3_file_is_ignored() {
+    let d = dir();
+    let v3 = format!(
+        r#"{{"version":3,"agent":"build-agent","server":"https://warden.example.ts.net/","entries":[{{"repository":"{REPO}","repository_id":1001,"grant_id":"{}","token":"ghs_old","expires_at":{},"asked":"full"}}]}}"#,
+        Id::random(),
+        NOW + 3600
+    );
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&d.cache)
+        .unwrap();
+    fs::write(&d.cache, v3).unwrap();
+    assert!(Cache::load(&d.cache).is_none());
+    assert_eq!(serve(&d.cache).await, (FRESH.to_owned(), true));
 }
 
 #[tokio::test]
@@ -114,6 +134,7 @@ fn bad_asked_key_makes_file_unreadable() {
     for bad in [
         "",
         "Full",
+        "full",
         "checks:read",
         "metadata:read,checks:read",
         "checks:admin,metadata:read",
@@ -121,7 +142,7 @@ fn bad_asked_key_makes_file_unreadable() {
     ] {
         let d = dir();
         let text = format!(
-            r#"{{"version":3,"agent":"build-agent","server":"https://warden.example.ts.net/","entries":[{{"repository":"{REPO}","repository_id":1001,"grant_id":"{}","token":"ghs_a","expires_at":{},"asked":"{bad}"}}]}}"#,
+            r#"{{"version":4,"agent":"build-agent","server":"https://warden.example.ts.net/","entries":[{{"repository":"{REPO}","repository_id":1001,"grant_id":"{}","token":"ghs_a","expires_at":{},"asked":"{bad}"}}]}}"#,
             Id::random(),
             NOW + 3600
         );

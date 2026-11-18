@@ -74,7 +74,7 @@ async fn permissions_flag_narrows() {
     assert_eq!(seen.len(), before + 2);
     assert_eq!(seen[before + 1]["permissions"]["issues"], "write");
     let cached = fs::read_to_string(s.machine.cache()).unwrap();
-    assert!(cached.contains(KEY) && cached.contains(r#""asked":"full""#));
+    assert!(cached.contains(KEY) && cached.contains(r#""asked":"default""#));
 }
 
 #[test]

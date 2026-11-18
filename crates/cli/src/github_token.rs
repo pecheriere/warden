@@ -169,7 +169,7 @@ pub async fn cached_or_mint(
     let identity = Identity::of(config);
     serve_from(&path, now, &identity, repository, asked, fresh, || async {
         match asked {
-            AskedSet::Full => require_scoped(&config.server).await?,
+            AskedSet::Default => require_scoped(&config.server).await?,
             AskedSet::Exactly(_) => require_permissions(&config.server).await?,
         }
         Ok(client.github_token(repository, asked).await?)
@@ -339,7 +339,7 @@ pub async fn print_token(
     permissions: Option<PermissionSet>,
     fresh: bool,
 ) -> Result<()> {
-    let asked = permissions.map_or(AskedSet::Full, AskedSet::Exactly);
+    let asked = permissions.map_or(AskedSet::Default, AskedSet::Exactly);
     let token = obtain(Caller::GhWrapper, repository, &asked, fresh).await?;
     let mut out = std::io::stdout().lock();
     out.write_all(token.as_bytes())

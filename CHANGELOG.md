@@ -6,6 +6,15 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `warden git-credential` reads `WARDEN_GITHUB_PERMISSIONS`, in the syntax of `warden github token
+  --permissions`, so that `WARDEN_GITHUB_PERMISSIONS=contents:write,workflows:write git push` asks
+  for exactly those permissions. A plain `git push` gets the default set. An empty or invalid value
+  makes the helper print an error and no token, and exit 64. The token cache file is version 4
+  (an older one is ignored and replaced), and a new token drops only the cached one for the same
+  repository and permission set, so tokens of other grants stay.
+
 ### Changed
 
 - Approving a GitHub token grant ends only the agent's overlapping grants with exactly the

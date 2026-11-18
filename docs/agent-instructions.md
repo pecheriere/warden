@@ -211,6 +211,19 @@ When a task needs less than the grant, such as a read-only check, mint a narrowe
 token must be minted again (for example after the owner changed the App's permissions, or a
 token was revoked).
 
+A plain `git push` or `gh` call gets the default set, never an extra permission. Name the extra
+on the command that needs it. For git, the variable takes the same syntax as `--permissions`
+and narrows the same way, so a push that changes a workflow names `contents:write` as well:
+
+```sh
+WARDEN_GITHUB_PERMISSIONS=contents:write,workflows:write git push
+GH_TOKEN=$(warden github token --repo owner/name --permissions actions:write) gh run rerun …
+```
+
+A value that is empty or invalid makes the helper print an error and no token, so git fails
+instead of pushing with another one. Each permission set has its own grant, and the others
+stay live. Revoke a superseded or sensitive grant after use.
+
 A grant covers the repositories the person approves, and a token covers one of them. Name the
 repository your task is about, and more than one only when the task needs them. A token for
 one repository cannot push, open pull requests, comment or edit issues on another, but it can

@@ -603,9 +603,23 @@ not hold this GitHub permission: <name>"; see the
 cached one, or `--fresh`) the CLI refuses a broker that does not announce
 `github_token_permissions`. With no active grant, `--permissions` first files the usual request
 for the default set; a set that names an extra the grant does not hold is then refused, so
-ask with `warden request github --extra-permissions` first. The CLI caches a narrowed token apart from the whole-set
-one, and `--fresh` mints a new token instead of serving the cached one. git and the `gh`
-wrapper always ask for the grant's whole set.
+ask with `warden request github --extra-permissions` first. The CLI caches a narrowed token apart from the
+default-set one, and `--fresh` mints a new token instead of serving the cached one.
+
+A plain `git push` or `gh` call gets the default set, never an extra permission: name the extra on
+the command that needs it. For git, the credential helper reads `WARDEN_GITHUB_PERMISSIONS`, in the
+same syntax as `--permissions`. It narrows the same way, so a push that changes a workflow names
+`contents:write` as well:
+
+```sh
+WARDEN_GITHUB_PERMISSIONS=contents:write,workflows:write git push
+GH_TOKEN=$(warden github token --repo owner/name --permissions actions:write) gh run rerun …
+```
+
+A value that is empty, only whitespace or invalid makes the helper print the error on stderr and
+nothing on stdout, and exit 64, so git fails instead of pushing with another token. The CLI keeps
+the tokens of every grant of a repository in its cache, so asking for a wider set does not discard
+the others. Revoke a superseded or sensitive grant after use.
 
 ### Releases
 
@@ -1008,7 +1022,7 @@ comment or edit issues on another repository the App is installed on, but it can
 a new issue on a public repository the App is installed on, and you should assume it can open
 issues and comment on any public repository, installed or not. warden keeps one token per
 repository and permission set in `github-token.json` in its state directory, mode 0600 (an
-older file is ignored and replaced, and a new grant for a repository drops its older tokens), and gets a new one when less than 5 minutes of it remain. Use it only through `git` and `gh`: do not print it, write it into a
+older file is ignored and replaced), and gets a new one when less than 5 minutes of it remain. Use it only through `git` and `gh`: do not print it, write it into a
 file, put it in a URL or hand it to another program.
 
 **With no active grant for the repository**, the first call asks the owner itself, for that

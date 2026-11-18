@@ -8,9 +8,9 @@
 //! replaced on the next write, never trusted.
 //!
 //! ```json
-//! {"version":3,"agent":"…","server":"…","entries":[
+//! {"version":4,"agent":"…","server":"…","entries":[
 //!   {"repository":"o/r","repository_id":1001,"grant_id":"…","token":"…","expires_at":0,
-//!    "asked":"full"}]}
+//!    "asked":"default"}]}
 //! ```
 
 use std::fs;
@@ -42,10 +42,10 @@ pub(super) const MAX_ENTRIES: usize = 32;
 const MAX_TOKEN_BYTES: usize = 1024;
 
 /// The version of the file's shape.
-const VERSION: u8 = 3;
+const VERSION: u8 = 4;
 
-/// What an entry's `asked` is when no permissions were named: the grant's whole set.
-const FULL: &str = "full";
+/// What an entry's `asked` is when no permissions were named: the default set.
+const DEFAULT: &str = "default";
 
 /// Bytes of an entry besides its token, repository name and `asked`, with room to
 /// spare.
@@ -58,17 +58,17 @@ const FILE_OVERHEAD: usize = 1024;
 /// what GitHub answered, so that asking again for the same finds it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AskedSet {
-    /// The grant's whole set: no `permissions` on the wire.
-    Full,
+    /// The default set: no `permissions` on the wire.
+    Default,
     /// Exactly these, which the grant must hold.
     Exactly(PermissionSet),
 }
 
 impl AskedSet {
-    /// The key in the file: `full`, or the set as [`PermissionSet`] writes it.
+    /// The key in the file: `default`, or the set as [`PermissionSet`] writes it.
     pub(super) fn key(&self) -> String {
         match self {
-            Self::Full => FULL.to_owned(),
+            Self::Default => DEFAULT.to_owned(),
             Self::Exactly(set) => set.to_string(),
         }
     }
@@ -76,7 +76,7 @@ impl AskedSet {
 
 /// Whether `key` is one [`AskedSet::key`] writes.
 fn well_formed_key(key: &str) -> bool {
-    key == FULL || PermissionSet::parse(key).is_ok_and(|set| set.to_string() == key)
+    key == DEFAULT || PermissionSet::parse(key).is_ok_and(|set| set.to_string() == key)
 }
 
 /// A token in memory, wiped when dropped.
@@ -270,20 +270,16 @@ impl Cache {
     }
 
     /// Add `entry`, replacing the one with the same repository (id or name) and
-    /// `asked`. An entry of the same repository minted under another grant is
-    /// dropped as well, with all that repository's others: a new grant supersedes
-    /// the tokens of the old one. What does not fit in [`MAX_ENTRIES`] entries or [`MAX_CACHE_BYTES`] bytes is
-    /// dropped, the entry ending soonest first, but never `entry` itself.
+    /// `asked`. Entries of the same repository with another `asked` stay, whichever
+    /// grant minted them: each grant's tokens are its own. What does not fit in
+    /// [`MAX_ENTRIES`] entries or [`MAX_CACHE_BYTES`] bytes is dropped, the entry
+    /// ending soonest first, but never `entry` itself.
     pub fn put(&mut self, entry: Entry) {
-        let same_repository = |e: &Entry| {
-            e.repository_id == entry.repository_id || e.repository.matches(&entry.repository)
-        };
-        let superseded = self
-            .entries
-            .iter()
-            .any(|e| same_repository(e) && e.grant_id != entry.grant_id);
-        self.entries
-            .retain(|e| !(same_repository(e) && (superseded || e.asked == entry.asked)));
+        self.entries.retain(|e| {
+            let same_repository =
+                e.repository_id == entry.repository_id || e.repository.matches(&entry.repository);
+            !(same_repository && e.asked == entry.asked)
+        });
         self.entries.push(entry);
         while self.entries.len() > MAX_ENTRIES || self.size_bound() > MAX_CACHE_BYTES {
             let Some(soonest) = self
