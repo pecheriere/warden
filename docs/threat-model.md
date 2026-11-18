@@ -1645,11 +1645,15 @@ warden's guarantees depend on its environment being set up as follows.
   release archives by SHA-256, and Homebrew refuses any other download. Whoever can
   change that formula chooses the binary. Once a release is published, a workflow in
   the tap opens a bump pull request with auto-merge on, using a token that can write
-  to the tap only and that only the tap's `main` can use. warden holds no secret for
-  it. The maintainer's agent starts that workflow right after publishing, with a
-  short-lived `actions:write` token from warden; otherwise its hourly schedule does,
-  which GitHub can delay by hours. Starting it runs `main`'s workflow as it is, so it
-  gives no way to change the formula. Publishing the release is the maintainer's
+  to the tap only and that only the tap's `main` can use. warden holds no secret of
+  the tap's. The maintainer's agent starts that workflow right after publishing, with
+  an `actions:write` token from warden on a grant it asks for at release time;
+  otherwise its hourly schedule does, which GitHub can delay by hours. Starting it
+  gives no way to change the formula: the workflow runs only from `main`, whatever
+  ref is named, and only `main` can reach the token's environment. Whoever holds such
+  a token can also cancel, rerun or disable the tap's workflows and delete their
+  runs, logs and artifacts. That can delay or block a bump, but not change what one
+  installs, since the required checks still decide what merges. Publishing the release is the maintainer's
   decision; the bump needs no other. The tap's required checks refuse a formula whose
   checksums are not in the release's signed manifest, checked with `main`'s script
   and the tap's own copy of the release keys, or that goes back to an older release.
