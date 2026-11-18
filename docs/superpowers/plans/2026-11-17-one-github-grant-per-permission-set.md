@@ -76,7 +76,7 @@ Each has its test in the owning task.
 
 **The pick (spec "Minting"):**
 - Candidates: active grants covering the repository (as today, by id or name).
-- Two candidates with an equal `PermissionSet` give `Ambiguous`, as today's two-grants case does.
+- Two candidates with equal extras (absent counts as empty) give `Ambiguous`, as today's two-grants case does. `Candidate` carries `extras: PermissionSet` for this.
 - With `wanted`: the holders are candidates whose set `covers_all(wanted)`. If there are none, every candidate is a holder, and `narrowed` then refuses naming what the picked grant lacks, as today.
 - Order among holders: no sensitive permission first, then the fewest permissions (`iter().count()`), then the smallest `not_after`, then `grant_id` for a total order.
 - `mint`: with `wanted`, the grant's full set (`narrowed` cuts it to `wanted`). Without, `owner_default.intersection(&grant_set)`. `owner_default` is the current `default_permissions` of the `warden:github-app` item, read the way `api/offers.rs` reads it. An unreadable default refuses, like every storage failure.
@@ -140,3 +140,7 @@ Each has its test in the owning task.
 - [ ] Run the full "Before you push" list from `AGENTS.md`, except the CI-only lines (fuzz metadata, crate age), and fix anything it finds. Keep each output to `| tail -30`.
 - [ ] Push the branch and open the PR from the template. It names warden-dqs and lists what was and wasn't verified locally. Attach the Task 3 screenshots per the `pr-screenshots` memory.
 - [ ] After merge, outside this repository: update `~/.claude/rules/warden.md` (dotfiles) with the `WARDEN_GITHUB_PERMISSIONS` line, and remind the owner to commit dotfiles.
+
+## Amendment after Task 1 (2026-11-17)
+
+Replacement and the pending slot compare the grant's **extras** (`extra_permissions`, absent = empty), not its full set: a renewal carries the old grant's extras, and a full-set comparison left the renewed grant live after a change of default. Task 1's fix round makes this change and restores the renewal tests' original expectations (renewal replaces, the page shows "was …").

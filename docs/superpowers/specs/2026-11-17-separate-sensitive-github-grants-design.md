@@ -26,8 +26,12 @@ removing a grant leaves the agent's other grants as they were. (owner's decision
 ### One grant per permission set
 
 - Approving a GitHub grant ends the agent's grants that overlap it (share a repository)
-  **and hold exactly the same permission set**. Grants with any other set stay.
-  (owner's decision: one grant per permission set)
+  **and asked for exactly the same extra permissions** (none counts as a set). Grants with
+  other extras stay. (owner's decision: one grant per permission set)
+- The set compared is the extras, what the agent asked for beyond the owner's default, not
+  the full set. A renewal is a new request carrying the old grant's extras: comparing full
+  sets would leave the renewed grant live whenever the owner changed the default in
+  between. **[call]**
 - The approval still binds the ids it ends into the digest the owner signs (`replaces`),
   so that mechanism stays as it is.
 - A legacy grant, made before grants named repositories, is still ended by any approval.
@@ -39,8 +43,8 @@ removing a grant leaves the agent's other grants as they were. (owner's decision
   until one is revoked or expires. To keep that visible, the approval page lists the agent's
   other live grants on the same repositories, with their permissions and end, under the
   heading "Also live". **[call]**
-- Pending requests: the request slot key gains the permission set, so requests for
-  different sets wait side by side. `OtherPermissionsPending` goes away. **[call]**
+- Pending requests: the request slot key gains the extras, so requests for
+  different extras wait side by side. `OtherPermissionsPending` goes away. **[call]**
 
 ### Minting: an extra permission only when it is named
 
@@ -64,7 +68,7 @@ arbitrary.
   `contents:read`), so the default set is **the owner's current `default_permissions`,
   limited to what the grant holds** (per name, the lower level). It can narrow an existing
   grant when the owner narrows the default, and never widen one. **[call]**
-- Two grants with the same permission set on one repository stay `AMBIGUOUS_GRANT`:
+- Two grants with the same extras on one repository stay `AMBIGUOUS_GRANT`:
   storage holds that only if something went wrong.
 - The check after GitHub answers repeats the same pick with the same request. It must pick
   the same grant, still active, or the token is withheld (`github_token_refused`), as today.
