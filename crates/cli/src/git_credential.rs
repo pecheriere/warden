@@ -137,8 +137,9 @@ where
 /// # Errors
 /// What is wrong with a value that is not UTF-8, is empty or only whitespace, or is
 /// not a valid permission set. An invalid value never falls back to the default set:
-/// the caller prints nothing for git, so that git fails instead of pushing with a
-/// token that has other permissions than the ones named.
+/// the caller prints nothing for git, so that git gets no token from warden instead
+/// of pushing with one that has other permissions than the ones named (with
+/// `GIT_TERMINAL_PROMPT=0`, or no terminal, git then fails).
 fn asked_from_env(value: Option<&OsStr>) -> Result<AskedSet, String> {
     let Some(value) = value else {
         return Ok(AskedSet::Default);

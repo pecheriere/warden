@@ -113,3 +113,15 @@ fn ended_pending_card_text_keeps_four_and_a_half_to_one_in_both_modes() {
         }
     }
 }
+
+/// The "Also live" panel is on `--soft` and marks a sensitive permission in `--deny`,
+/// next to its text in `--soft-ink`: both stay readable in both modes.
+#[test]
+fn also_live_marks_keep_four_and_a_half_to_one_on_soft() {
+    for block in modes() {
+        let soft = token(block, "soft");
+        for ink in ["deny", "soft-ink"] {
+            assert!(contrast(token(block, ink), soft) >= 4.5, "{ink}: {block}");
+        }
+    }
+}

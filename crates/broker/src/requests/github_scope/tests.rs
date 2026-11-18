@@ -31,6 +31,7 @@ fn digest_input_is_v2_and_binds_the_set_after_the_repositories() {
             grant_id: replaced.clone(),
             scope: warden_broker_proto::github_token::GrantScope::Legacy,
             permissions: PermissionSet::legacy(),
+            extras: Vec::new(),
             not_after: 0,
         }],
     )
@@ -62,4 +63,21 @@ fn digest_input_changes_with_the_set() {
             .digest_input()
             .ends_with("checks:read,contents:write,metadata:read\0")
     );
+}
+
+/// The other live grants are shown, never bound: an approval goes through when one
+/// of them ends or another appears between the page and the passkey.
+#[test]
+fn digest_input_leaves_out_the_grants_that_stay() {
+    let bare = pending(StoredPermissions::legacy(), Vec::new());
+    let mut shown = bare.clone();
+    shown.also_live = vec![ReplacedGrant {
+        grant_id: Id::random(),
+        scope: warden_broker_proto::github_token::GrantScope::Legacy,
+        permissions: PermissionSet::parse("contents:write,workflows:write").unwrap(),
+        extras: Vec::new(),
+        not_after: 0,
+    }];
+    assert_eq!(bare.digest_input(), shown.digest_input());
+    assert_eq!(bare.digest("ab"), shown.digest("ab"));
 }

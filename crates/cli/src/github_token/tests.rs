@@ -321,7 +321,7 @@ async fn cache_refuses_wrong_mode_or_garbage() {
     };
     let bad_token = file(&entry_json(r"ghs_a\nb", ""), "", 4);
     let unknown_entry_field = file(&entry_json("ghs_a", r#","x":1"#), "", 4);
-    let unknown_field = file(&entry_json("ghs_a", ""), r#","x":1"#, 3);
+    let unknown_field = file(&entry_json("ghs_a", ""), r#","x":1"#, 4);
     let wrong_version = file(&entry_json("ghs_a", ""), "", 2);
     let too_many = file(&vec![entry_json("ghs_a", ""); 33].join(","), "", 4);
     let huge = format!(r#"{{"token":"{}"}}"#, "a".repeat(20_000));

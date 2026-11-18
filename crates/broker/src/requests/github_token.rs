@@ -1,9 +1,10 @@
 //! The GitHub token grant's own rules: its windows, the policy the App makes and
 //! finding the agent's grant to mint with (the pick itself is in `github_pick`).
 //!
-//! An agent holds at most one grant per repository and permission set: approving a new
-//! grant ends the ones it overlaps with the same set (see `github_overlap`), so that
-//! revoking a grant really does stop that agent's minting under that set.
+//! An agent holds at most one grant per repository and set of extra permissions:
+//! approving a new grant ends the ones it overlaps with the same extras (see
+//! `github_overlap`), so that revoking a grant really does stop that agent's minting
+//! under those extras.
 
 use sqlx::Row as _;
 use warden_broker_proto::github_permissions::PermissionSet;
@@ -31,10 +32,9 @@ pub struct ActiveGithubToken {
     /// `not_before` and `not_after` columns and its view say, so that a row changed
     /// since approval in any one of them cannot shorten it.
     pub window_secs: u64,
-    /// What to mint with, before the request's own permissions narrow it: the
-    /// grant's whole set when the request names permissions, and otherwise the
-    /// owner's current default limited to what the grant holds.
-    pub mint: PermissionSet,
+    /// What the grant's tokens may have, read strictly. What a token gets is
+    /// [`Requests::github_mint_set`].
+    pub permissions: PermissionSet,
 }
 
 /// What an agent's active grants say about one repository.
@@ -139,8 +139,9 @@ impl Requests {
     }
 
     /// The GitHub token grant `agent` may mint with now for `repository`, matched
-    /// by name in any case, and what to mint with, for a request that names `wanted`
-    /// (see `github_pick` for the rule). Read for every mint, so that a revocation
+    /// by name in any case, for a request that names `wanted` (see `github_pick` for
+    /// the rule). It reads storage only: what the token gets is
+    /// [`Requests::github_mint_set`]. Read for every mint, so that a revocation
     /// or the end of the window stops the next one. A grant stored before scoping
     /// covers nothing. A grant that holds the repository's id under another name is
     /// a candidate too. Two candidates approved with the same extras are
@@ -149,9 +150,9 @@ impl Requests {
     /// rather than pick one.
     ///
     /// # Errors
-    /// Storage failures, an unreadable stored grant (a covering grant whose
-    /// permissions cannot be read refuses, rather than being passed over for
-    /// another) or an unreadable owner's default: the caller refuses.
+    /// Storage failures or an unreadable stored grant (a covering grant whose
+    /// permissions or extras cannot be read refuses, rather than being passed over
+    /// for another): the caller refuses.
     pub async fn active_github_token_for(
         &self,
         agent: &AgentName,
@@ -218,13 +219,12 @@ impl Requests {
             Pick::Ambiguous(first) => return Ok(GithubLookup::Ambiguous(first)),
             Pick::One(picked) => picked,
         };
-        let mint = self.github_mint_set(picked, wanted).await?;
         Ok(GithubLookup::One(ActiveGithubToken {
             grant_id: picked.grant_id.clone(),
             grant: picked.grant.clone(),
             repository: picked.repository.clone(),
             window_secs: picked.window_secs,
-            mint,
+            permissions: picked.permissions.clone(),
         }))
     }
 

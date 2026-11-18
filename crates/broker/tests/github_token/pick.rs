@@ -11,6 +11,7 @@ use warden_broker::testkit::github_app::token_answer;
 use warden_broker::testkit::upstream::{Gate, HttpsUpstream, Scripted};
 use warden_broker::testkit::{TestBroker, TestResponse};
 use warden_broker_proto::Window;
+use warden_broker_proto::github_token::OTHER_GRANT_APPLIES;
 
 use super::extras::{REPO, allow, approve_with_extras};
 use super::permissions::set_default;
@@ -275,6 +276,83 @@ async fn sensitive_grant_revoked_during_mint_gives_nothing() {
 }
 
 #[tokio::test]
+async fn less_privileged_grant_approved_during_mint_withholds_the_token() {
+    let (broker, key, upstream, held) = with_actions().await;
+    let gate = Gate::new();
+    upstream.script_github_token(
+        answer(
+            &broker,
+            &[
+                ("contents", "write"),
+                ("metadata", "read"),
+                ("pull_requests", "write"),
+            ],
+        )
+        .held_by(&gate),
+    );
+    let expected = github_calls(&upstream).len() as u64 + 1;
+    let call = tokio::spawn({
+        let broker = broker.clone();
+        let key = key.clone();
+        async move { mint(&broker, &key, None).await }
+    });
+    upstream.wait_for_github_token_calls(expected).await;
+    // A grant without extras is less privileged, and other extras leave `held` live.
+    let everyday = approve(&broker, &upstream, "bot", Window::D30).await;
+    assert_ne!(everyday, held);
+    gate.open();
+
+    let resp = call.await.unwrap();
+    assert_eq!(resp.status, StatusCode::CONFLICT, "{}", resp.body);
+    assert!(resp.body.contains(OTHER_GRANT_APPLIES), "{}", resp.body);
+    assert!(!resp.body.contains("ghs_"), "{}", resp.body);
+    let refused = entries(&broker, "github_token_refused");
+    let last = refused.last().expect("a refusal entry");
+    assert_eq!(last["grant_id"], held.as_str());
+    assert_eq!(last["reason"], OTHER_GRANT_APPLIES, "{last}");
+    let revoked_at: Option<i64> = sqlx::query_scalar("SELECT revoked_at FROM grants WHERE id = ?")
+        .bind(held.as_str())
+        .fetch_one(&broker.state().pool)
+        .await
+        .unwrap();
+    assert_eq!(revoked_at, None, "the first grant was not revoked");
+}
+
+#[tokio::test]
+async fn default_unreadable_after_github_answers_still_gives_the_token() {
+    let (broker, key, upstream, grant) = with_actions().await;
+    let gate = Gate::new();
+    upstream.script_github_token(
+        answer(
+            &broker,
+            &[
+                ("contents", "write"),
+                ("metadata", "read"),
+                ("pull_requests", "write"),
+            ],
+        )
+        .held_by(&gate),
+    );
+    let expected = github_calls(&upstream).len() as u64 + 1;
+    let call = tokio::spawn({
+        let broker = broker.clone();
+        let key = key.clone();
+        async move { mint(&broker, &key, None).await }
+    });
+    upstream.wait_for_github_token_calls(expected).await;
+    // The set was computed before GitHub was asked: the check after it compares the
+    // grant only, so the default is not read again.
+    broker
+        .backend
+        .set_github_permissions_outage(Some("the vault is unreachable"));
+    gate.open();
+
+    let resp = call.await.unwrap();
+    assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
+    assert_eq!(resp.json()["grant_id"], grant);
+}
+
+#[tokio::test]
 async fn unreadable_grant_permissions_refuse() {
     let (broker, key, upstream, _, sensitive) = everyday_and_sensitive().await;
     let pool = &broker.state().pool;
@@ -308,11 +386,42 @@ async fn unreadable_grant_permissions_refuse() {
 }
 
 #[tokio::test]
+async fn unreadable_grant_extras_refuse() {
+    let (broker, key, upstream, _, sensitive) = everyday_and_sensitive().await;
+    // Only the extras: the permissions still read, so only the pick's strict read of
+    // the extras can refuse.
+    sqlx::query(
+        "UPDATE grants SET view = json_set(view, '$.access.extra_permissions', \
+         'new_thing:write,workflows:write') WHERE id = ?",
+    )
+    .bind(sensitive.as_str())
+    .execute(&broker.state().pool)
+    .await
+    .unwrap();
+
+    // The everyday grant would serve a plain mint, but the sensitive one cannot be
+    // read: skipping it would hide the corruption, so the mint refuses.
+    let before = upstream.received().len();
+    let resp = mint(&broker, &key, None).await;
+    assert_eq!(
+        resp.status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "{}",
+        resp.body
+    );
+    assert!(!resp.body.contains("new_thing"), "{}", resp.body);
+    assert_eq!(upstream.received().len(), before, "GitHub was not asked");
+    assert_eq!(entries(&broker, "github_token_minted"), [] as [Value; 0]);
+}
+
+#[tokio::test]
 async fn unreadable_default_refuses_a_plain_mint() {
     let (broker, key, upstream, _) = with_actions().await;
+    // The App's key still reads, so only the refusal to compute the set without the
+    // default keeps GitHub from being asked.
     broker
         .backend
-        .set_github_app_outage(Some("the vault is unreachable"));
+        .set_github_permissions_outage(Some("the vault is unreachable"));
     let before = upstream.received().len();
     let resp = mint(&broker, &key, None).await;
     assert!(resp.status.is_server_error(), "{}", resp.body);

@@ -4,7 +4,8 @@
 //! The broker mints a GitHub App installation token for one repository under this
 //! agent's active `github_token` grant that covers it. GitHub ends it after an
 //! hour; the CLI keeps it in `<state>/github-token.json` (see [`cache`]), one entry
-//! per repository, and mints again once less than [`MIN_REMAINING_SECS`] remain.
+//! per repository and set of permissions asked for, and mints again once less than
+//! [`MIN_REMAINING_SECS`] remain.
 //!
 //! When the agent has no active grant for the repository, the CLI asks the owner
 //! itself, naming that repository, says on stderr that it waits, and goes on once

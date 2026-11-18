@@ -448,8 +448,17 @@ fn pending_github_lists_other_live_grants() {
         html[block..].contains("contents: write</code>, <code class=\"perm\">metadata: read"),
         "{html}"
     );
-    assert!(html[block..].contains("actions: write"), "{html}");
-    assert_eq!(count(&html, "<li>"), 2, "{html}");
+    // A grant's extras and sensitive permissions are marked as everywhere else.
+    assert!(
+        html[block..].contains(r#"<code class="perm extra-write">actions: write</code>"#),
+        "{html}"
+    );
+    assert!(
+        html[block..].contains(r#"<code class="perm sensitive">workflows: write</code>"#),
+        "{html}"
+    );
+    assert_eq!(count(&html[block..], r#"class="perm extra-"#), 1, "{html}");
+    assert_eq!(count(&html, "<li>"), 3, "{html}");
     assert!(
         html.contains(&format!(
             "<code><bdi>{REPO}</bdi></code>, <code><bdi>{TAP}</bdi></code>"
@@ -457,8 +466,8 @@ fn pending_github_lists_other_live_grants() {
         "{html}"
     );
     // A date and a time, as the grants page shows an end: these grants can last 30 days.
-    assert_eq!(count(&html[block..], ", until 20"), 2, "{html}");
-    assert_eq!(count(&html[block..], " UTC</li>"), 2, "{html}");
+    assert_eq!(count(&html[block..], ", until 20"), 3, "{html}");
+    assert_eq!(count(&html[block..], " UTC</li>"), 3, "{html}");
     // Right after where the replaced block goes, before the fine print.
     assert!(
         html.find("Can push and merge on").unwrap() < block

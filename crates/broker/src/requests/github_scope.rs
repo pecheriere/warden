@@ -91,6 +91,9 @@ pub struct ReplacedGrant {
     pub scope: GrantScope,
     /// The permissions its tokens have.
     pub permissions: PermissionSet,
+    /// The extras it was approved with, `metadata:read` aside, in name order: empty
+    /// for none. The page marks them in its permission list.
+    pub extras: Vec<Permission>,
     /// When it ends, in Unix seconds.
     pub not_after: i64,
 }

@@ -75,6 +75,15 @@ but its `git-credential` cannot, so a push that changes a workflow needs this re
 CLI. A default the owner narrowed since a grant was approved now narrows that grant's plain
 tokens; a widened default never widens them. Nothing is migrated.
 
+Approving a GitHub grant now ends only the agent's grants on the same repositories with the
+same extras; the others stay live and the approval page lists them under "Also live". Upgrade
+the broker first. The CLI's token cache is now version 4 (`github-token.json`): an older
+file is ignored and replaced. A plain token cached before the broker's upgrade, by an older
+CLI or by this one against the older broker, may still carry the grant's extras until it
+expires, within the hour. A GitHub request that was pending at the upgrade is not matched by
+an identical one made after it, which waits beside it until the first is decided or
+expires; approving both is harmless, as the second replaces the first.
+
 ## Extra GitHub permissions (0.16.0)
 
 `warden request github --extra-permissions` and `warden github token --permissions` send
@@ -118,7 +127,8 @@ github` again on each agent machine, as [above](#github-tokens-and-the-repositor
 after upgrading the CLI past 0.12.0. The CLI's token cache is
 now per repository (`github-token.json`, version 2): an older file is ignored and replaced.
 An agent may now hold several GitHub grants, and approving one ends the agent's grants that
-share a repository with it.
+share a repository with it (now only those with the same extras: see
+[above](#extra-github-permissions-only-when-named-breaking)).
 
 ## GitHub token permissions and extras
 

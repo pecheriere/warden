@@ -2,7 +2,7 @@
 //! that render every page and for the screenshots.
 
 use maud::Markup;
-use warden_broker_proto::github_permissions::PermissionSet;
+use warden_broker_proto::github_permissions::{Permission, PermissionSet};
 use warden_broker_proto::github_token::{
     AutomaticCaller, AutomaticRequest, GithubTokenAccess, GrantRepository, GrantScope,
 };
@@ -93,6 +93,7 @@ pub(super) fn permissions_view(
 pub(super) fn replaced(grant: u8, list: &[(u64, &str)]) -> ReplacedGrant {
     ReplacedGrant {
         permissions: PermissionSet::legacy(),
+        extras: Vec::new(),
         not_after: NOW + 3_600,
         grant_id: id(grant),
         scope: GrantScope::repositories(
@@ -179,6 +180,7 @@ pub(super) fn replaces_view_with(n: usize) -> crate::requests::PendingView {
                     grant_id: id(13),
                     scope: GrantScope::Legacy,
                     permissions: PermissionSet::legacy(),
+                    extras: Vec::new(),
                     not_after: NOW + 3_600,
                 },
             ]
@@ -192,8 +194,18 @@ pub(super) fn replaces_view_with(n: usize) -> crate::requests::PendingView {
     )
 }
 
+/// The extras of a grant approved with `text`, as the broker lists them.
+fn extras_of(text: &str) -> Vec<Permission> {
+    PermissionSet::parse(text)
+        .unwrap()
+        .extras_beyond(&PermissionSet::metadata_only())
+        .iter()
+        .collect()
+}
+
 /// A request that replaces nothing, while the agent holds an everyday grant on
-/// `REPO` and another on `TAP` and `LONG`, which stay.
+/// `REPO` and `TAP`, one with the extra `actions:write` on `REPO` and `LONG`, and one
+/// with the sensitive extra `workflows:write` on `REPO`, which all stay.
 pub(super) fn also_live_view() -> crate::requests::PendingView {
     let mut github = resolved(vec![scoped(1001, REPO, None)]);
     github.also_live = vec![
@@ -203,8 +215,15 @@ pub(super) fn also_live_view() -> crate::requests::PendingView {
             ..replaced(21, &[(1001, REPO), (1002, TAP)])
         },
         ReplacedGrant {
-            permissions: PermissionSet::parse("actions:write").unwrap(),
+            permissions: PermissionSet::parse("actions:write,contents:write").unwrap(),
+            extras: extras_of("actions:write"),
             ..replaced(22, &[(1001, REPO), (1005, LONG)])
+        },
+        ReplacedGrant {
+            permissions: PermissionSet::parse("contents:write,workflows:write").unwrap(),
+            extras: extras_of("workflows:write"),
+            not_after: NOW + 1_800,
+            ..replaced(23, &[(1001, REPO)])
         },
     ];
     github_view(access(&[REPO], None), Some(github))

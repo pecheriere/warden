@@ -97,6 +97,12 @@ impl Requests {
                     grant_id: parse(&row, "id")?,
                     scope: held.scope,
                     permissions: held.permissions,
+                    extras: held.extras.map_or_else(Vec::new, |extras| {
+                        extras
+                            .extras_beyond(&PermissionSet::metadata_only())
+                            .iter()
+                            .collect()
+                    }),
                     not_after: row.try_get("not_after")?,
                 });
             }

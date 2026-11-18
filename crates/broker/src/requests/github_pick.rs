@@ -14,7 +14,7 @@ use warden_broker_proto::Id;
 use warden_broker_proto::github_permissions::PermissionSet;
 use warden_broker_proto::github_token::{GithubTokenGrant, GrantRepository};
 
-use super::{RequestError, Requests, github_extras_of, github_permissions_of};
+use super::{ActiveGithubToken, RequestError, Requests, github_extras_of, github_permissions_of};
 
 /// An active grant covering the repository asked for, read strictly.
 #[derive(Debug, Clone)]
@@ -28,7 +28,7 @@ pub(super) struct Candidate {
     /// When it ends, as its row says.
     pub(super) not_after: i64,
     /// What its tokens may have.
-    permissions: PermissionSet,
+    pub(super) permissions: PermissionSet,
     /// The extras it was approved with, `metadata:read` alone for none.
     extras: PermissionSet,
 }
@@ -109,15 +109,17 @@ fn privilege(candidate: &Candidate) -> (bool, usize, i64, &str) {
 }
 
 impl Requests {
-    /// The permissions to mint with under `picked` for `wanted`: the grant's own when
-    /// the request names permissions (the caller narrows them to what was named), and
-    /// otherwise the owner's current default set, limited to what the grant holds.
+    /// The permissions to mint with under `picked` for `wanted`, before the request's
+    /// own permissions narrow them: the grant's own when the request names
+    /// permissions (the caller narrows them to what was named), and otherwise the
+    /// owner's current default set, limited to what the grant holds. Read once per
+    /// mint, before GitHub is asked.
     ///
     /// # Errors
     /// The owner's default cannot be read: the caller refuses.
-    pub(super) async fn github_mint_set(
+    pub async fn github_mint_set(
         &self,
-        picked: &Candidate,
+        picked: &ActiveGithubToken,
         wanted: Option<&PermissionSet>,
     ) -> Result<PermissionSet, RequestError> {
         if wanted.is_some() {

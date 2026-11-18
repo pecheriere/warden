@@ -151,6 +151,46 @@ async fn approval_page_lists_the_grants_that_stay() {
     assert!(!page.body.contains("Approving also ends"), "{}", page.body);
 }
 
+/// The "Also live" block is shown, never bound: an approval still goes through when
+/// one of those grants ends between the page and the passkey.
+#[tokio::test]
+async fn also_live_grant_ending_after_the_page_does_not_stop_the_approval() {
+    let (broker, _key, upstream) = configured_on_fake().await;
+    allow(&broker, LEGACY, "actions:write,workflows:write");
+    let everyday = approve_repositories(&broker, &upstream, "bot", Window::D7, &[A]).await;
+    let mut passkey = broker.enroll_soft_passkey().await;
+    upstream.answer_github_installation(Some(installation_with(&[("workflows", "write")])));
+    upstream.script_github_token(resolved(&broker, &[A]));
+    let (_created, token) = broker
+        .create_request(
+            "bot",
+            with_extras_for(Window::M30, &[A.1], "workflows:write"),
+        )
+        .await;
+    let page = broker.get(&format!("/approve/{token}")).await;
+    assert!(
+        page.body.contains("<strong>Also live</strong>"),
+        "{}",
+        page.body
+    );
+    let target = broker.page_target_digest(&token).await;
+    let ended = broker
+        .post_json(
+            &format!("/grants/{everyday}/revoke"),
+            &serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(ended.status, StatusCode::OK, "{}", ended.body);
+
+    let begin = broker
+        .begin_approval_for(&token, Window::M30, &target)
+        .await;
+    let (ceremony, credential) = TestBroker::sign(&mut passkey, &begin);
+    let approved = broker.finish_approval(&token, &ceremony, &credential).await;
+    assert_eq!(approved.status, StatusCode::OK, "{}", approved.body);
+    assert_eq!(active_covering(&broker, 1001).await, 1);
+}
+
 #[tokio::test]
 async fn revoking_one_set_leaves_the_other() {
     let (broker, key, upstream) = configured_on_fake().await;

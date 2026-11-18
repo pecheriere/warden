@@ -576,8 +576,10 @@ each `read` or `write`; a bad one is a usage error (exit 64). The permissions ar
 grant, so it is for that task: renewing it keeps them. A request for the same repositories
 with other extras waits beside the others: an agent has one pending request per repositories
 and set of extras, and asking again with the same extras returns the pending one. The
-automatic request of `git` and `gh` never has extras. After the owner approves, the CLI drops
-the cached tokens of those repositories, so the next token holds the new set.
+automatic request of `git` and `gh` never has extras. After the owner approves, `warden
+request github` drops the cached tokens of those repositories, so the next token comes from
+the grants as they are now; a plain token still holds the default set, and the extras reach a
+token only when named (see below).
 
 **A sensitive extra** (`administration`, `workflows`, `secrets`, `environments`,
 `dependabot_secrets`, `repository_hooks` or an `organization_*` permission) lets whoever holds the token change
@@ -619,9 +621,10 @@ GH_TOKEN=$(warden github token --repo owner/name --permissions actions:write) gh
 ```
 
 A value that is empty, only whitespace or invalid makes the helper print the error on stderr and
-nothing on stdout, and exit 64, so git fails instead of pushing with another token. The CLI keeps
-the tokens of every grant of a repository in its cache, so asking for a wider set does not discard
-the others. Revoke a superseded or sensitive grant after use.
+nothing on stdout, and exit 64, so git gets no token from warden instead of pushing with another
+one (with `GIT_TERMINAL_PROMPT=0` or no terminal, as for an agent, git then fails). The CLI caches
+a token per repository and permission set asked for, so minting one set does not discard the
+others; an approval through `warden request github` drops all of that repository's. Revoke a superseded or sensitive grant after use.
 
 ### Releases
 

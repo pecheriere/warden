@@ -43,7 +43,7 @@ fn cache_keys_by_repository_and_set() {
     cache.put(asked_entry("ghs_default", &grant, &AskedSet::Default));
     assert!(
         cache.lookup(&repo(REPO), &checks_read(), NOW).is_none(),
-        "a whole-set token does not answer a narrowed ask"
+        "a default-set token does not answer a narrowed ask"
     );
     cache.put(asked_entry("ghs_narrow", &grant, &checks_read()));
     assert_eq!(cache.entries.len(), 2, "both coexist");
@@ -91,18 +91,27 @@ fn put_keeps_entries_of_other_grants() {
 #[tokio::test]
 async fn version_3_file_is_ignored() {
     let d = dir();
-    let v3 = format!(
-        r#"{{"version":3,"agent":"build-agent","server":"https://warden.example.ts.net/","entries":[{{"repository":"{REPO}","repository_id":1001,"grant_id":"{}","token":"ghs_old","expires_at":{},"asked":"full"}}]}}"#,
-        Id::random(),
-        NOW + 3600
-    );
+    // A key this version reads, so that only the version refuses the file: a plain
+    // token cached by version 3 may carry extras, which version 4's never do.
+    let file = |version: u32| {
+        format!(
+            r#"{{"version":{version},"agent":"build-agent","server":"https://warden.example.ts.net/","entries":[{{"repository":"{REPO}","repository_id":1001,"grant_id":"{}","token":"ghs_old","expires_at":{},"asked":"default"}}]}}"#,
+            Id::random(),
+            NOW + 3600
+        )
+    };
     fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(0o600)
         .open(&d.cache)
         .unwrap();
-    fs::write(&d.cache, v3).unwrap();
+    fs::write(&d.cache, file(4)).unwrap();
+    assert!(
+        Cache::load(&d.cache).is_some(),
+        "the same file at version 4 reads"
+    );
+    fs::write(&d.cache, file(3)).unwrap();
     assert!(Cache::load(&d.cache).is_none());
     assert_eq!(serve(&d.cache).await, (FRESH.to_owned(), true));
 }

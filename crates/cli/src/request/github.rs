@@ -81,7 +81,9 @@ fn several_notice(count: usize) -> Option<String> {
 /// environment, and `dir` as the directory the tool ran in. Writes only to stderr,
 /// as git and the `gh` wrapper read stdout. A pending GitHub token request of this
 /// agent for the same repository, made some other way, is waited on instead: the
-/// broker keeps one per agent and set of repositories, and any of them grants the same.
+/// broker keeps one per agent, set of repositories and set of extra permissions, and
+/// this request names no extras, so it only meets one that names none, which grants
+/// the same.
 ///
 /// # Errors
 /// [`Exit`] with [`EXIT_NO_GRANT`](crate::EXIT_NO_GRANT) when the request ends

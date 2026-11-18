@@ -9,7 +9,7 @@ All notable changes to this project are recorded here. The format follows
 ### Added
 
 - The approval page of a GitHub token request lists the agent's other live grants on its
-  repositories, under Also live.
+  repositories, under Also live, with their extras and sensitive permissions marked.
 - `warden git-credential` reads `WARDEN_GITHUB_PERMISSIONS`, in the syntax of `warden github token
   --permissions`, so that `WARDEN_GITHUB_PERMISSIONS=contents:write,workflows:write git push` asks
   for exactly those permissions. A plain `git push` gets the default set. An empty or invalid value
@@ -35,6 +35,10 @@ All notable changes to this project are recorded here. The format follows
   what is named (no sensitive permission first, then the fewest permissions, then the soonest
   end), and the check after GitHub answers must find that same grant still active, or the
   token is withheld. A covering grant whose permissions cannot be read refuses the mint.
+  When another grant, still live, has become the one to mint from by then, the refusal is the
+  `409` "another GitHub grant applies to this repository since the call began; ask again",
+  not "grant revoked during the call". The `409` for two grants with the same extras now says
+  to revoke one of those, after its earlier text.
 
 ### Fixed
 

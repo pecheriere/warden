@@ -1035,8 +1035,10 @@ Which grant a token comes from, when several cover the repository (one per set o
   (`NO_ACTIVE_GRANT`): no grant covering the repository was ever approved, or it ended or
   was revoked. Names are matched ignoring case.
 - `409` `{"error":"more than one GitHub grant covers this repository; ask the owner to
-  revoke one"}` (`AMBIGUOUS_GRANT`): two grants with the same extra permissions cover the name
-  or its id. Do not retry; the owner revokes one.
+  revoke one of those with the same extra permissions"}` (`AMBIGUOUS_GRANT`; match its start,
+  up to "revoke one"): two grants with the same extra permissions cover the name or its id.
+  Grants with different extras on one repository are normal and never give this. Do not
+  retry; the owner revokes one of the two.
 - `409` `{"error":"GitHub would not issue a token for this repository: the App may no longer
   reach it, or it was deleted or replaced"}` (`REPOSITORY_UNREACHABLE`): GitHub refused to
   scope a token to the repository's id, or to the grant's permissions (the owner may have
@@ -1047,6 +1049,11 @@ Which grant a token comes from, when several cover the repository (one per set o
 - `409` `{"error":"grant revoked during the call"}` or `{"error":"grant expired during the
   call"}`: the grant ended while the token was being minted, or was replaced by a new
   one. The token is not given out; ask again under the new grant.
+- `409` `{"error":"another GitHub grant applies to this repository since the call began; ask
+  again"}` (`OTHER_GRANT_APPLIES`): while the token was being minted, another of the agent's
+  grants became the one to mint from for this request, such as a less privileged one the owner
+  approved meanwhile. The first grant is still live. The token is not given out; asking again
+  mints under the grant that applies now.
 - `429` `{"error":"this agent has reached its limit of GitHub tokens for this hour; it starts
   again at the top of the hour"}`: the agent has had 60 tokens since the top of the hour
   (UTC), across all its grants. GitHub is not asked. A token lasts an hour, so keep it and ask again only when it is

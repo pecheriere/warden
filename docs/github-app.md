@@ -22,8 +22,9 @@ set it up.
   [the three levels](#the-three-levels-per-repository). Issues on public repositories reach further: see below.
 - **The permissions you configure**: by default `contents` write, `pull_requests` write,
   `issues` write and `metadata` read. You can set a different default (see
-  [Permissions](#permissions)). warden asks GitHub for the grant's set and nothing else,
-  whatever the App itself may do. Keep `workflows` and `administration` out of it: see [Sensitive permissions](#sensitive-permissions).
+  [Permissions](#permissions)). warden asks GitHub for at most the grant's set, and nothing
+  else, whatever the App itself may do: the permissions the request names, or your default
+  limited to the grant. Keep `workflows` and `administration` out of it: see [Sensitive permissions](#sensitive-permissions).
 - **One hour.** The token lasts as long as GitHub lets it, and the CLI gets a new one when
   less than 5 minutes of the old one remain.
 - **A grant of `1d`, `7d` or `30d`**, 30 days by default, up to
@@ -128,8 +129,9 @@ mint more than the grant.
 each time it is shown, begun or finished, and refuses a request whose set the installation
 does not hold, naming what is missing. Give the App those permissions on GitHub first
 (step 4 below) and accept the change on the installation. A grant keeps the set it was
-approved with: changing the default affects the next request and the next renewal, not
-grants that exist. If you remove a permission from the App after a grant was approved with
+approved with, so its tokens never hold more than that set. Narrowing the default narrows
+the plain tokens of grants that exist at once; widening it never widens them, and reaches a
+grant only at the next request or renewal. If you remove a permission from the App after a grant was approved with
 it, GitHub may refuse to mint the grant's tokens: the agent then gets `409` with the
 repository-unreachable error, and you should check the App's permissions on GitHub against
 the grant's set, which the grants page lists. Where GitHub instead grants a token less than

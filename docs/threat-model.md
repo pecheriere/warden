@@ -1083,8 +1083,10 @@ What an attacker gets, and what stops it:
   `default_permissions`, which is `contents`, `pull_requests` and `issues` write and `metadata`
   read when unset. The set is stored with the request when it is made, shown on the approval
   page, bound into the passkey's digest and held by the grant, so a later change to the item
-  moves no existing grant and no pending request. The broker sends the grant's set to GitHub
-  whatever the App is allowed, and the token and the audit entry carry what GitHub granted.
+  never widens an existing grant or a pending request. The broker asks GitHub for at most
+  the grant's set, whatever the App is allowed: the set the mint names, or the current
+  default limited to the grant, so a narrowed default narrows existing grants' plain tokens
+  (see below). The token and the audit entry carry what GitHub granted.
   What moves: an owner can now configure a default wider than the four (for example `checks`
   or `actions`), and every agent's token then holds it from the next request on. The sensitive
   permissions (`administration`, `workflows`, `secrets`, `environments`, `dependabot_secrets`,

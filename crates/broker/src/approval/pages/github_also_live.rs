@@ -12,7 +12,8 @@ use super::github_token::permission_list;
 use crate::requests::ReplacedGrant;
 
 /// One line for each grant of `agent` in `grants`: its repositories, its
-/// permissions and when it ends. Nothing when there are none.
+/// permissions, with its extras and sensitive ones marked as everywhere on the page,
+/// and when it ends. Nothing when there are none.
 pub(super) fn also_live(agent: &AgentName, grants: &[ReplacedGrant]) -> Markup {
     html! {
         @if !grants.is_empty() {
@@ -27,6 +28,8 @@ pub(super) fn also_live(agent: &AgentName, grants: &[ReplacedGrant]) -> Markup {
                         @let (date, time) = utc_parts(grant.not_after);
                         li {
                             @match &grant.scope {
+                                // Never listed (any approval ends a legacy grant); the
+                                // match must still name it, so it gets the fixed text.
                                 GrantScope::Legacy => "all repositories of the installation",
                                 GrantScope::Repositories(list) => {
                                     @for (i, repo) in list.iter().enumerate() {
@@ -35,7 +38,7 @@ pub(super) fn also_live(agent: &AgentName, grants: &[ReplacedGrant]) -> Markup {
                                     }
                                 }
                             }
-                            ": " (permission_list(&grant.permissions, &[]))
+                            ": " (permission_list(&grant.permissions, &grant.extras))
                             ", until " (date) " " (time)
                         }
                     }

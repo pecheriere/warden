@@ -16,7 +16,8 @@ use secrecy::ExposeSecret as _;
 use warden_broker_proto::github_permissions::PermissionSet;
 use warden_broker_proto::github_token::{
     AMBIGUOUS_GRANT, APP_CHANGED, GithubTokenRequest, GithubTokenResponse, HOURLY_LIMIT,
-    NO_ACTIVE_GRANT, OLD_CLIENT, PERMISSIONS_NOT_IN_GRANT, REPOSITORY_UNREACHABLE,
+    NO_ACTIVE_GRANT, OLD_CLIENT, OTHER_GRANT_APPLIES, PERMISSIONS_NOT_IN_GRANT,
+    REPOSITORY_UNREACHABLE,
 };
 use warden_broker_proto::{AgentName, Id, Window};
 
@@ -105,13 +106,7 @@ async fn attempt(
         .requests
         .active_github_token_for(agent, &request.repository, wanted)
         .await?;
-    let ActiveGithubToken {
-        grant_id,
-        grant,
-        repository,
-        window_secs,
-        mint,
-    } = match lookup {
+    let active = match lookup {
         GithubLookup::None => return Err(refused(StatusCode::FORBIDDEN, NO_ACTIVE_GRANT)),
         GithubLookup::Ambiguous(first) => {
             *seen = Some(first);
@@ -119,15 +114,22 @@ async fn attempt(
         }
         GithubLookup::One(active) => active,
     };
-    *seen = Some(grant_id.clone());
-    // Read strictly: a set this version cannot act on refuses, and costs nothing.
-    let granted = crate::requests::github_permissions_of(&grant)?;
+    *seen = Some(active.grant_id.clone());
     // Creation, approval and renewal never make such a grant; a stored one that is
-    // (a row changed since) is not minted from.
-    if window_secs > Window::H1.secs() && granted.iter().any(|p| p.is_sensitive()) {
+    // (a row changed since) is not minted from. The lookup read the set strictly.
+    if active.window_secs > Window::H1.secs() && active.permissions.sensitive().next().is_some() {
         return Err(refused(StatusCode::FORBIDDEN, SENSITIVE_GRANT_TOO_LONG));
     }
+    // Read once, before GitHub is asked: an owner's default that cannot be read
+    // refuses here, and the check after the mint compares only the grant.
+    let mint = state.requests.github_mint_set(&active, wanted).await?;
     let permissions = narrowed(wanted, mint)?;
+    let ActiveGithubToken {
+        grant_id,
+        grant,
+        repository,
+        ..
+    } = active;
 
     let key = state
         .backend
@@ -185,19 +187,7 @@ async fn attempt(
         .append(event)
         .await
         .map_err(RequestError::from)?;
-    // The call to GitHub and the log both take time, and a revocation does not wait
-    // for them: a grant that has ended meanwhile, or been replaced, gets nothing. The
-    // same pick for the same request must find the same grant.
-    let still_active = state
-        .requests
-        .active_github_token_for(agent, &request.repository, wanted)
-        .await?;
-    match &still_active {
-        GithubLookup::One(active)
-            if active.grant_id == grant_id && active.repository.id == repository.id => {}
-        GithubLookup::Ambiguous(_) => return Err(refused(StatusCode::CONFLICT, AMBIGUOUS_GRANT)),
-        _ => return Err(ended(state, agent, &grant_id).await),
-    }
+    still_the_grant(state, agent, &request, &grant_id, repository.id).await?;
     tracing::info!(agent = %agent, grant = %grant_id, "GitHub token minted");
     Ok(GithubTokenResponse {
         token: minted.token.token.expose_secret().to_owned(),
@@ -207,6 +197,38 @@ async fn attempt(
         repository_id: repository.id,
         permissions: Some(minted.granted.into()),
     })
+}
+
+/// The check after GitHub answered and the mint was logged: the same pick for the same
+/// `request` must find `grant_id`, still active, for `repository_id`. The call to
+/// GitHub and the log both take time, and a revocation does not wait for them.
+async fn still_the_grant(
+    state: &AppState,
+    agent: &AgentName,
+    request: &GithubTokenRequest,
+    grant_id: &Id,
+    repository_id: u64,
+) -> Result<(), Failure> {
+    // A grant that has ended meanwhile, or been replaced, gets nothing. Only storage
+    // is read: the set to mint with was settled before GitHub was asked.
+    let still_active = state
+        .requests
+        .active_github_token_for(agent, &request.repository, request.permissions.as_ref())
+        .await?;
+    match &still_active {
+        GithubLookup::One(active)
+            if active.grant_id == *grant_id && active.repository.id == repository_id =>
+        {
+            Ok(())
+        }
+        GithubLookup::Ambiguous(_) => Err(refused(StatusCode::CONFLICT, AMBIGUOUS_GRANT)),
+        GithubLookup::One(other) if other.grant_id != *grant_id => {
+            Err(ended(state, agent, grant_id, OTHER_GRANT_APPLIES).await)
+        }
+        GithubLookup::One(_) | GithubLookup::None => {
+            Err(ended(state, agent, grant_id, REVOKED_DURING).await)
+        }
+    }
 }
 
 /// The permissions to mint with: `mint`, what the lookup found for the request, or
@@ -225,21 +247,16 @@ fn narrowed(wanted: Option<&PermissionSet>, mint: PermissionSet) -> Result<Permi
     }
 }
 
-/// The failure for grant `grant_id`, which is no longer active: a 409 that says
-/// revoked, unless it expired. Anything unclear is called revoked: the refusal is
-/// the same. A failed lookup is the failure instead.
-async fn ended(state: &AppState, agent: &AgentName, grant_id: &Id) -> Failure {
-    let expired = match state.requests.agent_grant(agent, grant_id).await {
-        Ok((view, revoked)) => !revoked && state.clock.now() >= view.not_after,
-        Err(RequestError::NotFound) => false,
+/// The failure for grant `grant_id`, which the check after the mint no longer
+/// finds: a 409 that says it expired or was revoked if it did, and otherwise
+/// `live`, which says why a grant still live was not the one found. Anything unclear
+/// is called revoked: the refusal is the same. A failed lookup is the failure instead.
+async fn ended(state: &AppState, agent: &AgentName, grant_id: &Id, live: &'static str) -> Failure {
+    let reason = match state.requests.agent_grant(agent, grant_id).await {
+        Ok((_, true)) | Err(RequestError::NotFound) => REVOKED_DURING,
+        Ok((view, false)) if state.clock.now() >= view.not_after => EXPIRED_DURING,
+        Ok((_, false)) => live,
         Err(e) => return e.into(),
     };
-    refused(
-        StatusCode::CONFLICT,
-        if expired {
-            EXPIRED_DURING
-        } else {
-            REVOKED_DURING
-        },
-    )
+    refused(StatusCode::CONFLICT, reason)
 }

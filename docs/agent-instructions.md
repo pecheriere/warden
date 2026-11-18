@@ -221,8 +221,8 @@ GH_TOKEN=$(warden github token --repo owner/name --permissions actions:write) gh
 ```
 
 A value that is empty or invalid makes the helper print an error and no token, so git fails
-instead of pushing with another one. Each permission set has its own grant, and the others
-stay live. Revoke a superseded or sensitive grant after use.
+without a terminal (`GIT_TERMINAL_PROMPT=0`) instead of pushing with another one. Each set of
+extras has its own grant, and the others stay live. Revoke a superseded or sensitive grant after use.
 
 A grant covers the repositories the person approves, and a token covers one of them. Name the
 repository your task is about, and more than one only when the task needs them. A token for

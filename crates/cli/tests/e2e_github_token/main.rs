@@ -119,6 +119,7 @@ impl Machine {
             .env("WARDEN_AGENT_KEY", &self.key)
             .env_remove("WARDEN_SESSION")
             .env_remove("GH_TOKEN")
+            .env_remove("WARDEN_GITHUB_PERMISSIONS")
             .env_remove("GIT_DIR")
             .env_remove("GIT_WORK_TREE")
             .current_dir(self.root.path().join("repo"));
