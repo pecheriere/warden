@@ -91,6 +91,8 @@ pub struct ReplacedGrant {
     pub scope: GrantScope,
     /// The permissions its tokens have.
     pub permissions: PermissionSet,
+    /// When it ends, in Unix seconds.
+    pub not_after: i64,
 }
 
 /// What the approval page of a GitHub token request shows and binds.
@@ -100,6 +102,10 @@ pub struct GithubPending {
     pub resolution: Resolution,
     /// The agent's grants that approving would end.
     pub replaces: Vec<ReplacedGrant>,
+    /// The agent's other active grants on the same repositories, approved with other
+    /// extras, which approving leaves alone. Shown, never bound: the owner does not
+    /// decide on them here.
+    pub also_live: Vec<ReplacedGrant>,
     /// The permissions the request was created with, which the grant will hold.
     pub permissions: StoredPermissions,
     /// The request's extras that the owner's allowlist does not hold now, in name
@@ -220,6 +226,7 @@ impl Requests {
             return Ok(GithubPending {
                 resolution: Resolution::Resolved(Vec::new()),
                 replaces: Vec::new(),
+                also_live: Vec::new(),
                 permissions,
                 not_allowed: Vec::new(),
                 installation: InstallationCheck::Unreadable,
@@ -232,6 +239,9 @@ impl Requests {
         let replaces = self
             .replaced_grants(agent, &resolution, access.extra_permissions.as_ref())
             .await?;
+        let also_live = self
+            .also_live_grants(agent, &resolution, access.extra_permissions.as_ref())
+            .await?;
         let allowlist = self.backend.github_permissions().await?;
         let not_allowed = access
             .extra_permissions
@@ -241,6 +251,7 @@ impl Requests {
         Ok(GithubPending {
             resolution,
             replaces,
+            also_live,
             permissions,
             not_allowed,
             installation,
@@ -308,6 +319,20 @@ impl Requests {
     ) -> Result<Vec<ReplacedGrant>, RequestError> {
         match resolution.scope() {
             Some(new) => self.overlapping_grants(agent, &new, extras).await,
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// The agent's active GitHub token grants that cover one of the resolved
+    /// repositories and were approved with other extras, which approving leaves be.
+    async fn also_live_grants(
+        &self,
+        agent: &AgentName,
+        resolution: &Resolution,
+        extras: Option<&PermissionSet>,
+    ) -> Result<Vec<ReplacedGrant>, RequestError> {
+        match resolution.scope() {
+            Some(new) => self.other_live_grants(agent, &new, extras).await,
             None => Ok(Vec::new()),
         }
     }

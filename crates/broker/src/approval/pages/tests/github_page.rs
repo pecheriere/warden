@@ -1,9 +1,9 @@
 //! What the approval page says about the repositories of a GitHub token request.
 
 use super::github_fixtures::{
-    LONG, REPO, TAP, access, automatic_view, github_grant, github_view, history_page, multi_view,
-    page, pending_page, permissions_view, replaces_view, replaces_view_with, resolved, scope_of,
-    scoped, unreachable_view, with_checks,
+    LONG, REPO, TAP, access, also_live_view, automatic_view, github_grant, github_view,
+    history_page, multi_view, page, pending_page, permissions_view, replaces_view,
+    replaces_view_with, resolved, scope_of, scoped, unreachable_view, with_checks,
 };
 use crate::approval::pages::grants;
 use crate::requests::{ActiveGrant, LinkHosts};
@@ -398,6 +398,7 @@ fn legacy_request_never_says_unreadable() {
         Some(GithubPending {
             resolution: crate::requests::Resolution::Resolved(Vec::new()),
             replaces: Vec::new(),
+            also_live: Vec::new(),
             permissions: StoredPermissions::legacy(),
             not_allowed: Vec::new(),
             installation: InstallationCheck::Unreadable,
@@ -430,4 +431,47 @@ fn replaced_grant_shows_its_permissions() {
         "{html}"
     );
     assert_eq!(count(&html, "Its permissions: "), 3, "{html}");
+}
+
+#[test]
+fn pending_github_lists_other_live_grants() {
+    let html = page(&also_live_view());
+    assert!(!html.contains(r#"class="replaces""#), "{html}");
+    let block = html.find(r#"class="also-live""#).expect(&html);
+    assert!(
+        html.contains("<strong>Also live</strong>")
+            && html.contains("Approving leaves <bdi>build-agent</bdi>\u{2019}s other grants"),
+        "{html}"
+    );
+    // Permissions, repositories and the end, one line per grant.
+    assert!(
+        html[block..].contains("contents: write</code>, <code class=\"perm\">metadata: read"),
+        "{html}"
+    );
+    assert!(html[block..].contains("actions: write"), "{html}");
+    assert_eq!(count(&html, "<li>"), 2, "{html}");
+    assert!(
+        html.contains(&format!(
+            "<code><bdi>{REPO}</bdi></code>, <code><bdi>{TAP}</bdi></code>"
+        )),
+        "{html}"
+    );
+    assert_eq!(count(&html, "until <time datetime="), 2, "{html}");
+    // Right after where the replaced block goes, before the fine print.
+    assert!(
+        html.find("Can push and merge on").unwrap() < block
+            && block < html.find("Mints tokens for").unwrap(),
+        "{html}"
+    );
+    // Nothing links to or acts on those grants.
+    assert!(!html[block..].contains("Revoke"), "{html}");
+}
+
+#[test]
+fn also_live_absent_without_other_grants() {
+    for view in [multi_view(), replaces_view()] {
+        let html = page(&view);
+        assert!(!html.contains("also-live"), "{html}");
+        assert!(!html.contains("Also live"), "{html}");
+    }
 }

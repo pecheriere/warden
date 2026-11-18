@@ -13,6 +13,7 @@ fn pending(permissions: StoredPermissions, replaces: Vec<ReplacedGrant>) -> Gith
             renamed_from: None,
         }]),
         replaces,
+        also_live: Vec::new(),
         permissions,
         not_allowed: Vec::new(),
         installation: InstallationCheck::Holds,
@@ -30,6 +31,7 @@ fn digest_input_is_v2_and_binds_the_set_after_the_repositories() {
             grant_id: replaced.clone(),
             scope: warden_broker_proto::github_token::GrantScope::Legacy,
             permissions: PermissionSet::legacy(),
+            not_after: 0,
         }],
     )
     .digest_input();

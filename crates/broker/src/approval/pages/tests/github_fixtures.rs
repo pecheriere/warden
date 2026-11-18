@@ -63,6 +63,7 @@ pub(super) fn resolved(list: Vec<ScopedRepository>) -> GithubPending {
     GithubPending {
         resolution: Resolution::Resolved(list),
         replaces: Vec::new(),
+        also_live: Vec::new(),
         permissions: StoredPermissions::legacy(),
         not_allowed: Vec::new(),
         installation: InstallationCheck::Holds,
@@ -92,6 +93,7 @@ pub(super) fn permissions_view(
 pub(super) fn replaced(grant: u8, list: &[(u64, &str)]) -> ReplacedGrant {
     ReplacedGrant {
         permissions: PermissionSet::legacy(),
+        not_after: NOW + 3_600,
         grant_id: id(grant),
         scope: GrantScope::repositories(
             list.iter()
@@ -142,6 +144,7 @@ pub(super) fn unreachable_view() -> crate::requests::PendingView {
         Some(GithubPending {
             resolution: Resolution::NotAccessible,
             replaces: Vec::new(),
+            also_live: Vec::new(),
             permissions: StoredPermissions::legacy(),
             not_allowed: Vec::new(),
             installation: InstallationCheck::Holds,
@@ -165,6 +168,7 @@ pub(super) fn replaces_view_with(n: usize) -> crate::requests::PendingView {
                 scoped(1003, REPO, None),
                 scoped(1002, TAP, None),
             ]),
+            also_live: Vec::new(),
             replaces: vec![
                 replaced(11, &[(1001, REPO)]),
                 ReplacedGrant {
@@ -175,6 +179,7 @@ pub(super) fn replaces_view_with(n: usize) -> crate::requests::PendingView {
                     grant_id: id(13),
                     scope: GrantScope::Legacy,
                     permissions: PermissionSet::legacy(),
+                    not_after: NOW + 3_600,
                 },
             ]
             .into_iter()
@@ -185,6 +190,24 @@ pub(super) fn replaces_view_with(n: usize) -> crate::requests::PendingView {
             installation: InstallationCheck::Holds,
         }),
     )
+}
+
+/// A request that replaces nothing, while the agent holds an everyday grant on
+/// `REPO` and another on `TAP` and `LONG`, which stay.
+pub(super) fn also_live_view() -> crate::requests::PendingView {
+    let mut github = resolved(vec![scoped(1001, REPO, None)]);
+    github.also_live = vec![
+        ReplacedGrant {
+            permissions: PermissionSet::parse("contents:write,pull_requests:write").unwrap(),
+            not_after: NOW + 26 * 86_400,
+            ..replaced(21, &[(1001, REPO), (1002, TAP)])
+        },
+        ReplacedGrant {
+            permissions: PermissionSet::parse("actions:write").unwrap(),
+            ..replaced(22, &[(1001, REPO), (1005, LONG)])
+        },
+    ];
+    github_view(access(&[REPO], None), Some(github))
 }
 
 /// The approval page of a request for `REPO` with the extras `extras` (written form,
@@ -337,6 +360,10 @@ pub(super) fn github_token_pages() -> Vec<(&'static str, Markup)> {
         (
             "approve-github-token-replaces",
             approve(&replaces_view(), &lnk, NOW),
+        ),
+        (
+            "approve-github-token-also-live",
+            approve(&also_live_view(), &lnk, NOW),
         ),
         (
             "approve-github-token-permissions",

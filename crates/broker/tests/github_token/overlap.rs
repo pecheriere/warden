@@ -127,6 +127,30 @@ async fn grant_with_other_permissions_stays() {
     assert_eq!(entries(&broker, "grant_revoked"), [] as [Value; 0]);
 }
 
+/// The approval page of a sensitive request lists the everyday grant that stays.
+#[tokio::test]
+async fn approval_page_lists_the_grants_that_stay() {
+    let (broker, _key, upstream) = configured_on_fake().await;
+    allow(&broker, LEGACY, "actions:write,workflows:write");
+    approve_repositories(&broker, &upstream, "bot", Window::D7, &[A]).await;
+    upstream.answer_github_installation(Some(installation_with(&[("workflows", "write")])));
+    upstream.script_github_token(resolved(&broker, &[A]));
+    let (_created, token) = broker
+        .create_request(
+            "bot",
+            with_extras_for(Window::M30, &[A.1], "workflows:write"),
+        )
+        .await;
+    let page = broker.get(&format!("/approve/{token}")).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    assert!(
+        page.body.contains("<strong>Also live</strong>"),
+        "{}",
+        page.body
+    );
+    assert!(!page.body.contains("Approving also ends"), "{}", page.body);
+}
+
 #[tokio::test]
 async fn revoking_one_set_leaves_the_other() {
     let (broker, key, upstream) = configured_on_fake().await;

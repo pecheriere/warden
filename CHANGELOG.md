@@ -8,6 +8,8 @@ All notable changes to this project are recorded here. The format follows
 
 ### Added
 
+- The approval page of a GitHub token request lists the agent's other live grants on its
+  repositories, under Also live.
 - `warden git-credential` reads `WARDEN_GITHUB_PERMISSIONS`, in the syntax of `warden github token
   --permissions`, so that `WARDEN_GITHUB_PERMISSIONS=contents:write,workflows:write git push` asks
   for exactly those permissions. A plain `git push` gets the default set. An empty or invalid value

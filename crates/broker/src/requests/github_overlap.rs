@@ -63,15 +63,41 @@ impl Requests {
         new: &GrantScope,
         extras: Option<&PermissionSet>,
     ) -> Result<Vec<ReplacedGrant>, RequestError> {
+        self.grants_covering(agent, |held| held.replaced_by(new, extras))
+            .await
+    }
+
+    /// The agent's active GitHub token grants that cover one of the repositories of
+    /// `new` and were approved with other extras than `extras`: the ones approving
+    /// leaves live. Never a legacy grant, which any approval ends.
+    pub(super) async fn other_live_grants(
+        &self,
+        agent: &AgentName,
+        new: &GrantScope,
+        extras: Option<&PermissionSet>,
+    ) -> Result<Vec<ReplacedGrant>, RequestError> {
+        self.grants_covering(agent, |held| {
+            held.scope.overlaps(new) && !held.replaced_by(new, extras)
+        })
+        .await
+    }
+
+    /// The agent's active GitHub token grants that `keep` selects.
+    async fn grants_covering(
+        &self,
+        agent: &AgentName,
+        keep: impl Fn(&Held) -> bool,
+    ) -> Result<Vec<ReplacedGrant>, RequestError> {
         let mut found = Vec::new();
         for row in self.active_rows(agent, "github_token").await? {
             let view: String = row.try_get("view")?;
             let held = held_by(&view)?;
-            if held.replaced_by(new, extras) {
+            if keep(&held) {
                 found.push(ReplacedGrant {
                     grant_id: parse(&row, "id")?,
                     scope: held.scope,
                     permissions: held.permissions,
+                    not_after: row.try_get("not_after")?,
                 });
             }
         }
