@@ -13,9 +13,8 @@ use super::bus::next_change;
 use super::revocation::commit_with_entries;
 use super::transition::detached;
 use super::{
-    AuditOutcome, PendingView, RequestError, Requests, Scope, begin, github_overlap,
-    github_permissions_of, note_if_not_applied, parse, record, release_approval, renewal,
-    sha256_hex,
+    AuditOutcome, PendingView, RequestError, Requests, Scope, begin, github_extras_of,
+    github_overlap, note_if_not_applied, parse, record, release_approval, renewal, sha256_hex,
 };
 use crate::audit::AuditEvent;
 use crate::ssh_ca;
@@ -377,7 +376,7 @@ impl Requests {
                     agent,
                     &grant.grant_id,
                     &new.repositories,
-                    &github_permissions_of(new)?,
+                    github_extras_of(new)?.as_ref(),
                     github_replaced,
                     now,
                 )
@@ -423,7 +422,7 @@ impl Requests {
         }
         // A rerun's grant replaces the earlier one for the same release.
         events.extend(self.release_replaced_events(agent, &grant.access).await?);
-        // A GitHub grant replaces only the agent's grants that share a repository and hold the same permissions.
+        // A GitHub grant replaces only the agent's grants that share a repository and hold the same extras.
         let (replaced, github_replaced) = self
             .github_replaced_events(agent, &grant.grant_id, &grant.access)
             .await?;

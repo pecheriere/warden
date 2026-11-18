@@ -1,5 +1,5 @@
 //! Approving a GitHub token grant ends only the agent's grants that share a
-//! repository and a permission set with it, and two approvals at once leave one.
+//! repository and the same extra permissions with it, and two approvals at once leave one.
 
 use axum::http::StatusCode;
 use serde_json::Value;
@@ -11,6 +11,7 @@ use warden_broker_proto::Window;
 use warden_broker_proto::github_token::AMBIGUOUS_GRANT;
 
 use super::extras::{LEGACY, allow, installation_with, with_extras_for};
+use super::permissions::{WITH_CHECKS, set_default};
 use super::{approve_repositories, configured_on_fake, entries, github_calls, resolved};
 
 const A: (u64, &str) = (1001, "example-owner/example-repo");
@@ -168,6 +169,20 @@ async fn same_set_on_overlapping_repositories_is_replaced() {
     let second = approve_with_extras(&broker, &upstream, &[B], Window::D7, "actions:write").await;
     assert!(revoked(&broker, &first).await);
     assert!(!revoked(&broker, &second).await);
+}
+
+#[tokio::test]
+async fn same_extras_under_a_changed_default_is_replaced() {
+    let (broker, _key, upstream) = configured_on_fake().await;
+    let first = approve_repositories(&broker, &upstream, "bot", Window::D7, &[A]).await;
+    set_default(&broker, WITH_CHECKS);
+    let second = approve_repositories(&broker, &upstream, "bot", Window::D7, &[A]).await;
+    assert!(revoked(&broker, &first).await);
+    assert!(!revoked(&broker, &second).await);
+    let ended = entries(&broker, "grant_revoked");
+    assert_eq!(ended.len(), 1, "{ended:?}");
+    assert_eq!(ended[0]["grant_id"], first.as_str());
+    assert_eq!(ended[0]["by"], "replaced");
 }
 
 #[tokio::test]

@@ -95,11 +95,14 @@ pub(super) fn grant_extras(row: &SqliteRow) -> Result<Option<PermissionSet>, Req
             "GitHub token grant changed kind".to_owned(),
         ));
     };
-    grant
-        .extra_permissions
-        .map(|extras| extras.known())
-        .transpose()
-        .map_err(|_| RequestError::Corrupt("a grant's extra permissions".to_owned()))
+    super::github_extras_of(&grant)
+}
+
+/// The part of a pending request's dedupe key that tells its extra permissions: their
+/// written form, or `none`. A request and a renewal build it the same way, so each
+/// agent has one pending request per repositories and extras, whatever the default.
+pub(super) fn extras_slot(extras: Option<&PermissionSet>) -> String {
+    extras.map_or_else(|| "none".to_owned(), ToString::to_string)
 }
 
 /// What a grant holds when the agent asked for `extras` on top of `default`: both

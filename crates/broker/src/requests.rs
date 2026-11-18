@@ -691,6 +691,23 @@ pub(crate) fn github_permissions_of(
         .map_err(|e| RequestError::Corrupt(format!("GitHub token grant permissions: {e}")))
 }
 
+/// The extra permissions a stored GitHub token grant was approved with, read
+/// strictly: `None` when it had none.
+///
+/// # Errors
+///
+/// [`RequestError::Corrupt`] when this version cannot act on the set.
+pub(crate) fn github_extras_of(
+    grant: &GithubTokenGrant,
+) -> Result<Option<PermissionSet>, RequestError> {
+    grant
+        .extra_permissions
+        .as_ref()
+        .map(warden_broker_proto::github_permissions::GrantedPermissions::known)
+        .transpose()
+        .map_err(|_| RequestError::Corrupt("a grant's extra permissions".to_owned()))
+}
+
 /// Refuse a `window` longer than `max`, the limit of `subject` (`target pi`,
 /// `secret github`).
 fn check_window(window: Window, max: Window, subject: &str) -> Result<(), String> {

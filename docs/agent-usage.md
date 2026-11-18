@@ -575,7 +575,7 @@ allow that extra GitHub permission: <name>`. A set is `name:level` pairs joined 
 each `read` or `write`; a bad one is a usage error (exit 64). The permissions are held by the
 grant, so it is for that task: renewing it keeps them. A request for the same repositories
 with other extras waits beside the others: an agent has one pending request per repositories
-and permission set, and asking again with the same extras returns the pending one. The
+and set of extras, and asking again with the same extras returns the pending one. The
 automatic request of `git` and `gh` never has extras. After the owner approves, the CLI drops
 the cached tokens of those repositories, so the next token holds the new set.
 

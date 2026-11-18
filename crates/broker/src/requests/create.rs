@@ -183,12 +183,12 @@ impl Requests {
             return Err(RequestError::Rejected(reason));
         }
         Ok(Checked {
-            // One pending request per repositories and permission set: the full set
-            // the grant will hold, as approving compares it.
+            // One pending request per repositories and extra permissions, as approving
+            // compares them: the owner's default is not part of it.
             dedupe_key: format!(
                 "{agent}|github_token|{}|{}",
                 github.slot(),
-                permissions.full
+                github_permissions::extras_slot(github.extra_permissions.as_ref())
             ),
             subject: github.summary(),
             release: None,

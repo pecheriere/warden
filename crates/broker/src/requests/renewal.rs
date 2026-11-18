@@ -17,7 +17,7 @@ use warden_broker_proto::{
 };
 
 use super::create::Attached;
-use super::github_permissions::grant_extras;
+use super::github_permissions::{extras_slot, grant_extras};
 use super::github_scope::{Resolution, resolution_of};
 use super::transition::detached;
 use super::{Destination, RequestError, Requests, Scope, approval_token, begin, parse};
@@ -342,13 +342,12 @@ impl Requests {
         req: CreateRequest,
         renewing: Option<GrantScope>,
     ) -> Result<(Id, Url), RequestError> {
-        let permissions = self.renewal_permissions(&req.access).await?;
-        let dedupe_key = match (&req.access, &permissions) {
-            (Access::GithubToken(github), Some(permissions)) => format!(
+        let dedupe_key = match &req.access {
+            Access::GithubToken(github) => format!(
                 "{agent}|{}|{}|{}",
                 kind.kind(),
                 github.slot(),
-                permissions.full
+                extras_slot(github.extra_permissions.as_ref())
             ),
             _ => format!("{agent}|{}", kind.kind()),
         };
@@ -374,6 +373,7 @@ impl Requests {
             Some(scope) => Some(self.current_names(scope).await?),
             None => None,
         };
+        let permissions = self.renewal_permissions(&req.access).await?;
         let token = approval_token()?;
         let link = self.approval_link(&token)?;
         let change = self.recorded_change.lock().await;

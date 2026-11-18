@@ -1364,8 +1364,8 @@ unless noted, and fixed apart from the name:
   (`SENSITIVE_WINDOW`): the window of a request with a sensitive extra, which the owner also
   cannot approve for longer. Any other request takes `1d`, `7d` or `30d`.
 
-An agent has one pending request per repositories and permission set (the owner's default
-plus the extras): asking with other extras creates another request, and asking again with the
+An agent has one pending request per repositories and set of extras (the owner's default
+is not part of it): asking with other extras creates another request, and asking again with the
 same extras returns the pending one, as before.
 
 An extra outside the owner's allowlist and a sensitive extra for a longer window are each
@@ -1379,10 +1379,10 @@ The request is refused with a `400` when the broker holds no GitHub App
 (`GitHub tokens are not configured on this broker`), and for a window outside the three (or, with a sensitive extra, outside the short ones).
 There is nothing to install and the grant id is not needed: `POST /v1/github-token` finds
 the agent's active grant for the named repository, read anew for each token. An agent may
-hold several grants at once, but two with the same permissions never cover the same
+hold several grants at once, but two with the same extra permissions never cover the same
 repository: they overlap when they share a repository id or a repository name (ignoring
 case), and approving a grant ends the agent's overlapping ones with exactly the same
-permissions, which the owner is told on the approval page before approving
+extras, which the owner is told on the approval page before approving
 (the approval is refused with a `409` if that set changed meanwhile). Minting is refused with a
 `409` once the broker's App or installation is no longer the one with this `digest`. A
 grant approved before grants were scoped has no `repositories`: it ends at upgrade and

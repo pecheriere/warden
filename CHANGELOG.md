@@ -9,11 +9,11 @@ All notable changes to this project are recorded here. The format follows
 ### Changed
 
 - Approving a GitHub token grant ends only the agent's overlapping grants with exactly the
-  same permission set; a grant with other permissions stays, and revoking one leaves the
-  others working. A request for other permissions no longer waits behind another: an
-  agent has one pending request per repositories and permission set, and the `409` "a request
-  for these repositories with other permissions is pending" is gone. A renewal under a
-  changed default holds another set than the grant it renews, so it no longer ends that one.
+  same extra permissions; a grant with other extras stays, and revoking one leaves the
+  others working. A request for other extras no longer waits behind another: an
+  agent has one pending request per repositories and set of extras, and the `409` "a request
+  for these repositories with other permissions is pending" is gone. The owner's default is
+  not compared, so a renewal still ends the grant it renews after the default changes.
 
 ### Fixed
 

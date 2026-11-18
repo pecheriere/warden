@@ -1070,7 +1070,7 @@ What an attacker gets, and what stops it:
   and the goal is the agent's claim. A persuasive goal for a repository the owner did not
   mean is the same risk as any approval ([risk 1](security-assessment.md#ranked-risks)).
   Approving a grant also ends the agent's other grants that share a repository by id or by
-  name (ignoring case) and hold exactly the same permissions, listed on the page, and the approval is refused if that set changed
+  name (ignoring case) and hold exactly the same extra permissions, listed on the page, and the approval is refused if that set changed
   between the page and the passkey. If GitHub cannot be reached when the page is first
   opened, the page shows an error and nothing is stored; the first stored answer wins.
 - **The CLI's choice of repository is not a boundary.** The CLI works out the repository from
@@ -1193,8 +1193,8 @@ What holds:
   limiter commit signing uses, so refused calls cannot fill the log. A body over the route's
   16 KiB limit is refused before the caller is known, and is not recorded, as on every route.
 - **An agent cannot approve it, and nothing renews by itself.** A grant takes the passkey,
-  and so does renewing it. An agent may hold several grants, but two with the same permissions never cover the same
-  repository: approving one ends the agent's overlapping ones with the same permission set. As for commit signing, warden notifies the owner a few days before a grant
+  and so does renewing it. An agent may hold several grants, but two with the same extra permissions never cover the same
+  repository: approving one ends the agent's overlapping ones with the same extras. As for commit signing, warden notifies the owner a few days before a grant
   ends, naming only the agent, and **Renew** on Active grants opens a request that still needs
   the passkey; the grant works until that approval. If the owner lets it end, the agent's
   next call asks the owner again, so the request comes while the agent is working, and the
