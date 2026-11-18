@@ -1643,10 +1643,13 @@ warden's guarantees depend on its environment being set up as follows.
 - **The Homebrew tap decides what `brew upgrade` installs.** The formula in
   [pecheriere/homebrew-tap](https://github.com/pecheriere/homebrew-tap) pins the CLI's
   release archives by SHA-256, and Homebrew refuses any other download. Whoever can
-  change that formula chooses the binary. Within about an hour of a release being
-  published, a scheduled workflow in the tap opens a bump pull request with auto-merge
-  on, using a token that can write to the tap only and that only the tap's `main` can
-  use. warden holds no secret for it. Publishing the release is the maintainer's
+  change that formula chooses the binary. Once a release is published, a workflow in
+  the tap opens a bump pull request with auto-merge on, using a token that can write
+  to the tap only and that only the tap's `main` can use. warden holds no secret for
+  it. The maintainer's agent starts that workflow right after publishing, with a
+  short-lived `actions:write` token from warden; otherwise its hourly schedule does,
+  which GitHub can delay by hours. Starting it runs `main`'s workflow as it is, so it
+  gives no way to change the formula. Publishing the release is the maintainer's
   decision; the bump needs no other. The tap's required checks refuse a formula whose
   checksums are not in the release's signed manifest, checked with `main`'s script
   and the tap's own copy of the release keys, or that goes back to an older release.

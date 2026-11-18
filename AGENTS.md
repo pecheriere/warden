@@ -296,10 +296,12 @@ issue: an advisory with no fixed release yet fails no check.
    page or with `gh release edit` or `gh release create` and admin rights, can skip it,
    so never publish that way: releases are immutable, so a release published without
    the files can never gain them, including the signed manifest.
-5. Within about an hour, a scheduled workflow in
-   [pecheriere/homebrew-tap](https://github.com/pecheriere/homebrew-tap) opens a
-   pull request that bumps the formula, rendered from the signed manifest, with
-   auto-merge on. Its checks verify it against the manifest and install it on each
+5. Right after publishing, the agent starts the `bump` workflow in
+   [pecheriere/homebrew-tap](https://github.com/pecheriere/homebrew-tap):
+   `GH_TOKEN=$(warden github token --repo pecheriere/homebrew-tap --permissions actions:write) gh workflow run bump.yml -R pecheriere/homebrew-tap`.
+   Its hourly schedule is only a fallback: GitHub can delay it by several hours
+   (the 0.17.0 bump waited about 7). The workflow opens a pull request that bumps
+   the formula, rendered from the signed manifest, with auto-merge on. Its checks verify it against the manifest and install it on each
    platform; it merges when they pass, and Homebrew users get the release. If they
    fail, read why before anything else: a formula that does not match the signed
    manifest is a possible compromise.
