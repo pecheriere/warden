@@ -459,6 +459,23 @@ impl PermissionSet {
         Self(map)
     }
 
+    /// What both sets hold: the names in both, each at the lower of its two levels
+    /// (`write` covers `read`). `metadata:read`, in every set, stays.
+    #[must_use]
+    pub fn intersection(&self, other: &Self) -> Self {
+        Self(
+            self.0
+                .iter()
+                .filter_map(|(name, level)| {
+                    other
+                        .0
+                        .get(name)
+                        .map(|theirs| (*name, (*level).min(*theirs)))
+                })
+                .collect(),
+        )
+    }
+
     /// The entries of this set that `other` does not cover.
     #[must_use]
     pub fn missing_from(&self, other: &Self) -> Vec<Permission> {

@@ -50,6 +50,7 @@ mod commit_signing;
 mod daily_use;
 mod github_overlap;
 mod github_permissions;
+mod github_pick;
 mod github_scope;
 mod github_token;
 mod limits;

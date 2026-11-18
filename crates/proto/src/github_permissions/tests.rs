@@ -154,6 +154,26 @@ fn union_takes_higher_level() {
 }
 
 #[test]
+fn intersection_takes_the_lower_level() {
+    assert_eq!(
+        set("contents:write").intersection(&set("contents:read")),
+        set("contents:read")
+    );
+    assert_eq!(
+        set("contents:read").intersection(&set("contents:write")),
+        set("contents:read")
+    );
+    // A name in one set only is dropped; `metadata:read` is in both, so it stays.
+    let both = set("contents:write,pull_requests:write")
+        .intersection(&set("actions:write,contents:write,workflows:write"));
+    assert_eq!(both.to_string(), "contents:write,metadata:read");
+    assert_eq!(
+        set("issues:write").intersection(&set("actions:write")),
+        PermissionSet::metadata_only()
+    );
+}
+
+#[test]
 fn missing_from_lists_uncovered() {
     let missing = set("checks:write,actions:read").missing_from(&set("checks:read,actions:read"));
     assert_eq!(missing, vec![permission("checks:write")]);

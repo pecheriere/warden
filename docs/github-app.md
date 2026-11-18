@@ -116,10 +116,13 @@ and so is a level GitHub does not document for a name: `workflows` has only `wri
 `read`. Such an entry in `extra_permissions` makes GitHub tokens unusable, and
 `warden-server doctor` names the field.
 
-An agent holding a grant with extras can mint a token with fewer permissions than the grant
-holds: the mint endpoint takes a `permissions` field, and `warden github token
---permissions <set>` sends it. git and the `gh` wrapper always ask for the grant's whole
-set. Nothing can mint more than the grant.
+A token carries an extra permission only when the request names it: the mint endpoint takes
+a `permissions` field, which `warden github token --permissions <set>` and, for git,
+`WARDEN_GITHUB_PERMISSIONS` send. A mint that names nothing, such as a plain `git push` or `gh`
+call, gets your current default set, limited to what the grant holds, so narrowing the default
+narrows the plain tokens of grants already approved. When an agent holds several grants on a
+repository, the broker mints from the least privileged one holding what is named. Nothing can
+mint more than the grant.
 
 **The App must hold what you set.** The approval page reads the installation's permissions
 each time it is shown, begun or finished, and refuses a request whose set the installation

@@ -1077,7 +1077,8 @@ What an attacker gets, and what stops it:
   git's URL or `gh`'s arguments, but an agent that holds a key can call
   `POST /v1/github-token` itself with any repository. What bounds it is the grant: the broker
   mints only for a repository an active grant of that agent covers, by name ignoring case,
-  and refuses with a 403 otherwise, or a 409 when two grants cover it.
+  and refuses with a 403 otherwise, or a 409 when two grants with the same extra
+  permissions cover it.
 - **The permissions are the owner's configuration, never the agent's**: the item's
   `default_permissions`, which is `contents`, `pull_requests` and `issues` write and `metadata`
   read when unset. The set is stored with the request when it is made, shown on the approval
@@ -1100,7 +1101,19 @@ What an attacker gets, and what stops it:
   keeps the extras and the short window. A mint may ask for fewer permissions than the grant
   holds and is refused (403) for one it does not hold, so an agent can only narrow a
   token. What an agent can hold is therefore the default set, plus extras the owner
-  listed and approved for that grant. An agent with a prompt-injected goal can ask for
+  listed and approved for that grant. **An extra permission reaches a token only when the
+  request names it**: a mint that names nothing gets the owner's current default set,
+  limited to what the grant holds, so an extra granted to one session does not reach the
+  tokens of every other session of the agent by accident. Naming is not a boundary between
+  those sessions: all of them share one agent, so any of them can name an extra while a
+  grant holds it. When several grants cover the repository, the broker mints from the least
+  privileged one that holds what the request names (no sensitive permission first, then the
+  fewest permissions, then the soonest end), which decides only which grant the audit log
+  names and which revoke stops it. The check after GitHub answers repeats that choice for the
+  same request and withholds the token unless it finds the same grant still active, so
+  revoking a sensitive grant during a mint that named its permission gives that mint
+  nothing. A covering grant whose stored permissions cannot be read refuses the mint rather
+  than being passed over for another. An agent with a prompt-injected goal can ask for
   a listed sensitive extra, so the owner's allowlist and the goal on the phone are the
   controls: list only what an agent may need. Narrowing the allowlist does not end a grant
   that is live: one holding a non-sensitive extra keeps minting for up to 30 days, and the

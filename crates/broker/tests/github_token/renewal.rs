@@ -634,7 +634,29 @@ async fn renewal_refuses_a_grant_whose_stored_extra_no_longer_parses() {
             .len(),
         pending
     );
-    assert_eq!(minting_with(&broker).await.as_deref(), Some(old.as_str()));
+    let revoked_at: Option<i64> = sqlx::query_scalar("SELECT revoked_at FROM grants WHERE id = ?")
+        .bind(&old)
+        .fetch_one(&broker.state().pool)
+        .await
+        .unwrap();
+    assert_eq!(revoked_at, None, "the old grant is still active");
+    // It is not minted from either: a covering grant that cannot be read refuses.
+    let lookup = broker
+        .state()
+        .requests
+        .active_github_token_for(
+            &"bot".parse().unwrap(),
+            &REPO.to_owned().try_into().unwrap(),
+            None,
+        )
+        .await;
+    assert!(
+        matches!(
+            lookup,
+            Err(warden_broker::requests::RequestError::Corrupt(_))
+        ),
+        "{lookup:?}"
+    );
 }
 
 /// A request already waiting keeps the set it was created with, whatever the owner

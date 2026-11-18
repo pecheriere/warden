@@ -23,6 +23,16 @@ All notable changes to this project are recorded here. The format follows
   agent has one pending request per repositories and set of extras, and the `409` "a request
   for these repositories with other permissions is pending" is gone. The owner's default is
   not compared, so a renewal still ends the grant it renews after the default changes.
+- **Breaking:** a GitHub token carries an extra permission only when the request names it
+  (`warden github token --permissions`, or `WARDEN_GITHUB_PERMISSIONS` for git). A mint that
+  names none gets the owner's current default set, limited to what the grant holds, where it
+  used to get the grant's whole set. An agent that relied on its grant's extras by default,
+  such as a plain `git push` of a workflow change, now names them: see
+  [Upgrading](docs/upgrading.md#extra-github-permissions-only-when-named-breaking). When
+  several grants cover the repository, the broker mints from the least privileged one holding
+  what is named (no sensitive permission first, then the fewest permissions, then the soonest
+  end), and the check after GitHub answers must find that same grant still active, or the
+  token is withheld. A covering grant whose permissions cannot be read refuses the mint.
 
 ### Fixed
 

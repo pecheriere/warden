@@ -95,7 +95,8 @@ async fn extra_permissions_success_scenario() {
         "the token minted before the approval is not kept"
     );
 
-    // The next token is minted afresh, with the grant's whole set.
+    // A token that names the extras is minted afresh, from the grant that holds them:
+    // an extra reaches a token only when the request names it.
     let wider = "ghs_e2eWider0123456789";
     s.upstream.script_github_token(token_answer(
         wider,
@@ -104,17 +105,21 @@ async fn extra_permissions_success_scenario() {
         &[
             ("actions", "read"),
             ("checks", "read"),
-            ("contents", "write"),
-            ("issues", "write"),
             ("metadata", "read"),
-            ("pull_requests", "write"),
         ],
         "selected",
     ));
     let second = s
         .machine
         .warden()
-        .args(["github", "token", "--repo", REPO])
+        .args([
+            "github",
+            "token",
+            "--repo",
+            REPO,
+            "--permissions",
+            "checks:read,actions:read",
+        ])
         .output()
         .unwrap();
     assert_eq!(second.status.code(), Some(0), "{}", text(&second.stderr));

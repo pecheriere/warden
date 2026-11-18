@@ -11,7 +11,7 @@ use warden_broker_proto::github_token::{EXTRA_NOT_ALLOWED, SENSITIVE_WINDOW};
 use warden_broker_proto::{CreateRequest, Window};
 
 use super::permissions::{WITH_CHECKS, set};
-use super::{active_for, configured_on_fake, entries, installation, resolved};
+use super::{active_for, approved_grant, configured_on_fake, entries, installation, resolved};
 
 pub(super) const REPO: &str = "example-owner/example-repo";
 
@@ -84,18 +84,16 @@ pub(super) async fn approve_with_extras(
     extras: &str,
     more: &[(&str, &str)],
 ) -> String {
-    let (_, token) = broker
+    let (created, token) = broker
         .create_request("bot", with_extras(window, extras))
         .await;
     upstream.answer_github_installation(Some(installation_with(more)));
     upstream.script_github_token(resolved(broker, &[(1001, REPO)]));
     let approved = broker.approve(&token, window).await;
     assert_eq!(approved.status, StatusCode::OK, "{}", approved.body);
-    active_for(broker, "bot", REPO)
-        .await
-        .expect("a grant for the repository")
-        .grant_id
-        .to_string()
+    // Read from the request, not the lookup: the agent may hold other grants on
+    // `REPO`, and the lookup picks among them.
+    approved_grant(broker, "bot", &created.id).await
 }
 
 fn created_id(body: &str) -> String {

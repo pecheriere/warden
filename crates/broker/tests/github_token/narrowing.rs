@@ -30,6 +30,11 @@ async fn granted() -> (TestBroker, String, HttpsUpstream) {
     (broker, key, upstream)
 }
 
+/// A mint for `REPO` that names `workflows:write`, which only a sensitive grant holds.
+fn sensitive_mint() -> Value {
+    json!({"repository": REPO, "permissions": "contents:write,workflows:write"})
+}
+
 async fn mint_with(broker: &TestBroker, key: &str, body: Value) -> TestResponse {
     broker.api_post_json(key, "/v1/github-token", &body).await
 }
@@ -83,22 +88,22 @@ async fn narrowed_mint_asks_for_the_subset() {
 }
 
 #[tokio::test]
-async fn absent_permissions_mean_the_whole_grant() {
+async fn absent_permissions_mean_the_default_set() {
     let (broker, key, upstream) = granted().await;
-    let all = [
-        ("checks", "read"),
+    // The grant's extra `checks:read` is not asked for: it was not named.
+    let default = [
         ("contents", "write"),
         ("issues", "write"),
         ("metadata", "read"),
         ("pull_requests", "write"),
     ];
-    upstream.script_github_token(answer(&broker, &all));
+    upstream.script_github_token(answer(&broker, &default));
     let resp = mint_with(&broker, &key, json!({"repository": REPO})).await;
     assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
     assert_eq!(
         asked_permissions(&upstream),
         json!({
-            "checks": "read", "contents": "write", "issues": "write",
+            "contents": "write", "issues": "write",
             "metadata": "read", "pull_requests": "write"
         })
     );
@@ -181,7 +186,7 @@ async fn a_stored_grant_with_a_sensitive_permission_for_longer_than_1h_does_not_
         &broker,
         &[("contents", "write"), ("workflows", "write")],
     ));
-    let resp = mint_with(&broker, &key, json!({"repository": REPO})).await;
+    let resp = mint_with(&broker, &key, sensitive_mint()).await;
     assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
     // A row that says 7 days, as no approval makes it, does not.
     sqlx::query("UPDATE grants SET window_secs = ?")
@@ -191,7 +196,7 @@ async fn a_stored_grant_with_a_sensitive_permission_for_longer_than_1h_does_not_
         .unwrap();
     let calls = upstream.received().len();
     assert!(calls > before);
-    let resp = mint_with(&broker, &key, json!({"repository": REPO})).await;
+    let resp = mint_with(&broker, &key, sensitive_mint()).await;
     assert_eq!(resp.status, StatusCode::FORBIDDEN, "{}", resp.body);
     assert!(resp.body.contains("sensitive permission"), "{}", resp.body);
     assert_eq!(upstream.received().len(), calls, "GitHub was not asked");
@@ -221,7 +226,7 @@ async fn a_stored_grant_whose_not_after_column_alone_was_pushed_out_does_not_min
         &broker,
         &[("contents", "write"), ("workflows", "write")],
     ));
-    let resp = mint_with(&broker, &key, json!({"repository": REPO})).await;
+    let resp = mint_with(&broker, &key, sensitive_mint()).await;
     assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
     let refusals = entries(&broker, "github_token_refused").len();
     // Only the column that decides whether the grant is active, by a week.
@@ -231,7 +236,7 @@ async fn a_stored_grant_whose_not_after_column_alone_was_pushed_out_does_not_min
         .await
         .unwrap();
     let calls = upstream.received().len();
-    let resp = mint_with(&broker, &key, json!({"repository": REPO})).await;
+    let resp = mint_with(&broker, &key, sensitive_mint()).await;
     assert_eq!(resp.status, StatusCode::FORBIDDEN, "{}", resp.body);
     assert!(resp.body.contains("sensitive permission"), "{}", resp.body);
     assert_eq!(upstream.received().len(), calls, "GitHub was not asked");

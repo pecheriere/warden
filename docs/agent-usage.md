@@ -589,8 +589,10 @@ goal say exactly why this permission is needed, for what change, and nothing wid
 the repositories (`+checks:read`), and the owner sees them in red on the approval page.
 Without extras `--for` is `1d`, `7d` or `30d`, and `30d` when left out.
 
-A token can be narrower than its grant. `warden github token --repo owner/name` mints the grant's
-whole set, and `--permissions` gives the token only some of it, such as a read-only check:
+A token can be narrower than its grant. `warden github token --repo owner/name` mints the owner's
+default set, limited to what the grant holds, and `--permissions` gives the token exactly the set
+it names: an extra the grant holds, or only some of the default, such as a read-only check. With
+several grants on the repository, the broker mints from the least privileged one holding that set:
 
 ```sh
 warden github token --repo example-owner/example-repo --permissions checks:read

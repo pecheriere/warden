@@ -460,9 +460,11 @@ pub struct GithubTokenGrant {
 pub struct GithubTokenRequest {
     /// The repository.
     pub repository: RepoName,
-    /// The permissions the token should have, which the grant's must cover. Absent
-    /// means all of the grant's. Sent by a CLI that narrows; a broker that predates
-    /// this field refuses a body that holds it.
+    /// The permissions the token should have, which the grant's must cover; the
+    /// broker mints from the least privileged grant holding them all. Absent means
+    /// the owner's default set, limited to what the grant holds: an extra permission
+    /// reaches a token only when it is named here. A broker that predates this field
+    /// refuses a body that holds it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permissions: Option<PermissionSet>,
 }

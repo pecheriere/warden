@@ -1,8 +1,10 @@
 //! `POST /v1/github-token`.
 //!
-//! The broker mints a GitHub App installation token for an agent only under that
-//! agent's own active grant that covers the repository the request names, which is
-//! looked up for every mint, and only for that repository's id. Each token is
+//! The broker mints a GitHub App installation token for an agent only under one of
+//! that agent's own active grants that cover the repository the request names, the
+//! least privileged one holding what the request names, which is looked up for every
+//! mint, and only for that repository's id. A token carries an extra permission only
+//! when the request names it. Each token is
 //! recorded before it leaves the broker, and each refusal is recorded too. The
 //! token, the JWT that asked for it and anything GitHub said never appear in an
 //! error, a log line or the audit log.
@@ -96,17 +98,19 @@ async fn attempt(
     seen: &mut Option<Id>,
 ) -> Result<GithubTokenResponse, Failure> {
     let request = body?;
+    let wanted = request.permissions.as_ref();
     // Unreadable state refuses here: `?` on a storage failure, before GitHub or the
     // key is touched.
     let lookup = state
         .requests
-        .active_github_token_for(agent, &request.repository)
+        .active_github_token_for(agent, &request.repository, wanted)
         .await?;
     let ActiveGithubToken {
         grant_id,
         grant,
         repository,
         window_secs,
+        mint,
     } = match lookup {
         GithubLookup::None => return Err(refused(StatusCode::FORBIDDEN, NO_ACTIVE_GRANT)),
         GithubLookup::Ambiguous(first) => {
@@ -123,7 +127,7 @@ async fn attempt(
     if window_secs > Window::H1.secs() && granted.iter().any(|p| p.is_sensitive()) {
         return Err(refused(StatusCode::FORBIDDEN, SENSITIVE_GRANT_TOO_LONG));
     }
-    let permissions = narrowed(request.permissions, granted)?;
+    let permissions = narrowed(wanted, mint)?;
 
     let key = state
         .backend
@@ -182,10 +186,11 @@ async fn attempt(
         .await
         .map_err(RequestError::from)?;
     // The call to GitHub and the log both take time, and a revocation does not wait
-    // for them: a grant that has ended meanwhile, or been replaced, gets nothing.
+    // for them: a grant that has ended meanwhile, or been replaced, gets nothing. The
+    // same pick for the same request must find the same grant.
     let still_active = state
         .requests
-        .active_github_token_for(agent, &repository.name)
+        .active_github_token_for(agent, &request.repository, wanted)
         .await?;
     match &still_active {
         GithubLookup::One(active)
@@ -204,22 +209,19 @@ async fn attempt(
     })
 }
 
-/// The permissions to mint with: the grant's own, or the narrower set the agent asks
-/// for. One the grant does not hold is refused before GitHub or the key is touched,
-/// naming the first known permission it lacks.
-fn narrowed(
-    wanted: Option<PermissionSet>,
-    granted: PermissionSet,
-) -> Result<PermissionSet, Failure> {
+/// The permissions to mint with: `mint`, what the lookup found for the request, or
+/// the narrower set the agent asks for. One the grant does not hold is refused before
+/// GitHub or the key is touched, naming the first known permission it lacks.
+fn narrowed(wanted: Option<&PermissionSet>, mint: PermissionSet) -> Result<PermissionSet, Failure> {
     let Some(wanted) = wanted else {
-        return Ok(granted);
+        return Ok(mint);
     };
-    match wanted.missing_from(&granted).first() {
+    match wanted.missing_from(&mint).first() {
         Some(missing) => Err(refused(
             StatusCode::FORBIDDEN,
             format!("{PERMISSIONS_NOT_IN_GRANT}{missing}"),
         )),
-        None => Ok(wanted),
+        None => Ok(wanted.clone()),
     }
 }
 
