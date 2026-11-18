@@ -7,7 +7,7 @@ use maud::{Markup, html};
 use warden_broker_proto::AgentName;
 use warden_broker_proto::github_token::GrantScope;
 
-use super::format::clock;
+use super::format::utc_parts;
 use super::github_token::permission_list;
 use crate::requests::ReplacedGrant;
 
@@ -23,6 +23,8 @@ pub(super) fn also_live(agent: &AgentName, grants: &[ReplacedGrant]) -> Markup {
                 }
                 ul {
                     @for grant in grants {
+                        // A date as well as a time: these grants can last 30 days.
+                        @let (date, time) = utc_parts(grant.not_after);
                         li {
                             @match &grant.scope {
                                 GrantScope::Legacy => "all repositories of the installation",
@@ -34,7 +36,7 @@ pub(super) fn also_live(agent: &AgentName, grants: &[ReplacedGrant]) -> Markup {
                                 }
                             }
                             ": " (permission_list(&grant.permissions, &[]))
-                            ", until " (clock(grant.not_after))
+                            ", until " (date) " " (time)
                         }
                     }
                 }

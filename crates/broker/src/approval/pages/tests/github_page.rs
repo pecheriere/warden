@@ -456,7 +456,9 @@ fn pending_github_lists_other_live_grants() {
         )),
         "{html}"
     );
-    assert_eq!(count(&html, "until <time datetime="), 2, "{html}");
+    // A date and a time, as the grants page shows an end: these grants can last 30 days.
+    assert_eq!(count(&html[block..], ", until 20"), 2, "{html}");
+    assert_eq!(count(&html[block..], " UTC</li>"), 2, "{html}");
     // Right after where the replaced block goes, before the fine print.
     assert!(
         html.find("Can push and merge on").unwrap() < block
