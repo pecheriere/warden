@@ -56,7 +56,7 @@ doctor` fails its `github.token` check, git sends warden no repository, and an o
 wrapper does not pass `-R` to warden. A `gh` run outside a checkout needs `-R
 owner/name`.
 
-## Extra GitHub permissions only when named (breaking)
+## Extra GitHub permissions only when named (0.17.0, breaking)
 
 **A GitHub token now carries an extra permission only when the request names it.** Until
 now, a mint that named no permissions got the grant's whole set, extras included. After
@@ -128,7 +128,7 @@ after upgrading the CLI past 0.12.0. The CLI's token cache is
 now per repository (`github-token.json`, version 2): an older file is ignored and replaced.
 An agent may now hold several GitHub grants, and approving one ends the agent's grants that
 share a repository with it (now only those with the same extras: see
-[above](#extra-github-permissions-only-when-named-breaking)).
+[above](#extra-github-permissions-only-when-named-0170-breaking)).
 
 ## GitHub token permissions and extras
 

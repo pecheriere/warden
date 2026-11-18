@@ -6,6 +6,23 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-11-17
+
+### Upgrading
+
+- No new migration.
+- **Breaking for agents:** a GitHub token request that names no permissions now gets the
+  owner's default set, limited to what the grant holds, not the grant's whole set. An agent
+  that relied on an extra permission by default names it: `WARDEN_GITHUB_PERMISSIONS=<set> git
+  push`, or `warden github token --permissions <set>`. See
+  [docs/upgrading.md](docs/upgrading.md#extra-github-permissions-only-when-named-0170-breaking).
+- Upgrade the broker first. The CLI's GitHub token cache from an earlier version is
+  discarded: the next call mints a new token.
+- Approving a GitHub grant no longer ends the agent's grants with other extras: revoke the
+  ones you no longer need from the grants page.
+- The server still links OpenSSL 3.5.9; 3.5.10, which fixes five Low advisories warden does
+  not reach, is scheduled for 2026-12-01.
+
 ### Added
 
 - The approval page of a GitHub token request lists the agent's other live grants on its
@@ -30,7 +47,7 @@ All notable changes to this project are recorded here. The format follows
   names none gets the owner's current default set, limited to what the grant holds, where it
   used to get the grant's whole set. An agent that relied on its grant's extras by default,
   such as a plain `git push` of a workflow change, now names them: see
-  [Upgrading](docs/upgrading.md#extra-github-permissions-only-when-named-breaking). When
+  [Upgrading](docs/upgrading.md#extra-github-permissions-only-when-named-0170-breaking). When
   several grants cover the repository, the broker mints from the least privileged one holding
   what is named (no sensitive permission first, then the fewest permissions, then the soonest
   end), and the check after GitHub answers must find that same grant still active, or the
