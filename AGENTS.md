@@ -296,13 +296,20 @@ issue: an advisory with no fixed release yet fails no check.
    page or with `gh release edit` or `gh release create` and admin rights, can skip it,
    so never publish that way: releases are immutable, so a release published without
    the files can never gain them, including the signed manifest.
-5. Within about an hour, a scheduled workflow in
-   [pecheriere/homebrew-tap](https://github.com/pecheriere/homebrew-tap) opens a
-   pull request that bumps the formula, rendered from the signed manifest, with
-   auto-merge on. Its checks verify it against the manifest and install it on each
-   platform; it merges when they pass, and Homebrew users get the release. If they
-   fail, read why before anything else: a formula that does not match the signed
-   manifest is a possible compromise.
+5. Right after publishing, the agent starts the `bump` workflow in
+   [pecheriere/homebrew-tap](https://github.com/pecheriere/homebrew-tap). Unless
+   `warden status` shows a live grant with `+actions:write` on the tap, it first asks
+   for one:
+   `warden request github pecheriere/homebrew-tap --extra-permissions actions:write --for 1h --goal "[release x.y.z] Start the tap's bump workflow for x.y.z"`.
+   It then runs
+   `GH_TOKEN=$(warden github token --repo pecheriere/homebrew-tap --permissions actions:write) gh workflow run bump.yml -R pecheriere/homebrew-tap`
+   and revokes that grant once the run has started. The workflow's hourly schedule
+   stays as a fallback, because GitHub can delay scheduled runs by hours (the 0.17.0
+   bump waited about 7). The workflow opens a pull request that bumps the formula,
+   rendered from the signed manifest, with auto-merge on. Its checks verify it
+   against the manifest and install it on each platform; it merges when they pass,
+   and Homebrew users get the release. If they fail, read why before anything else:
+   a formula that does not match the signed manifest is a possible compromise.
 
 An agent creates a tag or a release only after asking the maintainer and
 getting a yes for that specific version and commit: the owner's phone approval
