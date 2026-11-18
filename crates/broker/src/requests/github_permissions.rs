@@ -8,7 +8,7 @@ use warden_broker_proto::github_permissions::{Permission, PermissionSet};
 use warden_broker_proto::github_token::{
     EXTRA_NOT_ALLOWED, INSTALLATION_LACKS, INSTALLATION_UNREADABLE,
 };
-use warden_broker_proto::{Access, CreateRequest, CreatedResponse, GrantAccess, Id};
+use warden_broker_proto::{Access, GrantAccess, Id};
 
 use super::{RequestError, Requests};
 use crate::github_app;
@@ -282,48 +282,6 @@ impl Requests {
                 )))
             }
             _ => Ok(None),
-        }
-    }
-
-    /// The agent's pending request in the slot `dedupe_key`, for `access`, if any.
-    /// A GitHub token request holds the slot of its repositories whatever extras it
-    /// names, so one that is waiting with other extras (or none) than `access` is
-    /// not the same request: it is refused, naming the waiting one, instead of
-    /// being returned for the owner to approve with permissions the agent did not
-    /// ask for this time.
-    ///
-    /// # Errors
-    /// [`RequestError::OtherPermissionsPending`]; [`RequestError::Corrupt`] for a
-    /// stored request that does not parse; storage failures.
-    pub(super) async fn pending_in_request_slot(
-        &self,
-        dedupe_key: &str,
-        access: &Access,
-    ) -> Result<Option<CreatedResponse>, RequestError> {
-        let Some(found) = self.pending_in_slot(dedupe_key).await? else {
-            return Ok(None);
-        };
-        let Access::GithubToken(wanted) = access else {
-            return Ok(Some(found));
-        };
-        let body: String = sqlx::query("SELECT body FROM requests WHERE id = ?")
-            .bind(found.id.as_str())
-            .fetch_one(&self.pool)
-            .await?
-            .try_get("body")?;
-        let stored: CreateRequest = serde_json::from_str(&body).map_err(|_| {
-            RequestError::Corrupt(format!("the stored body of request {}", found.id))
-        })?;
-        let Access::GithubToken(waiting) = stored.access else {
-            return Err(RequestError::Corrupt(format!(
-                "request {} changed kind",
-                found.id
-            )));
-        };
-        if waiting.extra_permissions == wanted.extra_permissions {
-            Ok(Some(found))
-        } else {
-            Err(RequestError::OtherPermissionsPending(found.id))
         }
     }
 

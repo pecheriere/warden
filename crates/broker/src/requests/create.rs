@@ -70,23 +70,6 @@ impl Requests {
         agent: &AgentName,
         req: CreateRequest,
     ) -> Result<CreatedResponse, RequestError> {
-        let created = self.create_unaudited(agent, req).await;
-        if let Err(e @ RequestError::OtherPermissionsPending(_)) = &created {
-            // An agent asking for other permissions than the ones it has waiting:
-            // fixed text and the id of its own request.
-            self.record_github_token_refusal(agent, None, e.to_string())
-                .await;
-        }
-        created
-    }
-
-    /// [`Requests::create`] without the audit entry of the refusal that only the
-    /// whole of it can tell.
-    async fn create_unaudited(
-        &self,
-        agent: &AgentName,
-        req: CreateRequest,
-    ) -> Result<CreatedResponse, RequestError> {
         self.link_hosts.check(req.link.as_ref())?;
         let Checked {
             dedupe_key,
@@ -111,10 +94,7 @@ impl Requests {
                 let mut conn = self.pool.acquire().await?;
                 check_key_unbound(&mut conn, agent, target, public_key, self.clock.now()).await?;
             }
-            if let Some(existing) = self
-                .pending_in_request_slot(&dedupe_key, &req.access)
-                .await?
-            {
+            if let Some(existing) = self.pending_in_slot(&dedupe_key).await? {
                 return Ok(existing);
             }
             let token = approval_token()?;
@@ -159,10 +139,7 @@ impl Requests {
             match inserted {
                 Ok(created) => return Ok(created),
                 Err(RequestError::Db(sqlx::Error::Database(e))) if e.is_unique_violation() => {
-                    if let Some(existing) = self
-                        .pending_in_request_slot(&dedupe_key, &req.access)
-                        .await?
-                    {
+                    if let Some(existing) = self.pending_in_slot(&dedupe_key).await? {
                         return Ok(existing);
                     }
                     // The other request was decided meanwhile; try again.
@@ -206,7 +183,13 @@ impl Requests {
             return Err(RequestError::Rejected(reason));
         }
         Ok(Checked {
-            dedupe_key: format!("{agent}|github_token|{}", github.slot()),
+            // One pending request per repositories and permission set: the full set
+            // the grant will hold, as approving compares it.
+            dedupe_key: format!(
+                "{agent}|github_token|{}|{}",
+                github.slot(),
+                permissions.full
+            ),
             subject: github.summary(),
             release: None,
             existing: None,

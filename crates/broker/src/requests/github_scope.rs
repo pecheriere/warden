@@ -229,7 +229,9 @@ impl Requests {
             Some(resolution) => resolution,
             None => self.resolve_and_store(id, access).await?,
         };
-        let replaces = self.replaced_grants(agent, &resolution).await?;
+        let replaces = self
+            .replaced_grants(agent, &resolution, &permissions.full)
+            .await?;
         let allowlist = self.backend.github_permissions().await?;
         let not_allowed = access
             .extra_permissions
@@ -297,14 +299,15 @@ impl Requests {
     }
 
     /// The agent's active GitHub token grants that cover one of the resolved
-    /// repositories; a legacy grant always does.
+    /// repositories and hold `permissions`; a legacy grant always qualifies.
     async fn replaced_grants(
         &self,
         agent: &AgentName,
         resolution: &Resolution,
+        permissions: &PermissionSet,
     ) -> Result<Vec<ReplacedGrant>, RequestError> {
         match resolution.scope() {
-            Some(new) => self.overlapping_grants(agent, &new).await,
+            Some(new) => self.overlapping_grants(agent, &new, permissions).await,
             None => Ok(Vec::new()),
         }
     }

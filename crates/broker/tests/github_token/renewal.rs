@@ -397,6 +397,31 @@ async fn held_by_bot(
         .expect("a set this broker knows")
 }
 
+/// The permission sets of every active GitHub token grant of `bot`, as written, in
+/// name order. A renewal under another default holds another set than the grant it
+/// renews, so it does not end that grant.
+async fn held_sets(broker: &TestBroker) -> Vec<String> {
+    let views: Vec<String> = sqlx::query_scalar(
+        "SELECT view FROM grants WHERE agent = 'bot' AND revoked_at IS NULL \
+         AND json_extract(view, '$.access.kind') = 'github_token'",
+    )
+    .fetch_all(&broker.state().pool)
+    .await
+    .unwrap();
+    let mut sets: Vec<String> = views
+        .iter()
+        .map(|view| {
+            let view: warden_broker_proto::GrantView = serde_json::from_str(view).unwrap();
+            let warden_broker_proto::GrantAccess::GithubToken(grant) = view.access else {
+                panic!("not a GitHub token grant");
+            };
+            grant.permissions.known().unwrap().to_string()
+        })
+        .collect();
+    sets.sort();
+    sets
+}
+
 #[tokio::test]
 async fn renewal_uses_the_current_default() {
     let (broker, _key, upstream) = configured_on_fake().await;
@@ -410,7 +435,13 @@ async fn renewal_uses_the_current_default() {
     let token = renew(&broker, &upstream, &old).await;
     let approved = broker.approve(&token, Window::D30).await;
     assert_eq!(approved.status, StatusCode::OK, "{}", approved.body);
-    assert_eq!(held_by_bot(&broker).await, set(WITH_CHECKS));
+    assert_eq!(
+        held_sets(&broker).await,
+        [
+            set(WITH_CHECKS).to_string(),
+            PermissionSet::legacy().to_string()
+        ]
+    );
 }
 
 #[tokio::test]
@@ -425,26 +456,25 @@ async fn renewal_of_legacy_grant_with_narrowed_default() {
     let approved = broker.approve(&token, Window::D30).await;
     assert_eq!(approved.status, StatusCode::OK, "{}", approved.body);
     assert_eq!(
-        held_by_bot(&broker).await,
-        set("contents:read,metadata:read")
+        held_sets(&broker).await,
+        [
+            set("contents:read,metadata:read").to_string(),
+            PermissionSet::legacy().to_string()
+        ]
     );
 }
 
 #[tokio::test]
-async fn renewal_page_shows_the_difference() {
+async fn renewal_under_a_changed_default_replaces_nothing() {
     let (broker, _key, upstream) = configured_on_fake().await;
     let old = approve(&broker, &upstream, "bot", Window::D30).await;
     set_default(&broker, WITH_CHECKS);
     let token = renew(&broker, &upstream, &old).await;
     let page = broker.get(&format!("/approve/{token}")).await;
     assert!(page.body.contains("checks: read"), "{}", page.body);
-    assert!(
-        page.body.contains(
-            "was <code class=\"perm\">contents: write</code>, <code class=\"perm\">issues: write</code>"
-        ),
-        "{}",
-        page.body
-    );
+    // Another permission set: the old grant stays, so the page ends none.
+    assert!(!page.body.contains("existing grant"), "{}", page.body);
+    assert!(!page.body.contains("was <code"), "{}", page.body);
 }
 
 #[tokio::test]
@@ -637,10 +667,10 @@ async fn renewal_refuses_a_grant_whose_stored_extra_no_longer_parses() {
     assert_eq!(minting_with(&broker).await.as_deref(), Some(old.as_str()));
 }
 
-/// A request already waiting keeps the set it was created with, whatever the owner
-/// does to the default afterwards, when renewing finds it.
+/// A request already waiting for the old default's set is another request than a
+/// renewal under the new default: they wait side by side, each with its own set.
 #[tokio::test]
-async fn a_renewal_finding_a_pending_request_keeps_that_requests_set_across_a_change_of_default() {
+async fn a_renewal_after_a_change_of_default_does_not_take_over_a_waiting_request() {
     let (broker, _key, upstream) = configured_on_fake().await;
     let old = approve(&broker, &upstream, "bot", Window::D30).await;
     broker
@@ -654,7 +684,21 @@ async fn a_renewal_finding_a_pending_request_keeps_that_requests_set_across_a_ch
     let approved = broker.approve(&token, Window::D7).await;
     assert_eq!(approved.status, StatusCode::OK, "{}", approved.body);
     assert_eq!(
-        held_by_bot(&broker).await,
-        warden_broker_proto::github_permissions::PermissionSet::legacy()
+        held_sets(&broker).await,
+        [
+            set(WITH_CHECKS).to_string(),
+            PermissionSet::legacy().to_string()
+        ]
+    );
+    assert_eq!(
+        broker
+            .state()
+            .requests
+            .pending_requests()
+            .await
+            .unwrap()
+            .len(),
+        1,
+        "the request for the old set still waits"
     );
 }

@@ -342,15 +342,18 @@ impl Requests {
         req: CreateRequest,
         renewing: Option<GrantScope>,
     ) -> Result<(Id, Url), RequestError> {
-        let dedupe_key = match &req.access {
-            Access::GithubToken(github) => format!("{agent}|{}|{}", kind.kind(), github.slot()),
+        let permissions = self.renewal_permissions(&req.access).await?;
+        let dedupe_key = match (&req.access, &permissions) {
+            (Access::GithubToken(github), Some(permissions)) => format!(
+                "{agent}|{}|{}|{}",
+                kind.kind(),
+                github.slot(),
+                permissions.full
+            ),
             _ => format!("{agent}|{}", kind.kind()),
         };
         self.expire_due(Scope::Dedupe(dedupe_key.clone())).await?;
-        if let Some(existing) = self
-            .pending_in_request_slot(&dedupe_key, &req.access)
-            .await?
-        {
+        if let Some(existing) = self.pending_in_slot(&dedupe_key).await? {
             // The request already there may hold no resolution yet (the agent's own, not
             // yet opened, or a renewal whose row was not written): without one the page
             // resolves by name, and a repository recreated under it would be taken for
@@ -371,7 +374,6 @@ impl Requests {
             Some(scope) => Some(self.current_names(scope).await?),
             None => None,
         };
-        let permissions = self.renewal_permissions(&req.access).await?;
         let token = approval_token()?;
         let link = self.approval_link(&token)?;
         let change = self.recorded_change.lock().await;

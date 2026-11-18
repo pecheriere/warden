@@ -1363,15 +1363,14 @@ unless noted, and fixed apart from the name:
 - `a GitHub token grant with a sensitive permission lasts 15m, 30m or 1h`
   (`SENSITIVE_WINDOW`): the window of a request with a sensitive extra, which the owner also
   cannot approve for longer. Any other request takes `1d`, `7d` or `30d`.
-- `409` `a request for these repositories with other permissions is pending; cancel it with
-  `warden request cancel <id>` or wait for it` (`OTHER_PERMISSIONS_PENDING`), followed by `: `
-  and the id of the pending request: an agent has one pending request for a set of
-  repositories, and asking again with other extras does not replace it. Asking with the same
-  extras returns the pending one, as before.
 
-An extra outside the owner's allowlist, a sensitive extra for a longer window and this `409`
-are each written to the audit log as `github_token_refused`, with no grant, the fixed text and
-a known permission name or the id above, never the request's own words.
+An agent has one pending request per repositories and permission set (the owner's default
+plus the extras): asking with other extras creates another request, and asking again with the
+same extras returns the pending one, as before.
+
+An extra outside the owner's allowlist and a sensitive extra for a longer window are each
+written to the audit log as `github_token_refused`, with no grant, the fixed text and a known
+permission name, never the request's own words.
 
 A renewal keeps the extras and, for a sensitive grant, a short window. If the allowlist no
 longer holds an extra, the renewal is made and the approval page says which, and cannot be approved.
@@ -1380,9 +1379,10 @@ The request is refused with a `400` when the broker holds no GitHub App
 (`GitHub tokens are not configured on this broker`), and for a window outside the three (or, with a sensitive extra, outside the short ones).
 There is nothing to install and the grant id is not needed: `POST /v1/github-token` finds
 the agent's active grant for the named repository, read anew for each token. An agent may
-hold several grants at once, but two never cover the same repository: they overlap when they
-share a repository id or a repository name (ignoring case), and approving a grant ends the
-agent's overlapping ones, which the owner is told on the approval page before approving
+hold several grants at once, but two with the same permissions never cover the same
+repository: they overlap when they share a repository id or a repository name (ignoring
+case), and approving a grant ends the agent's overlapping ones with exactly the same
+permissions, which the owner is told on the approval page before approving
 (the approval is refused with a `409` if that set changed meanwhile). Minting is refused with a
 `409` once the broker's App or installation is no longer the one with this `digest`. A
 grant approved before grants were scoped has no `repositories`: it ends at upgrade and

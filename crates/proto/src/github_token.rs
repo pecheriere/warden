@@ -67,12 +67,6 @@ pub const EXTRA_NOT_ALLOWED: &str = "this broker does not allow that extra GitHu
 /// after the request was made.
 pub const EXTRAS_NOT_ALLOWED: &str = "this broker does not allow these extra GitHub permissions: ";
 
-/// What the broker says when the agent has a request waiting for the same
-/// repositories that asks for other extra permissions. The id of that request
-/// follows: it is the broker's, not text the agent wrote.
-pub const OTHER_PERMISSIONS_PENDING: &str = "a request for these repositories with other \
-    permissions is pending; cancel it with `warden request cancel <id>` or wait for it";
-
 /// What the broker says when a mint asks for permissions the agent's grant does not
 /// hold. The first such known permission name follows, as `name:level`.
 pub const PERMISSIONS_NOT_IN_GRANT: &str = "the grant does not hold this GitHub permission: ";

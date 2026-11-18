@@ -1,5 +1,7 @@
 # GitHub token permissions: a configurable default and requested extras (#276)
 
+> Note, 2026-11-17: the [2026-11-17 design](2026-11-17-separate-sensitive-github-grants-design.md) reverses this design's option A: approving a grant no longer ends the agent's grants with other permissions, and requests for other permissions wait side by side.
+
 Status: design, for the owner's approval. Date: 2026-11-14.
 
 Tags: (owner's decision) decided in the design conversation; (owner's decision: #276) written

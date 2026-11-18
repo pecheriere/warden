@@ -1,6 +1,8 @@
 //! Approving a GitHub token grant ends the agent's grants that cover one of the same
-//! repositories, in the transaction that stores the new one, and no others. A grant
-//! from before grants were scoped names no repository, so any approval ends it.
+//! repositories with exactly the same permission set, in the transaction that stores
+//! the new one, and no others: an agent holds at most one grant per repository and
+//! permission set. A grant from before grants were scoped names no repository, so any
+//! approval ends it, whatever its permissions.
 
 use sqlx::{Row as _, Sqlite, Transaction};
 use warden_broker_proto::github_permissions::PermissionSet;
@@ -13,6 +15,18 @@ use crate::audit::AuditEvent;
 
 /// Recorded as `by` for a GitHub token grant ended by approving one that overlaps it.
 const REPLACED: &str = "replaced";
+
+/// Whether a grant of `scope` holding `held` is ended by approving one of `new` holding
+/// `permissions`: it covers one of the same repositories and holds the same set, or it
+/// is a legacy grant, which names no repository and is ended by any approval.
+fn replaced_by(
+    scope: &GrantScope,
+    held: &PermissionSet,
+    new: &GrantScope,
+    permissions: &PermissionSet,
+) -> bool {
+    scope.overlaps(new) && (scope.is_legacy() || held == permissions)
+}
 
 /// The scope and permissions of the GitHub token grant stored as `view`.
 fn scope_of(view: &str) -> Result<(GrantScope, PermissionSet), RequestError> {
@@ -30,21 +44,23 @@ fn scope_of(view: &str) -> Result<(GrantScope, PermissionSet), RequestError> {
 
 impl Requests {
     /// The agent's active GitHub token grants that cover one of the repositories of
-    /// `new`; a legacy grant always does.
+    /// `new` and hold exactly `permissions`; a legacy grant always qualifies, whatever
+    /// it holds.
     pub(super) async fn overlapping_grants(
         &self,
         agent: &AgentName,
         new: &GrantScope,
+        permissions: &PermissionSet,
     ) -> Result<Vec<ReplacedGrant>, RequestError> {
         let mut found = Vec::new();
         for row in self.active_rows(agent, "github_token").await? {
             let view: String = row.try_get("view")?;
-            let (scope, permissions) = scope_of(&view)?;
-            if scope.overlaps(new) {
+            let (scope, held) = scope_of(&view)?;
+            if replaced_by(&scope, &held, new, permissions) {
                 found.push(ReplacedGrant {
                     grant_id: parse(&row, "id")?,
                     scope,
-                    permissions,
+                    permissions: held,
                 });
             }
         }
@@ -52,7 +68,7 @@ impl Requests {
     }
 
     /// The entries for ending the active GitHub token grants of `agent` that the new
-    /// grant `kept` of `access` overlaps, and their ids: one `grant_revoked` and one
+    /// grant `kept` of `access` overlaps with the same permissions, and their ids: one `grant_revoked` and one
     /// `github_token_grant_replaced` for each. Written with the approval, before
     /// anything changes; [`end_overlapping`] ends what is there when it commits, and
     /// refuses if that is not these. Empty for any other kind.
@@ -67,7 +83,11 @@ impl Requests {
         };
         let mut events = Vec::new();
         let mut ids = Vec::new();
-        for replaced in self.overlapping_grants(agent, &new.repositories).await? {
+        let permissions = github_permissions_of(new)?;
+        for replaced in self
+            .overlapping_grants(agent, &new.repositories, &permissions)
+            .await?
+        {
             events.push(AuditEvent::GrantRevoked {
                 grant_id: replaced.grant_id.clone(),
                 by: REPLACED.to_owned(),
@@ -83,7 +103,8 @@ impl Requests {
     }
 }
 
-/// End the other active GitHub token grants of `agent` that overlap `new`, in `tx`,
+/// End the other active GitHub token grants of `agent` that overlap `new` and hold
+/// `permissions`, in `tx`,
 /// which also stores `kept`, the grant replacing them, and mark their requests
 /// revoked. Returns those requests.
 ///
@@ -100,6 +121,7 @@ pub(super) async fn end_overlapping(
     agent: &AgentName,
     kept: &Id,
     new: &GrantScope,
+    permissions: &PermissionSet,
     expected: &[Id],
     now: i64,
 ) -> Result<Vec<Id>, RequestError> {
@@ -116,7 +138,8 @@ pub(super) async fn end_overlapping(
     let mut grants: Vec<(Id, Id)> = Vec::new();
     for row in &rows {
         let view: String = row.try_get("view")?;
-        if scope_of(&view)?.0.overlaps(new) {
+        let (scope, held) = scope_of(&view)?;
+        if replaced_by(&scope, &held, new, permissions) {
             grants.push((parse(row, "id")?, parse(row, "request_id")?));
         }
     }

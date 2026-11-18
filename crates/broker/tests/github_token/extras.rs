@@ -1,20 +1,17 @@
 //! A GitHub token request may name extra permissions beyond the owner's default,
 //! within the owner's allowlist; a sensitive one only for a short window; and an
-//! agent has one pending request per repositories, whatever extras it names.
+//! agent has one pending request per repositories and permission set.
 
 use axum::http::StatusCode;
 use serde_json::{Value, json};
 use warden_broker::policy::GithubPermissionPolicy;
-use warden_broker::requests::RequestError;
 use warden_broker::testkit::upstream::HttpsUpstream;
 use warden_broker::testkit::{CapturingNotifier, TestBroker};
-use warden_broker_proto::github_token::{
-    EXTRA_NOT_ALLOWED, OTHER_PERMISSIONS_PENDING, SENSITIVE_WINDOW,
-};
+use warden_broker_proto::github_token::{EXTRA_NOT_ALLOWED, SENSITIVE_WINDOW};
 use warden_broker_proto::{CreateRequest, Window};
 
 use super::permissions::{WITH_CHECKS, set};
-use super::{active_for, approve, configured_on_fake, entries, installation, resolved};
+use super::{active_for, configured_on_fake, entries, installation, resolved};
 
 pub(super) const REPO: &str = "example-owner/example-repo";
 
@@ -32,7 +29,16 @@ pub(super) fn allow(broker: &TestBroker, default: &str, allowed: &str) {
 }
 
 pub(super) fn with_extras(window: Window, extras: &str) -> CreateRequest {
-    TestBroker::github_token_request_with_extras("push the fix", window, &[REPO], extras)
+    with_extras_for(window, &[REPO], extras)
+}
+
+/// As [`with_extras`], for `repositories`.
+pub(super) fn with_extras_for(
+    window: Window,
+    repositories: &[&str],
+    extras: &str,
+) -> CreateRequest {
+    TestBroker::github_token_request_with_extras("push the fix", window, repositories, extras)
 }
 
 fn without_extras(window: Window) -> CreateRequest {
@@ -212,48 +218,29 @@ async fn extra_covered_by_default_not_marked() {
 }
 
 #[tokio::test]
-async fn pending_with_other_extras_is_409() {
+async fn requests_for_other_permissions_wait_side_by_side() {
     let (broker, key, _upstream) = configured_on_fake().await;
     allow(&broker, LEGACY, "actions:read,checks:read");
-    let (status, body) = post(&broker, &key, &with_extras(Window::D7, "checks:read")).await;
-    assert_eq!(status, StatusCode::CREATED, "{body}");
-    let waiting = created_id(&body);
-    for other in [
-        with_extras(Window::D7, "actions:read"),
-        without_extras(Window::D7),
-    ] {
-        let (status, body) = post(&broker, &key, &other).await;
-        assert_eq!(status, StatusCode::CONFLICT, "{body}");
-        assert!(body.contains(OTHER_PERMISSIONS_PENDING), "{body}");
-        assert!(body.contains(&waiting), "{body}");
-    }
-    // A tool's automatic request asks for no extras: the credential helper is told.
-    let (status, body) = post_automatic(&broker, &key).await;
-    assert_eq!(status, StatusCode::CONFLICT, "{body}");
-    assert!(body.contains(OTHER_PERMISSIONS_PENDING), "{body}");
-    assert_eq!(pending_count(&broker).await, 1);
-    // Each refusal is in the audit log: the fixed text and the waiting request's id.
-    let refused = entries(&broker, "github_token_refused");
-    assert_eq!(refused.len(), 3, "{refused:?}");
-    for entry in &refused {
-        assert_eq!(
-            entry["reason"],
-            format!("{OTHER_PERMISSIONS_PENDING}: {waiting}"),
-            "{entry}"
-        );
-    }
-}
-
-#[tokio::test]
-async fn pending_automatic_blocks_a_request_with_extras() {
-    let (broker, key, _upstream) = configured_on_fake().await;
-    allow(&broker, LEGACY, "checks:read");
-    let (status, body) = post_automatic(&broker, &key).await;
-    assert_eq!(status, StatusCode::CREATED, "{body}");
-    let (status, body) = post(&broker, &key, &with_extras(Window::D30, "checks:read")).await;
-    assert_eq!(status, StatusCode::CONFLICT, "{body}");
-    assert!(body.contains(OTHER_PERMISSIONS_PENDING), "{body}");
-    assert_eq!(pending_count(&broker).await, 1);
+    let (status, plain) = post(&broker, &key, &without_extras(Window::D7)).await;
+    assert_eq!(status, StatusCode::CREATED, "{plain}");
+    let (status, checks) = post(&broker, &key, &with_extras(Window::D7, "checks:read")).await;
+    assert_eq!(status, StatusCode::CREATED, "{checks}");
+    assert_ne!(created_id(&plain), created_id(&checks));
+    let (status, again) = post(&broker, &key, &with_extras(Window::D7, "checks:read")).await;
+    assert_eq!(status, StatusCode::CREATED, "{again}");
+    assert_eq!(created_id(&again), created_id(&checks));
+    assert_eq!(
+        serde_json::from_str::<Value>(&again).unwrap()["created"],
+        false
+    );
+    let (status, actions) = post(&broker, &key, &with_extras(Window::D7, "actions:read")).await;
+    assert_eq!(status, StatusCode::CREATED, "{actions}");
+    // A tool's automatic request asks for no extras: it joins the plain one.
+    let (status, automatic) = post_automatic(&broker, &key).await;
+    assert_eq!(status, StatusCode::CREATED, "{automatic}");
+    assert_eq!(created_id(&automatic), created_id(&plain));
+    assert_eq!(pending_count(&broker).await, 3);
+    assert_eq!(entries(&broker, "github_token_refused"), [] as [Value; 0]);
 }
 
 #[tokio::test]
@@ -270,43 +257,6 @@ async fn pending_with_same_extras_returns_it() {
         false
     );
     assert_eq!(pending_count(&broker).await, 1);
-}
-
-#[tokio::test]
-async fn renewal_finding_a_request_with_extras_is_409() {
-    let (broker, _key, upstream) = configured_on_fake().await;
-    allow(&broker, LEGACY, "checks:read");
-    let grant = approve(&broker, &upstream, "bot", Window::D7).await;
-    broker
-        .create_request("bot", with_extras(Window::D7, "checks:read"))
-        .await;
-    let error = broker
-        .state()
-        .requests
-        .renew_grant(&grant.parse().unwrap())
-        .await
-        .unwrap_err();
-    assert!(
-        matches!(error, RequestError::OtherPermissionsPending(_)),
-        "{error}"
-    );
-}
-
-#[tokio::test]
-async fn the_owners_renew_button_says_what_is_waiting() {
-    let (broker, _key, upstream) = configured_on_fake().await;
-    allow(&broker, LEGACY, "checks:read");
-    let grant = approve(&broker, &upstream, "bot", Window::D7).await;
-    broker
-        .create_request("bot", with_extras(Window::D7, "checks:read"))
-        .await;
-    let resp = broker
-        .post_json(&format!("/grants/{grant}/renew"), &json!({}))
-        .await;
-    assert_eq!(resp.status, StatusCode::CONFLICT, "{}", resp.body);
-    let says = resp.json()["error"].as_str().unwrap().to_owned();
-    assert!(says.contains("approve or deny that one first"), "{says}");
-    assert!(!says.contains("cancel"), "{says}");
 }
 
 #[tokio::test]

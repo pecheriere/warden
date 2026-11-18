@@ -10,7 +10,7 @@ use warden_broker::testkit::github_app::token_answer;
 use warden_broker::testkit::upstream::{Scripted, installation_json};
 use warden_broker_proto::Window;
 use warden_broker_proto::github_permissions::PermissionSet;
-use warden_broker_proto::github_token::{OTHER_PERMISSIONS_PENDING, SENSITIVE_WINDOW};
+use warden_broker_proto::github_token::SENSITIVE_WINDOW;
 
 use super::old_broker::OldBroker;
 use super::{
@@ -220,42 +220,4 @@ async fn a_sensitive_extra_defaults_to_one_hour_and_a_long_window_is_refused_as_
     approve_for(&s, &request, Window::H1, &[(REPO_ID, REPO)], &[]).await;
     let out = wait(child).await;
     assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn a_request_with_other_permissions_pending_is_refused_as_the_broker_says() {
-    let s = setup().await;
-    allow(&s, "checks:read", &[("checks", "read")]);
-    let mut first = s
-        .machine
-        .warden()
-        .args(["request", "github", REPO, "--goal", "push the fix"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let _ = CapturingNotifier::token(&s.broker.capture.next().await);
-
-    let other = s
-        .machine
-        .warden()
-        .args([
-            "request",
-            "github",
-            REPO,
-            "--extra-permissions",
-            "checks:read",
-            "--goal",
-            "read the CI results",
-        ])
-        .output()
-        .unwrap();
-    assert_eq!(other.status.code(), Some(1), "{}", text(&other.stderr));
-    assert!(
-        text(&other.stderr).contains(OTHER_PERMISSIONS_PENDING),
-        "{}",
-        text(&other.stderr)
-    );
-    first.kill().unwrap();
-    first.wait().unwrap();
 }

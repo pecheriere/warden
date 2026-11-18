@@ -1,9 +1,9 @@
 //! The GitHub token grant's own rules: its windows, the policy the App makes and
 //! finding an agent's active grant.
 //!
-//! An agent holds at most one grant per repository: approving a new grant ends the
-//! ones it overlaps (see `renewal`), so that revoking a grant really does stop that
-//! agent's minting.
+//! An agent holds at most one grant per repository and permission set: approving a new
+//! grant ends the ones it overlaps with the same set (see `github_overlap`), so that
+//! revoking a grant really does stop that agent's minting under that set.
 
 use sqlx::Row as _;
 use warden_broker_proto::github_token::{GrantRepository, SENSITIVE_WINDOW};

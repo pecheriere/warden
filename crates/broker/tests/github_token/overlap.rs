@@ -1,5 +1,5 @@
 //! Approving a GitHub token grant ends only the agent's grants that share a
-//! repository with it, and two approvals at once leave one.
+//! repository and a permission set with it, and two approvals at once leave one.
 
 use axum::http::StatusCode;
 use serde_json::Value;
@@ -10,6 +10,7 @@ use warden_broker::testkit::upstream::HttpsUpstream;
 use warden_broker_proto::Window;
 use warden_broker_proto::github_token::AMBIGUOUS_GRANT;
 
+use super::extras::{LEGACY, allow, installation_with, with_extras_for};
 use super::{approve_repositories, configured_on_fake, entries, github_calls, resolved};
 
 const A: (u64, &str) = (1001, "example-owner/example-repo");
@@ -74,6 +75,99 @@ async fn overlapping_grant_is_replaced() {
     .await
     .unwrap();
     assert_eq!(status, "revoked");
+}
+
+/// Approve a request for `repositories` that adds `extras` to the default, for
+/// `window`, and return its grant. The installation holds every extra the tests use.
+async fn approve_with_extras(
+    broker: &TestBroker,
+    upstream: &HttpsUpstream,
+    repositories: &[(u64, &str)],
+    window: Window,
+    extras: &str,
+) -> String {
+    let names: Vec<&str> = repositories.iter().map(|(_, name)| *name).collect();
+    let (created, token) = broker
+        .create_request("bot", with_extras_for(window, &names, extras))
+        .await;
+    upstream.answer_github_installation(Some(installation_with(&[
+        ("actions", "write"),
+        ("workflows", "write"),
+    ])));
+    upstream.script_github_token(resolved(broker, repositories));
+    let approved = broker.approve(&token, window).await;
+    assert_eq!(approved.status, StatusCode::OK, "{}", approved.body);
+    let status = broker
+        .state()
+        .requests
+        .status(
+            &"bot".parse().unwrap(),
+            &created.id,
+            std::time::Duration::ZERO,
+        )
+        .await
+        .unwrap();
+    let warden_broker_proto::RequestStatus::Approved(view) = status else {
+        panic!("not approved: {status:?}");
+    };
+    view.grant_id.to_string()
+}
+
+#[tokio::test]
+async fn grant_with_other_permissions_stays() {
+    let (broker, _key, upstream) = configured_on_fake().await;
+    allow(&broker, LEGACY, "actions:write,workflows:write");
+    let everyday = approve_repositories(&broker, &upstream, "bot", Window::D7, &[A]).await;
+    let sensitive =
+        approve_with_extras(&broker, &upstream, &[A], Window::M30, "workflows:write").await;
+    assert!(!revoked(&broker, &everyday).await);
+    assert!(!revoked(&broker, &sensitive).await);
+    assert_eq!(active_covering(&broker, 1001).await, 2);
+    assert_eq!(entries(&broker, "grant_revoked"), [] as [Value; 0]);
+}
+
+#[tokio::test]
+async fn revoking_one_set_leaves_the_other() {
+    let (broker, key, upstream) = configured_on_fake().await;
+    allow(&broker, LEGACY, "actions:write,workflows:write");
+    let everyday = approve_repositories(&broker, &upstream, "bot", Window::D7, &[A]).await;
+    let sensitive =
+        approve_with_extras(&broker, &upstream, &[A], Window::M30, "workflows:write").await;
+    let ended = broker
+        .post_json(
+            &format!("/grants/{sensitive}/revoke"),
+            &serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(ended.status, StatusCode::OK, "{}", ended.body);
+    assert!(revoked(&broker, &sensitive).await);
+    assert!(!revoked(&broker, &everyday).await);
+    let listed = broker.api_get(&key, "/v1/grants").await.json();
+    let ids: Vec<&str> = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|g| g["grant_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, [everyday.as_str()]);
+    upstream.script_github_token(minted_answer(
+        "ghs_everyday_0123456789",
+        broker.clock.now() + 3600,
+        &[A],
+    ));
+    let minted = mint_a(&broker, &key).await;
+    assert_eq!(minted.status, StatusCode::OK, "{}", minted.body);
+    assert_eq!(minted.json()["grant_id"], everyday.as_str());
+}
+
+#[tokio::test]
+async fn same_set_on_overlapping_repositories_is_replaced() {
+    let (broker, _key, upstream) = configured_on_fake().await;
+    allow(&broker, LEGACY, "actions:write,workflows:write");
+    let first = approve_with_extras(&broker, &upstream, &[A, B], Window::D7, "actions:write").await;
+    let second = approve_with_extras(&broker, &upstream, &[B], Window::D7, "actions:write").await;
+    assert!(revoked(&broker, &first).await);
+    assert!(!revoked(&broker, &second).await);
 }
 
 #[tokio::test]

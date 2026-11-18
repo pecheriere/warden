@@ -20,7 +20,6 @@ use sqlx::sqlite::SqliteRow;
 use sqlx::{Row as _, SqlitePool};
 use url::Url;
 use warden_broker_proto::github_permissions::PermissionSet;
-use warden_broker_proto::github_token::OTHER_PERMISSIONS_PENDING;
 use warden_broker_proto::{
     Access, AgentName, CreateRequest, Fingerprint, GithubTokenGrant, GrantAccess, GrantView, Id,
     TargetName, UnixUser, Window,
@@ -178,10 +177,6 @@ pub enum RequestError {
     /// another agent, or of this agent for another target.
     #[error("this public key is already bound to another request or grant")]
     KeyInUse,
-    /// The agent has a request waiting for the same repositories that asks for other
-    /// extra permissions, whose id follows. Nothing was stored.
-    #[error("{}: {}", OTHER_PERMISSIONS_PENDING, .0)]
-    OtherPermissionsPending(Id),
     /// The agent is over one of its [`RequestLimits`]; nothing was stored and
     /// the owner was not asked about this request.
     #[error(transparent)]

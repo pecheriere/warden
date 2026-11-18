@@ -31,9 +31,12 @@ set it up.
   decides whether warden mints more tokens, not how long a token lasts. Like commit signing,
   it is long because the agent is expected to use it on its own: a prompt for every hour would
   be a reflex tap.
-- **Several grants at a time per agent**, one for each set of repositories. Approving a grant
-  ends the agent's other grants that share a repository with it, by GitHub's id or by name
-  (ignoring case); the approval page lists them before you approve. A grant that names no
+- **Several grants at a time per agent**, one for each set of repositories and permissions.
+  Approving a grant ends the agent's other grants that share a repository with it, by
+  GitHub's id or by name (ignoring case), and hold exactly the same permissions; the approval
+  page lists them before you approve. A grant with other permissions stays, and so does a
+  request waiting for them, so a short grant with a sensitive permission never ends the
+  agent's everyday one, and revoking it leaves that one working. A grant that names no
   repository (made before grants were scoped) ends at upgrade and is replaced by asking
   again.
 - **Issues on public repositories, too.** Measured on real GitHub: a token scoped to
