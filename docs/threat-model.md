@@ -1090,7 +1090,7 @@ What an attacker gets, and what stops it:
   What moves: an owner can now configure a default wider than the four (for example `checks`
   or `actions`), and every agent's token then holds it from the next request on. The sensitive
   permissions (`administration`, `workflows`, `secrets`, `environments`, `dependabot_secrets`,
-  `repository_hooks` and every `organization_*` one) are out of the default: a `default_permissions` that
+  `repository_hooks`, `variables` and every `organization_*` one) are out of the default: a `default_permissions` that
   names one makes the App unusable and is refused as a field, not clipped, so no automatic or 30-day
   grant holds one, and GitHub still refuses a push that changes a workflow file, a token cannot read or
   write repository secrets, and it cannot create a webhook that would keep sending events after the grant

@@ -43,7 +43,14 @@ const KNOWN: &[&str] = &[
 /// default. `dependabot_secrets` is a repository secret under another name.
 /// `repository_hooks` lets a token create a webhook, which keeps sending the
 /// repository's events to whoever set it up after the token has expired and the
-/// grant is revoked: access that outlives the grant. The `organization_*` ones
+/// grant is revoked: access that outlives the grant. `variables` is sensitive
+/// although a variable is not a secret: `variables:write` lets a token set a
+/// repository Actions variable that a workflow expands as `${{ vars.* }}` in a
+/// `run:` step, which injects shell into a job that runs with the repository's
+/// secrets, or in `runs-on`, which picks the runner, all without a pull request
+/// review, and the value stays after the grant ends. It is the family of
+/// `environments`. Reading variables needs collaborator access to the repository, not
+/// just the right to read it. The `organization_*` ones
 /// are the organization permissions GitHub documents on the page the other
 /// permissions are read from, on 2026-11-15; one GitHub does not document there stays unknown.
 pub const SENSITIVE: &[&str] = &[
@@ -71,6 +78,7 @@ pub const SENSITIVE: &[&str] = &[
     "organization_user_blocking",
     "repository_hooks",
     "secrets",
+    "variables",
     "workflows",
 ];
 
@@ -228,6 +236,13 @@ const MEANINGS: &[(&str, Option<&str>, Option<&str>)] = &[
         Some("create, replace and delete the repository's secrets, which its workflows then use"),
     ),
     (
+        "variables",
+        Some("read the values of the repository's Actions variables"),
+        Some(
+            "create, change and delete the repository's Actions variables, which its workflows expand in commands and runner choices",
+        ),
+    ),
+    (
         "workflows",
         None,
         Some(
@@ -315,7 +330,7 @@ impl fmt::Display for PermissionError {
             Self::Unknown => f.write_str("a permission name is not one GitHub documents"),
             Self::SensitiveInDefault => f.write_str(
                 "a sensitive permission (administration, workflows, secrets, environments, \
-                 dependabot_secrets, repository_hooks, organization_*) is only allowed in the \
+                 dependabot_secrets, repository_hooks, variables, organization_*) is only allowed in the \
                  extras, never in the default",
             ),
             Self::Admin(name) => write!(f, "the admin level of {name} is never granted"),

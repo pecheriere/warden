@@ -582,7 +582,7 @@ the grants as they are now; a plain token still holds the default set, and the e
 token only when named (see below).
 
 **A sensitive extra** (`administration`, `workflows`, `secrets`, `environments`,
-`dependabot_secrets`, `repository_hooks` or an `organization_*` permission) lets whoever holds the token change
+`dependabot_secrets`, `repository_hooks`, `variables` or an `organization_*` permission) lets whoever holds the token change
 what runs with the repository's credentials or keep access after the grant ends.
 Its grant lasts `15m`, `30m` or `1h`: without `--for` the CLI asks for `1h`, and a longer
 `--for` is refused (`a GitHub token grant with a sensitive permission lasts 15m, 30m or 1h`). Make the

@@ -1,6 +1,6 @@
 use super::{
     GrantedPermissions, Level, MEANINGS, Permission, PermissionError, PermissionSet, SENSITIVE,
-    is_sensitive, sensitive_meaning,
+    is_sensitive, known_names, sensitive_meaning,
 };
 
 fn set(text: &str) -> PermissionSet {
@@ -50,6 +50,7 @@ fn sensitive_names_parse() {
         "environments",
         "dependabot_secrets",
         "repository_hooks",
+        "variables",
         "organization_projects",
     ] {
         for level in ["read", "write"] {
@@ -62,6 +63,27 @@ fn sensitive_names_parse() {
     let sensitive: Vec<_> = parsed.sensitive().map(|p| p.to_string()).collect();
     assert_eq!(sensitive, ["organization_hooks:read", "workflows:write"]);
     assert_eq!(set("checks:read").sensitive().count(), 0);
+}
+
+#[test]
+fn variables_is_known_and_sensitive() {
+    for level in ["read", "write"] {
+        let permission = permission(&format!("variables:{level}"));
+        assert_eq!(permission.name(), "variables");
+        assert!(permission.is_sensitive());
+    }
+    assert!(is_sensitive("variables"));
+    assert!(known_names().any(|name| name == "variables"));
+    assert_eq!(
+        set("variables:write, actions:write").to_string(),
+        "actions:write,metadata:read,variables:write"
+    );
+    assert_eq!(set("variables:write").sensitive().count(), 1);
+    assert!(set("variables:write").covers(&permission("variables:read")));
+    assert_eq!(
+        "variables:admin".parse::<Permission>(),
+        Err(PermissionError::Admin("variables"))
+    );
 }
 
 #[test]
