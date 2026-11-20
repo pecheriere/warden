@@ -6,8 +6,11 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.18.1] - 2026-11-20
+
 ### Upgrading
 
+- No new migration.
 - Let any active or pending `variables` grant end, or revoke it, before upgrading: after the
   upgrade a stored grant naming it makes that agent's GitHub token lookups and the grants page
   fail until it expires (at most an hour).
