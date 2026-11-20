@@ -12,6 +12,12 @@ use serde::{Deserialize, Serialize};
 /// access token, minus the [`SENSITIVE`] ones. Read from
 /// <https://docs.github.com/en/rest/apps/apps#create-an-installation-access-token-for-an-app>
 /// on 2026-11-14. Names are as the REST API spells them.
+///
+/// `variables` (repository Actions variables, read or write) is here and not in
+/// [`SENSITIVE`] on purpose: Actions variables are plain, non-secret
+/// configuration that the repository's workflows read, readable by anyone who
+/// can read the repository. They neither reach past the repository nor hand out
+/// access that outlives the grant, which are the criteria for [`SENSITIVE`].
 const KNOWN: &[&str] = &[
     "actions",
     "artifact_metadata",
@@ -34,6 +40,7 @@ const KNOWN: &[&str] = &[
     "security_events",
     "single_file",
     "statuses",
+    "variables",
     "vulnerability_alerts",
 ];
 

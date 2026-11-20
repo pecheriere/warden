@@ -6,6 +6,12 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `variables` (the repository's Actions variables, `read` or `write`) is a known GitHub
+  permission, not a sensitive one. The owner can list it in `extra_permissions`, and an agent
+  can ask for it with `--extra-permissions` or `--permissions`. Upgrade the broker first.
+
 ## [0.17.0] - 2026-11-17
 
 ### Upgrading
