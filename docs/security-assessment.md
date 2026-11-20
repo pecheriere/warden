@@ -1,6 +1,6 @@
 # Security assessment
 
-**Date: 2026-11-17. Checked for release 0.17.0 at `main` commit `506b4f0`: each change since 0.14.0 that moves a risk has its update below (GitHub token permissions, sensitive permissions, requested extras, the agent hook and plugin, the revoking instructions, and in 0.17.0 one GitHub grant per set of extras with extras only when named); the CLI's token cache keyed by permission set, the relay's recorded stop reason, the `chrono` advisory ignore and the dependency updates move none. The last full review covered release 0.14.0, at `main` commit `a34bc79`. The
+**Date: 2026-11-20. Checked for release 0.17.0 at `main` commit `506b4f0`: each change since 0.14.0 that moves a risk has its update below (GitHub token permissions, sensitive permissions, requested extras, the agent hook and plugin, the revoking instructions, and in 0.17.0 one GitHub grant per set of extras with extras only when named); the CLI's token cache keyed by permission set, the relay's recorded stop reason, the `chrono` advisory ignore and the dependency updates move none. The last full review covered release 0.14.0, at `main` commit `a34bc79`. The
 release adds `warden list` and `warden prime`, and the audit log's limits (both below).
 The review for 0.13.0 (2026-11-12, at `a401590`) covered repository-scoped GitHub grants
 (risks 1 and 2, F24) and the manifest signed through the broker (risk 12, below). The
@@ -64,7 +64,13 @@ covering the repository. Risk 2 goes down: until now, while an extra was granted
 of the agent got it in every token without asking. It also goes up a little: a superseded grant
 stays live until it is revoked or ends, where approving used to end it; a sensitive grant still
 lasts 1 hour at most. Naming is not a boundary between sessions, which share one agent
-([GitHub tokens](threat-model.md#github-tokens)).**
+([GitHub tokens](threat-model.md#github-tokens)).
+Updated on 2026-11-20 for the `variables` permission (warden-rrq.9): it is sensitive, so only the
+owner's `extra_permissions` can hold it, an agent has to name it, and its grant lasts 1 hour at
+most. `variables:write` sets a repository Actions variable that a workflow can expand in a `run:`
+step, which runs with the repository's secrets, or in `runs-on`, with no pull request review, and the
+value outlives the grant: the family of `environments`. No risk changes rating; risk 1 (approving by
+reflex) is why it is not an everyday permission.**
 
 **This is the project's own assessment. It is not an independent review, audit
 or penetration test.** warden has not had one. The people and tools that wrote

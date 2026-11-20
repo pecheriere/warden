@@ -9,8 +9,16 @@ All notable changes to this project are recorded here. The format follows
 ### Added
 
 - `variables` (the repository's Actions variables, `read` or `write`) is a known GitHub
-  permission, not a sensitive one. The owner can list it in `extra_permissions`, and an agent
-  can ask for it with `--extra-permissions` or `--permissions`. Upgrade the broker first.
+  permission, and a sensitive one: `variables:write` can inject shell into a workflow that
+  expands `${{ vars.* }}` in a `run:` step, or change `runs-on`, without a pull request review,
+  and the value outlives the grant. It is allowed in `extra_permissions` only, never in the
+  default, and its grant lasts `15m`, `30m` or `1h`. An agent asks for it with
+  `--extra-permissions` or `--permissions`.
+
+### Upgrading
+
+- Upgrade the broker before listing `variables` in `extra_permissions`: an older broker does
+  not know the name, and an unknown name there turns off every GitHub token.
 
 ## [0.17.0] - 2026-11-17
 

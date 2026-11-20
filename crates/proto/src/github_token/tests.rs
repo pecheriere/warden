@@ -529,6 +529,15 @@ fn sensitive_extras_parse_here_and_are_the_brokers_to_allow() {
 }
 
 #[test]
+fn variables_extra_is_sensitive_and_so_gets_the_short_windows() {
+    let access = with_extras("variables:write");
+    assert!(access.has_sensitive_extra());
+    assert!(!with_extras("checks:read").has_sensitive_extra());
+    assert!(Window::M15.is_github_token_sensitive());
+    assert!(!Window::D30.is_github_token_sensitive());
+}
+
+#[test]
 fn fingerprint_covers_extras() {
     let agent = AgentName::try_from("build-agent".to_owned()).unwrap();
     let request = |access: GithubTokenAccess| CreateRequest {
