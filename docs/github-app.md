@@ -104,7 +104,8 @@ so `repository_hooks` gives access that outlives the grant. `actions_variables` 
 variable is not a secret: with `actions_variables:write` a token sets a repository Actions variable that a
 workflow expands as `${{ vars.* }}` in a `run:` step (which runs with the repository's secrets) or in
 `runs-on`, so it injects shell or picks the runner without a pull request review, and the value stays
-after the grant ends. Reading variables needs collaborator access to the repository.
+after the grant ends. Reading variables needs collaborator access to the repository. On GitHub the
+App holds it as the repository permission Variables, which GitHub's API names `actions_variables`.
 
 warden does not refuse them by itself: you decide. They are allowed in `extra_permissions` only,
 so a sensitive permission reaches a grant only when an agent names it and you approve it. In

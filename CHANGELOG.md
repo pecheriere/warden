@@ -8,6 +8,9 @@ All notable changes to this project are recorded here. The format follows
 
 ### Upgrading
 
+- Let any active or pending `variables` grant end, or revoke it, before upgrading: after the
+  upgrade a stored grant naming it makes that agent's GitHub token lookups and the grants page
+  fail until it expires (at most an hour).
 - Remove `variables` from `extra_permissions` on the `warden:github-app` item **before**
   upgrading the broker: it no longer knows the name, and an unknown name there turns off every
   GitHub token. After upgrading, add `actions_variables:write` (or `:read`). See
