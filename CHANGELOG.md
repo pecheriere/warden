@@ -6,6 +6,19 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-11-20
+
+### Upgrading
+
+- No new migration.
+- Upgrade the broker before listing `variables` in `extra_permissions`: an older broker does
+  not know the name, and an unknown name there turns off every GitHub token. See
+  [docs/upgrading.md](docs/upgrading.md#the-sensitive-permission-variables-0180).
+- The server still links OpenSSL 3.5.9. 3.5.10, not yet released, fixes eight Low advisories
+  of 2026-11-10 and 2026-11-17 (AES-GCM-SIV, CMS, QUIC, a TLS 1.3 key share and
+  `PEM_X509_INFO_read_bio_ex`), none of which warden reaches: it links OpenSSL only through
+  webauthn-rs.
+
 ### Added
 
 - `variables` (the repository's Actions variables, `read` or `write`) is a known GitHub
@@ -14,11 +27,6 @@ All notable changes to this project are recorded here. The format follows
   and the value outlives the grant. It is allowed in `extra_permissions` only, never in the
   default, and its grant lasts `15m`, `30m` or `1h`. An agent asks for it with
   `--extra-permissions` or `--permissions`.
-
-### Upgrading
-
-- Upgrade the broker before listing `variables` in `extra_permissions`: an older broker does
-  not know the name, and an unknown name there turns off every GitHub token.
 
 ## [0.17.0] - 2026-11-17
 
