@@ -6,6 +6,19 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Upgrading
+
+- Remove `variables` from `extra_permissions` on the `warden:github-app` item **before**
+  upgrading the broker: it no longer knows the name, and an unknown name there turns off every
+  GitHub token. After upgrading, add `actions_variables:write` (or `:read`). See
+  [docs/upgrading.md](docs/upgrading.md#the-permission-is-actions_variables-not-variables-0181).
+
+### Fixed
+
+- The sensitive permission for a repository's Actions variables is named `actions_variables`, GitHub's
+  key. 0.18.0 named it `variables`, which an installation never reports, so every request for it
+  was refused. Renamed with no alias: `variables` is now an unknown name. It stays sensitive.
+
 ## [0.18.0] - 2026-11-20
 
 ### Upgrading

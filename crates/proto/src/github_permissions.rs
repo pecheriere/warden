@@ -43,8 +43,8 @@ const KNOWN: &[&str] = &[
 /// default. `dependabot_secrets` is a repository secret under another name.
 /// `repository_hooks` lets a token create a webhook, which keeps sending the
 /// repository's events to whoever set it up after the token has expired and the
-/// grant is revoked: access that outlives the grant. `variables` is sensitive
-/// although a variable is not a secret: `variables:write` lets a token set a
+/// grant is revoked: access that outlives the grant. `actions_variables` is sensitive
+/// although a variable is not a secret: `actions_variables:write` lets a token set a
 /// repository Actions variable that a workflow expands as `${{ vars.* }}` in a
 /// `run:` step, which injects shell into a job that runs with the repository's
 /// secrets, or in `runs-on`, which picks the runner, all without a pull request
@@ -54,6 +54,7 @@ const KNOWN: &[&str] = &[
 /// are the organization permissions GitHub documents on the page the other
 /// permissions are read from, on 2026-11-15; one GitHub does not document there stays unknown.
 pub const SENSITIVE: &[&str] = &[
+    "actions_variables",
     "administration",
     "dependabot_secrets",
     "environments",
@@ -78,7 +79,6 @@ pub const SENSITIVE: &[&str] = &[
     "organization_user_blocking",
     "repository_hooks",
     "secrets",
-    "variables",
     "workflows",
 ];
 
@@ -101,6 +101,13 @@ pub fn is_sensitive(name: &str) -> bool {
 /// level GitHub does not document for a name is `None`: [`Permission`] refuses it, so
 /// [`sensitive_meaning`] never meets it. A test holds the names to [`SENSITIVE`].
 const MEANINGS: &[(&str, Option<&str>, Option<&str>)] = &[
+    (
+        "actions_variables",
+        Some("read the values of the repository's Actions variables"),
+        Some(
+            "create, change and delete the repository's Actions variables, which its workflows expand in commands and runner choices",
+        ),
+    ),
     (
         "administration",
         Some("read the repository's settings, teams and collaborators"),
@@ -236,13 +243,6 @@ const MEANINGS: &[(&str, Option<&str>, Option<&str>)] = &[
         Some("create, replace and delete the repository's secrets, which its workflows then use"),
     ),
     (
-        "variables",
-        Some("read the values of the repository's Actions variables"),
-        Some(
-            "create, change and delete the repository's Actions variables, which its workflows expand in commands and runner choices",
-        ),
-    ),
-    (
         "workflows",
         None,
         Some(
@@ -330,7 +330,7 @@ impl fmt::Display for PermissionError {
             Self::Unknown => f.write_str("a permission name is not one GitHub documents"),
             Self::SensitiveInDefault => f.write_str(
                 "a sensitive permission (administration, workflows, secrets, environments, \
-                 dependabot_secrets, repository_hooks, variables, organization_*) is only allowed in the \
+                 dependabot_secrets, repository_hooks, actions_variables, organization_*) is only allowed in the \
                  extras, never in the default",
             ),
             Self::Admin(name) => write!(f, "the admin level of {name} is never granted"),

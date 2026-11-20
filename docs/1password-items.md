@@ -167,7 +167,7 @@ does not matter. Two optional fields set the permissions of the tokens, each a l
 `extra_permissions` (what a request may add to the default; missing means none, so no request can
 ask for one). A field that is repeated, empty or malformed, or a `default_permissions` that names a
 sensitive permission (`administration`, `workflows`, `secrets`, `environments`, `dependabot_secrets`,
-`repository_hooks`, `variables`, `organization_*`), makes GitHub tokens unusable until you fix it, and `warden-server doctor`
+`repository_hooks`, `actions_variables`, `organization_*`), makes GitHub tokens unusable until you fix it, and `warden-server doctor`
 names the field. A sensitive permission is allowed in `extra_permissions`. See
 [Permissions](github-app.md#permissions) and [Sensitive permissions](github-app.md#sensitive-permissions). warden
 reads the item for each approval page and token, and never gives the key out. Changing

@@ -56,10 +56,27 @@ doctor` fails its `github.token` check, git sends warden no repository, and an o
 wrapper does not pass `-R` to warden. A `gh` run outside a checkout needs `-R
 owner/name`.
 
+## The permission is actions_variables, not variables (0.18.1)
+
+0.18.0 named the sensitive permission for a repository's Actions variables `variables`. GitHub's
+key is `actions_variables`, which an installation never reported as `variables`, so every request
+for it was refused. 0.18.1 renames it, with no alias: it stays sensitive (extras only, named by
+the agent, `15m`, `30m` or `1h`), and `variables` is an unknown name.
+
+Upgrade in this order:
+
+1. Remove `variables` from `extra_permissions` on the `warden:github-app` item, **before**
+   upgrading the broker: 0.18.1 does not know the name, and an unknown name there turns off every
+   GitHub token.
+2. Upgrade the broker.
+3. Add `actions_variables:read` or `actions_variables:write` to `extra_permissions`. The GitHub App
+   must also hold the Variables permission: see [Permissions](github-app.md#permissions).
+
 ## The sensitive permission variables (0.18.0)
 
-`variables` (a repository's Actions variables) is a sensitive GitHub permission from this
-release: allowed in `extra_permissions` only, named by the agent, and granted for `15m`, `30m`
+`variables` (a repository's Actions variables) was a sensitive GitHub permission from this
+release, but GitHub's name for it is `actions_variables`: see
+[the rename in 0.18.1](#the-permission-is-actions_variables-not-variables-0181). Otherwise it was allowed in `extra_permissions` only, named by the agent, and granted for `15m`, `30m`
 or `1h`. Upgrade the broker before adding it to `extra_permissions` on the `warden:github-app`
 item: an older broker does not know the name, and an unknown name there turns off every GitHub
 token. The GitHub App must also hold the Variables permission: see

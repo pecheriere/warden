@@ -95,13 +95,13 @@ before you approve.
 ### Sensitive permissions
 
 These reach past a repository's code, or outlive the grant: `administration`, `workflows`,
-`secrets`, `environments`, `dependabot_secrets`, `repository_hooks`, `variables` and the `organization_*`
+`secrets`, `environments`, `dependabot_secrets`, `repository_hooks`, `actions_variables` and the `organization_*`
 permissions GitHub documents for installation tokens (read from GitHub's REST documentation on
 2026-11-15). Repository secrets, environments and workflow files let whoever holds a token
 change what runs with the repository's own credentials. A webhook keeps sending the
 repository's events to whoever created it after the token has expired and the grant is revoked,
-so `repository_hooks` gives access that outlives the grant. `variables` is sensitive although a
-variable is not a secret: with `variables:write` a token sets a repository Actions variable that a
+so `repository_hooks` gives access that outlives the grant. `actions_variables` is sensitive although a
+variable is not a secret: with `actions_variables:write` a token sets a repository Actions variable that a
 workflow expands as `${{ vars.* }}` in a `run:` step (which runs with the repository's secrets) or in
 `runs-on`, so it injects shell or picks the runner without a pull request review, and the value stays
 after the grant ends. Reading variables needs collaborator access to the repository.
