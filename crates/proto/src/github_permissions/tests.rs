@@ -50,7 +50,7 @@ fn sensitive_names_parse() {
         "environments",
         "dependabot_secrets",
         "repository_hooks",
-        "variables",
+        "actions_variables",
         "organization_projects",
     ] {
         for level in ["read", "write"] {
@@ -66,24 +66,33 @@ fn sensitive_names_parse() {
 }
 
 #[test]
-fn variables_is_known_and_sensitive() {
+fn actions_variables_is_known_and_sensitive() {
     for level in ["read", "write"] {
-        let permission = permission(&format!("variables:{level}"));
-        assert_eq!(permission.name(), "variables");
+        let permission = permission(&format!("actions_variables:{level}"));
+        assert_eq!(permission.name(), "actions_variables");
         assert!(permission.is_sensitive());
     }
-    assert!(is_sensitive("variables"));
-    assert!(known_names().any(|name| name == "variables"));
+    assert!(is_sensitive("actions_variables"));
+    assert!(known_names().any(|name| name == "actions_variables"));
     assert_eq!(
-        set("variables:write, actions:write").to_string(),
-        "actions:write,metadata:read,variables:write"
+        set("actions_variables:write, actions:write").to_string(),
+        "actions:write,actions_variables:write,metadata:read"
     );
-    assert_eq!(set("variables:write").sensitive().count(), 1);
-    assert!(set("variables:write").covers(&permission("variables:read")));
+    assert_eq!(set("actions_variables:write").sensitive().count(), 1);
+    assert!(set("actions_variables:write").covers(&permission("actions_variables:read")));
     assert_eq!(
-        "variables:admin".parse::<Permission>(),
-        Err(PermissionError::Admin("variables"))
+        "actions_variables:admin".parse::<Permission>(),
+        Err(PermissionError::Admin("actions_variables"))
     );
+}
+
+#[test]
+fn the_old_name_variables_is_unknown() {
+    for text in ["variables:read", "variables:write"] {
+        assert_eq!(text.parse::<Permission>(), Err(PermissionError::Unknown));
+    }
+    assert!(!is_sensitive("variables"));
+    assert!(!known_names().any(|name| name == "variables"));
 }
 
 #[test]

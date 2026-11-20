@@ -529,8 +529,8 @@ fn sensitive_extras_parse_here_and_are_the_brokers_to_allow() {
 }
 
 #[test]
-fn variables_extra_is_sensitive_and_so_gets_the_short_windows() {
-    let access = with_extras("variables:write");
+fn actions_variables_extra_is_sensitive_and_so_gets_the_short_windows() {
+    let access = with_extras("actions_variables:write");
     assert!(access.has_sensitive_extra());
     assert!(!with_extras("checks:read").has_sensitive_extra());
     assert!(Window::M15.is_github_token_sensitive());
