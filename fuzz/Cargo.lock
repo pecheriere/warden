@@ -4069,7 +4069,7 @@ dependencies = [
 
 [[package]]
 name = "warden-agent-hook"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "toml",
  "url",
@@ -4078,7 +4078,7 @@ dependencies = [
 
 [[package]]
 name = "warden-broker"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4122,7 +4122,7 @@ dependencies = [
 
 [[package]]
 name = "warden-broker-proto"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "getrandom 0.4.3",
  "hex",

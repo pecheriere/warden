@@ -56,6 +56,15 @@ doctor` fails its `github.token` check, git sends warden no repository, and an o
 wrapper does not pass `-R` to warden. A `gh` run outside a checkout needs `-R
 owner/name`.
 
+## The sensitive permission variables (0.18.0)
+
+`variables` (a repository's Actions variables) is a sensitive GitHub permission from this
+release: allowed in `extra_permissions` only, named by the agent, and granted for `15m`, `30m`
+or `1h`. Upgrade the broker before adding it to `extra_permissions` on the `warden:github-app`
+item: an older broker does not know the name, and an unknown name there turns off every GitHub
+token. The GitHub App must also hold the Variables permission: see
+[Permissions](github-app.md#permissions).
+
 ## Extra GitHub permissions only when named (0.17.0, breaking)
 
 **A GitHub token now carries an extra permission only when the request names it.** Until
