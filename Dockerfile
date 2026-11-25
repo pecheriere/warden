@@ -2,7 +2,7 @@
 # everything used here, so no unpinned frontend image is pulled at build time.
 
 # Builder: Rust 1.99 on Debian bookworm, pinned by digest.
-FROM rust:1.99-bookworm@sha256:9181b56c2a21ab1d5e73cffe04fc762426d30aa7fac3c91141dd033f49a7fc8b AS builder
+FROM rust:1.99-bookworm@sha256:e6f2cff35d0f309acf8433b4f05878ed77092602c5065cc81801177da0bb3a9c AS builder
 WORKDIR /src
 # Dependencies build in their own layer, from the manifests and Cargo.lock
 # only, so the build cache reuses it until Cargo.lock changes. Each crate gets
